@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -147,6 +148,25 @@ def write_pubspec(*, manifest_path: Path, output: Path) -> None:
     output.write_text("\n".join(lines), encoding="utf-8")
 
 
+def install_cache(*, manifest_path: Path, dart_executable: Path) -> None:
+    manifest = load_manifest(manifest_path)
+    packages = manifest["packages"]
+    assert isinstance(packages, dict)
+    for name, version in packages.items():
+        subprocess.run(
+            [
+                str(dart_executable),
+                "pub",
+                "cache",
+                "add",
+                name,
+                "--version",
+                version,
+            ],
+            check=True,
+        )
+
+
 def verify_cache(*, manifest_path: Path, pub_cache: Path) -> None:
     manifest = load_manifest(manifest_path)
     packages = manifest["packages"]
@@ -186,6 +206,10 @@ def build_parser() -> argparse.ArgumentParser:
     pubspec.add_argument("--manifest", type=Path, required=True)
     pubspec.add_argument("--output", type=Path, required=True)
 
+    install = subparsers.add_parser("install-cache")
+    install.add_argument("--manifest", type=Path, required=True)
+    install.add_argument("--dart", type=Path, required=True)
+
     verify = subparsers.add_parser("verify-cache")
     verify.add_argument("--manifest", type=Path, required=True)
     verify.add_argument("--pub-cache", type=Path, required=True)
@@ -206,6 +230,11 @@ def main() -> int:
             load_manifest(args.manifest)
         elif args.command == "write-pubspec":
             write_pubspec(manifest_path=args.manifest, output=args.output)
+        elif args.command == "install-cache":
+            install_cache(
+                manifest_path=args.manifest,
+                dart_executable=args.dart,
+            )
         elif args.command == "verify-cache":
             verify_cache(manifest_path=args.manifest, pub_cache=args.pub_cache)
         else:
