@@ -229,7 +229,8 @@ jobs:
             pwsh_root="$(dirname "$(readlink -f "$(command -v pwsh)")")"
             cp -aL "$flutter_root" "$root/flutter"
             cp -a "$PUB_CACHE" "$root/pub-cache"
-            cp -aL "$pwsh_root" "$root/powershell"
+            python3 scripts/copy_portable_tree.py "$pwsh_root" "$root/powershell"
+            "$root/powershell/pwsh" -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()' >/dev/null
             cat > "$root/activate.sh" <<'EOF'
           #!/usr/bin/env bash
           root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

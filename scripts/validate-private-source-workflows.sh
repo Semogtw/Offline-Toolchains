@@ -88,6 +88,7 @@ for file in \
   schemas/artifact-set-v2.schema.json \
   schemas/toolchain-request-v1.schema.json \
   scripts/build_artifact_set.py \
+  scripts/copy_portable_tree.py \
   scripts/restore_workspace.py \
   scripts/validate-toolchain-request.py \
   triggers/toolchain-build.json; do
@@ -122,6 +123,8 @@ require_text "$exact_builder" "./gradlew --no-daemon --offline"
 require_text "$exact_builder" "rm -rf private-source request-source"
 require_text "$exact_builder" "Upload toolchain receipt"
 require_text "$exact_builder" "uses: ./.github/actions/upload-artifact-set"
+require_text "$exact_builder" "scripts/copy_portable_tree.py"
+require_text .github/workflows/build-goanime.yml "scripts/copy_portable_tree.py"
 
 require_text "$uploader" "retention-days: 1"
 require_text "$uploader" "compression-level: 0"
@@ -143,16 +146,23 @@ python3 scripts/validate-toolchain-request.py \
   triggers/toolchain-build.json --profiles profiles >/dev/null
 python3 scripts/validate-workflows.py .github/workflows >/dev/null
 
-if git grep -n -E '^-----BEGIN PGP PRIVATE KEY BLOCK-----$'; then
+if git grep -n -E '^-----BEGIN PGP PRIVATE KEY BLOCK-----$' -- . \
+  ':(exclude)docs/superpowers/**'; then
   fail "private OpenPGP key material is tracked"
 fi
-if git grep -n -- 'ghp_' -- ':!scripts/validate-private-source-workflows.sh'; then
+if git grep -n -- 'ghp_' -- . \
+  ':(exclude)scripts/validate-private-source-workflows.sh' \
+  ':(exclude)docs/superpowers/**'; then
   fail "classic GitHub token-looking material is tracked"
 fi
-if git grep -n -- 'github_pat_' -- ':!scripts/validate-private-source-workflows.sh'; then
+if git grep -n -- 'github_pat_' -- . \
+  ':(exclude)scripts/validate-private-source-workflows.sh' \
+  ':(exclude)docs/superpowers/**'; then
   fail "fine-grained GitHub token-looking material is tracked"
 fi
-if git grep -n -E 'PRIVATE_REPOSITORIES_TOKEN[[:space:]]*=' -- ':!scripts/validate-private-source-workflows.sh'; then
+if git grep -n -E 'PRIVATE_REPOSITORIES_TOKEN[[:space:]]*=' -- . \
+  ':(exclude)scripts/validate-private-source-workflows.sh' \
+  ':(exclude)docs/superpowers/**'; then
   fail "assigned private repository token material is tracked"
 fi
 

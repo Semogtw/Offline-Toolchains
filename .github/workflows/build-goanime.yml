@@ -132,7 +132,9 @@ jobs:
           if [[ "$PROFILE" == goanime-analysis ]]; then
             cp -aL "$FLUTTER_ROOT" "$root/flutter"
             cp -a "$PUB_CACHE" "$root/pub-cache"
-            cp -aL "$(dirname "$(readlink -f "$(command -v pwsh)")")" "$root/powershell"
+            pwsh_root="$(dirname "$(readlink -f "$(command -v pwsh)")")"
+            python3 scripts/copy_portable_tree.py "$pwsh_root" "$root/powershell"
+            "$root/powershell/pwsh" -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()' >/dev/null
             cat > "$root/activate.sh" <<'EOF'
           #!/usr/bin/env bash
           root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
