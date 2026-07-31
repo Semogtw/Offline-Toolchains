@@ -89,7 +89,12 @@ for file in \
   schemas/toolchain-request-v1.schema.json \
   scripts/build_artifact_set.py \
   scripts/copy_portable_tree.py \
+  scripts/native_asset_cache.py \
+  scripts/prepare-project.sh \
+  scripts/relocate_flutter_sdk.py \
   scripts/restore_workspace.py \
+  scripts/restore_workspace_entry.py \
+  scripts/restore-workspace.sh \
   scripts/validate-toolchain-request.py \
   triggers/toolchain-build.json; do
   require_file "$file"
@@ -124,7 +129,18 @@ require_text "$exact_builder" "rm -rf private-source request-source"
 require_text "$exact_builder" "Upload toolchain receipt"
 require_text "$exact_builder" "uses: ./.github/actions/upload-artifact-set"
 require_text "$exact_builder" "scripts/copy_portable_tree.py"
+require_text scripts/restore-workspace.sh "restore_workspace_entry.py"
+require_text scripts/restore_workspace_entry.py "prepare_restored_project_caches"
 require_text .github/workflows/build-goanime.yml "scripts/copy_portable_tree.py"
+require_text "$exact_builder" "scripts/relocate_flutter_sdk.py"
+require_text .github/workflows/build-goanime.yml "scripts/relocate_flutter_sdk.py"
+require_text "$exact_builder" "scripts/native_asset_cache.py capture"
+require_text "$exact_builder" 'scripts/native_asset_cache.py" prepare'
+require_text .github/workflows/build-goanime.yml "scripts/native_asset_cache.py capture"
+require_text .github/workflows/build-goanime.yml 'scripts/native_asset_cache.py" prepare'
+require_text "$exact_builder" '"$root/flutter/bin/flutter" pub get --offline --enforce-lockfile'
+require_text .github/workflows/build-goanime.yml '"$root/flutter/bin/flutter" pub get --offline'
+require_text .github/workflows/build-goanime.yml '"$root/flutter/bin/flutter" test --no-pub'
 
 require_text "$uploader" "retention-days: 1"
 require_text "$uploader" "compression-level: 0"
