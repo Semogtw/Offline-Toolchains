@@ -1,0 +1,37 @@
+name: Apply agent patch
+
+on:
+  push:
+    branches:
+      - agent/artifact-platform-v2
+    paths:
+      - agent-patches/*.patch.gz.b64
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: agent/artifact-platform-v2
+          fetch-depth: 0
+      - name: Decode, verify and apply patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          patch_source="$(find agent-patches -maxdepth 1 -type f -name '*.patch.gz.b64' -print -quit)"
+          test -n "$patch_source"
+          base64 --decode "$patch_source" | gzip -dc > "$RUNNER_TEMP/agent.patch"
+          git apply --check "$RUNNER_TEMP/agent.patch"
+          git apply "$RUNNER_TEMP/agent.patch"
+          rm -f "$patch_source"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'feat: checkpoint artifact platform v2 core'
+          git push origin HEAD:agent/artifact-platform-v2
