@@ -1,0 +1,170 @@
+name: Upload schema-v2 artifact set
+description: Upload one manifest artifact and up to 16 connector-sized archive parts
+inputs:
+  artifact-set-id:
+    required: true
+  out:
+    required: true
+  archive-prefix:
+    required: true
+  part-count:
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Upload manifest and inventory
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-set-id }}-manifest
+        path: |
+          ${{ inputs.out }}/artifact-set.json
+          ${{ inputs.out }}/SBOM.spdx.json
+          ${{ inputs.out }}/PARTS.txt
+          ${{ inputs.out }}/SHA256SUMS.parts
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 1
+    - name: Upload part 00
+      if: fromJSON(inputs.part-count) > 0
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-set-id }}-part-00
+        path: ${{ inputs.out }}/${{ inputs.archive-prefix }}.tar.zst.part-00
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 1
+    - name: Upload part 01
+      if: fromJSON(inputs.part-count) > 1
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-set-id }}-part-01
+        path: ${{ inputs.out }}/${{ inputs.archive-prefix }}.tar.zst.part-01
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 1
+    - name: Upload part 02
+      if: fromJSON(inputs.part-count) > 2
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-set-id }}-part-02
+        path: ${{ inputs.out }}/${{ inputs.archive-prefix }}.tar.zst.part-02
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 1
+    - name: Upload part 03
+      if: fromJSON(inputs.part-count) > 3
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-set-id }}-part-03
+        path: ${{ inputs.out }}/${{ inputs.archive-prefix }}.tar.zst.part-03
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 1
+    - name: Upload part 04
+      if: fromJSON(inputs.part-count) > 4
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-set-id }}-part-04
+        path: ${{ inputs.out }}/${{ inputs.archive-prefix }}.tar.zst.part-04
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 1
+    - name: Upload part 05
+      if: fromJSON(inputs.part-count) > 5
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-set-id }}-part-05
+        path: ${{ inputs.out }}/${{ inputs.archive-prefix }}.tar.zst.part-05
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 1
+    - name: Upload part 06
+      if: fromJSON(inputs.part-count) > 6
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-set-id }}-part-06
+        path: ${{ inputs.out }}/${{ inputs.archive-prefix }}.tar.zst.part-06
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 1
+    - name: Upload part 07
+      if: fromJSON(inputs.part-count) > 7
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-set-id }}-part-07
+        path: ${{ inputs.out }}/${{ inputs.archive-prefix }}.tar.zst.part-07
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 1
+    - name: Upload part 08
+      if: fromJSON(inputs.part-count) > 8
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-set-id }}-part-08
+        path: ${{ inputs.out }}/${{ inputs.archive-prefix }}.tar.zst.part-08
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 1
+    - name: Upload part 09
+      if: fromJSON(inputs.part-count) > 9
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-set-id }}-part-09
+        path: ${{ inputs.out }}/${{ inputs.archive-prefix }}.tar.zst.part-09
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 1
+    - name: Upload part 10
+      if: fromJSON(inputs.part-count) > 10
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-set-id }}-part-10
+        path: ${{ inputs.out }}/${{ inputs.archive-prefix }}.tar.zst.part-10
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 1
+    - name: Upload part 11
+      if: fromJSON(inputs.part-count) > 11
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-set-id }}-part-11
+        path: ${{ inputs.out }}/${{ inputs.archive-prefix }}.tar.zst.part-11
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 1
+    - name: Upload part 12
+      if: fromJSON(inputs.part-count) > 12
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-set-id }}-part-12
+        path: ${{ inputs.out }}/${{ inputs.archive-prefix }}.tar.zst.part-12
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 1
+    - name: Upload part 13
+      if: fromJSON(inputs.part-count) > 13
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-set-id }}-part-13
+        path: ${{ inputs.out }}/${{ inputs.archive-prefix }}.tar.zst.part-13
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 1
+    - name: Upload part 14
+      if: fromJSON(inputs.part-count) > 14
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-set-id }}-part-14
+        path: ${{ inputs.out }}/${{ inputs.archive-prefix }}.tar.zst.part-14
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 1
+    - name: Upload part 15
+      if: fromJSON(inputs.part-count) > 15
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-set-id }}-part-15
+        path: ${{ inputs.out }}/${{ inputs.archive-prefix }}.tar.zst.part-15
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 1
