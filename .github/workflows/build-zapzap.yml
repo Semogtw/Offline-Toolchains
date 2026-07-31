@@ -2,6 +2,11 @@ name: Build ZapZap offline cache
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/build-zapzap.yml
+      - fixtures/zapzap/**
+      - triggers/**
   push:
     branches:
       - main
