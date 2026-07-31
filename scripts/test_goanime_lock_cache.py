@@ -80,6 +80,40 @@ class GoAnimeLockCacheTest(unittest.TestCase):
             self.assertIn('  beta_pkg: "2.0.0+1"', text)
             self.assertNotIn('flutter_test:', text)
 
+    def test_installs_each_exact_package_without_dependency_solving(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            manifest = td / 'hosted-lock.json'
+            manifest.write_text(json.dumps({
+                'schema_version': 1,
+                'flutter_version': '3.44.1',
+                'dart_version': '3.12.1',
+                'package_count': 2,
+                'packages': {'alpha': '1.2.3', 'beta_pkg': '2.0.0+1'},
+            }))
+            log = td / 'dart.log'
+            dart = td / 'dart'
+            dart.write_text(
+                '#!/usr/bin/env bash\n'
+                'printf "%s\n" "$*" >> "${DART_CALL_LOG:?}"\n'
+            )
+            dart.chmod(0o755)
+            env = dict(**__import__('os').environ, DART_CALL_LOG=str(log))
+            subprocess.run(
+                [
+                    'python3', str(SCRIPT), 'install-cache',
+                    '--manifest', str(manifest), '--dart', str(dart),
+                ],
+                text=True, capture_output=True, check=True, env=env,
+            )
+            self.assertEqual(
+                log.read_text().splitlines(),
+                [
+                    'pub cache add alpha --version 1.2.3',
+                    'pub cache add beta_pkg --version 2.0.0+1',
+                ],
+            )
+
     def test_verify_cache_reports_every_missing_package(self):
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
