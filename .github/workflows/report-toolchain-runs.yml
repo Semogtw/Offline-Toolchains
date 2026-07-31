@@ -1,0 +1,119 @@
+name: Report toolchain runs
+
+on:
+  workflow_run:
+    workflows:
+      - Build exact private-lock toolchain
+      - Build Android base
+      - Build portable JDK 21
+      - Build GoAnime toolchain
+      - Build ZapZap toolchain
+    types:
+      - completed
+
+permissions:
+  contents: read
+  actions: write
+  issues: write
+
+jobs:
+  report:
+    name: Catalog and clean artifact sets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout trusted reporter
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Download receipts and build report plan
+        id: plan
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_RUN_URL: ${{ github.event.workflow_run.html_url }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          SOURCE_NAME: ${{ github.event.workflow_run.name }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/toolchain-report"
+          receipts="$work/receipts"
+          mkdir -p "$receipts"
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/artifacts?per_page=100" \
+            --jq '.artifacts[]' | jq -s '{artifacts:.}' > "$work/run-artifacts.json"
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
+            --jq '.artifacts[]' | jq -s '{artifacts:.}' > "$work/all-artifacts.json"
+          mapfile -t receipt_ids < <(jq -r '.artifacts[] | select(.name | startswith("toolchain-receipt-")) | .id' "$work/run-artifacts.json")
+          if (( ${#receipt_ids[@]} == 0 )); then
+            echo 'has_plan=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          for artifact_id in "${receipt_ids[@]}"; do
+            target="$receipts/$artifact_id"
+            mkdir -p "$target"
+            gh api -H 'Accept: application/vnd.github+json' \
+              "/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$target.zip"
+            unzip -qq "$target.zip" -d "$target"
+          done
+          python3 - "$work/run.json" <<'PY'
+          import json, os, sys
+          json.dump({
+              'id': int(os.environ['SOURCE_RUN_ID']),
+              'html_url': os.environ['SOURCE_RUN_URL'],
+              'conclusion': os.environ['SOURCE_CONCLUSION'],
+              'name': os.environ['SOURCE_NAME'],
+          }, open(sys.argv[1], 'w', encoding='utf-8'), indent=2, sort_keys=True)
+          PY
+          python3 scripts/catalog_artifacts.py report-plan \
+            --run-json "$work/run.json" \
+            --artifacts-json "$work/all-artifacts.json" \
+            --receipts-dir "$receipts" > "$work/plan.json"
+          echo "has_plan=true" >> "$GITHUB_OUTPUT"
+          echo "plan=$work/plan.json" >> "$GITHUB_OUTPUT"
+      - name: Update issue catalog and remove superseded sets
+        if: steps.plan.outputs.has_plan == 'true'
+        uses: actions/github-script@v8
+        env:
+          PLAN_PATH: ${{ steps.plan.outputs.plan }}
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = JSON.parse(fs.readFileSync(process.env.PLAN_PATH, 'utf8'));
+            const issueNumber = 8;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              per_page: 100,
+            });
+            for (const update of plan.comments) {
+              const existing = comments.find((comment) => comment.body?.includes(update.marker));
+              if (existing) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: existing.id,
+                  body: update.body,
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                  body: update.body,
+                });
+              }
+            }
+            for (const artifactId of plan.delete_artifact_ids) {
+              try {
+                await github.rest.actions.deleteArtifact({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  artifact_id: artifactId,
+                });
+              } catch (error) {
+                core.warning(`Could not delete artifact ${artifactId}: ${error.message}`);
+              }
+            }
