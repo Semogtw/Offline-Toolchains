@@ -94,7 +94,10 @@ jobs:
           rm -rf "$parts_dir"
           mkdir -p "$parts_dir"
           split -b 400M -d -a 2 "$archive" "$parts_dir/android-base-linux-x64.part-"
-          sha256sum "$parts_dir"/android-base-linux-x64.part-* > "$parts_dir/SHA256SUMS.parts"
+          (
+            cd "$parts_dir"
+            sha256sum android-base-linux-x64.part-* > SHA256SUMS.parts
+          )
 
           {
             echo "archive=$(basename "$archive")"
