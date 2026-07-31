@@ -1,5 +1,6 @@
 name: Report toolchain runs
 
+# source-bundle artifacts are excluded by scripts/catalog_artifacts.py.
 on:
   workflow_run:
     workflows:
