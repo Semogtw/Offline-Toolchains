@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: read
 
 jobs:
   apply:
@@ -25,38 +26,46 @@ jobs:
           ref: agent/artifact-platform-v2
           fetch-depth: 0
 
-      - name: Verify and apply segmented patch
+      - name: Reconstruct and apply verified non-workflow patch
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: '7'
         run: |
           set -euo pipefail
-          test -f agent-patches/manifest.json || exit 0
-          series="$(tr -d '\r\n' < agent-patches/apply.txt)"
-          python3 - "$series" "$RUNNER_TEMP/patch.gz.b64" <<'PY'
+          series="core"
+          gh api "/repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100" \
+            > "$RUNNER_TEMP/comments.json"
+          python3 - "$RUNNER_TEMP/comments.json" "$series" "$RUNNER_TEMP/patch.gz.b64" <<'PY'
           import hashlib
           import json
+          import re
           import sys
           from pathlib import Path
 
-          series, output = sys.argv[1:]
-          root = Path('agent-patches')
-          manifest = json.loads((root / 'manifest.json').read_text())
-          if manifest != {
-              'series': series,
-              'total': manifest.get('total'),
-              'sha256': manifest.get('sha256'),
-          }:
-              raise SystemExit('patch manifest has unexpected fields')
-          total = manifest['total']
-          expected = manifest['sha256']
-          if not isinstance(total, int) or total < 1:
-              raise SystemExit('invalid patch chunk count')
-          chunks = []
-          for index in range(total):
-              path = root / 'chunks' / f'{index:03d}.txt'
-              if not path.is_file():
-                  raise SystemExit(f'missing patch chunk {index}')
-              chunks.append(path.read_bytes())
-          data = b''.join(chunks)
+          comments, series, output = sys.argv[1:]
+          pattern = re.compile(
+              rf'^<!-- agent-patch:{re.escape(series)}:(\d+)/(\d+) '
+              rf'sha256=([0-9a-f]{{64}}) -->\n([A-Za-z0-9+/=]+)$'
+          )
+          chunks = {}
+          total = None
+          expected = None
+          for comment in json.load(open(comments, encoding='utf-8')):
+              match = pattern.fullmatch(comment.get('body', ''))
+              if not match:
+                  continue
+              index, candidate_total, digest, chunk = match.groups()
+              index = int(index)
+              candidate_total = int(candidate_total)
+              if total is None:
+                  total, expected = candidate_total, digest
+              if total != candidate_total or expected != digest:
+                  raise SystemExit('patch metadata mismatch')
+              chunks[index] = chunk
+          if total is None or sorted(chunks) != list(range(total)):
+              raise SystemExit(f'incomplete patch series: expected {total}, got {sorted(chunks)}')
+          data = ''.join(chunks[index] for index in range(total)).encode()
           actual = hashlib.sha256(data).hexdigest()
           print(f'patch transport: chunks={total} bytes={len(data)} sha256={actual}')
           if actual != expected:
@@ -64,11 +73,11 @@ jobs:
           Path(output).write_bytes(data)
           PY
           base64 --decode "$RUNNER_TEMP/patch.gz.b64" | gzip -dc > "$RUNNER_TEMP/agent.patch"
-          git apply --check "$RUNNER_TEMP/agent.patch"
-          git apply "$RUNNER_TEMP/agent.patch"
+          git apply --check --exclude='.github/workflows/**' "$RUNNER_TEMP/agent.patch"
+          git apply --exclude='.github/workflows/**' "$RUNNER_TEMP/agent.patch"
           rm -rf agent-patches
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
-          git commit -m "feat: checkpoint artifact platform v2 $series"
+          git commit -m 'feat: checkpoint artifact platform v2 core code'
           git push origin HEAD:agent/artifact-platform-v2
