@@ -21,7 +21,7 @@ sha256sum -c SHA256SUMS.parts
 cat <prefixo>.part-* > <arquivo>.tar.zst
 ```
 
-`PARTS.txt` contém os nomes exatos e o SHA-256 do arquivo remontado.
+`PARTS.txt` contém os nomes exatos e o SHA-256 do arquivo remontado. Artifacts gerados antes de 2026-07-31 podem conter paths absolutos no arquivo de checksums; gere um run novo em vez de reutilizá-los.
 
 ## Ordem de uso
 
@@ -45,7 +45,7 @@ tar --zstd -xf zapzap-gradle-cache-linux-x64.tar.zst
 source ./zapzap-toolchain/activate.sh
 ```
 
-Os scripts somente adicionam variáveis ao shell atual. Eles não alteram o sistema operacional.
+Os scripts somente adicionam variáveis ao shell atual. O bundle GoAnime também fornece `safe.directory` ao Git por variáveis de ambiente para que o Flutter continue portátil quando o arquivo for extraído por um usuário diferente do runner. Ele não altera `~/.gitconfig`.
 
 ## GoAnime Mobile
 
@@ -63,6 +63,18 @@ flutter build apk --debug --no-pub
 
 O cache deve ser regenerado quando Flutter, `pubspec.yaml`, `pubspec.lock`, AGP, Kotlin ou o wrapper Gradle do GoAnime mudar.
 
+### Limite atual do lockfile
+
+A fixture atual hidrata um grafo compatível a partir das constraints públicas, mas ainda não espelha integralmente as versões do `pubspec.lock` privado. Isso é suficiente para disponibilizar Flutter, Dart, PowerShell e um cache amplo, mas não prova que `flutter pub get --offline` preservará exatamente o lock real.
+
+Antes de tratar esse cache como gate determinístico, mantenha no repositório público um lock sanitizado ou uma lista completa `pacote=versão` contendo apenas entradas `source: hosted` do lock real, e valide com:
+
+```bash
+flutter pub get --offline --enforce-lockfile
+```
+
+Nunca copie URLs privadas, tokens ou dependências Git privadas. O lock atual do GoAnime contém versões públicas que já podem divergir da resolução mais recente da fixture; por isso, um run verde da fixture não substitui a validação contra o checkout real.
+
 ## ZapZap
 
 A fixture pública replica o grafo de ferramentas documentado na branch ativa `development/android-build-recovery`: Gradle 8.9, AGP 8.7.3, Kotlin/Compose 2.0.21, JDK 17 e SDK 35.
@@ -78,6 +90,16 @@ bash ./tools/checks/verify_android_baseline.sh
 ./gradlew --offline lintDebug
 ./gradlew --offline :app:assembleDebug
 ```
+
+## Verificação prática
+
+Em 2026-07-31, um run descoberto pelo PR persistente foi acessado exclusivamente pelo conector. O manifesto e as 11 partes do bundle GoAnime foram baixados, os hashes individuais e o SHA-256 final foram confirmados, e o arquivo remontado executou fora do runner:
+
+- Flutter 3.44.1;
+- Dart 3.12.1;
+- PowerShell 7.6.3.
+
+Essa prova confirmou o transporte e a portabilidade das ferramentas. Ela também encontrou e motivou as correções de checksums relativos e `safe.directory`. O build Android completo ainda exige combinar esse bundle com `android-base-linux-x64-*` e validar o checkout real.
 
 ## Segurança
 
