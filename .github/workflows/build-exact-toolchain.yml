@@ -1,0 +1,327 @@
+name: Build exact private-lock toolchain
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Exact project profile or aggregate
+        required: true
+        type: choice
+        options:
+          - goanime-analysis
+          - goanime-android
+          - goanime-full
+          - zapzap-pure
+          - zapzap-android
+          - zapzap-full
+      force_rebuild:
+        description: Ignore an equivalent live artifact set
+        required: true
+        default: false
+        type: boolean
+  workflow_run:
+    workflows: [Request exact toolchain build]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: exact-toolchain-${{ github.event_name == 'workflow_dispatch' && inputs.profile || github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  normalize:
+    name: Normalize trusted request
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'build/toolchains' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.actor.login == github.repository_owner)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.request.outputs.matrix }}
+      project: ${{ steps.request.outputs.project }}
+      repository: ${{ steps.request.outputs.repository }}
+      force_rebuild: ${{ steps.request.outputs.force_rebuild }}
+    steps:
+      - name: Checkout trusted implementation
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Checkout connector request revision
+        if: github.event_name == 'workflow_run'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          path: request-source
+          persist-credentials: false
+          sparse-checkout: triggers/toolchain-build.json
+          sparse-checkout-cone-mode: false
+      - name: Validate and normalize request
+        id: request
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_PROFILE: ${{ inputs.profile }}
+          INPUT_FORCE_REBUILD: ${{ inputs.force_rebuild }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == workflow_run ]]; then
+            request=request-source/triggers/toolchain-build.json
+          else
+            request="$RUNNER_TEMP/request.json"
+            python3 - "$request" "$INPUT_PROFILE" "$INPUT_FORCE_REBUILD" <<'PY'
+          import json,sys
+          json.dump({'profile':sys.argv[2],'force_rebuild':sys.argv[3].lower()=='true'},open(sys.argv[1],'w'))
+          PY
+          fi
+          python3 scripts/validate-toolchain-request.py "$request" --profiles profiles \
+            --output "$RUNNER_TEMP/validated.json" >/dev/null
+          python3 - "$RUNNER_TEMP/validated.json" "$GITHUB_OUTPUT" <<'PY'
+          import json,sys
+          value=json.load(open(sys.argv[1]))
+          repos={'goanime':'Semogtw/goanime-mobile','zapzap':'Semogtw/Zapzap'}
+          project=value.get('project')
+          if project not in repos or not value.get('private_profiles'):
+              raise SystemExit('exact builder requires a fixed private project profile')
+          with open(sys.argv[2],'a') as out:
+              out.write('matrix='+json.dumps({'profile':value['private_profiles']},separators=(',',':'))+'\n')
+              out.write(f'project={project}\nrepository={repos[project]}\n')
+              out.write(f"force_rebuild={str(value['force_rebuild']).lower()}\n")
+          PY
+
+  build:
+    name: Exact ${{ matrix.profile }}
+    needs: normalize
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.normalize.outputs.matrix) }}
+    steps:
+      - name: Checkout trusted implementation
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Require restricted private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - name: Checkout fixed private repository
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ needs.normalize.outputs.repository }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+      - name: Install Java 17 for GoAnime
+        if: startsWith(matrix.profile, 'goanime-')
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Java 21 for ZapZap
+        if: startsWith(matrix.profile, 'zapzap-')
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install Flutter 3.44.1
+        if: startsWith(matrix.profile, 'goanime-')
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: false
+      - name: Install Android components for Android profiles
+        if: endsWith(matrix.profile, '-android')
+        uses: android-actions/setup-android@v3
+      - name: Prepare Android SDK components
+        if: endsWith(matrix.profile, '-android')
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-35' 'platforms;android-36' \
+            'build-tools;35.0.0' 'build-tools;36.0.0' \
+            'ndk;27.0.12077973' 'ndk;28.2.13676358' 'cmake;3.22.1'
+      - name: Collect exact lock inputs
+        id: lock
+        shell: bash
+        env:
+          PROFILE: ${{ matrix.profile }}
+          PROJECT: ${{ needs.normalize.outputs.project }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/lock-$PROFILE"
+          python3 scripts/collect-lock-inputs.py --root private-source \
+            --profile "$PROFILE" --project "$PROJECT" --profiles profiles --out "$out" >/dev/null
+          echo "lock_fingerprint=$(tr -d '\r\n' < "$out/lock-fingerprint.txt")" >> "$GITHUB_OUTPUT"
+          echo "software=$out/software.json" >> "$GITHUB_OUTPUT"
+          echo "trusted_commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Reuse equivalent unexpired artifact set
+        id: reuse
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/find-reusable-set.sh \
+            --profile '${{ matrix.profile }}' --package '${{ matrix.profile }}' \
+            --lock-mode private-exact \
+            --lock-fingerprint '${{ steps.lock.outputs.lock_fingerprint }}' \
+            --workflow-commit '${{ steps.lock.outputs.trusted_commit }}' \
+            --receipt-dir "$RUNNER_TEMP/receipt-${{ matrix.profile }}" \
+            --github-output "$GITHUB_OUTPUT" \
+            --force-rebuild '${{ needs.normalize.outputs.force_rebuild }}'
+      - name: Hydrate and prove exact dependencies offline
+        if: steps.reuse.outputs.reused != 'true'
+        shell: bash
+        env:
+          PROFILE: ${{ matrix.profile }}
+          PROJECT: ${{ needs.normalize.outputs.project }}
+          PUB_CACHE: ${{ runner.temp }}/pub-cache
+          GRADLE_USER_HOME: ${{ runner.temp }}/gradle-home
+        run: |
+          set -euo pipefail
+          rm -rf "$PUB_CACHE" "$GRADLE_USER_HOME"
+          mkdir -p "$PUB_CACHE" "$GRADLE_USER_HOME"
+          if [[ "$PROJECT" == goanime ]]; then
+            flutter config --no-analytics
+            flutter precache --android --linux
+            (cd private-source && flutter pub get --enforce-lockfile)
+            (cd private-source && flutter pub get --offline --enforce-lockfile)
+            cache_test=private-source/test/.offline_toolchain_native_cache_test.dart
+            mkdir -p "$(dirname "$cache_test")"
+            cat > "$cache_test" <<'DART'
+          import 'package:flutter_test/flutter_test.dart';
+          void main() { test('hydrates native assets', () => expect(true, isTrue)); }
+          DART
+            (cd private-source && flutter test --no-pub test/.offline_toolchain_native_cache_test.dart)
+            rm -f "$cache_test"
+            if [[ "$PROFILE" == goanime-android ]]; then
+              (cd private-source/android && ./gradlew --no-daemon :app:assembleDebug)
+              (cd private-source/android && ./gradlew --no-daemon --offline :app:assembleDebug)
+            fi
+          else
+            if [[ "$PROFILE" == zapzap-pure ]]; then
+              tasks=(:core:model:test :core:data:test :core:network:test)
+            else
+              tasks=(:app:testDebugUnitTest :app:lintDebug :app:assembleDebug)
+            fi
+            (cd private-source && ./gradlew --no-daemon "${tasks[@]}")
+            (cd private-source && ./gradlew --no-daemon --offline "${tasks[@]}")
+          fi
+      - name: Assemble public cache package
+        if: steps.reuse.outputs.reused != 'true'
+        id: root
+        shell: bash
+        env:
+          PROFILE: ${{ matrix.profile }}
+          PUB_CACHE: ${{ runner.temp }}/pub-cache
+          GRADLE_USER_HOME: ${{ runner.temp }}/gradle-home
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/package-$PROFILE/$PROFILE"
+          rm -rf "${root%/*}" && mkdir -p "$root"
+          if [[ "$PROFILE" == goanime-analysis ]]; then
+            flutter_root="$(dirname "$(dirname "$(readlink -f "$(command -v flutter)")")")"
+            pwsh_root="$(dirname "$(readlink -f "$(command -v pwsh)")")"
+            cp -aL "$flutter_root" "$root/flutter"
+            cp -a "$PUB_CACHE" "$root/pub-cache"
+            python3 scripts/native_asset_cache.py capture \
+              --source private-source/.dart_tool/hooks_runner/shared \
+              --destination "$root/native-assets-cache/hooks_runner-shared" >/dev/null
+            python3 scripts/copy_portable_tree.py "$pwsh_root" "$root/powershell"
+            "$root/powershell/pwsh" -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()' >/dev/null
+            python3 scripts/relocate_flutter_sdk.py --flutter-root "$root/flutter" --pub-cache "$root/pub-cache" >/dev/null
+            (
+              export FLUTTER_ROOT="$root/flutter" PUB_CACHE="$root/pub-cache"
+              export PATH="$root/flutter/bin:$root/powershell:$PATH"
+              export CI=true FLUTTER_SUPPRESS_ANALYTICS=true
+              cd private-source
+              "$root/flutter/bin/flutter" pub get --offline --enforce-lockfile
+              rm -rf .dart_tool/hooks_runner
+              python3 "$GITHUB_WORKSPACE/scripts/native_asset_cache.py" prepare \
+                --cache "$root/native-assets-cache/hooks_runner-shared" --project "$PWD" >/dev/null
+              cache_test=test/.offline_toolchain_native_cache_test.dart
+              mkdir -p "$(dirname "$cache_test")"
+              cat > "$cache_test" <<'DART'
+            import 'package:flutter_test/flutter_test.dart';
+            void main() { test('uses cached native assets', () => expect(true, isTrue)); }
+            DART
+              "$root/flutter/bin/flutter" test --no-pub "$cache_test"
+              rm -f "$cache_test"
+            )
+            cat > "$root/activate.sh" <<'EOF'
+          #!/usr/bin/env bash
+          root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          export PUB_CACHE="$root/pub-cache"
+          export PATH="$root/flutter/bin:$root/powershell:$PATH"
+          export CI=true
+          EOF
+          else
+            cp -a "$GRADLE_USER_HOME" "$root/gradle-home"
+            cat > "$root/activate.sh" <<'EOF'
+          #!/usr/bin/env bash
+          root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          export GRADLE_USER_HOME="$root/gradle-home"
+          export CI=true
+          EOF
+          fi
+          chmod +x "$root/activate.sh"
+          echo "package_root=$root" >> "$GITHUB_OUTPUT"
+      - name: Package schema-v2 artifact set
+        if: steps.reuse.outputs.reused != 'true'
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/artifact-${{ matrix.profile }}"
+          python3 scripts/build_artifact_set.py \
+            --profile '${{ matrix.profile }}' --package '${{ matrix.profile }}' \
+            --root '${{ steps.root.outputs.package_root }}' --out "$out" --profiles profiles \
+            --lock-mode private-exact \
+            --lock-fingerprint '${{ steps.lock.outputs.lock_fingerprint }}' \
+            --builder-fingerprint '${{ steps.reuse.outputs.builder_fingerprint }}' \
+            --workflow .github/workflows/build-exact-toolchain.yml \
+            --workflow-commit '${{ steps.lock.outputs.trusted_commit }}' --run-id "$GITHUB_RUN_ID" \
+            --software '${{ steps.lock.outputs.software }}' \
+            --archive-name '${{ matrix.profile }}.tar.zst' >/dev/null
+          python3 - "$out/artifact-set.json" "$RUNNER_TEMP/receipt-${{ matrix.profile }}/receipt.json" "$GITHUB_OUTPUT" "$out" <<'PY'
+          import json,sys
+          m=json.load(open(sys.argv[1])); json.dump({'schema_version':1,'result':'built','manifest':m,'artifact_ids':[]},open(sys.argv[2],'w'),indent=2,sort_keys=True)
+          if len(m['parts'])>16: raise SystemExit('artifact set exceeds 16 parts')
+          with open(sys.argv[3],'a') as o: o.write(f"artifact_set_id={m['artifact_set_id']}\npart_count={len(m['parts'])}\nout={sys.argv[4]}\n")
+          PY
+      - name: Remove private checkout before upload
+        shell: bash
+        run: |
+          rm -rf private-source request-source
+          test ! -e private-source && test ! -e request-source
+      - name: Upload toolchain receipt
+        uses: actions/upload-artifact@v7
+        with:
+          name: toolchain-receipt-${{ matrix.profile }}-${{ github.run_id }}
+          path: ${{ steps.reuse.outputs.receipt_dir }}/receipt.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Upload schema-v2 artifact set
+        if: steps.reuse.outputs.reused != 'true'
+        uses: ./.github/actions/upload-artifact-set
+        with:
+          artifact-set-id: ${{ steps.pack.outputs.artifact_set_id }}
+          out: ${{ steps.pack.outputs.out }}
+          archive-prefix: ${{ matrix.profile }}
+          part-count: ${{ steps.pack.outputs.part_count }}
+
+# Upload part 15 and retention-days: 1 are enforced by the trusted composite uploader.

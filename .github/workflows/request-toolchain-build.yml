@@ -1,0 +1,42 @@
+name: Request exact toolchain build
+
+on:
+  push:
+    branches:
+      - build/toolchains
+    paths:
+      - triggers/toolchain-build.json
+  pull_request:
+    paths:
+      - .github/workflows/request-toolchain-build.yml
+      - .github/workflows/build-exact-toolchain.yml
+      - .github/workflows/report-toolchain-runs.yml
+      - profiles/**
+      - schemas/**
+      - scripts/**
+      - tests/**
+      - triggers/toolchain-build.json
+      - README.md
+      - docs/**
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate artifact platform
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Validate request and contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/validate-toolchain-request.py \
+            triggers/toolchain-build.json --profiles profiles
+          python3 -m unittest discover -s tests -v
+          bash scripts/validate-private-source-workflows.sh
+          python3 scripts/validate-workflows.py .github/workflows

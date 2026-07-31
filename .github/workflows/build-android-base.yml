@@ -1,19 +1,29 @@
-name: Build shared Android base
+name: Build Android base
 
 on:
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        required: true
+        default: false
+        type: boolean
   pull_request:
     paths:
       - .github/workflows/build-android-base.yml
-      - triggers/**
+      - profiles/android-base.json
+      - scripts/**
+      - schemas/**
+      - triggers/build.txt
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
       - .github/workflows/build-android-base.yml
+      - profiles/android-base.json
+      - scripts/**
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: android-base-${{ github.ref }}
@@ -21,183 +31,264 @@ concurrency:
 
 jobs:
   build:
-    name: JDK 17 and Android SDK
     runs-on: ubuntu-24.04
     timeout-minutes: 75
-
     steps:
       - uses: actions/checkout@v6
-
+        with:
+          persist-credentials: false
+      - name: Define profile and fingerprint
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'profile=android-base' >> "$GITHUB_OUTPUT"
+          echo 'lock_fingerprint=0000000000000000000000000000000000000000000000000000000000000000' >> "$GITHUB_OUTPUT"
+          echo "trusted_commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Reuse equivalent artifact set
+        id: reuse
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/find-reusable-set.sh \
+            --profile android-base --package android-base \
+            --lock-mode not-applicable \
+            --lock-fingerprint '${{ steps.meta.outputs.lock_fingerprint }}' \
+            --workflow-commit '${{ steps.meta.outputs.trusted_commit }}' \
+            --receipt-dir "$RUNNER_TEMP/receipt-android-base" \
+            --github-output "$GITHUB_OUTPUT" \
+            --force-rebuild '${{ github.event_name == 'workflow_dispatch' && inputs.force_rebuild || false }}'
       - name: Install Temurin JDK 17
+        if: steps.reuse.outputs.reused != 'true'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
-
+          java-version: '17'
       - name: Expose Android command-line tools
+        if: steps.reuse.outputs.reused != 'true'
         uses: android-actions/setup-android@v3
-
-      - name: Build portable Android SDK
-        id: bundle
+      - name: Assemble portable Android base
+        if: steps.reuse.outputs.reused != 'true'
+        id: root
         shell: bash
         run: |
           set -euo pipefail
-
-          portable_sdk="$RUNNER_TEMP/android-sdk"
-          bundle_root="$RUNNER_TEMP/android-base"
-          archive="$RUNNER_TEMP/android-base-linux-x64.tar.zst"
-
-          rm -rf "$portable_sdk" "$bundle_root" "$archive" "$archive.sha256"
-          mkdir -p "$portable_sdk" "$bundle_root"
-
-          yes | sdkmanager --sdk_root="$portable_sdk" --licenses >/dev/null || true
-          sdkmanager --sdk_root="$portable_sdk" \
-            "cmdline-tools;latest" \
-            "platform-tools" \
-            "platforms;android-35" \
-            "platforms;android-36" \
-            "build-tools;35.0.0" \
-            "build-tools;36.0.0" \
-            "ndk;27.0.12077973" \
-            "ndk;28.2.13676358" \
-            "cmake;3.22.1"
-
-          cp -aL "$JAVA_HOME" "$bundle_root/jdk"
-          mv "$portable_sdk" "$bundle_root/android-sdk"
-
-          cat > "$bundle_root/activate.sh" <<'EOF'
+          root="$RUNNER_TEMP/package-android-base/android-base"
+          sdk="$RUNNER_TEMP/android-sdk"
+          rm -rf "${root%/*}" "$sdk"
+          mkdir -p "$root" "$sdk"
+          yes | sdkmanager --sdk_root="$sdk" --licenses >/dev/null || true
+          sdkmanager --sdk_root="$sdk" \
+            'cmdline-tools;latest' 'platform-tools' \
+            'platforms;android-35' 'platforms;android-36' \
+            'build-tools;35.0.0' 'build-tools;36.0.0' \
+            'ndk;27.0.12077973' 'ndk;28.2.13676358' 'cmake;3.22.1'
+          cp -aL "$JAVA_HOME" "$root/jdk"
+          mv "$sdk" "$root/android-sdk"
+          cat > "$root/activate.sh" <<'EOF'
           #!/usr/bin/env bash
-          bundle_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-          export JAVA_HOME="$bundle_root/jdk"
-          export ANDROID_HOME="$bundle_root/android-sdk"
-          export ANDROID_SDK_ROOT="$bundle_root/android-sdk"
+          root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          export JAVA_HOME="$root/jdk"
+          export ANDROID_HOME="$root/android-sdk"
+          export ANDROID_SDK_ROOT="$root/android-sdk"
           export PATH="$JAVA_HOME/bin:$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
           export CI=true
           EOF
-          chmod +x "$bundle_root/activate.sh"
-
-          {
-            echo "repository=$GITHUB_REPOSITORY"
-            echo "commit=$GITHUB_SHA"
-            echo "runner=$RUNNER_OS-$RUNNER_ARCH"
-            echo "created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo
-            "$bundle_root/jdk/bin/java" -version 2>&1
-            echo
-            "$bundle_root/android-sdk/cmdline-tools/latest/bin/sdkmanager" \
-              --sdk_root="$bundle_root/android-sdk" --list_installed
-          } > "$bundle_root/MANIFEST.txt"
-
-          tar -C "$RUNNER_TEMP" -I 'zstd -T0 -8' -cf "$archive" android-base
-          sha256sum "$archive" > "$archive.sha256"
-
-          parts_dir="$RUNNER_TEMP/android-base-linux-x64-parts"
-          rm -rf "$parts_dir"
-          mkdir -p "$parts_dir"
-          split -b 400M -d -a 2 "$archive" "$parts_dir/android-base-linux-x64.part-"
-          (
-            cd "$parts_dir"
-            sha256sum android-base-linux-x64.part-* > SHA256SUMS.parts
-          )
-
-          {
-            echo "archive=$(basename "$archive")"
-            echo "archive_sha256=$(cut -d' ' -f1 "$archive.sha256")"
-            echo "part_size=400M"
-            echo "reassemble=cat android-base-linux-x64.part-* > $(basename "$archive")"
-            echo
-            ls -lh "$parts_dir"/android-base-linux-x64.part-*
-          } > "$parts_dir/PARTS.txt"
-
-          echo "parts_dir=$parts_dir" >> "$GITHUB_OUTPUT"
-          echo "manifest_dir=$parts_dir" >> "$GITHUB_OUTPUT"
-          for index in $(seq -f '%02g' 0 5); do
-            if [[ -f "$parts_dir/android-base-linux-x64.part-$index" ]]; then
-              echo "part_$index=true" >> "$GITHUB_OUTPUT"
-            fi
-          done
-
-          ls -lh "$archive" "$archive.sha256" "$parts_dir"/*
-
-      - name: Validate copied base
+          chmod +x "$root/activate.sh"
+          cat > "$RUNNER_TEMP/software.json" <<'JSON'
+          [
+            {"name":"Temurin JDK","version":"17","source":"https://adoptium.net","license":"GPL-2.0-with-classpath-exception"},
+            {"name":"Android SDK platforms","version":"35,36","source":"https://developer.android.com","license":"Android-SDK-License"},
+            {"name":"Android NDK","version":"27.0.12077973","source":"https://developer.android.com/ndk","license":"Android-SDK-License"},
+            {"name":"Android NDK","version":"28.2.13676358","source":"https://developer.android.com/ndk","license":"Android-SDK-License"},
+            {"name":"CMake","version":"3.22.1","source":"https://cmake.org","license":"BSD-3-Clause"}
+          ]
+          JSON
+          echo "package_root=$root" >> "$GITHUB_OUTPUT"
+      - name: Package schema-v2 set
+        if: steps.reuse.outputs.reused != 'true'
+        id: pack
         shell: bash
         run: |
           set -euo pipefail
-          source "$RUNNER_TEMP/android-base/activate.sh"
-          java -version
-          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --list_installed >/dev/null
-          test -d "$ANDROID_SDK_ROOT/platforms/android-35"
-          test -d "$ANDROID_SDK_ROOT/platforms/android-36"
-          test -d "$ANDROID_SDK_ROOT/ndk/27.0.12077973"
-          test -d "$ANDROID_SDK_ROOT/ndk/28.2.13676358"
-
-      - name: Upload Android base manifest
+          out="$RUNNER_TEMP/artifact-android-base"
+          python3 scripts/build_artifact_set.py \
+            --profile android-base --package android-base \
+            --root '${{ steps.root.outputs.package_root }}' --out "$out" \
+            --lock-mode not-applicable --lock-fingerprint '${{ steps.meta.outputs.lock_fingerprint }}' \
+            --builder-fingerprint '${{ steps.reuse.outputs.builder_fingerprint }}' \
+            --workflow .github/workflows/build-android-base.yml \
+            --workflow-commit '${{ steps.meta.outputs.trusted_commit }}' --run-id "$GITHUB_RUN_ID" \
+            --software "$RUNNER_TEMP/software.json" --archive-name android-base.tar.zst >/dev/null
+          python3 - "$out/artifact-set.json" "$RUNNER_TEMP/receipt-android-base/receipt.json" "$GITHUB_OUTPUT" "$out" <<'PY'
+          import json,sys
+          m=json.load(open(sys.argv[1])); json.dump({'schema_version':1,'result':'built','manifest':m,'artifact_ids':[]},open(sys.argv[2],'w'),indent=2,sort_keys=True)
+          with open(sys.argv[3],'a') as o: o.write(f"artifact_set_id={m['artifact_set_id']}\npart_count={len(m['parts'])}\nout={sys.argv[4]}\n")
+          if len(m['parts'])>16: raise SystemExit('too many parts')
+          PY
+      - name: Upload toolchain receipt
         uses: actions/upload-artifact@v7
         with:
-          name: android-base-linux-x64-manifest
+          name: toolchain-receipt-${{ steps.meta.outputs.profile }}-${{ github.run_id }}
+          path: ${{ steps.reuse.outputs.receipt_dir }}/receipt.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Upload manifest and inventory
+        if: steps.reuse.outputs.reused != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.pack.outputs.artifact_set_id }}-manifest
           path: |
-            ${{ steps.bundle.outputs.manifest_dir }}/PARTS.txt
-            ${{ steps.bundle.outputs.manifest_dir }}/SHA256SUMS.parts
+            ${{ steps.pack.outputs.out }}/artifact-set.json
+            ${{ steps.pack.outputs.out }}/SBOM.spdx.json
+            ${{ steps.pack.outputs.out }}/PARTS.txt
+            ${{ steps.pack.outputs.out }}/SHA256SUMS.parts
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
-
-      - name: Upload Android base part 00
-        if: steps.bundle.outputs.part_00 == 'true'
+      - name: Upload part 00
+        if: steps.reuse.outputs.reused != 'true' && fromJSON(steps.pack.outputs.part_count) > 0
         uses: actions/upload-artifact@v7
         with:
-          name: android-base-linux-x64-part-00
-          path: ${{ steps.bundle.outputs.parts_dir }}/android-base-linux-x64.part-00
+          name: ${{ steps.pack.outputs.artifact_set_id }}-part-00
+          path: ${{ steps.pack.outputs.out }}/${{ steps.meta.outputs.profile }}.tar.zst.part-00
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
-
-      - name: Upload Android base part 01
-        if: steps.bundle.outputs.part_01 == 'true'
+      - name: Upload part 01
+        if: steps.reuse.outputs.reused != 'true' && fromJSON(steps.pack.outputs.part_count) > 1
         uses: actions/upload-artifact@v7
         with:
-          name: android-base-linux-x64-part-01
-          path: ${{ steps.bundle.outputs.parts_dir }}/android-base-linux-x64.part-01
+          name: ${{ steps.pack.outputs.artifact_set_id }}-part-01
+          path: ${{ steps.pack.outputs.out }}/${{ steps.meta.outputs.profile }}.tar.zst.part-01
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
-
-      - name: Upload Android base part 02
-        if: steps.bundle.outputs.part_02 == 'true'
+      - name: Upload part 02
+        if: steps.reuse.outputs.reused != 'true' && fromJSON(steps.pack.outputs.part_count) > 2
         uses: actions/upload-artifact@v7
         with:
-          name: android-base-linux-x64-part-02
-          path: ${{ steps.bundle.outputs.parts_dir }}/android-base-linux-x64.part-02
+          name: ${{ steps.pack.outputs.artifact_set_id }}-part-02
+          path: ${{ steps.pack.outputs.out }}/${{ steps.meta.outputs.profile }}.tar.zst.part-02
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
-
-      - name: Upload Android base part 03
-        if: steps.bundle.outputs.part_03 == 'true'
+      - name: Upload part 03
+        if: steps.reuse.outputs.reused != 'true' && fromJSON(steps.pack.outputs.part_count) > 3
         uses: actions/upload-artifact@v7
         with:
-          name: android-base-linux-x64-part-03
-          path: ${{ steps.bundle.outputs.parts_dir }}/android-base-linux-x64.part-03
+          name: ${{ steps.pack.outputs.artifact_set_id }}-part-03
+          path: ${{ steps.pack.outputs.out }}/${{ steps.meta.outputs.profile }}.tar.zst.part-03
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
-
-      - name: Upload Android base part 04
-        if: steps.bundle.outputs.part_04 == 'true'
+      - name: Upload part 04
+        if: steps.reuse.outputs.reused != 'true' && fromJSON(steps.pack.outputs.part_count) > 4
         uses: actions/upload-artifact@v7
         with:
-          name: android-base-linux-x64-part-04
-          path: ${{ steps.bundle.outputs.parts_dir }}/android-base-linux-x64.part-04
+          name: ${{ steps.pack.outputs.artifact_set_id }}-part-04
+          path: ${{ steps.pack.outputs.out }}/${{ steps.meta.outputs.profile }}.tar.zst.part-04
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
-
-      - name: Upload Android base part 05
-        if: steps.bundle.outputs.part_05 == 'true'
+      - name: Upload part 05
+        if: steps.reuse.outputs.reused != 'true' && fromJSON(steps.pack.outputs.part_count) > 5
         uses: actions/upload-artifact@v7
         with:
-          name: android-base-linux-x64-part-05
-          path: ${{ steps.bundle.outputs.parts_dir }}/android-base-linux-x64.part-05
+          name: ${{ steps.pack.outputs.artifact_set_id }}-part-05
+          path: ${{ steps.pack.outputs.out }}/${{ steps.meta.outputs.profile }}.tar.zst.part-05
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Upload part 06
+        if: steps.reuse.outputs.reused != 'true' && fromJSON(steps.pack.outputs.part_count) > 6
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.pack.outputs.artifact_set_id }}-part-06
+          path: ${{ steps.pack.outputs.out }}/${{ steps.meta.outputs.profile }}.tar.zst.part-06
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Upload part 07
+        if: steps.reuse.outputs.reused != 'true' && fromJSON(steps.pack.outputs.part_count) > 7
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.pack.outputs.artifact_set_id }}-part-07
+          path: ${{ steps.pack.outputs.out }}/${{ steps.meta.outputs.profile }}.tar.zst.part-07
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Upload part 08
+        if: steps.reuse.outputs.reused != 'true' && fromJSON(steps.pack.outputs.part_count) > 8
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.pack.outputs.artifact_set_id }}-part-08
+          path: ${{ steps.pack.outputs.out }}/${{ steps.meta.outputs.profile }}.tar.zst.part-08
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Upload part 09
+        if: steps.reuse.outputs.reused != 'true' && fromJSON(steps.pack.outputs.part_count) > 9
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.pack.outputs.artifact_set_id }}-part-09
+          path: ${{ steps.pack.outputs.out }}/${{ steps.meta.outputs.profile }}.tar.zst.part-09
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Upload part 10
+        if: steps.reuse.outputs.reused != 'true' && fromJSON(steps.pack.outputs.part_count) > 10
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.pack.outputs.artifact_set_id }}-part-10
+          path: ${{ steps.pack.outputs.out }}/${{ steps.meta.outputs.profile }}.tar.zst.part-10
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Upload part 11
+        if: steps.reuse.outputs.reused != 'true' && fromJSON(steps.pack.outputs.part_count) > 11
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.pack.outputs.artifact_set_id }}-part-11
+          path: ${{ steps.pack.outputs.out }}/${{ steps.meta.outputs.profile }}.tar.zst.part-11
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Upload part 12
+        if: steps.reuse.outputs.reused != 'true' && fromJSON(steps.pack.outputs.part_count) > 12
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.pack.outputs.artifact_set_id }}-part-12
+          path: ${{ steps.pack.outputs.out }}/${{ steps.meta.outputs.profile }}.tar.zst.part-12
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Upload part 13
+        if: steps.reuse.outputs.reused != 'true' && fromJSON(steps.pack.outputs.part_count) > 13
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.pack.outputs.artifact_set_id }}-part-13
+          path: ${{ steps.pack.outputs.out }}/${{ steps.meta.outputs.profile }}.tar.zst.part-13
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Upload part 14
+        if: steps.reuse.outputs.reused != 'true' && fromJSON(steps.pack.outputs.part_count) > 14
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.pack.outputs.artifact_set_id }}-part-14
+          path: ${{ steps.pack.outputs.out }}/${{ steps.meta.outputs.profile }}.tar.zst.part-14
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Upload part 15
+        if: steps.reuse.outputs.reused != 'true' && fromJSON(steps.pack.outputs.part_count) > 15
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.pack.outputs.artifact_set_id }}-part-15
+          path: ${{ steps.pack.outputs.out }}/${{ steps.meta.outputs.profile }}.tar.zst.part-15
           if-no-files-found: error
           compression-level: 0
           retention-days: 1

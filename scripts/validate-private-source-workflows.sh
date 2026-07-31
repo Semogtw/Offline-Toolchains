@@ -2,7 +2,7 @@
 set -euo pipefail
 
 fail() {
-  echo "Private source workflow validation failed: $*" >&2
+  echo "Workflow security validation failed: $*" >&2
   exit 1
 }
 
@@ -79,14 +79,107 @@ require_text "$build_workflow" "retention-days: 1"
 require_text "$build_workflow" "gpg --batch --yes --trust-model always"
 require_text "$build_workflow" 'rm -rf "$package_dir" "$plaintext_archive" "$source_dir"'
 
-if git grep -n -E '^-----BEGIN PGP PRIVATE KEY BLOCK-----$'; then
-  fail "private OpenPGP key material is tracked"
-fi
-if git grep -n -- 'ghp_' -- ':!scripts/validate-private-source-workflows.sh'; then
-  fail "classic GitHub token-looking material is tracked"
-fi
-if git grep -n -- 'github_pat_' -- ':!scripts/validate-private-source-workflows.sh'; then
-  fail "fine-grained GitHub token-looking material is tracked"
+# Artifact Platform v2 guards.
+for file in \
+  .github/workflows/request-toolchain-build.yml \
+  .github/workflows/build-exact-toolchain.yml \
+  .github/workflows/report-toolchain-runs.yml \
+  .github/actions/upload-artifact-set/action.yml \
+  schemas/artifact-set-v2.schema.json \
+  schemas/toolchain-request-v1.schema.json \
+  scripts/build_artifact_set.py \
+  scripts/copy_portable_tree.py \
+  scripts/native_asset_cache.py \
+  scripts/prepare-project.sh \
+  scripts/relocate_flutter_sdk.py \
+  scripts/restore_workspace.py \
+  scripts/restore_workspace_entry.py \
+  scripts/restore-workspace.sh \
+  scripts/validate-toolchain-request.py \
+  triggers/toolchain-build.json; do
+  require_file "$file"
+done
+
+toolchain_request=.github/workflows/request-toolchain-build.yml
+exact_builder=.github/workflows/build-exact-toolchain.yml
+reporter=.github/workflows/report-toolchain-runs.yml
+uploader=.github/actions/upload-artifact-set/action.yml
+request_schema=schemas/toolchain-request-v1.schema.json
+
+require_text "$toolchain_request" "build/toolchains"
+require_text "$toolchain_request" "validate-toolchain-request.py"
+require_text "$toolchain_request" "python3 -m unittest discover -s tests -v"
+if grep -Fq -- 'secrets.' "$toolchain_request"; then
+  fail "unprivileged toolchain request workflow must not receive secrets"
 fi
 
-printf 'Private source workflow validation passed.\n'
+require_text "$exact_builder" "workflow_run"
+require_text "$exact_builder" "github.event.workflow_run.head_branch == 'build/toolchains'"
+require_text "$exact_builder" "github.event.workflow_run.actor.login == github.repository_owner"
+require_text "$exact_builder" "PRIVATE_REPOSITORIES_TOKEN"
+require_text "$exact_builder" "Semogtw/goanime-mobile"
+require_text "$exact_builder" "Semogtw/Zapzap"
+require_text "$exact_builder" "fetch-depth: 0"
+require_text "$exact_builder" "persist-credentials: false"
+require_text "$exact_builder" "lfs: false"
+require_text "$exact_builder" "submodules: false"
+require_text "$exact_builder" "flutter pub get --offline --enforce-lockfile"
+require_text "$exact_builder" "./gradlew --no-daemon --offline"
+require_text "$exact_builder" "rm -rf private-source request-source"
+require_text "$exact_builder" "Upload toolchain receipt"
+require_text "$exact_builder" "uses: ./.github/actions/upload-artifact-set"
+require_text "$exact_builder" "scripts/copy_portable_tree.py"
+require_text scripts/restore-workspace.sh "restore_workspace_entry.py"
+require_text scripts/restore_workspace_entry.py "prepare_restored_project_caches"
+require_text .github/workflows/build-goanime.yml "scripts/copy_portable_tree.py"
+require_text "$exact_builder" "scripts/relocate_flutter_sdk.py"
+require_text .github/workflows/build-goanime.yml "scripts/relocate_flutter_sdk.py"
+require_text "$exact_builder" "scripts/native_asset_cache.py capture"
+require_text "$exact_builder" 'scripts/native_asset_cache.py" prepare'
+require_text .github/workflows/build-goanime.yml "scripts/native_asset_cache.py capture"
+require_text .github/workflows/build-goanime.yml 'scripts/native_asset_cache.py" prepare'
+require_text "$exact_builder" '"$root/flutter/bin/flutter" pub get --offline --enforce-lockfile'
+require_text .github/workflows/build-goanime.yml '"$root/flutter/bin/flutter" pub get --offline'
+require_text .github/workflows/build-goanime.yml '"$root/flutter/bin/flutter" test --no-pub'
+
+require_text "$uploader" "retention-days: 1"
+require_text "$uploader" "compression-level: 0"
+require_text "$uploader" "Upload part 15"
+require_text "$uploader" "fromJSON(inputs.part-count) > 15"
+require_text scripts/build_artifact_set.py "DEFAULT_PART_SIZE = 400 * 1024 * 1024"
+require_text schemas/artifact-set-v2.schema.json '"const": 2'
+require_text "$request_schema" '"additionalProperties": false'
+if grep -Eq '"(repository|token|command|ref)"[[:space:]]*:' "$request_schema"; then
+  fail "toolchain request schema must not accept repository, token, command or ref"
+fi
+
+require_text "$reporter" "actions: write"
+require_text "$reporter" "issues: write"
+require_text "$reporter" "source-bundle artifacts are excluded"
+require_text scripts/catalog_artifacts.py "private-source-"
+
+python3 scripts/validate-toolchain-request.py \
+  triggers/toolchain-build.json --profiles profiles >/dev/null
+python3 scripts/validate-workflows.py .github/workflows >/dev/null
+
+if git grep -n -E '^-----BEGIN PGP PRIVATE KEY BLOCK-----$' -- . \
+  ':(exclude)docs/superpowers/**'; then
+  fail "private OpenPGP key material is tracked"
+fi
+if git grep -n -- 'ghp_' -- . \
+  ':(exclude)scripts/validate-private-source-workflows.sh' \
+  ':(exclude)docs/superpowers/**'; then
+  fail "classic GitHub token-looking material is tracked"
+fi
+if git grep -n -- 'github_pat_' -- . \
+  ':(exclude)scripts/validate-private-source-workflows.sh' \
+  ':(exclude)docs/superpowers/**'; then
+  fail "fine-grained GitHub token-looking material is tracked"
+fi
+if git grep -n -E 'PRIVATE_REPOSITORIES_TOKEN[[:space:]]*=' -- . \
+  ':(exclude)scripts/validate-private-source-workflows.sh' \
+  ':(exclude)docs/superpowers/**'; then
+  fail "assigned private repository token material is tracked"
+fi
+
+printf 'Workflow security validation passed.\n'

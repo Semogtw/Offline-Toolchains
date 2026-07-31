@@ -1,0 +1,36 @@
+{
+  "activation_order": 10,
+  "architecture": "x86_64",
+  "doctor_checks": [
+    {
+      "path": "jdk/bin/java",
+      "type": "executable"
+    },
+    {
+      "path": "android-sdk/platforms/android-35",
+      "type": "directory"
+    },
+    {
+      "path": "android-sdk/platforms/android-36",
+      "type": "directory"
+    },
+    {
+      "path": "android-sdk/ndk/27.0.12077973",
+      "type": "directory"
+    },
+    {
+      "path": "android-sdk/ndk/28.2.13676358",
+      "type": "directory"
+    }
+  ],
+  "kind": "concrete",
+  "lock_inputs": [],
+  "lock_mode": "not-applicable",
+  "name": "android-base",
+  "packages": [
+    "android-base"
+  ],
+  "platform": "linux",
+  "project": null,
+  "requires": []
+}
