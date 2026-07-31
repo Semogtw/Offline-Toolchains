@@ -1,3 +1,5 @@
 Toolchain build trigger.
 
 Update this file when fresh one-day artifacts are needed.
+
+Build generation: 2 (connector-sized 400 MiB parts).
