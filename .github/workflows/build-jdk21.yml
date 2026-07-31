@@ -1,0 +1,157 @@
+name: Build portable JDK 21
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/build-jdk21.yml
+      - triggers/build.txt
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-jdk21.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jdk21-toolchain-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Temurin JDK 21 Linux x64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Temurin JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Assemble portable JDK
+        id: bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          bundle_root="$RUNNER_TEMP/jdk21-linux-x64"
+          archive="$RUNNER_TEMP/jdk21-linux-x64.tar.zst"
+          parts_dir="$RUNNER_TEMP/jdk21-linux-x64-parts"
+
+          rm -rf "$bundle_root" "$archive" "$parts_dir"
+          mkdir -p "$bundle_root" "$parts_dir"
+          cp -aL "$JAVA_HOME" "$bundle_root/jdk"
+
+          cat > "$bundle_root/activate.sh" <<'EOF'
+          #!/usr/bin/env bash
+          bundle_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          export JAVA_HOME="$bundle_root/jdk"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          export CI=true
+          EOF
+          chmod +x "$bundle_root/activate.sh"
+
+          {
+            echo "repository=$GITHUB_REPOSITORY"
+            echo "commit=$GITHUB_SHA"
+            echo "runner=$RUNNER_OS-$RUNNER_ARCH"
+            echo "created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo
+            "$bundle_root/jdk/bin/java" -version 2>&1
+            "$bundle_root/jdk/bin/javac" -version 2>&1
+          } > "$bundle_root/MANIFEST.txt"
+
+          tar -C "$RUNNER_TEMP" -I 'zstd -T0 -8' \
+            -cf "$archive" jdk21-linux-x64
+
+          split -b 400M -d -a 2 \
+            "$archive" "$parts_dir/jdk21-linux-x64.part-"
+          (
+            cd "$parts_dir"
+            sha256sum jdk21-linux-x64.part-* > SHA256SUMS.parts
+          )
+
+          archive_hash="$(sha256sum "$archive" | cut -d' ' -f1)"
+          {
+            echo "archive=$(basename "$archive")"
+            echo "archive_sha256=$archive_hash"
+            echo "part_size=400M"
+            echo "reassemble=cat jdk21-linux-x64.part-* > $(basename "$archive")"
+            echo
+            ls -lh "$parts_dir"/jdk21-linux-x64.part-*
+          } > "$parts_dir/PARTS.txt"
+
+          echo "parts_dir=$parts_dir" >> "$GITHUB_OUTPUT"
+          for index in $(seq -f '%02g' 0 3); do
+            if [[ -f "$parts_dir/jdk21-linux-x64.part-$index" ]]; then
+              echo "part_$index=true" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
+      - name: Validate copied JDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/jdk21-linux-x64/activate.sh"
+          test "$(java -version 2>&1 | head -1 | grep -o '21\.[0-9.]*' | cut -d. -f1)" = "21"
+          java -version
+          javac -version
+
+      - name: Upload JDK manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: jdk21-linux-x64-manifest
+          path: |
+            ${{ steps.bundle.outputs.parts_dir }}/PARTS.txt
+            ${{ steps.bundle.outputs.parts_dir }}/SHA256SUMS.parts
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload JDK part 00
+        if: steps.bundle.outputs.part_00 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: jdk21-linux-x64-part-00
+          path: ${{ steps.bundle.outputs.parts_dir }}/jdk21-linux-x64.part-00
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload JDK part 01
+        if: steps.bundle.outputs.part_01 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: jdk21-linux-x64-part-01
+          path: ${{ steps.bundle.outputs.parts_dir }}/jdk21-linux-x64.part-01
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload JDK part 02
+        if: steps.bundle.outputs.part_02 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: jdk21-linux-x64-part-02
+          path: ${{ steps.bundle.outputs.parts_dir }}/jdk21-linux-x64.part-02
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload JDK part 03
+        if: steps.bundle.outputs.part_03 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: jdk21-linux-x64-part-03
+          path: ${{ steps.bundle.outputs.parts_dir }}/jdk21-linux-x64.part-03
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
