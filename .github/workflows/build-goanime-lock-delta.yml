@@ -64,16 +64,13 @@ jobs:
           set -euo pipefail
           echo "PUB_CACHE=$RUNNER_TEMP/goanime-exact-pub-cache" >> "$GITHUB_ENV"
           export PUB_CACHE="$RUNNER_TEMP/goanime-exact-pub-cache"
-          project="$RUNNER_TEMP/goanime-exact-project"
-          rm -rf "$project" "$PUB_CACHE"
-          mkdir -p "$project"
-          python3 scripts/goanime_lock_cache.py write-pubspec \
+          rm -rf "$PUB_CACHE"
+          mkdir -p "$PUB_CACHE"
+          python3 scripts/goanime_lock_cache.py install-cache \
             --manifest manifests/goanime/hosted-lock.json \
-            --output "$project/pubspec.yaml"
-          cd "$project"
-          flutter pub get
-          python3 "$GITHUB_WORKSPACE/scripts/goanime_lock_cache.py" verify-cache \
-            --manifest "$GITHUB_WORKSPACE/manifests/goanime/hosted-lock.json" \
+            --dart "$(command -v dart)"
+          python3 scripts/goanime_lock_cache.py verify-cache \
+            --manifest manifests/goanime/hosted-lock.json \
             --pub-cache "$PUB_CACHE"
 
       - name: Assemble exact-lock delta
@@ -144,16 +141,11 @@ jobs:
           tar --zstd -xf "$RUNNER_TEMP/goanime-lock-delta-linux-x64.tar.zst" \
             -C "$validation_root"
           delta="$validation_root/goanime-lock-delta"
+          export PUB_HOSTED_URL=http://127.0.0.1:9
+          export FLUTTER_STORAGE_BASE_URL=http://127.0.0.1:9
           python3 "$delta/goanime-lock-cache.py" verify-cache \
             --manifest "$delta/HOSTED-LOCK.json" \
             --pub-cache "$delta/pub-cache"
-          export PUB_CACHE="$delta/pub-cache"
-          export PUB_HOSTED_URL=http://127.0.0.1:9
-          export FLUTTER_STORAGE_BASE_URL=http://127.0.0.1:9
-          project="$RUNNER_TEMP/goanime-exact-project"
-          rm -rf "$project/.dart_tool"
-          cd "$project"
-          flutter pub get --offline --enforce-lockfile
 
       - name: Upload delta manifest
         uses: actions/upload-artifact@v7
