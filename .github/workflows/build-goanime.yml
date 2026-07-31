@@ -173,9 +173,30 @@ jobs:
           tar -C "$RUNNER_TEMP" -I 'zstd -T0 -8' -cf "$archive" goanime-toolchain
           sha256sum "$archive" > "$archive.sha256"
 
-          echo "archive=$archive" >> "$GITHUB_OUTPUT"
-          echo "checksum=$archive.sha256" >> "$GITHUB_OUTPUT"
-          ls -lh "$archive" "$archive.sha256"
+          parts_dir="$RUNNER_TEMP/goanime-flutter-cache-linux-x64-parts"
+          rm -rf "$parts_dir"
+          mkdir -p "$parts_dir"
+          split -b 400M -d -a 2 "$archive" "$parts_dir/goanime-flutter-cache-linux-x64.part-"
+          sha256sum "$parts_dir"/goanime-flutter-cache-linux-x64.part-* > "$parts_dir/SHA256SUMS.parts"
+
+          {
+            echo "archive=$(basename "$archive")"
+            echo "archive_sha256=$(cut -d' ' -f1 "$archive.sha256")"
+            echo "part_size=400M"
+            echo "reassemble=cat goanime-flutter-cache-linux-x64.part-* > $(basename "$archive")"
+            echo
+            ls -lh "$parts_dir"/goanime-flutter-cache-linux-x64.part-*
+          } > "$parts_dir/PARTS.txt"
+
+          echo "parts_dir=$parts_dir" >> "$GITHUB_OUTPUT"
+          echo "manifest_dir=$parts_dir" >> "$GITHUB_OUTPUT"
+          for index in $(seq -w 0 15); do
+            if [[ -f "$parts_dir/goanime-flutter-cache-linux-x64.part-$index" ]]; then
+              echo "part_$index=true" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
+          ls -lh "$archive" "$archive.sha256" "$parts_dir"/*
 
       - name: Validate copied bundle offline
         shell: bash
@@ -194,13 +215,173 @@ jobs:
           cd android
           ./gradlew --offline --no-daemon tasks >/dev/null
 
-      - name: Upload GoAnime bundle
+      - name: Upload GoAnime bundle manifest
         uses: actions/upload-artifact@v7
         with:
-          name: goanime-flutter-cache-linux-x64
+          name: goanime-flutter-cache-linux-x64-manifest
           path: |
-            ${{ steps.bundle.outputs.archive }}
-            ${{ steps.bundle.outputs.checksum }}
+            ${{ steps.bundle.outputs.manifest_dir }}/PARTS.txt
+            ${{ steps.bundle.outputs.manifest_dir }}/SHA256SUMS.parts
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload GoAnime bundle part 00
+        if: steps.bundle.outputs.part_00 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-flutter-cache-linux-x64-part-00
+          path: ${{ steps.bundle.outputs.parts_dir }}/goanime-flutter-cache-linux-x64.part-00
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload GoAnime bundle part 01
+        if: steps.bundle.outputs.part_01 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-flutter-cache-linux-x64-part-01
+          path: ${{ steps.bundle.outputs.parts_dir }}/goanime-flutter-cache-linux-x64.part-01
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload GoAnime bundle part 02
+        if: steps.bundle.outputs.part_02 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-flutter-cache-linux-x64-part-02
+          path: ${{ steps.bundle.outputs.parts_dir }}/goanime-flutter-cache-linux-x64.part-02
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload GoAnime bundle part 03
+        if: steps.bundle.outputs.part_03 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-flutter-cache-linux-x64-part-03
+          path: ${{ steps.bundle.outputs.parts_dir }}/goanime-flutter-cache-linux-x64.part-03
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload GoAnime bundle part 04
+        if: steps.bundle.outputs.part_04 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-flutter-cache-linux-x64-part-04
+          path: ${{ steps.bundle.outputs.parts_dir }}/goanime-flutter-cache-linux-x64.part-04
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload GoAnime bundle part 05
+        if: steps.bundle.outputs.part_05 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-flutter-cache-linux-x64-part-05
+          path: ${{ steps.bundle.outputs.parts_dir }}/goanime-flutter-cache-linux-x64.part-05
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload GoAnime bundle part 06
+        if: steps.bundle.outputs.part_06 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-flutter-cache-linux-x64-part-06
+          path: ${{ steps.bundle.outputs.parts_dir }}/goanime-flutter-cache-linux-x64.part-06
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload GoAnime bundle part 07
+        if: steps.bundle.outputs.part_07 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-flutter-cache-linux-x64-part-07
+          path: ${{ steps.bundle.outputs.parts_dir }}/goanime-flutter-cache-linux-x64.part-07
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload GoAnime bundle part 08
+        if: steps.bundle.outputs.part_08 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-flutter-cache-linux-x64-part-08
+          path: ${{ steps.bundle.outputs.parts_dir }}/goanime-flutter-cache-linux-x64.part-08
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload GoAnime bundle part 09
+        if: steps.bundle.outputs.part_09 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-flutter-cache-linux-x64-part-09
+          path: ${{ steps.bundle.outputs.parts_dir }}/goanime-flutter-cache-linux-x64.part-09
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload GoAnime bundle part 10
+        if: steps.bundle.outputs.part_10 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-flutter-cache-linux-x64-part-10
+          path: ${{ steps.bundle.outputs.parts_dir }}/goanime-flutter-cache-linux-x64.part-10
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload GoAnime bundle part 11
+        if: steps.bundle.outputs.part_11 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-flutter-cache-linux-x64-part-11
+          path: ${{ steps.bundle.outputs.parts_dir }}/goanime-flutter-cache-linux-x64.part-11
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload GoAnime bundle part 12
+        if: steps.bundle.outputs.part_12 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-flutter-cache-linux-x64-part-12
+          path: ${{ steps.bundle.outputs.parts_dir }}/goanime-flutter-cache-linux-x64.part-12
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload GoAnime bundle part 13
+        if: steps.bundle.outputs.part_13 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-flutter-cache-linux-x64-part-13
+          path: ${{ steps.bundle.outputs.parts_dir }}/goanime-flutter-cache-linux-x64.part-13
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload GoAnime bundle part 14
+        if: steps.bundle.outputs.part_14 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-flutter-cache-linux-x64-part-14
+          path: ${{ steps.bundle.outputs.parts_dir }}/goanime-flutter-cache-linux-x64.part-14
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload GoAnime bundle part 15
+        if: steps.bundle.outputs.part_15 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-flutter-cache-linux-x64-part-15
+          path: ${{ steps.bundle.outputs.parts_dir }}/goanime-flutter-cache-linux-x64.part-15
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
