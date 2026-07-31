@@ -57,8 +57,13 @@ jobs:
               chunks[index] = chunk
           if total is None or sorted(chunks) != list(range(total)):
               raise SystemExit(f'incomplete patch series: expected {total}, got {sorted(chunks)}')
+          for index in range(total):
+              payload = chunks[index].encode()
+              print(f'chunk {index}: bytes={len(payload)} sha256={hashlib.sha256(payload).hexdigest()}')
           data = ''.join(chunks[index] for index in range(total)).encode()
-          if hashlib.sha256(data).hexdigest() != expected:
+          actual = hashlib.sha256(data).hexdigest()
+          print(f'combined: bytes={len(data)} sha256={actual}')
+          if actual != expected:
               raise SystemExit('patch transport checksum mismatch')
           open(output, 'wb').write(data)
           PY
