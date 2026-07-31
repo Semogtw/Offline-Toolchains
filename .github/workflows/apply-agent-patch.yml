@@ -1,10 +1,11 @@
 name: Apply agent patch
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/artifact-platform-v2
+      - main
     paths:
+      - .github/workflows/apply-agent-patch.yml
       - agent-patches/apply.txt
 
 permissions:
@@ -13,7 +14,10 @@ permissions:
 
 jobs:
   apply:
-    if: github.actor == github.repository_owner
+    if: >-
+      github.actor == github.repository_owner &&
+      github.event.pull_request.number == 7 &&
+      github.event.pull_request.head.ref == 'agent/artifact-platform-v2'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -44,7 +48,8 @@ jobs:
               if not match:
                   continue
               index, candidate_total, digest, chunk = match.groups()
-              index = int(index); candidate_total = int(candidate_total)
+              index = int(index)
+              candidate_total = int(candidate_total)
               if total is None:
                   total, expected = candidate_total, digest
               if total != candidate_total or expected != digest:
