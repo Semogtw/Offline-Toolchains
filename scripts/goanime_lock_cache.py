@@ -138,10 +138,6 @@ def write_pubspec(*, manifest_path: Path, output: Path) -> None:
     lines.extend(
         [
             "",
-            "dev_dependencies:",
-            "  flutter_test:",
-            "    sdk: flutter",
-            "",
             "flutter:",
             "  uses-material-design: true",
             "",
