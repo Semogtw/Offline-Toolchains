@@ -107,7 +107,7 @@ jobs:
 
           echo "parts_dir=$parts_dir" >> "$GITHUB_OUTPUT"
           echo "manifest_dir=$parts_dir" >> "$GITHUB_OUTPUT"
-          for index in $(seq -w 0 5); do
+          for index in $(seq -f '%02g' 0 5); do
             if [[ -f "$parts_dir/android-base-linux-x64.part-$index" ]]; then
               echo "part_$index=true" >> "$GITHUB_OUTPUT"
             fi
