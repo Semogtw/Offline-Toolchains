@@ -1,10 +1,13 @@
 # Offline Toolchains
 
-Repositório público para fabricar toolchains Linux x64 reutilizáveis em ambientes que conseguem acessar o GitHub somente pelo conector, mas não conseguem baixar SDKs e dependências diretamente.
+Repositório público para fabricar ambientes Linux x64 reutilizáveis em sessões que conseguem acessar o GitHub somente pelo conector, mas não conseguem baixar SDKs, dependências ou um checkout Git diretamente.
 
-Os workflows não acessam os repositórios privados e não recebem tokens, signing, credenciais ou código-fonte privado. Eles produzem somente SDKs públicos, caches de dependências públicas, scripts de ativação, manifestos e checksums.
+Há dois fluxos independentes:
 
-## Artifacts
+1. **Toolchains públicas** — SDKs e caches de dependências públicas, sem acesso aos repositórios privados.
+2. **Source bundles privados** — exports Git cifrados do GoAnime Mobile e ZapZap, usando um PAT somente leitura e criptografia antes de qualquer upload.
+
+## Artifacts de toolchains
 
 | Prefixo dos artifacts | Conteúdo | Uso |
 | --- | --- | --- |
@@ -91,7 +94,7 @@ bash ./tools/checks/verify_android_baseline.sh
 ./gradlew --offline :app:assembleDebug
 ```
 
-## Verificação prática
+## Verificação prática das toolchains
 
 Em 2026-07-31, um run descoberto pelo PR persistente foi acessado exclusivamente pelo conector. O manifesto e as 11 partes do bundle GoAnime foram baixados, os hashes individuais e o SHA-256 final foram confirmados, e o arquivo remontado executou fora do runner:
 
@@ -101,11 +104,211 @@ Em 2026-07-31, um run descoberto pelo PR persistente foi acessado exclusivamente
 
 Essa prova confirmou o transporte e a portabilidade das ferramentas. Ela também encontrou e motivou as correções de checksums relativos e `safe.directory`. O build Android completo ainda exige combinar esse bundle com `android-base-linux-x64-*` e validar o checkout real.
 
+## Source bundles privados cifrados
+
+O workflow `Build encrypted private source bundle` exporta somente os dois repositórios privados fixos:
+
+| Projeto | Repositório privado |
+| --- | --- |
+| `goanime` | `Semogtw/goanime-mobile` |
+| `zapzap` | `Semogtw/Zapzap` |
+
+Ele nunca aceita um nome de repositório arbitrário.
+
+### Modos de exportação
+
+- `full` — todas as branches e tags obtidas pelo checkout completo, junto do histórico alcançável;
+- `ref` — uma branch, tag ou SHA exatos em um Git bundle reduzido;
+- `snapshot` — somente arquivos rastreados de um commit, sem `.git` e sem histórico.
+
+O export não inclui objetos Git LFS, repositórios de submódulos, arquivos não rastreados, stashes nem commits que nunca receberam push.
+
+### Secret obrigatório
+
+Crie um fine-grained personal access token com:
+
+- proprietário `Semogtw`;
+- acesso somente a `goanime-mobile` e `Zapzap`;
+- permissão de repositório `Contents: Read-only`;
+- prazo de expiração definido;
+- nenhuma permissão de escrita.
+
+Salve-o em:
+
+```text
+Settings → Secrets and variables → Actions → New repository secret
+Name: PRIVATE_REPOSITORIES_TOKEN
+```
+
+Os checkouts privados usam `fetch-depth: 0`, `persist-credentials: false`, `lfs: false` e `submodules: false`. O token não entra no bundle, manifesto ou artifact.
+
+### Criptografia
+
+A chave pública OpenPGP está em:
+
+```text
+keys/source-bundles-public.asc
+```
+
+Fingerprint esperado:
+
+```text
+2DE29DC31427CF0A911AB96175679291435059B0
+```
+
+A chave privada correspondente deve permanecer fora do GitHub. O workflow verifica o fingerprint, cria o bundle, cifra o pacote, remove o checkout e os arquivos em claro e somente então publica os artifacts.
+
+Perder a chave privada torna os exports irrecuperáveis. Expor a chave privada permite descriptografar qualquer artifact ainda disponível produzido para esse fingerprint.
+
+### Gatilho pelo navegador
+
+Abra:
+
+```text
+Actions → Build encrypted private source bundle → Run workflow
+```
+
+Escolha projeto, modo e ref. Uma ref vazia usa o checkout padrão; no modo `full`, todas as branches e tags buscadas continuam incluídas.
+
+### Gatilho pelo conector
+
+O conector não expõe `workflow_dispatch`. O fluxo automatizado usa duas etapas:
+
+1. a branch permanente `build/source-bundles` altera `triggers/private-source-bundle.json`;
+2. o workflow sem secrets `Request private source bundle` valida o JSON;
+3. após sucesso, o workflow privilegiado versionado na `main` recebe `workflow_run` e cria o export.
+
+Exemplo:
+
+```json
+{
+  "project": "zapzap",
+  "mode": "full",
+  "ref": ""
+}
+```
+
+O workflow privilegiado aceita somente requests bem-sucedidos da branch `build/source-bundles`, disparados por `push` e atribuídos ao proprietário. Alterações de workflow na branch de request não mudam o código privilegiado executado pela `main`.
+
+### Artifacts produzidos
+
+Cada execução publica por um dia:
+
+```text
+private-source-<project>-<mode>-manifest
+private-source-<project>-<mode>-part-000
+private-source-<project>-<mode>-part-001
+...
+```
+
+O ciphertext é dividido em 400 MiB e limitado a 16 partes. O manifest público contém apenas dados de transporte, fingerprint e hashes; repositório, commit e refs ficam dentro do pacote cifrado.
+
+### Remontagem e verificação
+
+Deixe os ZIPs baixados em uma pasta ou extraia-os para a mesma pasta. Depois execute:
+
+```bash
+bash scripts/assemble-source-bundle.sh ./downloads ./private-source.gpg
+```
+
+O script exige todas as partes declaradas, valida os hashes individuais, remonta em ordem numérica e verifica o SHA-256 final.
+
+### Descriptografia local
+
+A lógica de chave privada não fica neste repositório público. Use um keyring temporário:
+
+```bash
+export GNUPGHOME="$(mktemp -d)"
+chmod 700 "$GNUPGHOME"
+gpg --import /caminho/seguro/offline-toolchains-source-bundles-private.asc
+
+gpg --output private-source-package.tar.zst \
+  --decrypt private-source.gpg
+
+mkdir private-source-package
+tar --zstd -xf private-source-package.tar.zst \
+  -C private-source-package
+```
+
+O pacote contém `PRIVATE-MANIFEST.json`, `REFS.txt` e um dos arquivos:
+
+```text
+repository.bundle
+snapshot.tar.zst
+```
+
+### Restaurar um Git bundle
+
+```bash
+git bundle verify private-source-package/repository.bundle
+mkdir checkout
+git init checkout
+
+git -C checkout fetch \
+  ../private-source-package/repository.bundle \
+  '+refs/heads/*:refs/remotes/origin/*' \
+  '+refs/tags/*:refs/tags/*'
+
+git -C checkout branch -a
+```
+
+No modo `full`, crie a branch local desejada:
+
+```bash
+git -C checkout switch -c main --track origin/main
+```
+
+Para a branch ativa do ZapZap:
+
+```bash
+git -C checkout switch \
+  -c development/android-build-recovery \
+  --track origin/development/android-build-recovery
+```
+
+No modo `ref`, a head exportada aparece como `origin/offline-export`.
+
+O remote informativo pode ser restaurado após ler `PRIVATE-MANIFEST.json`:
+
+```bash
+git -C checkout remote add origin \
+  https://github.com/Semogtw/Zapzap.git
+```
+
+### Restaurar um snapshot
+
+```bash
+mkdir checkout
+tar --zstd -xf private-source-package/snapshot.tar.zst \
+  -C checkout --strip-components=1
+```
+
+### Rotação de chave
+
+1. gere uma nova chave OpenPGP de criptografia;
+2. substitua `keys/source-bundles-public.asc`;
+3. atualize o fingerprint nos workflows, scripts e documentação;
+4. execute `bash scripts/validate-private-source-workflows.sh`;
+5. preserve a chave privada anterior até todos os artifacts antigos expirarem.
+
+Nunca versione uma chave privada OpenPGP.
+
+## Validação
+
+Antes de alterar o fluxo de source bundles:
+
+```bash
+bash scripts/validate-private-source-workflows.sh
+```
+
+Esse guard verifica schema, refs, fingerprint, ausência de chave privada/token, mappings fixos, checkout sem credencial persistida, segmentação de 400 MiB e retenção de um dia.
+
 ## Segurança
 
-- Trate artifacts como executáveis: use apenas runs de commits confiáveis.
-- Verifique `SHA256SUMS.parts` e o SHA-256 final em `PARTS.txt` antes de extrair.
-- Não adicione PAT com acesso aos repositórios privados.
-- Não copie lockfiles ou manifests que contenham URLs privadas, credenciais ou dependências Git privadas.
-- Não publique keystores, `local.properties`, `google-services.json`, Firebase config, TURN credentials ou signing.
-- Runners públicos padrão são usados somente para fabricar dependências públicas.
+- Trate artifacts como executáveis: use somente runs de commits confiáveis.
+- Verifique `SHA256SUMS.parts` e o SHA-256 final antes de extrair SDKs ou descriptografar source bundles.
+- Os workflows de toolchain não precisam de PAT privado.
+- O workflow de source bundle usa somente o PAT read-only limitado aos dois repositórios mapeados.
+- Não publique a chave privada OpenPGP, keystores, `local.properties`, `google-services.json`, Firebase config, TURN credentials ou signing.
+- Não amplie o PAT para escrita nem para outros repositórios.
+- Não execute conteúdo da branch pública de request no job que recebe o PAT.
