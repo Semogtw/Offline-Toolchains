@@ -1,0 +1,33 @@
+{
+  "activation_order": 30,
+  "architecture": "x86_64",
+  "doctor_checks": [
+    {
+      "path": "flutter/bin/flutter",
+      "type": "executable"
+    },
+    {
+      "path": "pub-cache",
+      "type": "directory"
+    },
+    {
+      "path": "powershell/pwsh",
+      "type": "executable"
+    }
+  ],
+  "kind": "concrete",
+  "lock_inputs": [
+    "pubspec.yaml",
+    "pubspec.lock",
+    "packages/*/pubspec.yaml",
+    "packages/*/pubspec.lock"
+  ],
+  "lock_mode": "private-exact",
+  "name": "goanime-analysis",
+  "packages": [
+    "goanime-analysis"
+  ],
+  "platform": "linux",
+  "project": "goanime",
+  "requires": []
+}

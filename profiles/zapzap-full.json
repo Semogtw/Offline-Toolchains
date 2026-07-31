@@ -1,0 +1,18 @@
+{
+  "activation_order": 100,
+  "architecture": "x86_64",
+  "doctor_checks": [],
+  "kind": "aggregate",
+  "lock_inputs": [],
+  "lock_mode": "aggregate",
+  "name": "zapzap-full",
+  "packages": [],
+  "platform": "linux",
+  "project": "zapzap",
+  "requires": [
+    "android-base",
+    "jdk21",
+    "zapzap-pure",
+    "zapzap-android"
+  ]
+}

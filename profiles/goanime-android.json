@@ -1,0 +1,33 @@
+{
+  "activation_order": 40,
+  "architecture": "x86_64",
+  "doctor_checks": [
+    {
+      "path": "gradle-home/caches",
+      "type": "directory"
+    }
+  ],
+  "kind": "concrete",
+  "lock_inputs": [
+    "pubspec.yaml",
+    "pubspec.lock",
+    "android/gradle/wrapper/gradle-wrapper.properties",
+    "android/settings.gradle",
+    "android/settings.gradle.kts",
+    "android/build.gradle",
+    "android/build.gradle.kts",
+    "android/app/build.gradle",
+    "android/app/build.gradle.kts"
+  ],
+  "lock_mode": "private-exact",
+  "name": "goanime-android",
+  "packages": [
+    "goanime-android"
+  ],
+  "platform": "linux",
+  "project": "goanime",
+  "requires": [
+    "android-base",
+    "goanime-analysis"
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "activation_order": 20,
+  "architecture": "x86_64",
+  "doctor_checks": [
+    {
+      "path": "jdk/bin/java",
+      "type": "executable"
+    },
+    {
+      "command": [
+        "jdk/bin/java",
+        "-version"
+      ],
+      "contains": "21",
+      "type": "version_contains"
+    }
+  ],
+  "kind": "concrete",
+  "lock_inputs": [],
+  "lock_mode": "not-applicable",
+  "name": "jdk21",
+  "packages": [
+    "jdk21"
+  ],
+  "platform": "linux",
+  "project": null,
+  "requires": []
+}

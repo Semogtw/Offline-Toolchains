@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Semogtw/Offline-Toolchains/schemas/toolchain-request-v1.schema.json",
+  "title": "Connector toolchain build request",
+  "type": "object",
+  "required": ["profile", "force_rebuild"],
+  "properties": {
+    "profile": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,99}$"},
+    "force_rebuild": {"type": "boolean"}
+  },
+  "additionalProperties": false
+}

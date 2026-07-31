@@ -1,0 +1,33 @@
+{
+  "activation_order": 30,
+  "architecture": "x86_64",
+  "doctor_checks": [
+    {
+      "path": "gradle-home/caches",
+      "type": "directory"
+    }
+  ],
+  "kind": "concrete",
+  "lock_inputs": [
+    "gradle/wrapper/gradle-wrapper.properties",
+    "settings.gradle",
+    "settings.gradle.kts",
+    "build.gradle",
+    "build.gradle.kts",
+    "gradle/libs.versions.toml",
+    "gradle.lockfile",
+    "**/gradle.lockfile",
+    "**/*.gradle",
+    "**/*.gradle.kts"
+  ],
+  "lock_mode": "private-exact",
+  "name": "zapzap-pure",
+  "packages": [
+    "zapzap-pure"
+  ],
+  "platform": "linux",
+  "project": "zapzap",
+  "requires": [
+    "jdk21"
+  ]
+}

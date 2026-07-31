@@ -1,0 +1,17 @@
+{
+  "activation_order": 100,
+  "architecture": "x86_64",
+  "doctor_checks": [],
+  "kind": "aggregate",
+  "lock_inputs": [],
+  "lock_mode": "aggregate",
+  "name": "goanime-full",
+  "packages": [],
+  "platform": "linux",
+  "project": "goanime",
+  "requires": [
+    "android-base",
+    "goanime-analysis",
+    "goanime-android"
+  ]
+}
