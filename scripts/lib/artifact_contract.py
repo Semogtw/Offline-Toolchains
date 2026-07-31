@@ -167,6 +167,13 @@ def validate_manifest(document: Any) -> list[str]:
     for field in ("activation_script", "doctor_script", "software_inventory"):
         if not safe_relative_path(document.get(field, "")):
             errors.append(f"{field} must be a safe relative path")
+    optional_project_fields = ("project_cache", "project_prepare_script")
+    present_project_fields = [field for field in optional_project_fields if field in document]
+    if present_project_fields and len(present_project_fields) != len(optional_project_fields):
+        errors.append("project_cache and project_prepare_script must be declared together")
+    for field in present_project_fields:
+        if not safe_relative_path(document.get(field, "")):
+            errors.append(f"{field} must be a safe relative path")
 
     compatibility = document.get("compatibility")
     if not isinstance(compatibility, dict):

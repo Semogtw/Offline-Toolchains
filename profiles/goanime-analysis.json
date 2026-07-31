@@ -13,6 +13,14 @@
     {
       "path": "powershell/pwsh",
       "type": "executable"
+    },
+    {
+      "path": "native-assets-cache/hooks_runner-shared",
+      "type": "directory"
+    },
+    {
+      "path": "prepare-project.sh",
+      "type": "executable"
     }
   ],
   "kind": "concrete",

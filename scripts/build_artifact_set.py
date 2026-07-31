@@ -81,6 +81,14 @@ def package(args: argparse.Namespace) -> dict[str, Any]:
     shutil.copy2(Path(__file__).parent / "lib" / "artifact_contract.py", root / "artifact_contract.py")
     shutil.copy2(Path(__file__).with_name("doctor.sh"), root / "doctor.sh")
     os.chmod(root / "doctor.sh", 0o755)
+    project_cache_relative = "native-assets-cache/hooks_runner-shared"
+    project_cache = root / project_cache_relative
+    has_project_cache = project_cache.is_dir() and any(path.is_file() for path in project_cache.rglob("*"))
+    if has_project_cache:
+        shutil.copy2(Path(__file__).with_name("native_asset_cache.py"), root / "native_asset_cache.py")
+        shutil.copy2(Path(__file__).with_name("prepare-project.sh"), root / "prepare-project.sh")
+        os.chmod(root / "native_asset_cache.py", 0o755)
+        os.chmod(root / "prepare-project.sh", 0o755)
     (root / "profile.json").write_text(json.dumps(profile, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     calculated = compute_set_fingerprint(
@@ -155,6 +163,10 @@ def package(args: argparse.Namespace) -> dict[str, Any]:
         "doctor_checks": profile["doctor_checks"],
         "software_inventory": "SBOM.spdx.json",
         "compatibility": {"minimum_restore_version": 2, "exact_lock_required": args.lock_mode == "private-exact"},
+        **({
+            "project_cache": project_cache_relative,
+            "project_prepare_script": "prepare-project.sh",
+        } if has_project_cache else {}),
     }
     errors = validate_manifest(manifest)
     if errors:

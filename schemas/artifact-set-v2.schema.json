@@ -4,26 +4,88 @@
   "title": "Offline Toolchains artifact set manifest",
   "type": "object",
   "required": [
-    "schema_version", "artifact_set_id", "set_fingerprint", "profile", "package", "lock_mode",
-    "lock_fingerprint", "builder_fingerprint", "workflow", "workflow_commit",
-    "run_id", "created_at", "expires_at", "platform", "architecture",
-    "archive", "parts", "requires", "activation_script", "doctor_script",
-    "software_inventory", "compatibility"
+    "schema_version",
+    "artifact_set_id",
+    "set_fingerprint",
+    "profile",
+    "package",
+    "lock_mode",
+    "lock_fingerprint",
+    "builder_fingerprint",
+    "workflow",
+    "workflow_commit",
+    "run_id",
+    "created_at",
+    "expires_at",
+    "platform",
+    "architecture",
+    "archive",
+    "parts",
+    "requires",
+    "activation_script",
+    "doctor_script",
+    "software_inventory",
+    "compatibility"
   ],
   "properties": {
-    "schema_version": {"const": 2},
-    "artifact_set_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,199}$"},
-    "set_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "profile": {"type": "string"},
-    "package": {"type": "string"},
-    "lock_mode": {"enum": ["synthetic", "private-exact", "not-applicable"]},
-    "lock_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "builder_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "workflow_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-    "run_id": {"type": "integer", "minimum": 1},
-    "platform": {"const": "linux"},
-    "architecture": {"const": "x86_64"},
-    "parts": {"type": "array", "minItems": 1}
+    "schema_version": {
+      "const": 2
+    },
+    "artifact_set_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,199}$"
+    },
+    "set_fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "profile": {
+      "type": "string"
+    },
+    "package": {
+      "type": "string"
+    },
+    "lock_mode": {
+      "enum": [
+        "synthetic",
+        "private-exact",
+        "not-applicable"
+      ]
+    },
+    "lock_fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "builder_fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "workflow_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "run_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "platform": {
+      "const": "linux"
+    },
+    "architecture": {
+      "const": "x86_64"
+    },
+    "parts": {
+      "type": "array",
+      "minItems": 1
+    },
+    "project_cache": {
+      "type": "string",
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+    },
+    "project_prepare_script": {
+      "type": "string",
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+    }
   },
   "additionalProperties": true
 }
