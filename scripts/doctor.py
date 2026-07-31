@@ -14,7 +14,11 @@ from typing import Any
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.lib.artifact_contract import load_and_validate_manifest, safe_relative_path
+try:
+    from scripts.lib.artifact_contract import load_and_validate_manifest, safe_relative_path
+except ModuleNotFoundError:
+    # Packaged artifacts carry the contract validator next to this script.
+    from artifact_contract import load_and_validate_manifest, safe_relative_path
 
 
 def _resolve(root: Path, relative: str) -> Path:

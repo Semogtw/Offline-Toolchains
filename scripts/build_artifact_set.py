@@ -78,6 +78,7 @@ def package(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("software inventory input must be a list")
 
     shutil.copy2(Path(__file__).with_name("doctor.py"), root / "doctor.py")
+    shutil.copy2(Path(__file__).parent / "lib" / "artifact_contract.py", root / "artifact_contract.py")
     shutil.copy2(Path(__file__).with_name("doctor.sh"), root / "doctor.sh")
     os.chmod(root / "doctor.sh", 0o755)
     (root / "profile.json").write_text(json.dumps(profile, indent=2, sort_keys=True) + "\n", encoding="utf-8")

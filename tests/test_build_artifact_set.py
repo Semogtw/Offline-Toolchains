@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -34,6 +35,18 @@ class BuildArtifactSetTests(unittest.TestCase):
             self.assertEqual(manifest["set_fingerprint"], manifest["set_fingerprint"].lower())
             self.assertTrue(manifest["artifact_set_id"].startswith("jdk21-" + manifest["set_fingerprint"][:16]))
             self.assertTrue((out / "SBOM.spdx.json").is_file())
+            self.assertTrue((root / "artifact_contract.py").is_file())
+            environment = os.environ.copy()
+            environment.pop("PYTHONPATH", None)
+            doctor = subprocess.run(
+                [str(root / "doctor.sh"), "--manifest", str(out / "artifact-set.json"), "--root", str(root), "--json"],
+                cwd=Path(directory),
+                env=environment,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(doctor.returncode, 0, doctor.stderr + doctor.stdout)
+            self.assertEqual(json.loads(doctor.stdout)["status"], "ready")
             for part in manifest["parts"]:
                 self.assertEqual(sha256_file(out / part["name"]), part["sha256"])
             self.assertNotIn(str(Path(directory)), (out / "SHA256SUMS.parts").read_text())
