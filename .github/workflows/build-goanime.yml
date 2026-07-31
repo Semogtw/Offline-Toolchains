@@ -117,6 +117,7 @@ jobs:
           fi
           python3 scripts/collect-lock-inputs.py --root "$project" --profile "$PROFILE" --project goanime --profiles profiles --out "$RUNNER_TEMP/resolved-lock" >/dev/null
           echo "software=$RUNNER_TEMP/resolved-lock/software.json" >> "$GITHUB_OUTPUT"
+          echo "project=$project" >> "$GITHUB_OUTPUT"
       - name: Assemble portable profile
         if: steps.reuse.outputs.reused != 'true'
         id: root
@@ -132,9 +133,14 @@ jobs:
           if [[ "$PROFILE" == goanime-analysis ]]; then
             cp -aL "$FLUTTER_ROOT" "$root/flutter"
             cp -a "$PUB_CACHE" "$root/pub-cache"
+            project='${{ steps.hydrate.outputs.project }}'
+            python3 scripts/native_asset_cache.py capture \
+              --source "$project/.dart_tool/hooks_runner/shared" \
+              --destination "$root/native-assets-cache/hooks_runner-shared" >/dev/null
             pwsh_root="$(dirname "$(readlink -f "$(command -v pwsh)")")"
             python3 scripts/copy_portable_tree.py "$pwsh_root" "$root/powershell"
             "$root/powershell/pwsh" -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()' >/dev/null
+            python3 scripts/relocate_flutter_sdk.py --flutter-root "$root/flutter" --pub-cache "$root/pub-cache" >/dev/null
             cat > "$root/activate.sh" <<'EOF'
           #!/usr/bin/env bash
           root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -143,6 +149,22 @@ jobs:
           export PATH="$FLUTTER_ROOT/bin:$root/powershell:$PATH"
           export CI=true FLUTTER_SUPPRESS_ANALYTICS=true
           EOF
+            portable_project="$RUNNER_TEMP/portable-goanime-fixture"
+            rm -rf "$portable_project"; mkdir -p "$portable_project/lib" "$portable_project/test"
+            cp fixtures/goanime/pubspec.yaml "$portable_project/pubspec.yaml"
+            cp fixtures/goanime/lib/main.dart "$portable_project/lib/main.dart"
+            cp -a fixtures/goanime/test/. "$portable_project/test/"
+            (
+              export FLUTTER_ROOT="$root/flutter" PUB_CACHE="$root/pub-cache"
+              export PATH="$root/flutter/bin:$root/powershell:$PATH"
+              export CI=true FLUTTER_SUPPRESS_ANALYTICS=true
+              cd "$portable_project"
+              "$root/flutter/bin/flutter" pub get --offline
+              python3 "$GITHUB_WORKSPACE/scripts/native_asset_cache.py" prepare \
+                --cache "$root/native-assets-cache/hooks_runner-shared" --project "$portable_project" >/dev/null
+              "$root/flutter/bin/flutter" analyze --no-pub
+              "$root/flutter/bin/flutter" test --no-pub
+            )
           else
             rm -rf "$GRADLE_USER_HOME/daemon" "$GRADLE_USER_HOME/workers"
             cp -a "$GRADLE_USER_HOME" "$root/gradle-home"
