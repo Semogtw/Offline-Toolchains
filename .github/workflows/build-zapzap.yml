@@ -1,0 +1,138 @@
+name: Build ZapZap offline cache
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-zapzap.yml
+      - fixtures/zapzap/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zapzap-toolchain-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GRADLE_VERSION: "8.9"
+
+jobs:
+  build:
+    name: Gradle, AGP, Kotlin and Android dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Temurin JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Expose Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+          cache-disabled: true
+
+      - name: Configure portable Gradle cache
+        shell: bash
+        run: echo "GRADLE_USER_HOME=$RUNNER_TEMP/zapzap-gradle-home" >> "$GITHUB_ENV"
+
+      - name: Hydrate ZapZap dependency graph
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          project="$RUNNER_TEMP/zapzap-fixture"
+          cp -a fixtures/zapzap "$project"
+          cd "$project"
+
+          gradle wrapper \
+            --gradle-version "$GRADLE_VERSION" \
+            --distribution-type bin
+
+          ./gradlew --no-daemon \
+            :app:dependencies \
+            :app:testDebugUnitTest \
+            :app:lintDebug \
+            :app:assembleDebug
+
+      - name: Assemble portable ZapZap cache
+        id: bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          bundle_root="$RUNNER_TEMP/zapzap-toolchain"
+          archive="$RUNNER_TEMP/zapzap-gradle-cache-linux-x64.tar.zst"
+          rm -rf "$bundle_root" "$archive" "$archive.sha256"
+          mkdir -p "$bundle_root"
+
+          rm -rf "$GRADLE_USER_HOME/daemon" "$GRADLE_USER_HOME/workers"
+          cp -a "$GRADLE_USER_HOME" "$bundle_root/gradle-home"
+
+          cat > "$bundle_root/activate.sh" <<'EOF'
+          #!/usr/bin/env bash
+          bundle_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          export GRADLE_USER_HOME="$bundle_root/gradle-home"
+          export CI=true
+          EOF
+          chmod +x "$bundle_root/activate.sh"
+
+          {
+            echo "repository=$GITHUB_REPOSITORY"
+            echo "commit=$GITHUB_SHA"
+            echo "runner=$RUNNER_OS-$RUNNER_ARCH"
+            echo "gradle=$GRADLE_VERSION"
+            echo "agp=8.7.3"
+            echo "kotlin=2.0.21"
+            echo "compile_sdk=35"
+            echo "created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo
+            sha256sum \
+              fixtures/zapzap/settings.gradle.kts \
+              fixtures/zapzap/build.gradle.kts \
+              fixtures/zapzap/app/build.gradle.kts
+          } > "$bundle_root/MANIFEST.txt"
+
+          tar -C "$RUNNER_TEMP" -I 'zstd -T0 -8' -cf "$archive" zapzap-toolchain
+          sha256sum "$archive" > "$archive.sha256"
+
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "checksum=$archive.sha256" >> "$GITHUB_OUTPUT"
+          ls -lh "$archive" "$archive.sha256"
+
+      - name: Validate copied cache offline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          source "$RUNNER_TEMP/zapzap-toolchain/activate.sh"
+          project="$RUNNER_TEMP/zapzap-fixture"
+          cd "$project"
+
+          ./gradlew --offline --no-daemon \
+            :app:dependencies \
+            :app:testDebugUnitTest \
+            :app:lintDebug \
+            :app:assembleDebug
+
+      - name: Upload ZapZap cache
+        uses: actions/upload-artifact@v7
+        with:
+          name: zapzap-gradle-cache-linux-x64
+          path: |
+            ${{ steps.bundle.outputs.archive }}
+            ${{ steps.bundle.outputs.checksum }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
