@@ -6,13 +6,22 @@ Os workflows não acessam os repositórios privados e não recebem tokens, signi
 
 ## Artifacts
 
-| Artifact | Conteúdo | Uso |
+| Prefixo dos artifacts | Conteúdo | Uso |
 | --- | --- | --- |
-| `android-base-linux-x64` | Temurin JDK 17, Android SDK 35/36, build-tools, platform-tools, NDK e CMake | Base comum para GoAnime Mobile e ZapZap |
-| `goanime-flutter-cache-linux-x64` | Flutter 3.44.1, Dart, Pub cache, Gradle cache Android e PowerShell | `flutter pub get --offline`, análise, testes, health checks e build Android do GoAnime |
-| `zapzap-gradle-cache-linux-x64` | Gradle 8.9 e caches de AGP 8.7.3, Kotlin/Compose 2.0.21 e dependências Android | testes, lint e `assembleDebug` do ZapZap |
+| `android-base-linux-x64-*` | Temurin JDK 17, Android SDK 35/36, build-tools, platform-tools, NDK e CMake | Base comum para GoAnime Mobile e ZapZap |
+| `goanime-flutter-cache-linux-x64-*` | Flutter 3.44.1, Dart, Pub cache, Gradle cache Android e PowerShell | `flutter pub get --offline`, análise, testes, health checks e build Android do GoAnime |
+| `zapzap-gradle-cache-linux-x64-*` | Gradle 8.9 e caches de AGP 8.7.3, Kotlin/Compose 2.0.21 e dependências Android | testes, lint e `assembleDebug` do ZapZap |
 
 Todos os artifacts usam retenção de **1 dia** para minimizar armazenamento. Gere-os novamente quando uma sessão precisar deles.
+
+Cada pacote grande é dividido em artifacts independentes de **400 MiB**, porque o conector rejeita um artifact acima de 512 MiB. Baixe o artifact `*-manifest` e todos os `*-part-NN`, extraia os ZIPs na mesma pasta e remonte:
+
+```bash
+sha256sum -c SHA256SUMS.parts
+cat <prefixo>.part-* > <arquivo>.tar.zst
+```
+
+`PARTS.txt` contém os nomes exatos e o SHA-256 do arquivo remontado.
 
 ## Ordem de uso
 
@@ -73,7 +82,7 @@ bash ./tools/checks/verify_android_baseline.sh
 ## Segurança
 
 - Trate artifacts como executáveis: use apenas runs de commits confiáveis.
-- Verifique `SHA256SUMS` antes de extrair.
+- Verifique `SHA256SUMS.parts` e o SHA-256 final em `PARTS.txt` antes de extrair.
 - Não adicione PAT com acesso aos repositórios privados.
 - Não copie lockfiles ou manifests que contenham URLs privadas, credenciais ou dependências Git privadas.
 - Não publique keystores, `local.properties`, `google-services.json`, Firebase config, TURN credentials ou signing.
