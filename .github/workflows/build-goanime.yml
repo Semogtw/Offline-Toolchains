@@ -1,0 +1,201 @@
+name: Build GoAnime offline cache
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-goanime.yml
+      - fixtures/goanime/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-toolchain-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: 3.44.1
+  FLUTTER_CHANNEL: stable
+
+jobs:
+  build:
+    name: Flutter, Pub, Gradle and PowerShell
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Configure portable caches
+        shell: bash
+        run: |
+          echo "PUB_CACHE=$RUNNER_TEMP/goanime-pub-cache" >> "$GITHUB_ENV"
+          echo "GRADLE_USER_HOME=$RUNNER_TEMP/goanime-gradle-home" >> "$GITHUB_ENV"
+
+      - name: Hydrate Flutter, Pub and Android Gradle dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          project="$RUNNER_TEMP/goanime-fixture"
+          flutter config --no-analytics
+          flutter precache --linux --android
+
+          flutter create \
+            --platforms=android \
+            --project-name=goanime_fixture \
+            --org=dev.offline \
+            "$project"
+
+          cp fixtures/goanime/pubspec.yaml "$project/pubspec.yaml"
+          cp fixtures/goanime/lib/main.dart "$project/lib/main.dart"
+          rm -rf "$project/test"
+          cp -a fixtures/goanime/test "$project/test"
+
+          cd "$project"
+          flutter pub get
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          settings = Path("android/settings.gradle.kts")
+          text = settings.read_text()
+          text = re.sub(
+              r'id\("com\.android\.application"\) version "[^"]+"',
+              'id("com.android.application") version "8.11.1"',
+              text,
+          )
+          text = re.sub(
+              r'id\("org\.jetbrains\.kotlin\.android"\) version "[^"]+"',
+              'id("org.jetbrains.kotlin.android") version "2.2.20"',
+              text,
+          )
+          marker = 'id("org.jetbrains.kotlin.android") version "2.2.20" apply false'
+          additions = (
+              marker
+              + '\n    id("com.google.gms.google-services") version "4.4.2" apply false'
+              + '\n    id("com.google.firebase.crashlytics") version "3.0.6" apply false'
+          )
+          text = text.replace(marker, additions)
+          settings.write_text(text)
+
+          wrapper = Path("android/gradle/wrapper/gradle-wrapper.properties")
+          wrapper_text = wrapper.read_text()
+          wrapper_text = re.sub(
+              r"distributionUrl=.*",
+              r"distributionUrl=https\\://services.gradle.org/distributions/gradle-8.14-all.zip",
+              wrapper_text,
+          )
+          wrapper.write_text(wrapper_text)
+
+          app = Path("android/app/build.gradle.kts")
+          app_text = app.read_text()
+          app_text += '''
+
+          dependencies {
+              coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+              implementation("com.google.android.play:core:1.10.3")
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("com.google.firebase:firebase-messaging-ktx:24.1.2")
+              implementation("com.google.firebase:firebase-crashlytics:19.4.4")
+          }
+          '''
+          app_text = app_text.replace(
+              "compileOptions {",
+              "compileOptions {\n        isCoreLibraryDesugaringEnabled = true",
+          )
+          app.write_text(app_text)
+          PY
+
+          flutter build apk --debug
+
+      - name: Assemble portable GoAnime bundle
+        id: bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          bundle_root="$RUNNER_TEMP/goanime-toolchain"
+          archive="$RUNNER_TEMP/goanime-flutter-cache-linux-x64.tar.zst"
+          rm -rf "$bundle_root" "$archive" "$archive.sha256"
+          mkdir -p "$bundle_root"
+
+          rm -rf "$GRADLE_USER_HOME/daemon" "$GRADLE_USER_HOME/workers"
+          rm -rf "$PUB_CACHE/_temp"
+
+          cp -a "$FLUTTER_ROOT" "$bundle_root/flutter"
+          cp -a "$PUB_CACHE" "$bundle_root/pub-cache"
+          cp -a "$GRADLE_USER_HOME" "$bundle_root/gradle-home"
+
+          pwsh_root="$(dirname "$(readlink -f "$(command -v pwsh)")")"
+          cp -a "$pwsh_root" "$bundle_root/powershell"
+
+          cat > "$bundle_root/activate.sh" <<'EOF'
+          #!/usr/bin/env bash
+          bundle_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          export FLUTTER_ROOT="$bundle_root/flutter"
+          export PUB_CACHE="$bundle_root/pub-cache"
+          export GRADLE_USER_HOME="$bundle_root/gradle-home"
+          export PATH="$FLUTTER_ROOT/bin:$bundle_root/powershell:$PATH"
+          export FLUTTER_SUPPRESS_ANALYTICS=true
+          export CI=true
+          EOF
+          chmod +x "$bundle_root/activate.sh"
+
+          {
+            echo "repository=$GITHUB_REPOSITORY"
+            echo "commit=$GITHUB_SHA"
+            echo "runner=$RUNNER_OS-$RUNNER_ARCH"
+            echo "flutter=$FLUTTER_VERSION"
+            echo "created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo
+            "$bundle_root/flutter/bin/flutter" --version
+            echo
+            sha256sum fixtures/goanime/pubspec.yaml
+          } > "$bundle_root/MANIFEST.txt"
+
+          tar -C "$RUNNER_TEMP" -I 'zstd -T0 -8' -cf "$archive" goanime-toolchain
+          sha256sum "$archive" > "$archive.sha256"
+
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "checksum=$archive.sha256" >> "$GITHUB_OUTPUT"
+          ls -lh "$archive" "$archive.sha256"
+
+      - name: Validate copied bundle offline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          source "$RUNNER_TEMP/goanime-toolchain/activate.sh"
+          project="$RUNNER_TEMP/goanime-fixture"
+          cd "$project"
+
+          rm -rf .dart_tool
+          flutter pub get --offline
+          flutter analyze --no-pub
+          flutter test --no-pub
+          pwsh -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          cd android
+          ./gradlew --offline --no-daemon tasks >/dev/null
+
+      - name: Upload GoAnime bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-flutter-cache-linux-x64
+          path: |
+            ${{ steps.bundle.outputs.archive }}
+            ${{ steps.bundle.outputs.checksum }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
