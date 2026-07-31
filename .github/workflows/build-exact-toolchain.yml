@@ -199,6 +199,14 @@ jobs:
             flutter precache --android --linux
             (cd private-source && flutter pub get --enforce-lockfile)
             (cd private-source && flutter pub get --offline --enforce-lockfile)
+            cache_test=private-source/test/.offline_toolchain_native_cache_test.dart
+            mkdir -p "$(dirname "$cache_test")"
+            cat > "$cache_test" <<'DART'
+          import 'package:flutter_test/flutter_test.dart';
+          void main() { test('hydrates native assets', () => expect(true, isTrue)); }
+          DART
+            (cd private-source && flutter test --no-pub test/.offline_toolchain_native_cache_test.dart)
+            rm -f "$cache_test"
             if [[ "$PROFILE" == goanime-android ]]; then
               (cd private-source/android && ./gradlew --no-daemon :app:assembleDebug)
               (cd private-source/android && ./gradlew --no-daemon --offline :app:assembleDebug)
@@ -229,8 +237,30 @@ jobs:
             pwsh_root="$(dirname "$(readlink -f "$(command -v pwsh)")")"
             cp -aL "$flutter_root" "$root/flutter"
             cp -a "$PUB_CACHE" "$root/pub-cache"
+            python3 scripts/native_asset_cache.py capture \
+              --source private-source/.dart_tool/hooks_runner/shared \
+              --destination "$root/native-assets-cache/hooks_runner-shared" >/dev/null
             python3 scripts/copy_portable_tree.py "$pwsh_root" "$root/powershell"
             "$root/powershell/pwsh" -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()' >/dev/null
+            python3 scripts/relocate_flutter_sdk.py --flutter-root "$root/flutter" --pub-cache "$root/pub-cache" >/dev/null
+            (
+              export FLUTTER_ROOT="$root/flutter" PUB_CACHE="$root/pub-cache"
+              export PATH="$root/flutter/bin:$root/powershell:$PATH"
+              export CI=true FLUTTER_SUPPRESS_ANALYTICS=true
+              cd private-source
+              "$root/flutter/bin/flutter" pub get --offline --enforce-lockfile
+              rm -rf .dart_tool/hooks_runner
+              python3 "$GITHUB_WORKSPACE/scripts/native_asset_cache.py" prepare \
+                --cache "$root/native-assets-cache/hooks_runner-shared" --project "$PWD" >/dev/null
+              cache_test=test/.offline_toolchain_native_cache_test.dart
+              mkdir -p "$(dirname "$cache_test")"
+              cat > "$cache_test" <<'DART'
+            import 'package:flutter_test/flutter_test.dart';
+            void main() { test('uses cached native assets', () => expect(true, isTrue)); }
+            DART
+              "$root/flutter/bin/flutter" test --no-pub "$cache_test"
+              rm -f "$cache_test"
+            )
             cat > "$root/activate.sh" <<'EOF'
           #!/usr/bin/env bash
           root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
