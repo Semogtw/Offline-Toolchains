@@ -153,6 +153,10 @@ jobs:
           export PUB_CACHE="$bundle_root/pub-cache"
           export GRADLE_USER_HOME="$bundle_root/gradle-home"
           export PATH="$FLUTTER_ROOT/bin:$bundle_root/powershell:$PATH"
+          git_config_index="${GIT_CONFIG_COUNT:-0}"
+          export GIT_CONFIG_COUNT="$((git_config_index + 1))"
+          export "GIT_CONFIG_KEY_${git_config_index}=safe.directory"
+          export "GIT_CONFIG_VALUE_${git_config_index}=$FLUTTER_ROOT"
           export FLUTTER_SUPPRESS_ANALYTICS=true
           export CI=true
           EOF
@@ -177,7 +181,10 @@ jobs:
           rm -rf "$parts_dir"
           mkdir -p "$parts_dir"
           split -b 400M -d -a 2 "$archive" "$parts_dir/goanime-flutter-cache-linux-x64.part-"
-          sha256sum "$parts_dir"/goanime-flutter-cache-linux-x64.part-* > "$parts_dir/SHA256SUMS.parts"
+          (
+            cd "$parts_dir"
+            sha256sum goanime-flutter-cache-linux-x64.part-* > SHA256SUMS.parts
+          )
 
           {
             echo "archive=$(basename "$archive")"
