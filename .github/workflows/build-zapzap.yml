@@ -1,217 +1,163 @@
-name: Build ZapZap offline cache
+name: Build ZapZap toolchain
 
 on:
   workflow_dispatch:
+    inputs:
+      profile:
+        required: true
+        default: zapzap-pure
+        type: choice
+        options: [zapzap-pure, zapzap-android]
+      force_rebuild:
+        required: true
+        default: false
+        type: boolean
   pull_request:
     paths:
       - .github/workflows/build-zapzap.yml
       - fixtures/zapzap/**
-      - triggers/**
+      - profiles/zapzap-*.json
+      - scripts/**
+      - schemas/**
+      - triggers/build.txt
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
       - .github/workflows/build-zapzap.yml
       - fixtures/zapzap/**
+      - profiles/zapzap-*.json
+      - scripts/**
 
 permissions:
   contents: read
-
-concurrency:
-  group: zapzap-toolchain-${{ github.ref }}
-  cancel-in-progress: true
+  actions: read
 
 env:
-  GRADLE_VERSION: "8.9"
+  GRADLE_VERSION: '8.9'
 
 jobs:
   build:
-    name: Gradle, AGP, Kotlin and Android dependencies
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
-
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@v6
-
-      - name: Install Temurin JDK 17
+        with:
+          persist-credentials: false
+      - name: Define profile and synthetic fingerprint
+        id: meta
+        shell: bash
+        env:
+          INPUT_PROFILE: ${{ inputs.profile }}
+        run: |
+          set -euo pipefail
+          profile="${INPUT_PROFILE:-zapzap-pure}"
+          [[ "$profile" =~ ^zapzap-(pure|android)$ ]] || exit 2
+          fingerprint="$({ find fixtures/zapzap -type f -print0 | sort -z | xargs -0 sha256sum; echo "$profile"; } | sha256sum | cut -d' ' -f1)"
+          echo "profile=$profile" >> "$GITHUB_OUTPUT"
+          echo "lock_fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+          echo "trusted_commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Reuse equivalent artifact set
+        id: reuse
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/find-reusable-set.sh --profile '${{ steps.meta.outputs.profile }}' --package '${{ steps.meta.outputs.profile }}' \
+            --lock-mode synthetic --lock-fingerprint '${{ steps.meta.outputs.lock_fingerprint }}' \
+            --workflow-commit '${{ steps.meta.outputs.trusted_commit }}' \
+            --receipt-dir "$RUNNER_TEMP/receipt-${{ steps.meta.outputs.profile }}" --github-output "$GITHUB_OUTPUT" \
+            --force-rebuild '${{ github.event_name == 'workflow_dispatch' && inputs.force_rebuild || false }}'
+      - name: Install Temurin JDK 21
+        if: steps.reuse.outputs.reused != 'true'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
-
+          java-version: '21'
       - name: Expose Android SDK
+        if: steps.reuse.outputs.reused != 'true' && steps.meta.outputs.profile == 'zapzap-android'
         uses: android-actions/setup-android@v3
-
       - name: Install Gradle 8.9
+        if: steps.reuse.outputs.reused != 'true'
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: ${{ env.GRADLE_VERSION }}
           cache-disabled: true
-
-      - name: Configure portable Gradle cache
+      - name: Hydrate synthetic fixture and prove offline
+        if: steps.reuse.outputs.reused != 'true'
+        id: hydrate
         shell: bash
-        run: echo "GRADLE_USER_HOME=$RUNNER_TEMP/zapzap-gradle-home" >> "$GITHUB_ENV"
-
-      - name: Hydrate ZapZap dependency graph
-        shell: bash
+        env:
+          PROFILE: ${{ steps.meta.outputs.profile }}
+          GRADLE_USER_HOME: ${{ runner.temp }}/zapzap-gradle-home
         run: |
           set -euo pipefail
-
           project="$RUNNER_TEMP/zapzap-fixture"
+          rm -rf "$project" "$GRADLE_USER_HOME"
           cp -a fixtures/zapzap "$project"
-          cd "$project"
-
-          gradle wrapper \
-            --gradle-version "$GRADLE_VERSION" \
-            --distribution-type bin
-
-          ./gradlew --no-daemon \
-            :app:dependencies \
-            :app:testDebugUnitTest \
-            :app:lintDebug \
-            :app:assembleDebug
-
-      - name: Assemble portable ZapZap cache
-        id: bundle
+          (cd "$project" && gradle wrapper --gradle-version "$GRADLE_VERSION" --distribution-type bin)
+          if [[ "$PROFILE" == zapzap-pure ]]; then
+            tasks=(:app:dependencies :app:testDebugUnitTest)
+          else
+            tasks=(:app:dependencies :app:testDebugUnitTest :app:lintDebug :app:assembleDebug)
+          fi
+          (cd "$project" && ./gradlew --no-daemon "${tasks[@]}")
+          (cd "$project" && ./gradlew --offline --no-daemon "${tasks[@]}")
+          python3 scripts/collect-lock-inputs.py --root "$project" --profile "$PROFILE" --project zapzap --profiles profiles --out "$RUNNER_TEMP/resolved-lock" >/dev/null
+          echo "software=$RUNNER_TEMP/resolved-lock/software.json" >> "$GITHUB_OUTPUT"
+      - name: Assemble portable profile
+        if: steps.reuse.outputs.reused != 'true'
+        id: root
         shell: bash
+        env:
+          PROFILE: ${{ steps.meta.outputs.profile }}
+          GRADLE_USER_HOME: ${{ runner.temp }}/zapzap-gradle-home
         run: |
           set -euo pipefail
-
-          bundle_root="$RUNNER_TEMP/zapzap-toolchain"
-          archive="$RUNNER_TEMP/zapzap-gradle-cache-linux-x64.tar.zst"
-          rm -rf "$bundle_root" "$archive" "$archive.sha256"
-          mkdir -p "$bundle_root"
-
+          root="$RUNNER_TEMP/package-$PROFILE/$PROFILE"
+          rm -rf "${root%/*}"; mkdir -p "$root"
           rm -rf "$GRADLE_USER_HOME/daemon" "$GRADLE_USER_HOME/workers"
-          cp -a "$GRADLE_USER_HOME" "$bundle_root/gradle-home"
-
-          cat > "$bundle_root/activate.sh" <<'EOF'
+          cp -a "$GRADLE_USER_HOME" "$root/gradle-home"
+          cat > "$root/activate.sh" <<'EOF'
           #!/usr/bin/env bash
-          bundle_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-          export GRADLE_USER_HOME="$bundle_root/gradle-home"
+          root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          export GRADLE_USER_HOME="$root/gradle-home"
           export CI=true
           EOF
-          chmod +x "$bundle_root/activate.sh"
-
-          {
-            echo "repository=$GITHUB_REPOSITORY"
-            echo "commit=$GITHUB_SHA"
-            echo "runner=$RUNNER_OS-$RUNNER_ARCH"
-            echo "gradle=$GRADLE_VERSION"
-            echo "agp=8.7.3"
-            echo "kotlin=2.0.21"
-            echo "compile_sdk=35"
-            echo "created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo
-            sha256sum \
-              fixtures/zapzap/settings.gradle.kts \
-              fixtures/zapzap/build.gradle.kts \
-              fixtures/zapzap/app/build.gradle.kts
-          } > "$bundle_root/MANIFEST.txt"
-
-          tar -C "$RUNNER_TEMP" -I 'zstd -T0 -8' -cf "$archive" zapzap-toolchain
-          sha256sum "$archive" > "$archive.sha256"
-
-          parts_dir="$RUNNER_TEMP/zapzap-gradle-cache-linux-x64-parts"
-          rm -rf "$parts_dir"
-          mkdir -p "$parts_dir"
-          split -b 400M -d -a 2 "$archive" "$parts_dir/zapzap-gradle-cache-linux-x64.part-"
-          (
-            cd "$parts_dir"
-            sha256sum zapzap-gradle-cache-linux-x64.part-* > SHA256SUMS.parts
-          )
-
-          {
-            echo "archive=$(basename "$archive")"
-            echo "archive_sha256=$(cut -d' ' -f1 "$archive.sha256")"
-            echo "part_size=400M"
-            echo "reassemble=cat zapzap-gradle-cache-linux-x64.part-* > $(basename "$archive")"
-            echo
-            ls -lh "$parts_dir"/zapzap-gradle-cache-linux-x64.part-*
-          } > "$parts_dir/PARTS.txt"
-
-          echo "parts_dir=$parts_dir" >> "$GITHUB_OUTPUT"
-          echo "manifest_dir=$parts_dir" >> "$GITHUB_OUTPUT"
-          for index in $(seq -f '%02g' 0 4); do
-            if [[ -f "$parts_dir/zapzap-gradle-cache-linux-x64.part-$index" ]]; then
-              echo "part_$index=true" >> "$GITHUB_OUTPUT"
-            fi
-          done
-
-          ls -lh "$archive" "$archive.sha256" "$parts_dir"/*
-
-      - name: Validate copied cache offline
+          chmod +x "$root/activate.sh"
+          echo "package_root=$root" >> "$GITHUB_OUTPUT"
+      - name: Package schema-v2 set
+        if: steps.reuse.outputs.reused != 'true'
+        id: pack
         shell: bash
         run: |
-          set -euo pipefail
-
-          source "$RUNNER_TEMP/zapzap-toolchain/activate.sh"
-          project="$RUNNER_TEMP/zapzap-fixture"
-          cd "$project"
-
-          ./gradlew --offline --no-daemon \
-            :app:dependencies \
-            :app:testDebugUnitTest \
-            :app:lintDebug \
-            :app:assembleDebug
-
-      - name: Upload ZapZap cache manifest
+          profile='${{ steps.meta.outputs.profile }}'; out="$RUNNER_TEMP/artifact-$profile"
+          python3 scripts/build_artifact_set.py --profile "$profile" --package "$profile" \
+            --root '${{ steps.root.outputs.package_root }}' --out "$out" --profiles profiles \
+            --lock-mode synthetic --lock-fingerprint '${{ steps.meta.outputs.lock_fingerprint }}' \
+            --builder-fingerprint '${{ steps.reuse.outputs.builder_fingerprint }}' \
+            --workflow .github/workflows/build-zapzap.yml --workflow-commit '${{ steps.meta.outputs.trusted_commit }}' \
+            --run-id "$GITHUB_RUN_ID" --software '${{ steps.hydrate.outputs.software }}' --archive-name "$profile.tar.zst" >/dev/null
+          python3 - "$out/artifact-set.json" "$RUNNER_TEMP/receipt-$profile/receipt.json" "$GITHUB_OUTPUT" "$out" <<'PY'
+          import json,sys
+          m=json.load(open(sys.argv[1])); json.dump({'schema_version':1,'result':'built','manifest':m,'artifact_ids':[]},open(sys.argv[2],'w'),indent=2,sort_keys=True)
+          if len(m['parts'])>16: raise SystemExit('too many parts')
+          with open(sys.argv[3],'a') as o:o.write(f"artifact_set_id={m['artifact_set_id']}\npart_count={len(m['parts'])}\nout={sys.argv[4]}\n")
+          PY
+      - name: Upload toolchain receipt
         uses: actions/upload-artifact@v7
         with:
-          name: zapzap-gradle-cache-linux-x64-manifest
-          path: |
-            ${{ steps.bundle.outputs.manifest_dir }}/PARTS.txt
-            ${{ steps.bundle.outputs.manifest_dir }}/SHA256SUMS.parts
+          name: toolchain-receipt-${{ steps.meta.outputs.profile }}-${{ github.run_id }}
+          path: ${{ steps.reuse.outputs.receipt_dir }}/receipt.json
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
-
-      - name: Upload ZapZap cache part 00
-        if: steps.bundle.outputs.part_00 == 'true'
-        uses: actions/upload-artifact@v7
+      - name: Upload schema-v2 artifact set
+        if: steps.reuse.outputs.reused != 'true'
+        uses: ./.github/actions/upload-artifact-set
         with:
-          name: zapzap-gradle-cache-linux-x64-part-00
-          path: ${{ steps.bundle.outputs.parts_dir }}/zapzap-gradle-cache-linux-x64.part-00
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
+          artifact-set-id: ${{ steps.pack.outputs.artifact_set_id }}
+          out: ${{ steps.pack.outputs.out }}
+          archive-prefix: ${{ steps.meta.outputs.profile }}
+          part-count: ${{ steps.pack.outputs.part_count }}
 
-      - name: Upload ZapZap cache part 01
-        if: steps.bundle.outputs.part_01 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: zapzap-gradle-cache-linux-x64-part-01
-          path: ${{ steps.bundle.outputs.parts_dir }}/zapzap-gradle-cache-linux-x64.part-01
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload ZapZap cache part 02
-        if: steps.bundle.outputs.part_02 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: zapzap-gradle-cache-linux-x64-part-02
-          path: ${{ steps.bundle.outputs.parts_dir }}/zapzap-gradle-cache-linux-x64.part-02
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload ZapZap cache part 03
-        if: steps.bundle.outputs.part_03 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: zapzap-gradle-cache-linux-x64-part-03
-          path: ${{ steps.bundle.outputs.parts_dir }}/zapzap-gradle-cache-linux-x64.part-03
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload ZapZap cache part 04
-        if: steps.bundle.outputs.part_04 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: zapzap-gradle-cache-linux-x64-part-04
-          path: ${{ steps.bundle.outputs.parts_dir }}/zapzap-gradle-cache-linux-x64.part-04
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
+# artifact-set.json and SBOM.spdx.json are uploaded by the composite action.
