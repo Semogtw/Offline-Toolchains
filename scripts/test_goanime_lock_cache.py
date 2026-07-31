@@ -71,11 +71,14 @@ class GoAnimeLockCacheTest(unittest.TestCase):
                 'packages': {'alpha': '1.2.3', 'beta_pkg': '2.0.0+1'},
             }))
             output = td / 'pubspec.yaml'
-            self.run_script('write-pubspec', '--manifest', manifest, '--output', output)
+            self.run_script(
+                'write-pubspec', '--manifest', manifest, '--output', output,
+            )
             text = output.read_text()
             self.assertIn('flutter:\n    sdk: flutter', text)
             self.assertIn('  alpha: "1.2.3"', text)
             self.assertIn('  beta_pkg: "2.0.0+1"', text)
+            self.assertNotIn('flutter_test:', text)
 
     def test_verify_cache_reports_every_missing_package(self):
         with tempfile.TemporaryDirectory() as td:
