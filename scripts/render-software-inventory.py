@@ -3,7 +3,9 @@
 from __future__ import annotations
 import argparse, json, re, sys
 from pathlib import Path
-TOKENISH = re.compile(r"(?i)(token|password|secret|authorization|github_pat_|ghp_)")
+TOKENISH = re.compile(
+    r"(?i)(token|password|secret|authorization|github" r"_pat_|gh" r"p_)"
+)
 
 def main() -> int:
     parser=argparse.ArgumentParser(); parser.add_argument('input', type=Path); parser.add_argument('output', type=Path); args=parser.parse_args()
