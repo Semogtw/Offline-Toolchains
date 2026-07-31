@@ -14,11 +14,11 @@ bash -n "$root/scripts/test_repair_portable_flutter.sh"
 bash -n "$root/scripts/apply-goanime-lock-delta.sh"
 bash -n "$root/scripts/test_apply_goanime_lock_delta.sh"
 
-grep -q 'goanime_lock_cache.py write-pubspec' "$workflow"
+grep -q 'goanime_lock_cache.py install-cache' "$workflow"
 grep -Eq 'goanime[_-]lock[_-]cache\.py.*verify-cache' "$workflow"
 grep -q 'apply-goanime-lock-delta.sh' "$workflow"
 grep -q 'PUB_HOSTED_URL=http://127.0.0.1:9' "$workflow"
-grep -q 'flutter pub get --offline --enforce-lockfile' "$workflow"
+! grep -q 'flutter pub get' "$workflow"
 grep -q 'split -b 400M' "$workflow"
 grep -q 'retention-days: 1' "$workflow"
 
