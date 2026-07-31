@@ -2,4 +2,4 @@ Toolchain build trigger.
 
 Update this file when fresh one-day artifacts are needed.
 
-Build generation: 3 (zero-padded connector-sized parts).
+Build generation: 4 (portable checksums and Flutter safe.directory).
