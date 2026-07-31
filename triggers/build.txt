@@ -2,4 +2,4 @@ Toolchain build trigger.
 
 Update this file when fresh one-day artifacts are needed.
 
-Build generation: 4 (portable checksums and Flutter safe.directory).
+Build generation: 5 (Flutter 3.44 NDK 28 plus portable checksums).
