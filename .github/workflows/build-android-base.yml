@@ -90,9 +90,30 @@ jobs:
           tar -C "$RUNNER_TEMP" -I 'zstd -T0 -8' -cf "$archive" android-base
           sha256sum "$archive" > "$archive.sha256"
 
-          echo "archive=$archive" >> "$GITHUB_OUTPUT"
-          echo "checksum=$archive.sha256" >> "$GITHUB_OUTPUT"
-          ls -lh "$archive" "$archive.sha256"
+          parts_dir="$RUNNER_TEMP/android-base-linux-x64-parts"
+          rm -rf "$parts_dir"
+          mkdir -p "$parts_dir"
+          split -b 400M -d -a 2 "$archive" "$parts_dir/android-base-linux-x64.part-"
+          sha256sum "$parts_dir"/android-base-linux-x64.part-* > "$parts_dir/SHA256SUMS.parts"
+
+          {
+            echo "archive=$(basename "$archive")"
+            echo "archive_sha256=$(cut -d' ' -f1 "$archive.sha256")"
+            echo "part_size=400M"
+            echo "reassemble=cat android-base-linux-x64.part-* > $(basename "$archive")"
+            echo
+            ls -lh "$parts_dir"/android-base-linux-x64.part-*
+          } > "$parts_dir/PARTS.txt"
+
+          echo "parts_dir=$parts_dir" >> "$GITHUB_OUTPUT"
+          echo "manifest_dir=$parts_dir" >> "$GITHUB_OUTPUT"
+          for index in $(seq -w 0 5); do
+            if [[ -f "$parts_dir/android-base-linux-x64.part-$index" ]]; then
+              echo "part_$index=true" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
+          ls -lh "$archive" "$archive.sha256" "$parts_dir"/*
 
       - name: Validate copied base
         shell: bash
@@ -105,13 +126,73 @@ jobs:
           test -d "$ANDROID_SDK_ROOT/platforms/android-36"
           test -d "$ANDROID_SDK_ROOT/ndk/27.0.12077973"
 
-      - name: Upload shared base
+      - name: Upload Android base manifest
         uses: actions/upload-artifact@v7
         with:
-          name: android-base-linux-x64
+          name: android-base-linux-x64-manifest
           path: |
-            ${{ steps.bundle.outputs.archive }}
-            ${{ steps.bundle.outputs.checksum }}
+            ${{ steps.bundle.outputs.manifest_dir }}/PARTS.txt
+            ${{ steps.bundle.outputs.manifest_dir }}/SHA256SUMS.parts
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Android base part 00
+        if: steps.bundle.outputs.part_00 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-base-linux-x64-part-00
+          path: ${{ steps.bundle.outputs.parts_dir }}/android-base-linux-x64.part-00
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Android base part 01
+        if: steps.bundle.outputs.part_01 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-base-linux-x64-part-01
+          path: ${{ steps.bundle.outputs.parts_dir }}/android-base-linux-x64.part-01
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Android base part 02
+        if: steps.bundle.outputs.part_02 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-base-linux-x64-part-02
+          path: ${{ steps.bundle.outputs.parts_dir }}/android-base-linux-x64.part-02
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Android base part 03
+        if: steps.bundle.outputs.part_03 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-base-linux-x64-part-03
+          path: ${{ steps.bundle.outputs.parts_dir }}/android-base-linux-x64.part-03
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Android base part 04
+        if: steps.bundle.outputs.part_04 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-base-linux-x64-part-04
+          path: ${{ steps.bundle.outputs.parts_dir }}/android-base-linux-x64.part-04
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Android base part 05
+        if: steps.bundle.outputs.part_05 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-base-linux-x64-part-05
+          path: ${{ steps.bundle.outputs.parts_dir }}/android-base-linux-x64.part-05
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
