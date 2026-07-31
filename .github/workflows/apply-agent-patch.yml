@@ -5,10 +5,11 @@ on:
     branches:
       - agent/artifact-platform-v2
     paths:
-      - agent-patches/*.patch.gz.b64
+      - agent-patches/apply.txt
 
 permissions:
   contents: write
+  pull-requests: read
 
 jobs:
   apply:
@@ -20,18 +21,48 @@ jobs:
         with:
           ref: agent/artifact-platform-v2
           fetch-depth: 0
-      - name: Decode, verify and apply patch
+      - name: Fetch, verify and apply segmented patch
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: '7'
         run: |
           set -euo pipefail
-          patch_source="$(find agent-patches -maxdepth 1 -type f -name '*.patch.gz.b64' -print -quit)"
-          test -n "$patch_source"
-          base64 --decode "$patch_source" | gzip -dc > "$RUNNER_TEMP/agent.patch"
+          series="$(tr -d '\r\n' < agent-patches/apply.txt)"
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100" \
+            --jq '.[] | .body' > "$RUNNER_TEMP/comments.jsonl"
+          python3 - "$RUNNER_TEMP/comments.jsonl" "$series" "$RUNNER_TEMP/patch.gz.b64" <<'PY'
+          import hashlib, json, re, sys
+          comments, series, output = sys.argv[1:]
+          pattern = re.compile(rf'^<!-- agent-patch:{re.escape(series)}:(\d+)/(\d+) sha256=([0-9a-f]{{64}}) -->\n([A-Za-z0-9+/=]+)$')
+          chunks = {}
+          total = None
+          expected = None
+          for raw in open(comments, encoding='utf-8'):
+              body = json.loads(raw)
+              match = pattern.fullmatch(body)
+              if not match:
+                  continue
+              index, candidate_total, digest, chunk = match.groups()
+              index = int(index); candidate_total = int(candidate_total)
+              if total is None:
+                  total, expected = candidate_total, digest
+              if total != candidate_total or expected != digest:
+                  raise SystemExit('patch metadata mismatch')
+              chunks[index] = chunk
+          if total is None or sorted(chunks) != list(range(total)):
+              raise SystemExit(f'incomplete patch series: expected {total}, got {sorted(chunks)}')
+          data = ''.join(chunks[index] for index in range(total)).encode()
+          if hashlib.sha256(data).hexdigest() != expected:
+              raise SystemExit('patch transport checksum mismatch')
+          open(output, 'wb').write(data)
+          PY
+          base64 --decode "$RUNNER_TEMP/patch.gz.b64" | gzip -dc > "$RUNNER_TEMP/agent.patch"
           git apply --check "$RUNNER_TEMP/agent.patch"
           git apply "$RUNNER_TEMP/agent.patch"
-          rm -f "$patch_source"
+          rm -rf agent-patches
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
-          git commit -m 'feat: checkpoint artifact platform v2 core'
+          git commit -m "feat: checkpoint artifact platform v2 $series"
           git push origin HEAD:agent/artifact-platform-v2
