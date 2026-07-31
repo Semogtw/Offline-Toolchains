@@ -2,6 +2,11 @@ name: Build GoAnime offline cache
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/build-goanime.yml
+      - fixtures/goanime/**
+      - triggers/**
   push:
     branches:
       - main
