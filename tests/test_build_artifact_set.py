@@ -21,6 +21,9 @@ class BuildArtifactSetTests(unittest.TestCase):
             java.chmod(0o755)
             (root / "activate.sh").write_text("#!/bin/sh\n")
             (root / "activate.sh").chmod(0o755)
+            cache_file = root / "native-assets-cache/hooks_runner-shared/sqlite3/build/download-test/libsqlite3.so"
+            cache_file.parent.mkdir(parents=True)
+            cache_file.write_bytes(b"sqlite")
             software = Path(directory) / "software.json"
             software.write_text(json.dumps([{"name": "Temurin", "version": "21", "source": "https://adoptium.net", "license": "GPL-2.0-with-classpath-exception"}]))
             subprocess.run([
@@ -36,6 +39,10 @@ class BuildArtifactSetTests(unittest.TestCase):
             self.assertTrue(manifest["artifact_set_id"].startswith("jdk21-" + manifest["set_fingerprint"][:16]))
             self.assertTrue((out / "SBOM.spdx.json").is_file())
             self.assertTrue((root / "artifact_contract.py").is_file())
+            self.assertEqual(manifest["project_cache"], "native-assets-cache/hooks_runner-shared")
+            self.assertEqual(manifest["project_prepare_script"], "prepare-project.sh")
+            self.assertTrue((root / "native_asset_cache.py").is_file())
+            self.assertTrue((root / "prepare-project.sh").is_file())
             environment = os.environ.copy()
             environment.pop("PYTHONPATH", None)
             doctor = subprocess.run(
