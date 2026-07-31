@@ -47,7 +47,8 @@ python3 "$toolchain_root/goanime-lock-cache.py" verify-cache \
 EOFACTIVATE
 chmod +x "$toolchain_root/activate-exact.sh"
 
-"$toolchain_root/repair-portable-flutter.sh" "$toolchain_root/flutter"
+PUB_CACHE="$toolchain_root/pub-cache" \
+  "$toolchain_root/repair-portable-flutter.sh" "$toolchain_root/flutter"
 python3 "$toolchain_root/goanime-lock-cache.py" verify-cache \
   --manifest "$toolchain_root/HOSTED-LOCK.json" \
   --pub-cache "$toolchain_root/pub-cache"
