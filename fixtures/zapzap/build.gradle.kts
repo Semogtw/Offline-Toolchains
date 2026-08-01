@@ -15,6 +15,11 @@ dependencies {
     offlineExactArtifacts("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     offlineExactArtifacts("androidx.annotation:annotation-jvm:1.8.1")
     offlineExactArtifacts("org.jetbrains.kotlin:kotlin-stdlib-common:2.0.21")
+    offlineExactArtifacts("androidx.activity:activity-compose:1.8.2")
+    offlineExactArtifacts("androidx.activity:activity-ktx:1.7.0")
+    offlineExactArtifacts("androidx.core:core:1.13.1")
+    offlineExactArtifacts("androidx.core:core-ktx:1.5.0")
+    offlineExactArtifacts("androidx.tracing:tracing:1.0.0")
 }
 
 val hydrateOfflineExactArtifacts = tasks.register("hydrateOfflineExactArtifacts") {
