@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "ZapZapOfflineFixture"
 include(":app")
+include(":tools:test-support")
