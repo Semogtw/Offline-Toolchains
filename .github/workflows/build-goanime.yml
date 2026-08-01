@@ -6,6 +6,8 @@ on:
     paths:
       - .github/workflows/build-goanime.yml
       - fixtures/goanime/**
+      - scripts/validate_goanime_hosted_packages.py
+      - tests/test_validate_goanime_hosted_packages.py
       - triggers/**
   push:
     branches:
@@ -13,6 +15,8 @@ on:
     paths:
       - .github/workflows/build-goanime.yml
       - fixtures/goanime/**
+      - scripts/validate_goanime_hosted_packages.py
+      - tests/test_validate_goanime_hosted_packages.py
 
 permissions:
   contents: read
@@ -24,6 +28,7 @@ concurrency:
 env:
   FLUTTER_VERSION: 3.44.1
   FLUTTER_CHANNEL: stable
+  GOANIME_HOSTED_PACKAGE_MANIFEST: fixtures/goanime/hosted-packages.txt
   MEDIA_KIT_ANDROID_VIDEO_PACKAGE: media_kit_libs_android_video-1.3.8
   MEDIA_KIT_NATIVE_VERSION: v1.1.7
 
@@ -35,6 +40,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Validate exact hosted package manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest tests/test_validate_goanime_hosted_packages.py
+          python3 scripts/validate_goanime_hosted_packages.py \
+            "$GOANIME_HOSTED_PACKAGE_MANIFEST"
 
       - name: Install Flutter
         uses: subosito/flutter-action@v2
@@ -71,6 +84,17 @@ jobs:
 
           cd "$project"
           flutter pub get
+
+          while IFS= read -r line; do
+            [[ -z "$line" || "$line" == \#* ]] && continue
+            package="${line%%=*}"
+            version="${line#*=}"
+            package_dir="$PUB_CACHE/hosted/pub.dev/${package}-${version}"
+            if [[ ! -d "$package_dir" ]]; then
+              dart pub cache add "$package" --version "$version"
+            fi
+            test -d "$package_dir"
+          done < "$GITHUB_WORKSPACE/$GOANIME_HOSTED_PACKAGE_MANIFEST"
 
           python3 - <<'PY'
           from pathlib import Path
@@ -213,6 +237,11 @@ jobs:
           cp -a "$PUB_CACHE" "$bundle_root/pub-cache"
           cp -a "$GRADLE_USER_HOME" "$bundle_root/gradle-home"
 
+          flutter_tools_dir="$bundle_root/flutter/packages/flutter_tools"
+          rm -f "$flutter_tools_dir/.dart_tool/package_config.json"
+          rm -f "$flutter_tools_dir/.dart_tool/package_config_subset"
+          rm -f "$flutter_tools_dir/.dart_tool/.goanime-portable-root"
+
           pwsh_root="$(dirname "$(readlink -f "$(command -v pwsh)")")"
           cp -a "$pwsh_root" "$bundle_root/powershell"
 
@@ -229,6 +258,23 @@ jobs:
           export "GIT_CONFIG_VALUE_${git_config_index}=$FLUTTER_ROOT"
           export FLUTTER_SUPPRESS_ANALYTICS=true
           export CI=true
+
+          flutter_tools_dir="$FLUTTER_ROOT/packages/flutter_tools"
+          portable_stamp="$flutter_tools_dir/.dart_tool/.goanime-portable-root"
+          if [[ ! -f "$portable_stamp" ]] || \
+             [[ "$(cat "$portable_stamp" 2>/dev/null || true)" != "$bundle_root" ]]; then
+            rm -f "$flutter_tools_dir/.dart_tool/package_config.json"
+            rm -f "$flutter_tools_dir/.dart_tool/package_config_subset"
+            (
+              cd "$flutter_tools_dir"
+              "$FLUTTER_ROOT/bin/cache/dart-sdk/bin/dart" \
+                pub get --offline --example >/dev/null
+            ) || {
+              echo "Failed to regenerate the portable flutter_tools package config." >&2
+              return 1 2>/dev/null || exit 1
+            }
+            printf '%s\n' "$bundle_root" > "$portable_stamp"
+          fi
           EOF
           chmod +x "$bundle_root/activate.sh"
 
@@ -237,12 +283,14 @@ jobs:
             echo "commit=$GITHUB_SHA"
             echo "runner=$RUNNER_OS-$RUNNER_ARCH"
             echo "flutter=$FLUTTER_VERSION"
+            echo "hosted_package_count=$(grep -Ev '^(#|$)' "$GOANIME_HOSTED_PACKAGE_MANIFEST" | wc -l | tr -d ' ')"
             echo "media_kit_native=$MEDIA_KIT_NATIVE_VERSION"
             echo "created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo
-            "$bundle_root/flutter/bin/flutter" --version
+            flutter --version
             echo
             sha256sum fixtures/goanime/pubspec.yaml
+            sha256sum "$GOANIME_HOSTED_PACKAGE_MANIFEST"
           } > "$bundle_root/MANIFEST.txt"
 
           tar -C "$RUNNER_TEMP" -I 'zstd -T0 -8' -cf "$archive" goanime-toolchain
@@ -290,6 +338,16 @@ jobs:
           flutter analyze --no-pub
           flutter test --no-pub
           pwsh -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+
+          while IFS= read -r line; do
+            [[ -z "$line" || "$line" == \#* ]] && continue
+            package="${line%%=*}"
+            version="${line#*=}"
+            test -d "$PUB_CACHE/hosted/pub.dev/${package}-${version}"
+          done < "$GITHUB_WORKSPACE/$GOANIME_HOSTED_PACKAGE_MANIFEST"
+
+          test "$(cat "$FLUTTER_ROOT/packages/flutter_tools/.dart_tool/.goanime-portable-root")" = \
+            "$RUNNER_TEMP/goanime-toolchain"
 
           build_log="$RUNNER_TEMP/goanime-offline-apk.log"
           GRADLE_OPTS="${GRADLE_OPTS:-} -Dorg.gradle.offline=true" \
