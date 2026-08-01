@@ -29,6 +29,8 @@ assert.equal(fixture.private, true);
 assert.equal(fixture.packageManager, "pnpm@11.15.1");
 assert.match(fixture.engines.node, /22/);
 assert.equal(fixture.pnpm, undefined, "pnpm 11 settings belong in pnpm-workspace.yaml");
+assert.equal(fixture.dependencies["@tanstack/react-router"], "1.168.23");
+assert.equal(fixture.dependencies["@tanstack/react-start"], "1.168.23");
 assert.equal(fixture.devDependencies["@tanstack/router-plugin"], "1.168.23");
 assert.equal(fixture.devDependencies["@testing-library/jest-dom"], "6.9.1");
 
@@ -77,17 +79,20 @@ for (const dependency of requiredDevelopment) {
   );
 }
 
-const builtDependencies = [...pnpmWorkspace.matchAll(/^  - ["']?([^"'\n]+)["']?$/gm)]
+assert.match(pnpmWorkspace, /^strictDepBuilds: true$/m);
+assert.match(pnpmWorkspace, /^allowBuilds:$/m);
+const allowedBuilds = [...pnpmWorkspace.matchAll(/^  ["']?([^"':\n]+(?:\/[^"':\n]+)?)["']?: true$/gm)]
   .map((match) => match[1]);
 assert.deepEqual(
-  builtDependencies,
-  [...builtDependencies].sort(),
-  "onlyBuiltDependencies must stay sorted",
+  allowedBuilds,
+  [...allowedBuilds].sort(),
+  "allowBuilds entries must stay sorted",
 );
-assert.ok(pnpmWorkspace.includes("onlyBuiltDependencies:"));
-assert.ok(builtDependencies.includes("better-sqlite3"));
-assert.ok(builtDependencies.includes("esbuild"));
-assert.ok(builtDependencies.includes("workerd"));
+for (const dependency of ["@parcel/watcher", "better-sqlite3", "esbuild", "sharp", "workerd"]) {
+  assert.ok(allowedBuilds.includes(dependency), `missing allowBuilds entry: ${dependency}`);
+}
+assert.doesNotMatch(pnpmWorkspace, /onlyBuiltDependencies:/);
+assert.doesNotMatch(pnpmWorkspace, /dangerouslyAllowAllBuilds:/);
 
 assert.match(smoke, /better-sqlite3/);
 assert.match(smoke, /drizzle-orm\/better-sqlite3/);
