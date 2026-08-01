@@ -23,7 +23,7 @@ env:
 
 jobs:
   build:
-    name: Rust 1.95, Cargo cache, Ruff and utility binaries
+    name: Rust 1.95, Cargo cache, Ruff and native headers
     runs-on: ubuntu-24.04
     timeout-minutes: 150
 
@@ -52,6 +52,15 @@ jobs:
         with:
           version: "0.11.3"
           enable-cache: false
+
+      - name: Install native build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential clang cmake libcap-dev libseccomp-dev \
+            libsqlite3-dev libssl-dev pkg-config protobuf-compiler zstd
 
       - name: Install pinned Rust toolchain
         shell: bash
@@ -91,23 +100,82 @@ jobs:
           bundle_root="$RUNNER_TEMP/codex-toolchain"
           archive="$RUNNER_TEMP/codex-toolchain-linux-x64.tar.zst"
           parts_dir="$RUNNER_TEMP/codex-toolchain-linux-x64-parts"
+          native_root="$bundle_root/native"
+          native_lib="$native_root/usr/lib/x86_64-linux-gnu"
           codex_commit="$(git -C codex-source rev-parse HEAD)"
 
           rm -rf "$bundle_root" "$archive" "$archive.sha256" "$parts_dir"
-          mkdir -p "$bundle_root" "$bundle_root/tools/bin" "$parts_dir"
+          mkdir -p \
+            "$bundle_root/tools/bin" \
+            "$native_root/usr/bin" \
+            "$native_root/usr/include" \
+            "$native_lib/pkgconfig" \
+            "$parts_dir"
 
           cp -a "$HOME/.rustup" "$bundle_root/rustup"
           cp -a "$HOME/.cargo" "$bundle_root/cargo"
           install -m 0755 "$(command -v uv)" "$bundle_root/tools/bin/uv"
           install -m 0755 "$(command -v just)" "$bundle_root/tools/bin/just"
           install -m 0755 codex-source/scripts/.venv/bin/ruff "$bundle_root/tools/bin/ruff"
+          install -m 0755 "$(command -v protoc)" "$native_root/usr/bin/protoc"
+
+          for header in \
+            /usr/include/seccomp.h \
+            /usr/include/sqlite3.h \
+            /usr/include/sqlite3ext.h \
+            /usr/include/sys/capability.h; do
+            if [[ -f "$header" ]]; then
+              install -D -m 0644 "$header" "$native_root$header"
+            fi
+          done
+          if [[ -d /usr/include/openssl ]]; then
+            cp -a /usr/include/openssl "$native_root/usr/include/openssl"
+          fi
+
+          shopt -s nullglob
+          for library in \
+            /usr/lib/x86_64-linux-gnu/libcap.so* \
+            /usr/lib/x86_64-linux-gnu/libseccomp.so* \
+            /usr/lib/x86_64-linux-gnu/libsqlite3.so* \
+            /usr/lib/x86_64-linux-gnu/libssl.so* \
+            /usr/lib/x86_64-linux-gnu/libcrypto.so* \
+            /usr/lib/x86_64-linux-gnu/libprotobuf.so* \
+            /usr/lib/x86_64-linux-gnu/libprotoc.so*; do
+            cp -a "$library" "$native_lib/"
+          done
+          for metadata in \
+            /usr/lib/x86_64-linux-gnu/pkgconfig/libcap.pc \
+            /usr/lib/x86_64-linux-gnu/pkgconfig/libseccomp.pc \
+            /usr/lib/x86_64-linux-gnu/pkgconfig/sqlite3.pc \
+            /usr/lib/x86_64-linux-gnu/pkgconfig/openssl.pc \
+            /usr/lib/x86_64-linux-gnu/pkgconfig/libssl.pc \
+            /usr/lib/x86_64-linux-gnu/pkgconfig/libcrypto.pc; do
+            if [[ -f "$metadata" ]]; then
+              cp -a "$metadata" "$native_lib/pkgconfig/"
+            fi
+          done
+          while read -r dependency; do
+            case "$dependency" in
+              /lib/x86_64-linux-gnu/libc.so.*|/lib64/ld-linux-x86-64.so.*)
+                ;;
+              /lib/*|/usr/lib/*)
+                cp -aL "$dependency" "$native_lib/"
+                ;;
+            esac
+          done < <(ldd "$(command -v protoc)" | awk '/=> \// {print $3}')
 
           cat > "$bundle_root/activate.sh" <<'EOF'
           #!/usr/bin/env bash
           bundle_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          native_root="$bundle_root/native"
+          native_lib="$native_root/usr/lib/x86_64-linux-gnu"
           export RUSTUP_HOME="$bundle_root/rustup"
           export CARGO_HOME="$bundle_root/cargo"
-          export PATH="$bundle_root/tools/bin:$CARGO_HOME/bin:$PATH"
+          export PATH="$bundle_root/tools/bin:$native_root/usr/bin:$CARGO_HOME/bin:$PATH"
+          export CPATH="$native_root/usr/include${CPATH:+:$CPATH}"
+          export LIBRARY_PATH="$native_lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+          export LD_LIBRARY_PATH="$native_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export PKG_CONFIG_PATH="$native_lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
           export CARGO_NET_OFFLINE=true
           export CARGO_NET_GIT_FETCH_WITH_CLI=true
           export RUST_BACKTRACE=1
@@ -135,6 +203,7 @@ jobs:
             ruff --version
             uv --version
             just --version
+            protoc --version
           } > "$bundle_root/MANIFEST.txt"
 
           rustc --version
@@ -144,6 +213,7 @@ jobs:
           ruff --version
           uv --version
           just --version
+          protoc --version
           (
             cd codex-source/codex-rs
             cargo fetch --locked --offline
@@ -157,11 +227,15 @@ jobs:
             cd "$parts_dir"
             sha256sum codex-toolchain-linux-x64.part-* > SHA256SUMS.parts
           )
+          part_count="$(find "$parts_dir" -maxdepth 1 -type f -name 'codex-toolchain-linux-x64.part-*' | wc -l)"
+          test "$part_count" -ge 1
+          test "$part_count" -le 8
 
           {
             echo "archive=$(basename "$archive")"
             echo "archive_sha256=$(cut -d' ' -f1 "$archive.sha256")"
             echo "codex_commit=$codex_commit"
+            echo "part_count=$part_count"
             echo "part_size=400M"
             echo "reassemble=cat codex-toolchain-linux-x64.part-* > $(basename "$archive")"
             echo
@@ -169,7 +243,7 @@ jobs:
           } > "$parts_dir/PARTS.txt"
 
           echo "parts_dir=$parts_dir" >> "$GITHUB_OUTPUT"
-          for index in $(seq -f '%02g' 0 15); do
+          for index in $(seq -f '%02g' 0 7); do
             if [[ -f "$parts_dir/codex-toolchain-linux-x64.part-$index" ]]; then
               echo "part_$index=true" >> "$GITHUB_OUTPUT"
             fi
@@ -191,7 +265,7 @@ jobs:
       - name: Upload Codex toolchain part 00
         if: steps.bundle.outputs.part_00 == 'true'
         uses: actions/upload-artifact@v7
-        with: &part-upload
+        with:
           name: codex-toolchain-linux-x64-part-00
           path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-00
           if-no-files-found: error
@@ -202,118 +276,68 @@ jobs:
         if: steps.bundle.outputs.part_01 == 'true'
         uses: actions/upload-artifact@v7
         with:
-          <<: *part-upload
           name: codex-toolchain-linux-x64-part-01
           path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-01
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
 
       - name: Upload Codex toolchain part 02
         if: steps.bundle.outputs.part_02 == 'true'
         uses: actions/upload-artifact@v7
         with:
-          <<: *part-upload
           name: codex-toolchain-linux-x64-part-02
           path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-02
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
 
       - name: Upload Codex toolchain part 03
         if: steps.bundle.outputs.part_03 == 'true'
         uses: actions/upload-artifact@v7
         with:
-          <<: *part-upload
           name: codex-toolchain-linux-x64-part-03
           path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-03
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
 
       - name: Upload Codex toolchain part 04
         if: steps.bundle.outputs.part_04 == 'true'
         uses: actions/upload-artifact@v7
         with:
-          <<: *part-upload
           name: codex-toolchain-linux-x64-part-04
           path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-04
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
 
       - name: Upload Codex toolchain part 05
         if: steps.bundle.outputs.part_05 == 'true'
         uses: actions/upload-artifact@v7
         with:
-          <<: *part-upload
           name: codex-toolchain-linux-x64-part-05
           path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-05
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
 
       - name: Upload Codex toolchain part 06
         if: steps.bundle.outputs.part_06 == 'true'
         uses: actions/upload-artifact@v7
         with:
-          <<: *part-upload
           name: codex-toolchain-linux-x64-part-06
           path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-06
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
 
       - name: Upload Codex toolchain part 07
         if: steps.bundle.outputs.part_07 == 'true'
         uses: actions/upload-artifact@v7
         with:
-          <<: *part-upload
           name: codex-toolchain-linux-x64-part-07
           path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-07
-
-      - name: Upload Codex toolchain part 08
-        if: steps.bundle.outputs.part_08 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          <<: *part-upload
-          name: codex-toolchain-linux-x64-part-08
-          path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-08
-
-      - name: Upload Codex toolchain part 09
-        if: steps.bundle.outputs.part_09 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          <<: *part-upload
-          name: codex-toolchain-linux-x64-part-09
-          path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-09
-
-      - name: Upload Codex toolchain part 10
-        if: steps.bundle.outputs.part_10 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          <<: *part-upload
-          name: codex-toolchain-linux-x64-part-10
-          path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-10
-
-      - name: Upload Codex toolchain part 11
-        if: steps.bundle.outputs.part_11 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          <<: *part-upload
-          name: codex-toolchain-linux-x64-part-11
-          path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-11
-
-      - name: Upload Codex toolchain part 12
-        if: steps.bundle.outputs.part_12 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          <<: *part-upload
-          name: codex-toolchain-linux-x64-part-12
-          path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-12
-
-      - name: Upload Codex toolchain part 13
-        if: steps.bundle.outputs.part_13 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          <<: *part-upload
-          name: codex-toolchain-linux-x64-part-13
-          path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-13
-
-      - name: Upload Codex toolchain part 14
-        if: steps.bundle.outputs.part_14 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          <<: *part-upload
-          name: codex-toolchain-linux-x64-part-14
-          path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-14
-
-      - name: Upload Codex toolchain part 15
-        if: steps.bundle.outputs.part_15 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          <<: *part-upload
-          name: codex-toolchain-linux-x64-part-15
-          path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-15
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
