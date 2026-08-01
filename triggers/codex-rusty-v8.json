@@ -1,0 +1,4 @@
+{
+  "requested_at": "2026-08-01T15:15:00Z",
+  "reason": "prime the local Codex core build cache with the locked rusty_v8 archive"
+}
