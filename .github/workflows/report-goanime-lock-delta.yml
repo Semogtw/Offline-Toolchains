@@ -1,0 +1,68 @@
+name: Report GoAnime exact delta runs
+
+on:
+  workflow_run:
+    workflows:
+      - Build GoAnime exact Pub cache delta
+    types:
+      - completed
+
+permissions:
+  actions: read
+  issues: write
+  contents: read
+
+jobs:
+  report:
+    if: github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch' || github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Publish connector-facing receipt
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const artifactsResponse = await github.rest.actions.listWorkflowRunArtifacts({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: run.id,
+              per_page: 100,
+            });
+
+            const artifacts = artifactsResponse.data.artifacts
+              .sort((left, right) => left.name.localeCompare(right.name));
+            const artifactLines = artifacts.length === 0
+              ? ['- artifacts: none']
+              : artifacts.map((artifact) => [
+                  `- artifact: \`${artifact.name}\``,
+                  `  - id: \`${artifact.id}\``,
+                  `  - size_bytes: \`${artifact.size_in_bytes}\``,
+                  `  - expired: \`${artifact.expired}\``,
+                  `  - expires_at: \`${artifact.expires_at ?? 'unknown'}\``,
+                ].join('\n'));
+
+            const body = [
+              '### GoAnime exact Pub cache delta run',
+              '',
+              `- run_id: \`${run.id}\``,
+              `- conclusion: \`${run.conclusion}\``,
+              `- event: \`${run.event}\``,
+              `- head_branch: \`${run.head_branch}\``,
+              `- head_sha: \`${run.head_sha}\``,
+              `- created_at: \`${run.created_at}\``,
+              `- updated_at: \`${run.updated_at}\``,
+              `- run_url: ${run.html_url}`,
+              '',
+              ...artifactLines,
+              '',
+              'This receipt contains only public workflow and artifact transport metadata.',
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 8,
+              body,
+            });
