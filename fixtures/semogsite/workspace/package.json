@@ -35,8 +35,9 @@
     "@radix-ui/react-slot": "^1.2.0",
     "@radix-ui/react-tooltip": "^1.2.0",
     "@radix-ui/react-visually-hidden": "^1.2.0",
-    "@tanstack/router-plugin": "1.168.32",
-    "@testing-library/jest-dom": "^6.6.0",
+    "@tanstack/router-plugin": "1.168.23",
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/jest-dom": "6.9.1",
     "@testing-library/react": "^16.3.0",
     "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^22.18.0",
@@ -51,14 +52,5 @@
     "vite-tsconfig-paths": "^5.1.0",
     "vitest": "^3.2.0",
     "wrangler": "^4.28.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "@parcel/watcher",
-      "better-sqlite3",
-      "esbuild",
-      "sharp",
-      "workerd"
-    ]
   }
 }
