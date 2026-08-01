@@ -5,8 +5,10 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
-const packagePath = resolve(root, "fixtures/semogsite/workspace/package.json");
-const smokePath = resolve(root, "fixtures/semogsite/workspace/smoke.mjs");
+const workspaceRoot = resolve(root, "fixtures/semogsite/workspace");
+const packagePath = resolve(workspaceRoot, "package.json");
+const pnpmWorkspacePath = resolve(workspaceRoot, "pnpm-workspace.yaml");
+const smokePath = resolve(workspaceRoot, "smoke.mjs");
 const activatePath = resolve(root, "fixtures/semogsite/toolchain/activate.sh");
 const installPath = resolve(root, "fixtures/semogsite/toolchain/install-offline.sh");
 const hydratePath = resolve(
@@ -16,6 +18,7 @@ const hydratePath = resolve(
 const doctorPath = resolve(root, "fixtures/semogsite/toolchain/doctor.sh");
 
 const fixture = JSON.parse(readFileSync(packagePath, "utf8"));
+const pnpmWorkspace = readFileSync(pnpmWorkspacePath, "utf8");
 const smoke = readFileSync(smokePath, "utf8");
 const activate = readFileSync(activatePath, "utf8");
 const install = readFileSync(installPath, "utf8");
@@ -25,6 +28,9 @@ const doctor = readFileSync(doctorPath, "utf8");
 assert.equal(fixture.private, true);
 assert.equal(fixture.packageManager, "pnpm@11.15.1");
 assert.match(fixture.engines.node, /22/);
+assert.equal(fixture.pnpm, undefined, "pnpm 11 settings belong in pnpm-workspace.yaml");
+assert.equal(fixture.devDependencies["@tanstack/router-plugin"], "1.168.23");
+assert.equal(fixture.devDependencies["@testing-library/jest-dom"], "6.9.1");
 
 const requiredRuntime = [
   "@hono/node-server",
@@ -44,6 +50,8 @@ const requiredDevelopment = [
   "@radix-ui/react-dialog",
   "@radix-ui/react-select",
   "@tanstack/router-plugin",
+  "@testing-library/dom",
+  "@testing-library/jest-dom",
   "@testing-library/react",
   "@types/node",
   "@vitejs/plugin-react",
@@ -69,14 +77,17 @@ for (const dependency of requiredDevelopment) {
   );
 }
 
+const builtDependencies = [...pnpmWorkspace.matchAll(/^  - ["']?([^"'\n]+)["']?$/gm)]
+  .map((match) => match[1]);
 assert.deepEqual(
-  fixture.pnpm.onlyBuiltDependencies,
-  [...fixture.pnpm.onlyBuiltDependencies].sort(),
-  "pnpm.onlyBuiltDependencies must stay sorted",
+  builtDependencies,
+  [...builtDependencies].sort(),
+  "onlyBuiltDependencies must stay sorted",
 );
-assert.ok(fixture.pnpm.onlyBuiltDependencies.includes("better-sqlite3"));
-assert.ok(fixture.pnpm.onlyBuiltDependencies.includes("esbuild"));
-assert.ok(fixture.pnpm.onlyBuiltDependencies.includes("workerd"));
+assert.ok(pnpmWorkspace.includes("onlyBuiltDependencies:"));
+assert.ok(builtDependencies.includes("better-sqlite3"));
+assert.ok(builtDependencies.includes("esbuild"));
+assert.ok(builtDependencies.includes("workerd"));
 
 assert.match(smoke, /better-sqlite3/);
 assert.match(smoke, /drizzle-orm\/better-sqlite3/);
@@ -92,7 +103,7 @@ assert.match(hydrate, /node-v\$abi-linux-x64/);
 assert.match(hydrate, /better_sqlite3\.node/);
 assert.match(doctor, /SemogSite toolchain doctor: PASS/);
 
-const serialized = JSON.stringify(fixture);
+const serialized = `${JSON.stringify(fixture)}\n${pnpmWorkspace}`;
 for (const forbidden of [
   "PRIVATE_REPOSITORIES_TOKEN",
   "google-services.json",
