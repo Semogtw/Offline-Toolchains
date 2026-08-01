@@ -1,0 +1,199 @@
+name: Build GoAnime exact Pub cache delta
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/build-goanime-lock-delta.yml
+      - manifests/goanime/hosted-lock.json
+      - scripts/goanime_lock_cache.py
+      - scripts/test_goanime_lock_cache.py
+      - scripts/repair-portable-flutter.sh
+      - scripts/test_repair_portable_flutter.sh
+      - scripts/apply-goanime-lock-delta.sh
+      - scripts/test_apply_goanime_lock_delta.sh
+      - scripts/validate-goanime-toolchain.sh
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-goanime-lock-delta.yml
+      - manifests/goanime/hosted-lock.json
+      - scripts/goanime_lock_cache.py
+      - scripts/test_goanime_lock_cache.py
+      - scripts/repair-portable-flutter.sh
+      - scripts/test_repair_portable_flutter.sh
+      - scripts/apply-goanime-lock-delta.sh
+      - scripts/test_apply_goanime_lock_delta.sh
+      - scripts/validate-goanime-toolchain.sh
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-lock-delta-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: 3.44.1
+  FLUTTER_CHANNEL: stable
+
+jobs:
+  build:
+    name: Exact hosted lock cache
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate deterministic-cache tooling
+        shell: bash
+        run: bash scripts/validate-goanime-toolchain.sh
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Hydrate exact hosted versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "PUB_CACHE=$RUNNER_TEMP/goanime-exact-pub-cache" >> "$GITHUB_ENV"
+          export PUB_CACHE="$RUNNER_TEMP/goanime-exact-pub-cache"
+          rm -rf "$PUB_CACHE"
+          mkdir -p "$PUB_CACHE"
+          python3 scripts/goanime_lock_cache.py install-cache \
+            --manifest manifests/goanime/hosted-lock.json \
+            --dart "$(command -v dart)"
+          python3 scripts/goanime_lock_cache.py verify-cache \
+            --manifest manifests/goanime/hosted-lock.json \
+            --pub-cache "$PUB_CACHE"
+
+      - name: Assemble exact-lock delta
+        id: bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          delta_root="$RUNNER_TEMP/goanime-lock-delta"
+          archive="$RUNNER_TEMP/goanime-lock-delta-linux-x64.tar.zst"
+          parts_dir="$RUNNER_TEMP/goanime-lock-delta-parts"
+          rm -rf "$delta_root" "$archive" "$parts_dir"
+          mkdir -p "$delta_root" "$parts_dir"
+          rm -rf "$PUB_CACHE/_temp" "$PUB_CACHE/log"
+          cp -a "$PUB_CACHE" "$delta_root/pub-cache"
+          cp manifests/goanime/hosted-lock.json "$delta_root/HOSTED-LOCK.json"
+          cp scripts/goanime_lock_cache.py "$delta_root/goanime-lock-cache.py"
+          cp scripts/repair-portable-flutter.sh "$delta_root/repair-portable-flutter.sh"
+          cp scripts/apply-goanime-lock-delta.sh "$delta_root/apply.sh"
+          chmod +x "$delta_root/goanime-lock-cache.py" \
+            "$delta_root/repair-portable-flutter.sh" \
+            "$delta_root/apply.sh"
+          {
+            echo "repository=$GITHUB_REPOSITORY"
+            echo "commit=$GITHUB_SHA"
+            echo "runner=$RUNNER_OS-$RUNNER_ARCH"
+            echo "flutter=$FLUTTER_VERSION"
+            echo "dart=$(dart --version 2>&1 | awk '{print $4}')"
+            python3 - <<'PY'
+          import json
+          with open('manifests/goanime/hosted-lock.json', encoding='utf-8') as source:
+              data = json.load(source)
+          print(f"hosted_lock_packages={data['package_count']}")
+          PY
+            echo "created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            sha256sum manifests/goanime/hosted-lock.json
+          } > "$delta_root/MANIFEST.txt"
+          tar -C "$RUNNER_TEMP" -I 'zstd -T0 -8' \
+            -cf "$archive" goanime-lock-delta
+          archive_sha256="$(sha256sum "$archive" | cut -d' ' -f1)"
+          split -b 400M -d -a 2 "$archive" \
+            "$parts_dir/goanime-lock-delta-linux-x64.part-"
+          (
+            cd "$parts_dir"
+            sha256sum goanime-lock-delta-linux-x64.part-* > SHA256SUMS.parts
+          )
+          {
+            echo "archive=$(basename "$archive")"
+            echo "archive_sha256=$archive_sha256"
+            echo "part_size=400M"
+            echo "reassemble=cat goanime-lock-delta-linux-x64.part-* > $(basename "$archive")"
+            echo
+            ls -lh "$parts_dir"/goanime-lock-delta-linux-x64.part-*
+          } > "$parts_dir/PARTS.txt"
+          echo "parts_dir=$parts_dir" >> "$GITHUB_OUTPUT"
+          for index in 00 01 02 03; do
+            if [[ -f "$parts_dir/goanime-lock-delta-linux-x64.part-$index" ]]; then
+              echo "part_$index=true" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
+      - name: Validate extracted delta without network
+        shell: bash
+        run: |
+          set -euo pipefail
+          validation_root="$RUNNER_TEMP/goanime-lock-delta-validation"
+          rm -rf "$validation_root"
+          mkdir -p "$validation_root"
+          tar --zstd -xf "$RUNNER_TEMP/goanime-lock-delta-linux-x64.tar.zst" \
+            -C "$validation_root"
+          delta="$validation_root/goanime-lock-delta"
+          export PUB_HOSTED_URL=http://127.0.0.1:9
+          export FLUTTER_STORAGE_BASE_URL=http://127.0.0.1:9
+          python3 "$delta/goanime-lock-cache.py" verify-cache \
+            --manifest "$delta/HOSTED-LOCK.json" \
+            --pub-cache "$delta/pub-cache"
+
+      - name: Upload delta manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-lock-delta-linux-x64-manifest
+          path: |
+            ${{ steps.bundle.outputs.parts_dir }}/PARTS.txt
+            ${{ steps.bundle.outputs.parts_dir }}/SHA256SUMS.parts
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload delta part 00
+        if: steps.bundle.outputs.part_00 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-lock-delta-linux-x64-part-00
+          path: ${{ steps.bundle.outputs.parts_dir }}/goanime-lock-delta-linux-x64.part-00
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload delta part 01
+        if: steps.bundle.outputs.part_01 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-lock-delta-linux-x64-part-01
+          path: ${{ steps.bundle.outputs.parts_dir }}/goanime-lock-delta-linux-x64.part-01
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload delta part 02
+        if: steps.bundle.outputs.part_02 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-lock-delta-linux-x64-part-02
+          path: ${{ steps.bundle.outputs.parts_dir }}/goanime-lock-delta-linux-x64.part-02
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload delta part 03
+        if: steps.bundle.outputs.part_03 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-lock-delta-linux-x64-part-03
+          path: ${{ steps.bundle.outputs.parts_dir }}/goanime-lock-delta-linux-x64.part-03
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
