@@ -54,7 +54,11 @@ jobs:
           archive="$output/$archive_name"
           curl --fail --location --retry 5 --output "$archive" "$url"
           test -s "$archive"
-          sha256sum "$archive" > "$output/SHA256SUMS"
+          (
+            cd "$output"
+            sha256sum "$archive_name" > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
           cat > "$output/MANIFEST.txt" <<EOF
           schema_version=1
           repository=$GITHUB_REPOSITORY
