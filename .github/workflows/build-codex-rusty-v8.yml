@@ -1,0 +1,82 @@
+name: Build Codex rusty_v8 offline archive
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-codex-rusty-v8.yml
+      - triggers/codex-rusty-v8.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codex-rusty-v8-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Resolve and package active rusty_v8 archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout active Codex fork
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/codex-gemini-agents
+          ref: feature/antigravity-capabilities
+          path: codex-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve locked V8 version and download archive
+        id: bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/codex-rusty-v8-linux-x64"
+          mkdir -p "$output"
+          version="$(python3 - codex-source/codex-rs/Cargo.lock <<'PY'
+          import pathlib, sys, tomllib
+          data = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
+          matches = [package['version'] for package in data['package'] if package['name'] == 'v8']
+          if len(matches) != 1:
+              raise SystemExit(f'expected one locked v8 package, found {matches!r}')
+          print(matches[0])
+          PY
+          )"
+          target="x86_64-unknown-linux-gnu"
+          archive_name="librusty_v8_release_${target}.a.gz"
+          url="https://github.com/denoland/rusty_v8/releases/download/v${version}/${archive_name}"
+          archive="$output/$archive_name"
+          curl --fail --location --retry 5 --output "$archive" "$url"
+          test -s "$archive"
+          sha256sum "$archive" > "$output/SHA256SUMS"
+          cat > "$output/MANIFEST.txt" <<EOF
+          schema_version=1
+          repository=$GITHUB_REPOSITORY
+          workflow_commit=$GITHUB_SHA
+          codex_repository=Semogtw/codex-gemini-agents
+          codex_branch=feature/antigravity-capabilities
+          codex_commit=$(git -C codex-source rev-parse HEAD)
+          v8_crate_version=$version
+          target=$target
+          archive=$archive_name
+          source_url=$url
+          created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          activation=export RUSTY_V8_ARCHIVE=<extracted-directory>/$archive_name
+          EOF
+          echo "output=$output" >> "$GITHUB_OUTPUT"
+          ls -lh "$output"/*
+
+      - name: Upload offline rusty_v8 archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: codex-rusty-v8-linux-x64
+          path: ${{ steps.bundle.outputs.output }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
