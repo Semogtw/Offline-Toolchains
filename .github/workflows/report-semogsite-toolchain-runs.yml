@@ -1,0 +1,92 @@
+name: Report SemogSite toolchain runs
+
+on:
+  workflow_run:
+    workflows:
+      - Build SemogSite offline toolchain
+    types:
+      - completed
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+jobs:
+  report:
+    if: >-
+      github.event.workflow_run.event == 'push' ||
+      github.event.workflow_run.event == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Publish connector-facing receipt
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const marker = '<!-- semogsite-toolchain-latest -->';
+            const artifactsResponse = await github.rest.actions.listWorkflowRunArtifacts({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: run.id,
+              per_page: 100,
+            });
+
+            const artifacts = artifactsResponse.data.artifacts
+              .sort((left, right) => left.name.localeCompare(right.name));
+            const artifactLines = artifacts.length === 0
+              ? ['- artifacts: none']
+              : artifacts.map((artifact) => [
+                  `- artifact: \`${artifact.name}\``,
+                  `  - id: \`${artifact.id}\``,
+                  `  - size_bytes: \`${artifact.size_in_bytes}\``,
+                  `  - expired: \`${artifact.expired}\``,
+                  `  - expires_at: \`${artifact.expires_at ?? 'unknown'}\``,
+                ].join('\n'));
+
+            const body = [
+              marker,
+              '### SemogSite Node and pnpm offline toolchain',
+              '',
+              `- run_id: \`${run.id}\``,
+              `- conclusion: \`${run.conclusion}\``,
+              `- event: \`${run.event}\``,
+              `- head_branch: \`${run.head_branch}\``,
+              `- head_sha: \`${run.head_sha}\``,
+              `- created_at: \`${run.created_at}\``,
+              `- updated_at: \`${run.updated_at}\``,
+              `- run_url: ${run.html_url}`,
+              '',
+              ...artifactLines,
+              '',
+              'The receipt contains only public workflow and artifact transport metadata.',
+            ].join('\n');
+
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: 8,
+                per_page: 100,
+              },
+            );
+            const existing = comments.find((comment) => comment.body?.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: 8,
+                body,
+              });
+            }
