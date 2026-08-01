@@ -4,6 +4,7 @@ on:
   workflow_run:
     workflows:
       - Build Codex offline toolchain
+      - Build Codex rusty_v8 offline archive
     types:
       - completed
 
@@ -42,7 +43,7 @@ jobs:
                 ];
             const body = [
               marker,
-              '### Build Codex offline toolchain',
+              `### ${run.name}`,
               '',
               `- Run: [${run.id}](${run.html_url})`,
               `- Conclusion: \`${run.conclusion}\``,
