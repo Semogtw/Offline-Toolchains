@@ -74,6 +74,12 @@ jobs:
           export ANDROID_HOME="$bundle_root/android-sdk"
           export ANDROID_SDK_ROOT="$bundle_root/android-sdk"
           export PATH="$JAVA_HOME/bin:$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
+          for proxy_var in HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; do
+            if [[ -v "$proxy_var" && -z "${!proxy_var}" ]]; then
+              unset "$proxy_var"
+            fi
+          done
+          unset proxy_var
           export CI=true
           EOF
           chmod +x "$bundle_root/activate.sh"
@@ -125,7 +131,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export HTTP_PROXY=
+          export HTTPS_PROXY=
+          export ALL_PROXY=
           source "$RUNNER_TEMP/android-base/activate.sh"
+          test ! -v HTTP_PROXY
+          test ! -v HTTPS_PROXY
+          test ! -v ALL_PROXY
           java -version
           sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --list_installed >/dev/null
           test -d "$ANDROID_SDK_ROOT/platforms/android-33"
