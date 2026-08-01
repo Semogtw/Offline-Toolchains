@@ -1,0 +1,49 @@
+name: Publish private source run index
+
+on:
+  workflow_run:
+    workflows:
+      - Build encrypted private source bundle
+    types:
+      - completed
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  publish:
+    name: Publish connector-visible run metadata
+    if: >-
+      github.event.workflow_run.repository.full_name == github.repository &&
+      github.event.workflow_run.actor.login == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Comment run metadata on the connector index
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const body = [
+              '### Encrypted private source bundle run',
+              '',
+              `- run_id: \`${run.id}\``,
+              `- conclusion: \`${run.conclusion ?? 'unknown'}\``,
+              `- event: \`${run.event}\``,
+              `- head_branch: \`${run.head_branch ?? 'unknown'}\``,
+              `- head_sha: \`${run.head_sha}\``,
+              `- created_at: \`${run.created_at}\``,
+              `- updated_at: \`${run.updated_at}\``,
+              `- run_url: ${run.html_url}`,
+              '',
+              'This index intentionally excludes project, requested ref, repository, artifact contents, tokens, and encryption material.',
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 11,
+              body,
+            });
