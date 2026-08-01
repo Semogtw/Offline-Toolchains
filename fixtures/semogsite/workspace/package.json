@@ -16,8 +16,8 @@
   "dependencies": {
     "@hono/node-server": "^1.19.0",
     "@tanstack/react-query": "^5.85.0",
-    "@tanstack/react-router": "1.168.32",
-    "@tanstack/react-start": "1.168.32",
+    "@tanstack/react-router": "1.168.23",
+    "@tanstack/react-start": "1.168.23",
     "better-sqlite3": "^12.2.0",
     "drizzle-orm": "^0.44.5",
     "hono": "^4.9.0",
