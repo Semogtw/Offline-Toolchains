@@ -85,6 +85,17 @@ jobs:
           rm -rf "$GRADLE_USER_HOME/daemon" "$GRADLE_USER_HOME/workers"
           cp -a "$GRADLE_USER_HOME" "$bundle_root/gradle-home"
 
+          standard_gradle="$(find \
+            "$bundle_root/gradle-home/wrapper/dists/gradle-$GRADLE_VERSION-bin" \
+            -mindepth 2 -maxdepth 2 -type d -name "gradle-$GRADLE_VERSION" \
+            -print -quit)"
+          test -n "$standard_gradle"
+          custom_gradle_root="$bundle_root/gradle-home/wrapper/dists/cipherlink-gradle-$GRADLE_VERSION"
+          mkdir -p "$custom_gradle_root"
+          ln -s \
+            "$(realpath --relative-to="$custom_gradle_root" "$standard_gradle")" \
+            "$custom_gradle_root/gradle-$GRADLE_VERSION"
+
           cat > "$bundle_root/activate.sh" <<'EOF'
           #!/usr/bin/env bash
           bundle_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -106,7 +117,8 @@ jobs:
             sha256sum \
               fixtures/zapzap/settings.gradle.kts \
               fixtures/zapzap/build.gradle.kts \
-              fixtures/zapzap/app/build.gradle.kts
+              fixtures/zapzap/app/build.gradle.kts \
+              fixtures/zapzap/tools/test-support/build.gradle.kts
           } > "$bundle_root/MANIFEST.txt"
 
           tar -C "$RUNNER_TEMP" -I 'zstd -T0 -8' -cf "$archive" zapzap-toolchain
@@ -146,6 +158,10 @@ jobs:
           set -euo pipefail
 
           source "$RUNNER_TEMP/zapzap-toolchain/activate.sh"
+          custom_gradle="$GRADLE_USER_HOME/wrapper/dists/cipherlink-gradle-$GRADLE_VERSION/gradle-$GRADLE_VERSION/bin/gradle"
+          test -x "$custom_gradle"
+          "$custom_gradle" --version >/dev/null
+
           project="$RUNNER_TEMP/zapzap-fixture"
           cd "$project"
 
