@@ -2,5 +2,5 @@ Toolchain build trigger.
 
 Update this file when fresh one-day artifacts are needed.
 
-Build generation: 7 (ZapZap Kotlin JVM cache, plugin markers, stdlib 2.0.21 and Android build-tools 34).
-Triggered at: 2026-08-01 13:54 BRT.
+Build generation: 8 (ZapZap hardened wrapper layout, Kotlin JVM cache and Android build-tools 34).
+Triggered at: 2026-08-01 14:23 BRT.
