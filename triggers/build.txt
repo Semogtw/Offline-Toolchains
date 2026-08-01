@@ -2,4 +2,5 @@ Toolchain build trigger.
 
 Update this file when fresh one-day artifacts are needed.
 
-Build generation: 5 (Flutter 3.44 NDK 28 plus portable checksums).
+Build generation: 6 (Flutter 3.44, Android NDK 28, portable checksums and offline media_kit native preload).
+Triggered at: 2026-08-01 04:26 BRT.
