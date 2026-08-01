@@ -101,6 +101,8 @@ jobs:
           archive="$RUNNER_TEMP/codex-toolchain-linux-x64.tar.zst"
           parts_dir="$RUNNER_TEMP/codex-toolchain-linux-x64-parts"
           native_root="$bundle_root/native"
+          native_include="$native_root/usr/include"
+          native_arch_include="$native_include/x86_64-linux-gnu"
           native_lib="$native_root/usr/lib/x86_64-linux-gnu"
           codex_commit="$(git -C codex-source rev-parse HEAD)"
 
@@ -108,7 +110,8 @@ jobs:
           mkdir -p \
             "$bundle_root/tools/bin" \
             "$native_root/usr/bin" \
-            "$native_root/usr/include" \
+            "$native_include" \
+            "$native_arch_include" \
             "$native_lib/pkgconfig" \
             "$parts_dir"
 
@@ -129,7 +132,12 @@ jobs:
             fi
           done
           if [[ -d /usr/include/openssl ]]; then
-            cp -a /usr/include/openssl "$native_root/usr/include/openssl"
+            cp -a /usr/include/openssl "$native_include/openssl"
+          fi
+          if [[ -d /usr/include/x86_64-linux-gnu/openssl ]]; then
+            cp -a \
+              /usr/include/x86_64-linux-gnu/openssl \
+              "$native_arch_include/openssl"
           fi
 
           shopt -s nullglob
@@ -168,11 +176,13 @@ jobs:
           #!/usr/bin/env bash
           bundle_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
           native_root="$bundle_root/native"
+          native_include="$native_root/usr/include"
+          native_arch_include="$native_include/x86_64-linux-gnu"
           native_lib="$native_root/usr/lib/x86_64-linux-gnu"
           export RUSTUP_HOME="$bundle_root/rustup"
           export CARGO_HOME="$bundle_root/cargo"
           export PATH="$bundle_root/tools/bin:$native_root/usr/bin:$CARGO_HOME/bin:$PATH"
-          export CPATH="$native_root/usr/include${CPATH:+:$CPATH}"
+          export CPATH="$native_arch_include:$native_include${CPATH:+:$CPATH}"
           export LIBRARY_PATH="$native_lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
           export LD_LIBRARY_PATH="$native_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           export PKG_CONFIG_PATH="$native_lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
@@ -185,6 +195,17 @@ jobs:
 
           source "$bundle_root/activate.sh"
           rustup default 1.95.0
+
+          cat > "$RUNNER_TEMP/openssl-smoke.c" <<'EOF'
+          #include <openssl/opensslv.h>
+          #include <openssl/ssl.h>
+          int main(void) {
+              return OPENSSL_VERSION_MAJOR < 3 || TLS_method() == 0;
+          }
+          EOF
+          cc "$RUNNER_TEMP/openssl-smoke.c" -o "$RUNNER_TEMP/openssl-smoke" \
+            $(pkg-config --cflags --libs openssl)
+          "$RUNNER_TEMP/openssl-smoke"
 
           {
             echo "schema_version=1"
@@ -204,6 +225,7 @@ jobs:
             uv --version
             just --version
             protoc --version
+            pkg-config --modversion openssl
           } > "$bundle_root/MANIFEST.txt"
 
           rustc --version
