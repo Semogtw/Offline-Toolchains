@@ -24,6 +24,8 @@ concurrency:
 env:
   FLUTTER_VERSION: 3.44.1
   FLUTTER_CHANNEL: stable
+  MEDIA_KIT_ANDROID_VIDEO_PACKAGE: media_kit_libs_android_video-1.3.8
+  MEDIA_KIT_NATIVE_VERSION: v1.1.7
 
 jobs:
   build:
@@ -125,6 +127,74 @@ jobs:
 
           flutter build apk --debug
 
+      - name: Preload media_kit native Android archives
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          project="$RUNNER_TEMP/goanime-fixture"
+          source_dir="$project/build/media_kit_libs_android_video/$MEDIA_KIT_NATIVE_VERSION"
+          preload_dir="$GRADLE_USER_HOME/offline-media-kit/$MEDIA_KIT_NATIVE_VERSION"
+          init_dir="$GRADLE_USER_HOME/init.d"
+
+          test -d "$PUB_CACHE/hosted/pub.dev/$MEDIA_KIT_ANDROID_VIDEO_PACKAGE"
+          mkdir -p "$preload_dir" "$init_dir"
+
+          declare -A expected_md5=(
+            [default-arm64-v8a.jar]=83df25b61193af8fa815e373143ac9af
+            [default-armeabi-v7a.jar]=22e21526fefc0a2b8f17adbec9f57590
+            [default-x86_64.jar]=6fa26bf0459b11f1c0b0dbc29e5b940d
+            [default-x86.jar]=0d742b756dc9d1fcd84ea271d8b68f32
+          )
+
+          for name in "${!expected_md5[@]}"; do
+            source_file="$source_dir/$name"
+            test -f "$source_file"
+            actual_md5="$(md5sum "$source_file" | awk '{print $1}')"
+            test "$actual_md5" = "${expected_md5[$name]}"
+            cp "$source_file" "$preload_dir/$name"
+          done
+
+          cat > "$init_dir/goanime-offline-media-kit.gradle" <<'GRADLE'
+          import java.nio.file.Files
+          import java.security.MessageDigest
+
+          gradle.beforeProject { project ->
+              if (project.name != 'media_kit_libs_android_video') {
+                  return
+              }
+
+              def version = 'v1.1.7'
+              def expected = [
+                  'default-arm64-v8a.jar': '83df25b61193af8fa815e373143ac9af',
+                  'default-armeabi-v7a.jar': '22e21526fefc0a2b8f17adbec9f57590',
+                  'default-x86_64.jar': '6fa26bf0459b11f1c0b0dbc29e5b940d',
+                  'default-x86.jar': '0d742b756dc9d1fcd84ea271d8b68f32',
+              ]
+              def sourceDir = new File(gradle.gradleUserHomeDir, "offline-media-kit/${version}")
+              def destinationDir = new File(project.buildDir, version)
+              destinationDir.mkdirs()
+
+              expected.each { name, checksum ->
+                  def source = new File(sourceDir, name)
+                  if (!source.isFile()) {
+                      throw new GradleException("Missing offline media_kit archive: ${source}")
+                  }
+                  def digest = MessageDigest.getInstance('MD5')
+                      .digest(Files.readAllBytes(source.toPath()))
+                      .encodeHex()
+                      .toString()
+                  if (digest != checksum) {
+                      throw new GradleException("Invalid offline media_kit archive: ${source}")
+                  }
+                  def destination = new File(destinationDir, name)
+                  if (!destination.isFile() || destination.length() != source.length()) {
+                      destination.bytes = source.bytes
+                  }
+              }
+          }
+          GRADLE
+
       - name: Assemble portable GoAnime bundle
         id: bundle
         shell: bash
@@ -167,6 +237,7 @@ jobs:
             echo "commit=$GITHUB_SHA"
             echo "runner=$RUNNER_OS-$RUNNER_ARCH"
             echo "flutter=$FLUTTER_VERSION"
+            echo "media_kit_native=$MEDIA_KIT_NATIVE_VERSION"
             echo "created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo
             "$bundle_root/flutter/bin/flutter" --version
@@ -214,13 +285,20 @@ jobs:
           project="$RUNNER_TEMP/goanime-fixture"
           cd "$project"
 
-          rm -rf .dart_tool
+          rm -rf .dart_tool build/media_kit_libs_android_video
           flutter pub get --offline
           flutter analyze --no-pub
           flutter test --no-pub
           pwsh -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
-          cd android
-          ./gradlew --offline --no-daemon tasks >/dev/null
+
+          build_log="$RUNNER_TEMP/goanime-offline-apk.log"
+          GRADLE_OPTS="${GRADLE_OPTS:-} -Dorg.gradle.offline=true" \
+            flutter build apk --debug --no-pub 2>&1 | tee "$build_log"
+          if grep -Fq 'Downloading file from:' "$build_log"; then
+            echo 'Offline validation attempted an external media_kit download.' >&2
+            exit 1
+          fi
+          test -f build/app/outputs/flutter-apk/app-debug.apk
 
       - name: Upload GoAnime bundle manifest
         uses: actions/upload-artifact@v7
