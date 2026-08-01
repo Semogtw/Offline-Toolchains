@@ -16,11 +16,17 @@ dependencies {
     offlineExactArtifacts("androidx.annotation:annotation-jvm:1.8.1")
 }
 
-tasks.register("hydrateOfflineExactArtifacts") {
+val hydrateOfflineExactArtifacts = tasks.register("hydrateOfflineExactArtifacts") {
     inputs.files(offlineExactArtifacts)
     doLast {
         offlineExactArtifacts.files.forEach { file ->
             check(file.isFile) { "Missing offline artifact: ${file.name}" }
         }
+    }
+}
+
+gradle.projectsEvaluated {
+    project(":app").tasks.named("preBuild") {
+        dependsOn(hydrateOfflineExactArtifacts)
     }
 }
