@@ -2,5 +2,5 @@ Toolchain build trigger.
 
 Update this file when fresh one-day artifacts are needed.
 
-Build generation: 6 (Flutter 3.44, Android NDK 28, portable checksums and offline media_kit native preload).
-Triggered at: 2026-08-01 04:26 BRT.
+Build generation: 7 (ZapZap Kotlin JVM cache, plugin markers, stdlib 2.0.21 and Android build-tools 34).
+Triggered at: 2026-08-01 13:54 BRT.
