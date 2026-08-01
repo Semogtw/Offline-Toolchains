@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: apply-goanime-jikan-contract-fixtures
@@ -21,6 +22,17 @@ jobs:
     timeout-minutes: 20
 
     steps:
+      - name: Report run start
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 4,
+              body: `<!-- goanime-jikan-patch:${context.runId} -->\n### Apply GoAnime Jikan patch\n\n- Run: [${context.runId}](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})\n- Status: started`,
+            });
+
       - name: Checkout patch request
         uses: actions/checkout@v6
         with:
@@ -84,3 +96,15 @@ jobs:
         run: |
           set -euo pipefail
           git push origin HEAD:feat/self-hosted-metadata-api-2026-07-30
+
+      - name: Report run result
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 4,
+              body: `<!-- goanime-jikan-patch-result:${context.runId} -->\n### Apply GoAnime Jikan patch result\n\n- Run: [${context.runId}](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})\n- Result: ${{ job.status }}`,
+            });
