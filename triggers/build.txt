@@ -2,5 +2,5 @@ Toolchain build trigger.
 
 Update this file when fresh one-day artifacts are needed.
 
-Build generation: 10 (ZapZap exact Kotlin common metadata, hardened wrapper, JVM and Compose compilation).
-Triggered at: 2026-08-01 14:48 BRT.
+Build generation: 11 (ZapZap lint transitives, exact Kotlin graph, hardened wrapper and Compose/JVM compilation).
+Triggered at: 2026-08-01 15:18 BRT.
