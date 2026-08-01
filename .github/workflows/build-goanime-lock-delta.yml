@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - .github/workflows/build-goanime-lock-delta.yml
+      - triggers/goanime-lock-delta.txt
       - manifests/goanime/hosted-lock.json
       - scripts/goanime_lock_cache.py
       - scripts/test_goanime_lock_cache.py
@@ -18,6 +19,7 @@ on:
       - main
     paths:
       - .github/workflows/build-goanime-lock-delta.yml
+      - triggers/goanime-lock-delta.txt
       - manifests/goanime/hosted-lock.json
       - scripts/goanime_lock_cache.py
       - scripts/test_goanime_lock_cache.py
