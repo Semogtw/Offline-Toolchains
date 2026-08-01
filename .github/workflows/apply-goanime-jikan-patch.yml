@@ -17,7 +17,6 @@ concurrency:
 
 jobs:
   apply:
-    if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
     timeout-minutes: 20
 
