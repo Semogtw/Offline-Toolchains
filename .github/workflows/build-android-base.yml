@@ -54,6 +54,7 @@ jobs:
           sdkmanager --sdk_root="$portable_sdk" \
             "cmdline-tools;latest" \
             "platform-tools" \
+            "platforms;android-33" \
             "platforms;android-35" \
             "platforms;android-36" \
             "build-tools;34.0.0" \
@@ -127,6 +128,7 @@ jobs:
           source "$RUNNER_TEMP/android-base/activate.sh"
           java -version
           sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --list_installed >/dev/null
+          test -d "$ANDROID_SDK_ROOT/platforms/android-33"
           test -d "$ANDROID_SDK_ROOT/platforms/android-35"
           test -d "$ANDROID_SDK_ROOT/platforms/android-36"
           test -d "$ANDROID_SDK_ROOT/build-tools/34.0.0"
