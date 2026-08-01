@@ -6,7 +6,25 @@ This profile builds a public Linux x64 dependency bundle for `Semogtw/SemogSite`
 
 The initial fixture follows the foundation plan at SemogSite commit `6b88e71591f0049fa2bb85099b770165f44940c4`. At that point the workspace had not yet been bootstrapped, so the workflow resolves the approved dependency families and includes the generated reference `pnpm-lock.yaml` in every artifact set.
 
+The plan named TanStack `1.168.32`, but that exact React Router release was not present in the registry. The reproducible baseline therefore pins React Start, React Router, and Router Plugin together at the published `1.168.23` release.
+
 When the real workspace manifests and lockfile exist, update the public fixture to match those exact dependency inputs and regenerate the toolchain.
+
+## Verified artifact baseline
+
+Workflow run `30722845186`, built from Offline-Toolchains commit `e1a238be73ec21c32d200fc72069b9edfc31428a`, passed on August 1, 2026. It published:
+
+- `semogsite-toolchain-linux-x64-manifest`;
+- `semogsite-toolchain-linux-x64-part-00` at 400 MiB;
+- `semogsite-toolchain-linux-x64-part-01` at about 46 MiB.
+
+The reconstructed archive SHA-256 is:
+
+```text
+a2ff9487e608f7d2e4cbe6a45760aa62be9509f313e16999d454545a6ddb8337
+```
+
+The artifact was also downloaded through the GitHub connector, reconstructed from both parts, checksum-verified, extracted, and exercised outside the Actions job. That independent smoke reused 361 packages with zero downloads, loaded `better-sqlite3`, passed the dependency smoke test and doctor, and launched the bundled Chromium through Playwright.
 
 ## Contents
 
@@ -21,7 +39,21 @@ The reconstructed archive contains:
 - activation, installation, native hydration, and doctor scripts;
 - `MANIFEST.txt` and `SOFTWARE-BOM.json`.
 
+The verified baseline uses Node `22.23.1`, pnpm `11.15.1`, Node module ABI `127`, and `better-sqlite3 12.11.1`.
+
 The fixture covers TanStack Start/Router/Query, React, Hono, Zod, Drizzle, SQLite, Radix primitives, TypeScript, Vite, Vitest, Testing Library, Playwright, and Wrangler.
+
+## Dependency build policy
+
+pnpm 11 lifecycle permissions are declared in `fixtures/semogsite/workspace/pnpm-workspace.yaml` with `strictDepBuilds: true` and an explicit `allowBuilds` map. Only these packages may run required build scripts while manufacturing the cache:
+
+- `@parcel/watcher`;
+- `better-sqlite3`;
+- `esbuild`;
+- `sharp`;
+- `workerd`.
+
+The offline installer itself uses `--ignore-scripts` and restores the verified SQLite native binary from the bundle, so consuming the artifact does not execute dependency lifecycle scripts.
 
 ## Reconstruct
 
