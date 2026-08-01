@@ -1,0 +1,319 @@
+name: Build Codex offline toolchain
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-codex.yml
+      - triggers/codex-toolchain.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codex-toolchain-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  PYTHONUTF8: "1"
+
+jobs:
+  build:
+    name: Rust 1.95, Cargo cache, Ruff and utility binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+
+    steps:
+      - name: Checkout toolchain definitions
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Checkout active Codex fork
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/codex-gemini-agents
+          ref: feature/antigravity-capabilities
+          path: codex-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          version: "0.11.3"
+          enable-cache: false
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.95.0 --profile minimal \
+            --component clippy --component rustfmt --component rust-src
+          rustup default 1.95.0
+          rustc --version
+          cargo --version
+          cargo clippy --version
+          cargo fmt --version
+
+      - name: Install pinned just
+        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532
+        with:
+          tool: just@1.51.0
+          checksum: true
+
+      - name: Hydrate public Codex dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv sync --frozen --project codex-source/scripts
+          codex-source/scripts/.venv/bin/ruff --version
+          (
+            cd codex-source/codex-rs
+            cargo fetch --locked
+          )
+
+      - name: Build portable bundle
+        id: bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          bundle_root="$RUNNER_TEMP/codex-toolchain"
+          archive="$RUNNER_TEMP/codex-toolchain-linux-x64.tar.zst"
+          parts_dir="$RUNNER_TEMP/codex-toolchain-linux-x64-parts"
+          codex_commit="$(git -C codex-source rev-parse HEAD)"
+
+          rm -rf "$bundle_root" "$archive" "$archive.sha256" "$parts_dir"
+          mkdir -p "$bundle_root" "$bundle_root/tools/bin" "$parts_dir"
+
+          cp -a "$HOME/.rustup" "$bundle_root/rustup"
+          cp -a "$HOME/.cargo" "$bundle_root/cargo"
+          install -m 0755 "$(command -v uv)" "$bundle_root/tools/bin/uv"
+          install -m 0755 "$(command -v just)" "$bundle_root/tools/bin/just"
+          install -m 0755 codex-source/scripts/.venv/bin/ruff "$bundle_root/tools/bin/ruff"
+
+          cat > "$bundle_root/activate.sh" <<'EOF'
+          #!/usr/bin/env bash
+          bundle_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          export RUSTUP_HOME="$bundle_root/rustup"
+          export CARGO_HOME="$bundle_root/cargo"
+          export PATH="$bundle_root/tools/bin:$CARGO_HOME/bin:$PATH"
+          export CARGO_NET_OFFLINE=true
+          export CARGO_NET_GIT_FETCH_WITH_CLI=true
+          export RUST_BACKTRACE=1
+          export PYTHONUTF8=1
+          EOF
+          chmod +x "$bundle_root/activate.sh"
+
+          source "$bundle_root/activate.sh"
+          rustup default 1.95.0
+
+          {
+            echo "schema_version=1"
+            echo "repository=$GITHUB_REPOSITORY"
+            echo "workflow_commit=$GITHUB_SHA"
+            echo "codex_repository=Semogtw/codex-gemini-agents"
+            echo "codex_branch=feature/antigravity-capabilities"
+            echo "codex_commit=$codex_commit"
+            echo "runner=$RUNNER_OS-$RUNNER_ARCH"
+            echo "created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo
+            rustc --version
+            cargo --version
+            cargo clippy --version
+            cargo fmt --version
+            ruff --version
+            uv --version
+            just --version
+          } > "$bundle_root/MANIFEST.txt"
+
+          rustc --version
+          cargo --version
+          cargo clippy --version
+          cargo fmt --version
+          ruff --version
+          uv --version
+          just --version
+          (
+            cd codex-source/codex-rs
+            cargo fetch --locked --offline
+            cargo metadata --locked --offline --no-deps >/dev/null
+          )
+
+          tar -C "$RUNNER_TEMP" -I 'zstd -T0 -8' -cf "$archive" codex-toolchain
+          sha256sum "$archive" > "$archive.sha256"
+          split -b 400M -d -a 2 "$archive" "$parts_dir/codex-toolchain-linux-x64.part-"
+          (
+            cd "$parts_dir"
+            sha256sum codex-toolchain-linux-x64.part-* > SHA256SUMS.parts
+          )
+
+          {
+            echo "archive=$(basename "$archive")"
+            echo "archive_sha256=$(cut -d' ' -f1 "$archive.sha256")"
+            echo "codex_commit=$codex_commit"
+            echo "part_size=400M"
+            echo "reassemble=cat codex-toolchain-linux-x64.part-* > $(basename "$archive")"
+            echo
+            ls -lh "$parts_dir"/codex-toolchain-linux-x64.part-*
+          } > "$parts_dir/PARTS.txt"
+
+          echo "parts_dir=$parts_dir" >> "$GITHUB_OUTPUT"
+          for index in $(seq -f '%02g' 0 15); do
+            if [[ -f "$parts_dir/codex-toolchain-linux-x64.part-$index" ]]; then
+              echo "part_$index=true" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
+          ls -lh "$archive" "$archive.sha256" "$parts_dir"/*
+
+      - name: Upload Codex toolchain manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: codex-toolchain-linux-x64-manifest
+          path: |
+            ${{ steps.bundle.outputs.parts_dir }}/PARTS.txt
+            ${{ steps.bundle.outputs.parts_dir }}/SHA256SUMS.parts
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Codex toolchain part 00
+        if: steps.bundle.outputs.part_00 == 'true'
+        uses: actions/upload-artifact@v7
+        with: &part-upload
+          name: codex-toolchain-linux-x64-part-00
+          path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-00
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Codex toolchain part 01
+        if: steps.bundle.outputs.part_01 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          <<: *part-upload
+          name: codex-toolchain-linux-x64-part-01
+          path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-01
+
+      - name: Upload Codex toolchain part 02
+        if: steps.bundle.outputs.part_02 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          <<: *part-upload
+          name: codex-toolchain-linux-x64-part-02
+          path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-02
+
+      - name: Upload Codex toolchain part 03
+        if: steps.bundle.outputs.part_03 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          <<: *part-upload
+          name: codex-toolchain-linux-x64-part-03
+          path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-03
+
+      - name: Upload Codex toolchain part 04
+        if: steps.bundle.outputs.part_04 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          <<: *part-upload
+          name: codex-toolchain-linux-x64-part-04
+          path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-04
+
+      - name: Upload Codex toolchain part 05
+        if: steps.bundle.outputs.part_05 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          <<: *part-upload
+          name: codex-toolchain-linux-x64-part-05
+          path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-05
+
+      - name: Upload Codex toolchain part 06
+        if: steps.bundle.outputs.part_06 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          <<: *part-upload
+          name: codex-toolchain-linux-x64-part-06
+          path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-06
+
+      - name: Upload Codex toolchain part 07
+        if: steps.bundle.outputs.part_07 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          <<: *part-upload
+          name: codex-toolchain-linux-x64-part-07
+          path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-07
+
+      - name: Upload Codex toolchain part 08
+        if: steps.bundle.outputs.part_08 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          <<: *part-upload
+          name: codex-toolchain-linux-x64-part-08
+          path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-08
+
+      - name: Upload Codex toolchain part 09
+        if: steps.bundle.outputs.part_09 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          <<: *part-upload
+          name: codex-toolchain-linux-x64-part-09
+          path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-09
+
+      - name: Upload Codex toolchain part 10
+        if: steps.bundle.outputs.part_10 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          <<: *part-upload
+          name: codex-toolchain-linux-x64-part-10
+          path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-10
+
+      - name: Upload Codex toolchain part 11
+        if: steps.bundle.outputs.part_11 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          <<: *part-upload
+          name: codex-toolchain-linux-x64-part-11
+          path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-11
+
+      - name: Upload Codex toolchain part 12
+        if: steps.bundle.outputs.part_12 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          <<: *part-upload
+          name: codex-toolchain-linux-x64-part-12
+          path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-12
+
+      - name: Upload Codex toolchain part 13
+        if: steps.bundle.outputs.part_13 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          <<: *part-upload
+          name: codex-toolchain-linux-x64-part-13
+          path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-13
+
+      - name: Upload Codex toolchain part 14
+        if: steps.bundle.outputs.part_14 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          <<: *part-upload
+          name: codex-toolchain-linux-x64-part-14
+          path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-14
+
+      - name: Upload Codex toolchain part 15
+        if: steps.bundle.outputs.part_15 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          <<: *part-upload
+          name: codex-toolchain-linux-x64-part-15
+          path: ${{ steps.bundle.outputs.parts_dir }}/codex-toolchain-linux-x64.part-15
