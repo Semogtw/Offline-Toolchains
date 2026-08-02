@@ -37,11 +37,13 @@ The build performs these gates before publishing:
 2. checks out the fixed private repository without persisted credentials, LFS or submodules;
 3. installs the pinned Node `22.23.1` and Yarn `1.22.22`;
 4. installs a portable Rust toolchain;
-5. hydrates Yarn and Cargo caches from the exact Hydra lockfiles;
+5. hydrates Yarn, Cargo, Electron, electron-builder and node-gyp caches from the exact Hydra lockfiles;
 6. runs Hydra type checking and tests online;
-7. removes generated dependencies and proves a second install with Yarn and Cargo forced offline;
+7. removes generated dependencies and proves a second install from a fresh `HOME`, with package registries, Electron mirrors, proxies and Cargo networking forced offline;
 8. reruns type checking and tests;
 9. deletes the private checkout before creating the archive.
+
+The isolated second installation is important: Electron binaries and native headers normally live outside Yarn's cache. Keeping those directories inside the archive and changing `HOME` prevents the proof from passing accidentally because of files already present on the GitHub runner.
 
 Artifacts expire after one day:
 
