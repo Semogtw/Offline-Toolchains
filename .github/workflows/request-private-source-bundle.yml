@@ -19,6 +19,7 @@ on:
       - .github/workflows/build-hydra.yml
       - scripts/validate-source-bundle-request.py
       - scripts/assemble-source-bundle.sh
+      - scripts/build-hydra-toolchain.sh
       - scripts/validate-private-source-workflows.sh
       - keys/source-bundles-public.asc
       - triggers/private-source-bundle.json
