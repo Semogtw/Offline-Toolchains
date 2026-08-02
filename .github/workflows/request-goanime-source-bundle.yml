@@ -1,0 +1,56 @@
+name: Request GoAnime source bundle
+
+on:
+  push:
+    branches:
+      - build/source-bundles
+    paths:
+      - triggers/private-source-bundle.json
+  pull_request:
+    paths:
+      - .github/workflows/request-goanime-source-bundle.yml
+      - .github/workflows/build-private-source-bundle.yml
+      - scripts/validate-source-bundle-request.py
+      - keys/source-bundles-public.asc
+      - triggers/private-source-bundle.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: request-goanime-source-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate GoAnime request and encryption key
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Validate GoAnime request
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/validate-source-bundle-request.py \
+            triggers/private-source-bundle.json
+          test "$(jq -r '.project' triggers/private-source-bundle.json)" = "goanime"
+
+      - name: Verify committed encryption key
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          export GNUPGHOME="$RUNNER_TEMP/request-keyring"
+          mkdir -m 700 "$GNUPGHOME"
+          gpg --batch --import keys/source-bundles-public.asc
+          fingerprint="$({
+            gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT"
+          } | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          test -z "$(gpg --batch --with-colons --list-secret-keys 2>/dev/null | awk -F: '$1 == "sec" { print $1 }')"
