@@ -425,9 +425,20 @@ jobs:
           corepack prepare "$package_manager" --activate
           pnpm --version
 
-      - name: Install locked dependencies
+      - name: Install dependencies
+        id: install
         working-directory: private-source
-        run: pnpm install --frozen-lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f pnpm-lock.yaml ]]; then
+            echo "mode=frozen" >> "$GITHUB_OUTPUT"
+            pnpm install --frozen-lockfile
+          else
+            echo "::warning::pnpm-lock.yaml is absent; using the documented bootstrap mode."
+            echo "mode=bootstrap" >> "$GITHUB_OUTPUT"
+            pnpm install --no-frozen-lockfile
+          fi
 
       - name: Run guardrails, typechecks and tests
         working-directory: private-source
@@ -448,6 +459,7 @@ jobs:
         env:
           REQUESTED_REF: ${{ needs.normalize.outputs.ref }}
           RESOLVED_SHA: ${{ steps.source.outputs.sha }}
+          INSTALL_MODE: ${{ steps.install.outputs.mode }}
           RESULT: ${{ job.status }}
         run: |
           {
@@ -455,6 +467,7 @@ jobs:
             echo
             echo "- Requested ref: \`$REQUESTED_REF\`"
             echo "- Resolved commit: \`${RESOLVED_SHA:-unresolved}\`"
+            echo "- Dependency mode: \`${INSTALL_MODE:-not-started}\`"
             echo "- Result: \`$RESULT\`"
             echo "- Build outputs were verified and discarded; no private artifact was uploaded."
           } >> "$GITHUB_STEP_SUMMARY"
