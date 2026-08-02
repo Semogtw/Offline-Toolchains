@@ -178,6 +178,7 @@ jobs:
           "$root/bin/install-offline" "$smoke"
           source "$root/bin/activate"
           pnpm --dir "$smoke" verify
+          pnpm --dir "$smoke" test:source:offline
           pnpm --dir "$smoke" test:e2e
           pnpm --dir "$smoke" test:functions:check
           "$root/bin/doctor" "$smoke"
