@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and normalize requests for public CI of allowlisted private projects."""
+"""Validate and normalize requests for public CI of allowlisted projects."""
 
 from __future__ import annotations
 
@@ -23,6 +23,10 @@ PROJECTS: dict[str, dict[str, str]] = {
         "repository": "Semogtw/SemogSite",
         "default_ref": "develop/foundation-bootstrap",
     },
+    "fichario": {
+        "repository": "Semogtw/FicharioVirtual",
+        "default_ref": "main",
+    },
 }
 
 _ALLOWED_KEYS = frozenset({"project", "ref"})
@@ -30,7 +34,7 @@ _REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
 
 
 class RequestValidationError(ValueError):
-    """Raised when an incoming private CI request is not safe or supported."""
+    """Raised when an incoming CI request is not safe or supported."""
 
 
 def _validate_ref(ref: Any) -> str:
@@ -99,7 +103,7 @@ def load_and_normalize(path: Path) -> dict[str, str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Validate and normalize an allowlisted private CI request."
+        description="Validate and normalize an allowlisted CI request."
     )
     parser.add_argument("request_file", type=Path)
     args = parser.parse_args(argv)
@@ -107,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         normalized = load_and_normalize(args.request_file)
     except RequestValidationError as exc:
-        print(f"private CI request rejected: {exc}", file=sys.stderr)
+        print(f"CI request rejected: {exc}", file=sys.stderr)
         return 2
 
     print(json.dumps(normalized, sort_keys=True, separators=(",", ":")))
