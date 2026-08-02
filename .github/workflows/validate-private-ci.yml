@@ -9,6 +9,7 @@ on:
       - .github/workflows/validate-private-ci.yml
       - scripts/private_ci_request.py
       - scripts/test_private_ci_request.py
+      - scripts/test-private-ci-toolchain-policy.py
       - scripts/validate-private-ci-workflows.py
       - triggers/private-ci.json
       - docs/private-project-ci.md
@@ -18,6 +19,7 @@ on:
     branches:
       - main
       - feature/**
+      - fix/**
     paths:
       - .github/workflows/request-private-project-ci.yml
       - .github/workflows/run-private-project-ci.yml
@@ -25,6 +27,7 @@ on:
       - .github/workflows/validate-private-ci.yml
       - scripts/private_ci_request.py
       - scripts/test_private_ci_request.py
+      - scripts/test-private-ci-toolchain-policy.py
       - scripts/validate-private-ci-workflows.py
       - triggers/private-ci.json
       - docs/private-project-ci.md
@@ -68,6 +71,9 @@ jobs:
 
       - name: Run request validator tests
         run: python3 scripts/test_private_ci_request.py
+
+      - name: Enforce project toolchain policy
+        run: python3 scripts/test-private-ci-toolchain-policy.py
 
       - name: Enforce private CI workflow contract
         run: python3 scripts/validate-private-ci-workflows.py
