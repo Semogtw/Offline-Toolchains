@@ -12,7 +12,7 @@ on:
     paths:
       - .github/workflows/request-private-source-bundle.yml
       - .github/workflows/request-goanime-source-bundle.yml
-      - .github/workflows/dispatch-goanime-source-bundle.yml
+      - .github/workflows/record-goanime-source-receipt.yml
       - .github/workflows/build-private-source-bundle.yml
       - .github/workflows/build-private-semogsite-source-bundle.yml
       - .github/workflows/build-private-hydra-source-bundle.yml
@@ -21,11 +21,13 @@ on:
       - scripts/assemble-source-bundle.sh
       - scripts/build-hydra-toolchain.sh
       - scripts/validate-private-source-workflows.sh
+      - scripts/validate-source-receipt-workflow.sh
       - keys/source-bundles-public.asc
       - triggers/private-source-bundle.json
       - triggers/semogsite-source-bundle.json
       - triggers/hydra-source-bundle.json
       - triggers/hydra-toolchain.json
+      - docs/GOANIME_SOURCE_BUNDLE.md
       - docs/HYDRA_TOOLCHAIN.md
       - README.md
       - docs/superpowers/specs/2026-07-31-private-source-bundles-design.md
@@ -71,4 +73,6 @@ jobs:
 
       - name: Run static security guards
         shell: bash
-        run: bash scripts/validate-private-source-workflows.sh
+        run: |
+          bash scripts/validate-private-source-workflows.sh
+          bash scripts/validate-source-receipt-workflow.sh
