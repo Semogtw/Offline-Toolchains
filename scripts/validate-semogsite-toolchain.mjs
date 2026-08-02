@@ -26,38 +26,42 @@ const hydrate = readFileSync(hydratePath, "utf8");
 const doctor = readFileSync(doctorPath, "utf8");
 
 assert.equal(fixture.private, true);
-assert.equal(fixture.packageManager, "pnpm@11.15.1");
+assert.equal(fixture.packageManager, "pnpm@10.14.0");
 assert.match(fixture.engines.node, /22/);
-assert.equal(fixture.pnpm, undefined, "pnpm 11 settings belong in pnpm-workspace.yaml");
-assert.equal(fixture.dependencies["@tanstack/react-router"], "1.168.23");
-assert.equal(fixture.dependencies["@tanstack/react-start"], "1.168.23");
-assert.equal(fixture.devDependencies["@tanstack/router-plugin"], "1.168.23");
-assert.equal(fixture.devDependencies["@testing-library/jest-dom"], "6.9.1");
+assert.match(fixture.engines.pnpm, /10\.14\.0/);
+assert.equal(fixture.dependencies["@modelcontextprotocol/sdk"], "^1.29.0");
+assert.equal(fixture.dependencies["@tanstack/react-router"], "^1.168.32");
+assert.equal(fixture.dependencies["@tanstack/react-start"], "^1.168.32");
+assert.equal(fixture.dependencies.zod, "^3.25.1");
+assert.equal(fixture.devDependencies["@tanstack/router-cli"], "1.167.21");
+assert.equal(fixture.devDependencies.vite, "^6.1.0");
+assert.equal(fixture.devDependencies.vitest, "^2.1.0");
+assert.equal(fixture.devDependencies.typescript, "^5.7.0");
 
 const requiredRuntime = [
   "@hono/node-server",
+  "@modelcontextprotocol/sdk",
   "@tanstack/react-query",
   "@tanstack/react-router",
   "@tanstack/react-start",
   "better-sqlite3",
   "drizzle-orm",
   "hono",
+  "lucide-react",
   "react",
   "react-dom",
   "zod",
 ];
 const requiredDevelopment = [
   "@playwright/test",
-  "@radix-ui/react-accordion",
-  "@radix-ui/react-dialog",
-  "@radix-ui/react-select",
-  "@tanstack/router-plugin",
-  "@testing-library/dom",
+  "@tanstack/router-cli",
   "@testing-library/jest-dom",
   "@testing-library/react",
+  "@types/better-sqlite3",
   "@types/node",
+  "@types/react",
+  "@types/react-dom",
   "@vitejs/plugin-react",
-  "drizzle-kit",
   "jsdom",
   "tsx",
   "typescript",
@@ -97,6 +101,7 @@ assert.doesNotMatch(pnpmWorkspace, /dangerouslyAllowAllBuilds:/);
 assert.match(smoke, /better-sqlite3/);
 assert.match(smoke, /drizzle-orm\/better-sqlite3/);
 assert.match(smoke, /@tanstack\/react-router/);
+assert.match(smoke, /@modelcontextprotocol\/sdk/);
 assert.match(smoke, /React\.version/);
 assert.match(activate, /PLAYWRIGHT_BROWSERS_PATH/);
 assert.match(activate, /PNPM_STORE_DIR/);
