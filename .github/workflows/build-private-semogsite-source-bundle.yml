@@ -227,6 +227,8 @@ jobs:
     steps:
       - name: Update source-bundle receipt
         uses: actions/github-script@v8
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -252,7 +254,7 @@ jobs:
               '### Build encrypted SemogSite source bundle',
               '',
               `- Run: [${runId}](https://github.com/${owner}/${repo}/actions/runs/${runId})`,
-              `- Conclusion: \`${{ toJSON(needs.build.result) }}\``,
+              `- Conclusion: \`${process.env.BUILD_RESULT}\``,
               '- Branch: `main`',
               `- Actor: \`${context.actor}\``,
               artifactLines,
