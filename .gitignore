@@ -1,0 +1,6 @@
+# Local OpenPGP key material used to decrypt private source bundles.
+# Private keys must never be committed or uploaded as workflow artifacts.
+*-private.asc
+*.private.asc
+offline-toolchains-source-bundles-private.asc
+.gnupg/
