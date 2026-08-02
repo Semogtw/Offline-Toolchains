@@ -1,0 +1,131 @@
+name: Bootstrap Fichario lockfile
+
+on:
+  workflow_run:
+    workflows:
+      - Request private project CI
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bootstrap-fichario-lockfile-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  normalize:
+    name: Normalize trusted Fichario bootstrap request
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'build/private-ci' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.actor.login == github.repository_owner &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      project: ${{ steps.request.outputs.project }}
+      ref: ${{ steps.request.outputs.ref }}
+
+    steps:
+      - name: Checkout trusted request validator
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: trusted-source
+          persist-credentials: false
+          sparse-checkout: scripts/private_ci_request.py
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout connector request revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          path: request-source
+          persist-credentials: false
+          sparse-checkout: triggers/private-ci.json
+          sparse-checkout-cone-mode: false
+
+      - name: Normalize request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          normalized="$(
+            python3 trusted-source/scripts/private_ci_request.py \
+              request-source/triggers/private-ci.json
+          )"
+          python3 - "$normalized" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          request = json.loads(sys.argv[1])
+          if request["repository"] != "Semogtw/FicharioVirtual":
+              raise SystemExit("unexpected repository mapping")
+          with open(sys.argv[2], "a", encoding="utf-8") as stream:
+              stream.write(f"project={request['project']}\n")
+              stream.write(f"ref={request['ref']}\n")
+          PY
+
+  bootstrap:
+    name: Fichário lockfile bootstrap
+    needs: normalize
+    if: needs.normalize.outputs.project == 'fichario'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout public Fichario source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/FicharioVirtual
+          ref: ${{ needs.normalize.outputs.ref }}
+          path: public-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Record resolved commit
+        id: source
+        shell: bash
+        run: echo "sha=$(git -C public-source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Require missing lockfile
+        shell: bash
+        run: test ! -e public-source/pnpm-lock.yaml
+
+      - name: Set up pnpm 10
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - name: Set up Node.js 22.16
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22.16.0"
+          check-latest: false
+
+      - name: Generate deterministic lockfile
+        working-directory: public-source
+        run: pnpm install --lockfile-only --no-frozen-lockfile
+
+      - name: Validate generated lockfile
+        working-directory: public-source
+        run: pnpm install --frozen-lockfile
+
+      - name: Upload public lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: fichario-pnpm-lock-${{ steps.source.outputs.sha }}
+          path: public-source/pnpm-lock.yaml
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Remove public checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/public-source"
