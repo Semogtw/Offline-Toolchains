@@ -5,27 +5,14 @@ def goAnimeOfflineRepository = new File(
 def goAnimeOfflineRepositoryUri = goAnimeOfflineRepository.toURI()
 
 settingsEvaluated { settings ->
-    settings.pluginManagement.repositories.maven {
-        name = 'GoAnimeOfflineDeltaPlugins'
-        url = goAnimeOfflineRepositoryUri
-    }
     try {
         settings.dependencyResolutionManagement.repositories.maven {
             name = 'GoAnimeOfflineDelta'
             url = goAnimeOfflineRepositoryUri
         }
     } catch (MissingPropertyException ignored) {
-        // Older Gradle settings without dependencyResolutionManagement.
-    }
-}
-
-gradle.beforeProject { project ->
-    project.buildscript.repositories.maven {
-        name = 'GoAnimeOfflineDeltaBuildscript'
-        url = goAnimeOfflineRepositoryUri
-    }
-    project.repositories.maven {
-        name = 'GoAnimeOfflineDeltaProject'
-        url = goAnimeOfflineRepositoryUri
+        throw new GradleException(
+            'GoAnime offline Maven delta requires dependencyResolutionManagement.'
+        )
     }
 }
