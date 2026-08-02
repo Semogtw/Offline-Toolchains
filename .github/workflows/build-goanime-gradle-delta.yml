@@ -1,0 +1,301 @@
+name: Build GoAnime Gradle Maven delta
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/build-goanime-gradle-delta.yml
+      - manifests/goanime/gradle-modules.txt
+      - scripts/validate_goanime_gradle_modules.py
+      - scripts/goanime-offline-maven.init.gradle
+      - scripts/apply-goanime-gradle-delta.sh
+      - tests/test_validate_goanime_gradle_modules.py
+      - tests/test_apply_goanime_gradle_delta.sh
+      - triggers/goanime-gradle-delta.txt
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-goanime-gradle-delta.yml
+      - manifests/goanime/gradle-modules.txt
+      - scripts/validate_goanime_gradle_modules.py
+      - scripts/goanime-offline-maven.init.gradle
+      - scripts/apply-goanime-gradle-delta.sh
+      - tests/test_validate_goanime_gradle_modules.py
+      - tests/test_apply_goanime_gradle_delta.sh
+      - triggers/goanime-gradle-delta.txt
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-gradle-delta-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GRADLE_VERSION: "8.14"
+  MODULE_MANIFEST: manifests/goanime/gradle-modules.txt
+
+jobs:
+  build:
+    name: Exact Maven repository delta
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate delta contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest tests/test_validate_goanime_gradle_modules.py
+          python3 scripts/validate_goanime_gradle_modules.py "$MODULE_MANIFEST"
+          bash tests/test_apply_goanime_gradle_delta.sh
+          bash -n scripts/apply-goanime-gradle-delta.sh \
+            tests/test_apply_goanime_gradle_delta.sh
+
+      - name: Install Temurin JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+          cache-disabled: true
+
+      - name: Hydrate exact Maven coordinates
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GRADLE_USER_HOME="$RUNNER_TEMP/goanime-gradle-delta-home"
+          project="$RUNNER_TEMP/goanime-gradle-delta-project"
+          rm -rf "$GRADLE_USER_HOME" "$project"
+          mkdir -p "$GRADLE_USER_HOME" "$project"
+
+          cat > "$project/settings.gradle" <<'EOF'
+          pluginManagement {
+              repositories {
+                  gradlePluginPortal()
+                  google()
+                  mavenCentral()
+              }
+          }
+          dependencyResolutionManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = 'goanime-gradle-delta'
+          EOF
+
+          {
+            cat <<'EOF'
+          configurations {
+              delta
+          }
+          dependencies {
+          EOF
+            while IFS= read -r coordinate; do
+              [[ -z "$coordinate" || "$coordinate" == \#* ]] && continue
+              printf "    delta '%s'\n" "$coordinate"
+            done < "$GITHUB_WORKSPACE/$MODULE_MANIFEST"
+            cat <<'EOF'
+          }
+          tasks.register('hydrate') {
+              inputs.files(configurations.delta)
+              doLast {
+                  configurations.delta.files.each { file ->
+                      println "hydrated=${file.name}"
+                  }
+              }
+          }
+          EOF
+          } > "$project/build.gradle"
+
+          gradle --no-daemon --refresh-dependencies \
+            -p "$project" hydrate
+
+          echo "DELTA_GRADLE_HOME=$GRADLE_USER_HOME" >> "$GITHUB_ENV"
+          echo "DELTA_PROJECT=$project" >> "$GITHUB_ENV"
+
+      - name: Assemble portable local Maven repository
+        id: bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          delta_root="$RUNNER_TEMP/goanime-gradle-delta"
+          repository="$delta_root/maven-repo"
+          archive="$RUNNER_TEMP/goanime-gradle-delta-linux-x64.tar.zst"
+          parts_dir="$RUNNER_TEMP/goanime-gradle-delta-parts"
+          rm -rf "$delta_root" "$archive" "$parts_dir"
+          mkdir -p "$repository" "$parts_dir"
+
+          python3 - "$DELTA_GRADLE_HOME" "$repository" <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import shutil
+          import sys
+          from pathlib import Path
+
+          source = Path(sys.argv[1]) / 'caches/modules-2/files-2.1'
+          target = Path(sys.argv[2])
+          allowed = {'.aar', '.jar', '.module', '.pom'}
+          copied = 0
+
+          if not source.is_dir():
+              raise SystemExit(f'missing Gradle module cache: {source}')
+
+          for group_dir in sorted(path for path in source.iterdir() if path.is_dir()):
+              for module_dir in sorted(path for path in group_dir.iterdir() if path.is_dir()):
+                  for version_dir in sorted(path for path in module_dir.iterdir() if path.is_dir()):
+                      destination = (
+                          target
+                          / Path(*group_dir.name.split('.'))
+                          / module_dir.name
+                          / version_dir.name
+                      )
+                      for artifact in sorted(version_dir.rglob('*')):
+                          if not artifact.is_file() or artifact.suffix not in allowed:
+                              continue
+                          destination.mkdir(parents=True, exist_ok=True)
+                          output = destination / artifact.name
+                          if output.exists():
+                              left = hashlib.sha256(output.read_bytes()).digest()
+                              right = hashlib.sha256(artifact.read_bytes()).digest()
+                              if left != right:
+                                  raise SystemExit(f'conflicting Maven artifact: {output}')
+                              continue
+                          shutil.copy2(artifact, output)
+                          copied += 1
+
+          if copied == 0:
+              raise SystemExit('no Maven artifacts copied from Gradle cache')
+          print(f'copied_maven_files={copied}')
+          PY
+
+          test -f \
+            "$repository/org/jetbrains/kotlin/kotlin-stdlib-common/2.2.0/kotlin-stdlib-common-2.2.0.jar"
+          test -f \
+            "$repository/org/jetbrains/kotlin/kotlin-stdlib-common/2.2.0/kotlin-stdlib-common-2.2.0.pom" \
+            -o -f \
+            "$repository/org/jetbrains/kotlin/kotlin-stdlib-common/2.2.0/kotlin-stdlib-common-2.2.0.module"
+
+          cp "$MODULE_MANIFEST" "$delta_root/MODULES.txt"
+          cp scripts/goanime-offline-maven.init.gradle \
+            "$delta_root/goanime-offline-maven.init.gradle"
+          cp scripts/apply-goanime-gradle-delta.sh "$delta_root/apply.sh"
+          chmod +x "$delta_root/apply.sh"
+
+          {
+            echo "repository=$GITHUB_REPOSITORY"
+            echo "commit=$GITHUB_SHA"
+            echo "runner=$RUNNER_OS-$RUNNER_ARCH"
+            echo "gradle=$GRADLE_VERSION"
+            echo "coordinate_count=$(grep -Ev '^(#|$)' "$MODULE_MANIFEST" | wc -l | tr -d ' ')"
+            echo "created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            sha256sum "$MODULE_MANIFEST"
+          } > "$delta_root/MANIFEST.txt"
+
+          tar -C "$RUNNER_TEMP" -I 'zstd -T0 -8' \
+            -cf "$archive" goanime-gradle-delta
+          archive_sha256="$(sha256sum "$archive" | cut -d' ' -f1)"
+          split -b 400M -d -a 2 "$archive" \
+            "$parts_dir/goanime-gradle-delta-linux-x64.part-"
+          (
+            cd "$parts_dir"
+            sha256sum goanime-gradle-delta-linux-x64.part-* > SHA256SUMS.parts
+          )
+          {
+            echo "archive=$(basename "$archive")"
+            echo "archive_sha256=$archive_sha256"
+            echo "part_size=400M"
+            echo "reassemble=cat goanime-gradle-delta-linux-x64.part-* > $(basename "$archive")"
+            echo
+            ls -lh "$parts_dir"/goanime-gradle-delta-linux-x64.part-*
+          } > "$parts_dir/PARTS.txt"
+
+          echo "delta_root=$delta_root" >> "$GITHUB_OUTPUT"
+          echo "parts_dir=$parts_dir" >> "$GITHUB_OUTPUT"
+          for index in 00 01 02 03; do
+            if [[ -f "$parts_dir/goanime-gradle-delta-linux-x64.part-$index" ]]; then
+              echo "part_$index=true" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
+      - name: Validate delta in a fresh offline Gradle home
+        shell: bash
+        run: |
+          set -euo pipefail
+          validation="$RUNNER_TEMP/goanime-gradle-delta-validation"
+          target_home="$validation/gradle-home"
+          project="$validation/project"
+          rm -rf "$validation"
+          mkdir -p "$project"
+
+          bash "${{ steps.bundle.outputs.delta_root }}/apply.sh" \
+            "${{ steps.bundle.outputs.delta_root }}" "$target_home"
+
+          cp "$DELTA_PROJECT/settings.gradle" "$project/settings.gradle"
+          cp "$DELTA_PROJECT/build.gradle" "$project/build.gradle"
+          export GRADLE_USER_HOME="$target_home"
+          gradle --offline --no-daemon -p "$project" hydrate | \
+            tee "$validation/offline-resolution.log"
+          grep -Fq 'hydrated=kotlin-stdlib-common-2.2.0.jar' \
+            "$validation/offline-resolution.log"
+
+      - name: Upload delta manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-gradle-delta-linux-x64-manifest
+          path: |
+            ${{ steps.bundle.outputs.parts_dir }}/PARTS.txt
+            ${{ steps.bundle.outputs.parts_dir }}/SHA256SUMS.parts
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload delta part 00
+        if: steps.bundle.outputs.part_00 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-gradle-delta-linux-x64-part-00
+          path: ${{ steps.bundle.outputs.parts_dir }}/goanime-gradle-delta-linux-x64.part-00
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload delta part 01
+        if: steps.bundle.outputs.part_01 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-gradle-delta-linux-x64-part-01
+          path: ${{ steps.bundle.outputs.parts_dir }}/goanime-gradle-delta-linux-x64.part-01
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload delta part 02
+        if: steps.bundle.outputs.part_02 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-gradle-delta-linux-x64-part-02
+          path: ${{ steps.bundle.outputs.parts_dir }}/goanime-gradle-delta-linux-x64.part-02
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload delta part 03
+        if: steps.bundle.outputs.part_03 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-gradle-delta-linux-x64-part-03
+          path: ${{ steps.bundle.outputs.parts_dir }}/goanime-gradle-delta-linux-x64.part-03
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
