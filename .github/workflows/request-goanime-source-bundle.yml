@@ -38,7 +38,7 @@ jobs:
           set -euo pipefail
           python3 scripts/validate-source-bundle-request.py \
             triggers/private-source-bundle.json
-          test "$(jq -r '.project' triggers/private-source-bundle.json)" = "goanime"
+          test "$(jq -r ' .project' triggers/private-source-bundle.json)" = "goanime"
 
       - name: Verify committed encryption key
         shell: bash
