@@ -293,11 +293,11 @@ jobs:
         shell: bash
         run: echo "sha=$(git -C private-source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Set up Temurin JDK 17
+      - name: Set up Temurin JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
 
       - name: Expose Android SDK
         uses: android-actions/setup-android@v3
