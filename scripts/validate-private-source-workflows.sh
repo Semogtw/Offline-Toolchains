@@ -18,16 +18,21 @@ for file in \
   .github/workflows/request-private-source-bundle.yml \
   .github/workflows/build-private-source-bundle.yml \
   .github/workflows/build-private-semogsite-source-bundle.yml \
+  .github/workflows/build-private-hydra-source-bundle.yml \
+  .github/workflows/build-hydra.yml \
   keys/source-bundles-public.asc \
   scripts/assemble-source-bundle.sh \
   scripts/validate-source-bundle-request.py \
   triggers/private-source-bundle.json \
-  triggers/semogsite-source-bundle.json; do
+  triggers/semogsite-source-bundle.json \
+  triggers/hydra-source-bundle.json \
+  triggers/hydra-toolchain.json; do
   require_file "$file"
 done
 
 python3 scripts/validate-source-bundle-request.py triggers/private-source-bundle.json >/dev/null
 python3 scripts/validate-source-bundle-request.py triggers/semogsite-source-bundle.json >/dev/null
+python3 scripts/validate-source-bundle-request.py triggers/hydra-source-bundle.json >/dev/null
 
 if printf '%s' '{"project":"other","mode":"full","ref":""}' |
    python3 scripts/validate-source-bundle-request.py - >/dev/null 2>&1; then
@@ -49,6 +54,25 @@ if printf '%s' '{"project":"semogsite","mode":"ref","ref":"develop/foundation-bo
 else
   fail "SemogSite source requests must be accepted"
 fi
+if printf '%s' '{"project":"hydra","mode":"ref","ref":"main"}' |
+   python3 scripts/validate-source-bundle-request.py - >/dev/null; then
+  :
+else
+  fail "Hydra source requests must be accepted"
+fi
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+trigger = json.loads(Path("triggers/hydra-toolchain.json").read_text(encoding="utf-8"))
+if set(trigger) != {"profile", "ref", "requested_at_utc", "reason"}:
+    raise SystemExit("Hydra toolchain trigger keys changed")
+if trigger["profile"] != "hydra":
+    raise SystemExit("Hydra toolchain trigger must use profile=hydra")
+if not isinstance(trigger["ref"], str) or not trigger["ref"]:
+    raise SystemExit("Hydra toolchain trigger requires a non-empty ref")
+PY
 
 bash -n scripts/assemble-source-bundle.sh
 
@@ -67,10 +91,14 @@ fingerprint="$({
 request_workflow=.github/workflows/request-private-source-bundle.yml
 legacy_build_workflow=.github/workflows/build-private-source-bundle.yml
 semogsite_build_workflow=.github/workflows/build-private-semogsite-source-bundle.yml
+hydra_build_workflow=.github/workflows/build-private-hydra-source-bundle.yml
+hydra_toolchain_workflow=.github/workflows/build-hydra.yml
 
 require_text "$request_workflow" "build/source-bundles"
 require_text "$request_workflow" "build/semogsite-source-bundles"
+require_text "$request_workflow" "build/hydra-source-bundles"
 require_text "$request_workflow" "triggers/semogsite-source-bundle.json"
+require_text "$request_workflow" "triggers/hydra-source-bundle.json"
 require_text "$request_workflow" "persist-credentials: false"
 require_text "$request_workflow" "validate-source-bundle-request.py"
 
@@ -105,6 +133,35 @@ require_text "$semogsite_build_workflow" "private-source-semogsite-ref"
 require_text "$semogsite_build_workflow" "retention-days: 1"
 require_text "$semogsite_build_workflow" "gpg --batch --yes --trust-model always"
 require_text "$semogsite_build_workflow" 'rm -rf "$package_dir" "$plaintext_archive" "$gpg_home" "$source_dir"'
+
+require_text "$hydra_build_workflow" "github.event.workflow_run.head_branch == 'build/hydra-source-bundles'"
+require_text "$hydra_build_workflow" "github.event.workflow_run.actor.login == github.repository_owner"
+require_text "$hydra_build_workflow" "repository: Semogtw/HydraPersonalizado"
+require_text "$hydra_build_workflow" "PRIVATE_REPOSITORIES_TOKEN"
+require_text "$hydra_build_workflow" "project=hydra"
+require_text "$hydra_build_workflow" "mode=ref"
+require_text "$hydra_build_workflow" "fetch-depth: 0"
+require_text "$hydra_build_workflow" "persist-credentials: false"
+require_text "$hydra_build_workflow" "lfs: false"
+require_text "$hydra_build_workflow" "submodules: false"
+require_text "$hydra_build_workflow" "private-source-hydra-ref"
+require_text "$hydra_build_workflow" "retention-days: 1"
+require_text "$hydra_build_workflow" "gpg --batch --yes --trust-model always"
+require_text "$hydra_build_workflow" 'rm -rf "$package_dir" "$plaintext_archive" "$gpg_home" "$source_dir"'
+
+require_text "$hydra_toolchain_workflow" "repository: Semogtw/HydraPersonalizado"
+require_text "$hydra_toolchain_workflow" "PRIVATE_REPOSITORIES_TOKEN"
+require_text "$hydra_toolchain_workflow" "persist-credentials: false"
+require_text "$hydra_toolchain_workflow" "lfs: false"
+require_text "$hydra_toolchain_workflow" "submodules: false"
+require_text "$hydra_toolchain_workflow" "yarn install --frozen-lockfile --non-interactive"
+require_text "$hydra_toolchain_workflow" "yarn --cwd \"\$project\" install"
+require_text "$hydra_toolchain_workflow" "--offline"
+require_text "$hydra_toolchain_workflow" "cargo fetch"
+require_text "$hydra_toolchain_workflow" "rm -rf \"\$source_dir\""
+require_text "$hydra_toolchain_workflow" "split -b 400M"
+require_text "$hydra_toolchain_workflow" "part_count > 16"
+require_text "$hydra_toolchain_workflow" "retention-days: 1"
 
 if git grep -n -E '^-----BEGIN PGP PRIVATE KEY BLOCK-----$'; then
   fail "private OpenPGP key material is tracked"
