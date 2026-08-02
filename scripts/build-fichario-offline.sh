@@ -97,10 +97,18 @@ toolchain_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 workspace="${1:-$toolchain_root/workspace}"
 # shellcheck source=/dev/null
 source "$toolchain_root/bin/activate"
+
+# Keep package identities unchanged while making every network attempt fail.
+# A missing Deno npm cache entry therefore turns this smoke test red.
+export HTTP_PROXY="http://127.0.0.1:9"
+export HTTPS_PROXY="http://127.0.0.1:9"
+export ALL_PROXY="http://127.0.0.1:9"
+export NO_PROXY="127.0.0.1,localhost"
+
 module_count=0
 while IFS= read -r module; do
   module_count=$((module_count + 1))
-  deno check --cached-only --no-config "$workspace/$module"
+  deno check --no-config "$workspace/$module"
 done < <(sed -n 's/^deno check --no-config //p' "$workspace/tools/checks/check-edge-functions.sh")
 if (( module_count == 0 )); then
   echo 'No Edge Function modules were discovered in check-edge-functions.sh.' >&2
@@ -169,7 +177,7 @@ lock_sha="$(sha256sum "$root/workspace/pnpm-lock.yaml" | cut -d' ' -f1)"
   echo "lock_sha256=$lock_sha"
   echo "pnpm_store=offline_install_and_verification_passed"
   echo "playwright=offline_browser_test_passed"
-  echo "deno_cache=cached_only_edge_checks_passed"
+  echo "deno_cache=proxy_blocked_edge_checks_passed"
   echo "database_gate_note=Supabase CLI is included; local DB tests still require Docker and Supabase container images"
 } > "$root/MANIFEST.txt"
 
