@@ -1,0 +1,2 @@
+# Exact public Maven coordinates required by the private GoAnime Android build.
+org.jetbrains.kotlin:kotlin-stdlib-common:2.2.0
