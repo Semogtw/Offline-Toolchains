@@ -1,133 +1,137 @@
-# Public Runner Private CI Hub Design
+# Public Runner Project CI Hub Design
 
 ## Status
 
-Approved for implementation by the repository owner on 2026-08-01.
+Approved for implementation by the repository owner on 2026-08-01. Extended on 2026-08-02 to validate the public Fichário Virtual repository through the same connector request bridge.
 
 ## Goal
 
-Run the real verification and build workloads for selected private repositories as native GitHub Actions runs of the public `Semogtw/Offline-Toolchains` repository, so the expensive jobs use the public repository's hosted-runner allowance rather than the private repositories' Actions minutes.
+Run real verification and build workloads as native GitHub Actions runs of the public `Semogtw/Offline-Toolchains` repository. Private projects use public hosted-runner allowance after an allowlisted read-only checkout. Public projects may reuse the request and receipt infrastructure without receiving private-repository credentials.
 
 ## Scope
 
-The first version supports exactly three allowlisted projects:
-
-| Project key | Private repository | Default ref | Real workload |
+| Project key | Repository | Default ref | Real workload |
 | --- | --- | --- | --- |
 | `goanime` | `Semogtw/goanime-mobile` | `main` | project health, formatting, analysis, tests, release-workflow validation, debug APK build |
 | `zapzap` | `Semogtw/Zapzap` | `development/android-build-recovery` | pure tests, source audit, Android baseline, unit tests, lint, debug APK build |
-| `semogsite` | `Semogtw/SemogSite` | `develop/foundation-bootstrap` | frozen install, guardrails/typecheck/tests through `pnpm check`, production build |
+| `semogsite` | `Semogtw/SemogSite` | `develop/foundation-bootstrap` | dependency installation, guardrails/typechecks/tests, production build |
+| `fichario` | `Semogtw/FicharioVirtual` | `main` | frozen dependency install and the canonical `pnpm verify:full` gate with browser, Deno, Supabase CLI and local database services |
 
-No arbitrary repository, shell command, workflow path, artifact path, or runner label may be supplied by an event payload.
+No event payload may choose an arbitrary repository, shell command, workflow path, artifact path, secret, or runner label.
 
-## Considered approaches
+## Selected architecture
 
-### Reusable workflows called from private repositories
+### Trusted request bridge
 
-Rejected because the run and billing context remain attached to the private caller repository.
-
-### Tiny private dispatch workflows plus public execution
-
-Technically valid, but every push still starts a private-repository run and consumes at least a small amount of its Actions allowance. This can be added later when automatic push triggering is more important than zero private Actions use.
-
-### Native public workflows with manual, API, and connector request triggers
-
-Selected. The privileged workflow belongs to `Offline-Toolchains`, checks out an allowlisted private repository by exact ref, and executes all meaningful work in the public runner. Manual `workflow_dispatch`, authenticated `repository_dispatch`, and a trusted request-branch bridge are supported.
-
-## Architecture
-
-### Request layer without private secrets
-
-`Request private project CI` validates `triggers/private-ci.json` on the permanent `build/private-ci` branch. The file contains only:
+`Request private project CI` validates `triggers/private-ci.json` on the permanent `build/private-ci` branch. The request contains only an allowlisted project key and optional exact Git ref:
 
 ```json
 {
-  "project": "zapzap",
-  "ref": "development/android-build-recovery"
+  "project": "fichario",
+  "ref": "0123456789abcdef0123456789abcdef01234567"
 }
 ```
 
-The request workflow has `contents: read`, never receives the private-repository token, and executes no project code. Its successful `workflow_run` is accepted only when the request came from the fixed branch, a push event, and the repository owner.
+The request workflow:
 
-### Privileged execution layer
+- has only `contents: read`;
+- receives no project checkout token;
+- checks out the validator from trusted `main`;
+- checks out only the trigger JSON from the exact request revision;
+- accepts only owner-authored pushes from the fixed request branch.
 
-`Run private project CI` is stored on the default branch and handles:
+### Private execution workflow
 
-- `workflow_dispatch` with project and ref inputs;
-- `repository_dispatch` events with fixed event type `private-project-ci`;
-- successful trusted `workflow_run` events from the request workflow.
+`Run private project CI` handles `goanime`, `zapzap`, and `semogsite`. It maps each key to a fixed private repository and canonical commands. Private checkout uses `PRIVATE_REPOSITORIES_TOKEN` only in `actions/checkout`, with credential persistence, LFS, and submodules disabled. No project artifact or project-derived cache is uploaded, and the checkout is removed in `always()` cleanup.
 
-A normalization job validates the request and maps the project key to a fixed repository and default ref. Three project-specific jobs then perform setup, checkout the selected private ref with `persist-credentials: false`, and run the canonical project commands.
+The fine-grained token is read-only and scoped only to:
 
-### Isolation
+- `Semogtw/goanime-mobile`;
+- `Semogtw/Zapzap`;
+- `Semogtw/SemogSite`.
 
-Each project job:
+### Public Fichário execution workflow
 
-- receives only the normalized project/ref/repository outputs;
-- uses a fresh GitHub-hosted Ubuntu runner;
-- has `contents: read` on the public repository;
-- uses `PRIVATE_REPOSITORIES_TOKEN` only during private checkout;
-- disables credential persistence, LFS, and submodules;
-- does not upload artifacts, caches containing project outputs, logs, test reports, APKs, source archives, or build directories;
-- removes the private checkout in an `always()` cleanup step.
+`Run Fichario CI` is a separate workflow. Separation is intentional:
 
-The token must be a fine-grained PAT with `Contents: Read-only` for only `goanime-mobile`, `Zapzap`, and `SemogSite`.
+- it never receives `PRIVATE_REPOSITORIES_TOKEN` or any secret;
+- repository identity is fixed to `Semogtw/FicharioVirtual`;
+- only a normalized request with project `fichario` can start the verification job;
+- checkout remains shallow and non-persistent;
+- setup is fixed to Node.js 22.16, pnpm 10, Chromium, Deno 2.8.1 and Supabase CLI;
+- dependency installation is frozen;
+- the only project command is `pnpm verify:full`;
+- build outputs and source archives are not uploaded;
+- the checkout is removed in `always()` cleanup.
 
-## Trigger data validation
+The separate workflow keeps public validation independent from the private token boundary and avoids expanding the privileged workflow's command surface.
 
-The validator accepts only the three project keys. Refs must be 1-200 characters, use Git ref-safe ASCII characters, and reject whitespace, control characters, `..`, `@{`, backslashes, leading hyphens, double slashes, trailing slashes, and `.lock` suffixes.
+### Sanitized receipts
 
-The event payload cannot select a repository, runner, script, command, environment, secret, or output destination.
+`Report private project CI runs` observes both execution workflows and appends a sanitized receipt to issue #15. Receipts include public run metadata and selected job conclusion, but omit private source, resolved private commit, logs, artifacts, secrets and build outputs.
+
+## Trigger validation
+
+The validator accepts only `goanime`, `zapzap`, `semogsite`, and `fichario`. Refs must be 1–200 characters, use Git-ref-safe ASCII, and reject whitespace, control characters, `..`, `@{`, backslashes, leading hyphens, double slashes, trailing slashes and `.lock` suffixes.
+
+The payload cannot override repository, runner, script, command, environment, secret or output destination.
 
 ## Project execution
 
 ### GoAnime
 
-- Flutter `3.44.1`, stable channel;
-- `flutter pub get`;
-- `pwsh ./tools/validate_project_health.ps1`;
-- `dart format --output=none --set-exit-if-changed lib test packages tools`;
-- `flutter analyze --no-pub`;
-- `flutter test --no-pub`;
-- `pwsh ./tools/validate_release_workflows.ps1`;
-- `flutter build apk --debug --no-pub`.
+- Flutter 3.44.1;
+- project health and release workflow validation;
+- formatting, analysis and tests;
+- Android debug APK build.
 
 ### ZapZap
 
-- Temurin JDK 17;
-- Android SDK platform 35 and build tools required by the checked-out project;
-- Gradle caches disabled at the Actions integration layer;
-- `bash ./tools/checks/run_pure_tests.sh`;
-- `bash ./tools/checks/audit_sources.sh`;
-- `bash ./tools/checks/verify_android_baseline.sh`;
-- `./gradlew --no-daemon testDebugUnitTest`;
-- `./gradlew --no-daemon lintDebug`;
-- `./gradlew --no-daemon :app:assembleDebug`.
-
-The first public CI run may use the network to populate Gradle dependencies. Deterministic offline execution remains a separate toolchain validation concern.
+- Temurin JDK 21 with Android target compatibility preserved by the project;
+- Android SDK 35;
+- pure tests, source audit and Android baseline;
+- unit tests, lint and debug APK build.
 
 ### SemogSite
 
 - Node.js 22;
-- Corepack activates the exact `packageManager` declared by the checked-out `package.json`;
-- `pnpm install --frozen-lockfile`;
-- `pnpm check`;
-- `pnpm build`.
+- repository-selected pnpm through Corepack;
+- frozen installation when a lockfile exists, documented bootstrap mode otherwise;
+- `pnpm check` and `pnpm build`.
 
-No deployment, database migration, secrets-backed integration test, or Playwright browser installation is part of this first CI hub version.
+### Fichário Virtual
+
+- Node.js 22.16 and pnpm 10;
+- `pnpm install --frozen-lockfile`;
+- Chromium plus host dependencies for Playwright;
+- Deno checks for Supabase Edge Functions;
+- Supabase CLI and Docker-backed local database services;
+- `pnpm verify:full`, covering frontend lint/typecheck/tests/build, E2E, source security, migration/RPC guards, Edge Function type checks, database reset, pgTAP, OCR concurrency and UTC rollover gates.
+
+No deployment, production secret, linked production database, billing change or release publication occurs.
 
 ## Failure handling
 
-Invalid requests fail before private checkout. Missing token fails with a concise message. Project command failures propagate as failed public runs. Cleanup runs even after failure. No retry loop hides deterministic failures.
+Invalid requests fail before project checkout. Missing private token affects only private jobs. Project command failures propagate as failed public runs. Cleanup always executes. No retry loop hides deterministic failures.
 
 ## Verification
 
-A repository-local validator checks the workflow contract without secrets. It verifies fixed mappings, fixed commands, safe checkout options, absence of artifact upload, request-branch trust checks, and documentation coverage. A public validation workflow runs this script for relevant pushes and pull requests.
+Repository-local validators enforce:
+
+- fixed project mappings and refs;
+- trusted request-branch conditions;
+- exact checkout flags and commands;
+- private token absence from the Fichário workflow;
+- no artifact/cache upload from project workflows;
+- receipt coverage and documentation coverage.
+
+The public validation workflow parses YAML and runs request, policy and workflow-contract tests.
 
 ## Out of scope
 
-- automatic push webhooks without any private Actions run;
-- writing commit statuses back to private repositories;
-- publishing private build artifacts;
-- release signing, Firebase configuration, TURN credentials, deployment, or production releases;
-- arbitrary additional private repositories.
+- arbitrary repositories or commands;
+- automatic project push webhooks without a dispatcher;
+- writing statuses back to project commits;
+- private build artifact publication;
+- signing, production deployment or production secrets;
+- linked production Supabase validation.
