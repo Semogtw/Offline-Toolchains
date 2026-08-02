@@ -6,7 +6,6 @@ on:
       - ops/semogsite-patch-requests
     paths:
       - triggers/semogsite-agent-patch.json
-      - payloads/semogsite-agent-patch.diff.gz.b64
 
 permissions:
   contents: read
