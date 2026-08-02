@@ -1,5 +1,5 @@
 {
-  "mode": "ref",
   "project": "semogsite",
-  "ref": "develop/editorial-workspace"
+  "ref": "develop/editorial-workspace",
+  "mode": "ref"
 }
