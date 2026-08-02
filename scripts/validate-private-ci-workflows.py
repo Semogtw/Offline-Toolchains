@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Enforce the security and execution contract of the public private-CI hub."""
+"""Enforce the security and execution contract of the public CI hub."""
 
 from __future__ import annotations
 
@@ -30,11 +30,15 @@ EXPECTED_PROJECTS = {
         "repository": "Semogtw/SemogSite",
         "default_ref": "develop/foundation-bootstrap",
     },
+    "fichario": {
+        "repository": "Semogtw/FicharioVirtual",
+        "default_ref": "main",
+    },
 }
 
 
 class ContractError(RuntimeError):
-    """Raised when a checked repository file violates the private-CI contract."""
+    """Raised when a checked repository file violates the CI contract."""
 
 
 def read(path: Path) -> str:
@@ -139,25 +143,31 @@ def validate_privileged_workflow(text: str) -> None:
         "pnpm check",
         "pnpm build",
         'corepack prepare "$package_manager" --activate',
+        "Fichário Virtual complete verification",
+        "needs.normalize.outputs.project == 'fichario'",
+        "pnpm exec playwright install --with-deps chromium",
+        "uses: denoland/setup-deno@v2",
+        "uses: supabase/setup-cli@v1",
+        "run: pnpm verify:full",
     ):
         require(text, fragment, "privileged workflow")
 
-    require_count(text, "path: private-source", 3, "privileged workflow")
-    require_count(text, "fetch-depth: 1", 3, "privileged workflow")
-    require_count(text, "persist-credentials: false", 5, "privileged workflow")
-    require_count(text, "lfs: false", 3, "privileged workflow")
-    require_count(text, "submodules: false", 3, "privileged workflow")
+    require_count(text, "path: private-source", 4, "privileged workflow")
+    require_count(text, "fetch-depth: 1", 4, "privileged workflow")
+    require_count(text, "persist-credentials: false", 6, "privileged workflow")
+    require_count(text, "lfs: false", 4, "privileged workflow")
+    require_count(text, "submodules: false", 4, "privileged workflow")
     require_count(text, "shell: pwsh", 2, "privileged workflow")
     require_count(
         text,
         'run: rm -rf "$GITHUB_WORKSPACE/private-source"',
-        3,
+        4,
         "privileged workflow",
     )
     require_count(
         text,
         "Build outputs were verified and discarded; no private artifact was uploaded.",
-        3,
+        4,
         "privileged workflow",
     )
 
@@ -188,6 +198,7 @@ def validate_report_workflow(text: str) -> None:
         "GoAnime real CI and Android debug build",
         "ZapZap real Android CI and debug build",
         "SemogSite real checks and production build",
+        "Fichário Virtual complete verification",
         "issue_number: 15",
         "Private source, private resolved commit, logs, artifacts, and build outputs are intentionally omitted.",
     ):
@@ -232,6 +243,7 @@ def validate_docs() -> None:
         require(plan, config["repository"], "plan")
     require(operations, "Public private CI run receipts", "operations")
     require(operations, "issue #15", "operations")
+    require(operations, "fichario", "operations")
     forbid(design, "TBD", "design")
     forbid(plan, "TBD", "plan")
 
