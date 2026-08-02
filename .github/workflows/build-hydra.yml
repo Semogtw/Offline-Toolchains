@@ -13,6 +13,7 @@ on:
       - main
     paths:
       - .github/workflows/build-hydra.yml
+      - scripts/build-hydra-toolchain.sh
       - scripts/validate-source-bundle-request.py
       - triggers/hydra-toolchain.json
       - docs/HYDRA_TOOLCHAIN.md
@@ -55,7 +56,10 @@ jobs:
             ref="$(python3 - <<'PY'
           import json
           from pathlib import Path
-          request = json.loads(Path("triggers/hydra-toolchain.json").read_text(encoding="utf-8"))
+
+          request = json.loads(
+              Path("triggers/hydra-toolchain.json").read_text(encoding="utf-8")
+          )
           if request.get("profile") != "hydra":
               raise SystemExit("Hydra toolchain trigger must use profile=hydra")
           ref = request.get("ref")
@@ -124,263 +128,19 @@ jobs:
             python3 \
             zstd
 
-      - name: Prepare portable Node, Yarn and Rust runtimes
-        id: runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          bundle_root="$RUNNER_TEMP/hydra-toolchain"
-          node_root="$(cd "$(dirname "$(dirname "$(readlink -f "$(command -v node)")")")" && pwd)"
-          rm -rf "$bundle_root"
-          mkdir -p \
-            "$bundle_root/node" \
-            "$bundle_root/yarn" \
-            "$bundle_root/yarn-cache" \
-            "$bundle_root/npm-cache" \
-            "$bundle_root/cargo-home/bin" \
-            "$bundle_root/rustup-home" \
-            "$bundle_root/reference-inputs" \
-            "$bundle_root/scripts"
-
-          cp -a "$node_root/." "$bundle_root/node/"
-          "$bundle_root/node/bin/npm" install \
-            --global \
-            --prefix "$bundle_root/yarn" \
-            "yarn@$YARN_VERSION"
-
-          rustup_source="$(command -v rustup)"
-          cp "$rustup_source" "$bundle_root/cargo-home/bin/rustup"
-          chmod +x "$bundle_root/cargo-home/bin/rustup"
-
-          export PATH="$bundle_root/cargo-home/bin:$bundle_root/yarn/bin:$bundle_root/node/bin:$PATH"
-          export CARGO_HOME="$bundle_root/cargo-home"
-          export RUSTUP_HOME="$bundle_root/rustup-home"
-          export YARN_CACHE_FOLDER="$bundle_root/yarn-cache"
-          export npm_config_cache="$bundle_root/npm-cache"
-          export npm_config_audit=false
-          export npm_config_fund=false
-          export npm_config_update_notifier=false
-
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup default "$RUST_TOOLCHAIN"
-
-          {
-            echo "HYDRA_TOOLCHAIN_ROOT=$bundle_root"
-            echo "CARGO_HOME=$CARGO_HOME"
-            echo "RUSTUP_HOME=$RUSTUP_HOME"
-            echo "YARN_CACHE_FOLDER=$YARN_CACHE_FOLDER"
-            echo "npm_config_cache=$npm_config_cache"
-            echo "PATH=$PATH"
-          } >> "$GITHUB_ENV"
-
-          echo "bundle_root=$bundle_root" >> "$GITHUB_OUTPUT"
-
-          node --version
-          yarn --version
-          rustc --version
-          cargo --version
-
-      - name: Hydrate exact Hydra dependency graphs
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          source_dir="$GITHUB_WORKSPACE/private-source"
-          cd "$source_dir"
-
-          yarn install --frozen-lockfile --non-interactive
-          cargo fetch \
-            --locked \
-            --manifest-path native/hydra-native/Cargo.toml
-          cargo fetch \
-            --locked \
-            --manifest-path native/game-agent/Cargo.toml
-
-          yarn typecheck
-          yarn test
-
-      - name: Assemble and verify portable Hydra toolchain
+      - name: Build and prove portable Hydra toolchain
         id: bundle
         shell: bash
+        env:
+          HYDRA_REF: ${{ steps.request.outputs.ref }}
         run: |
           set -euo pipefail
-
-          source_dir="$GITHUB_WORKSPACE/private-source"
-          bundle_root="${{ steps.runtime.outputs.bundle_root }}"
-          archive="$RUNNER_TEMP/hydra-toolchain-linux-x64.tar.zst"
-          parts_dir="$RUNNER_TEMP/hydra-toolchain-linux-x64-parts"
-
-          rm -rf "$archive" "$archive.sha256" "$parts_dir"
-          mkdir -p "$parts_dir"
-
-          cp "$source_dir/package.json" "$bundle_root/reference-inputs/package.json"
-          cp "$source_dir/yarn.lock" "$bundle_root/reference-inputs/yarn.lock"
-          cp "$source_dir/native/hydra-native/Cargo.lock" \
-            "$bundle_root/reference-inputs/hydra-native.Cargo.lock"
-          cp "$source_dir/native/game-agent/Cargo.lock" \
-            "$bundle_root/reference-inputs/game-agent.Cargo.lock"
-
-          cat > "$bundle_root/scripts/activate.sh" <<'EOF'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          toolchain_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-          export HYDRA_TOOLCHAIN_ROOT="$toolchain_root"
-          export PATH="$toolchain_root/cargo-home/bin:$toolchain_root/yarn/bin:$toolchain_root/node/bin:$PATH"
-          export CARGO_HOME="$toolchain_root/cargo-home"
-          export RUSTUP_HOME="$toolchain_root/rustup-home"
-          export YARN_CACHE_FOLDER="$toolchain_root/yarn-cache"
-          export npm_config_cache="$toolchain_root/npm-cache"
-          export npm_config_audit=false
-          export npm_config_fund=false
-          export npm_config_update_notifier=false
-          export CI=true
-          EOF
-
-          cat > "$bundle_root/scripts/install-offline.sh" <<'EOF'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          toolchain_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-          # shellcheck source=activate.sh
-          source "$toolchain_root/scripts/activate.sh"
-
-          project="${1:-$PWD}"
-          test -f "$project/package.json"
-          test -f "$project/yarn.lock"
-          test -f "$project/native/hydra-native/Cargo.lock"
-          test -f "$project/native/game-agent/Cargo.lock"
-
-          export npm_config_registry="http://127.0.0.1:9"
-          export YARN_REGISTRY="http://127.0.0.1:9"
-
-          yarn --cwd "$project" install \
-            --offline \
-            --frozen-lockfile \
-            --non-interactive
-          cargo fetch \
-            --offline \
-            --locked \
-            --manifest-path "$project/native/hydra-native/Cargo.toml"
-          cargo fetch \
-            --offline \
-            --locked \
-            --manifest-path "$project/native/game-agent/Cargo.toml"
-          EOF
-
-          cat > "$bundle_root/scripts/doctor.sh" <<'EOF'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          toolchain_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-          # shellcheck source=activate.sh
-          source "$toolchain_root/scripts/activate.sh"
-
-          node --version
-          yarn --version
-          rustc --version
-          cargo --version
-          python3 --version
-          pkg-config --modversion gtk4
-          pkg-config --modversion gtk4-layer-shell-0
-          test -d "$YARN_CACHE_FOLDER"
-          test -d "$CARGO_HOME/registry"
-          printf 'Hydra offline toolchain doctor: PASS\n'
-          EOF
-
-          chmod +x "$bundle_root/scripts/"*.sh
-
-          package_sha256="$(sha256sum "$source_dir/package.json" | cut -d' ' -f1)"
-          yarn_lock_sha256="$(sha256sum "$source_dir/yarn.lock" | cut -d' ' -f1)"
-          native_lock_sha256="$(
-            sha256sum "$source_dir/native/hydra-native/Cargo.lock" | cut -d' ' -f1
-          )"
-          agent_lock_sha256="$(
-            sha256sum "$source_dir/native/game-agent/Cargo.lock" | cut -d' ' -f1
-          )"
-
-          {
-            echo "schema_version=1"
-            echo "repository=$GITHUB_REPOSITORY"
-            echo "hydra_repository=Semogtw/HydraPersonalizado"
-            echo "hydra_ref=${{ steps.request.outputs.ref }}"
-            echo "runner=$RUNNER_OS-$RUNNER_ARCH"
-            echo "created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "node_version=$(node --version)"
-            echo "yarn_version=$(yarn --version)"
-            echo "rustc_version=$(rustc --version)"
-            echo "cargo_version=$(cargo --version)"
-            echo "package_sha256=$package_sha256"
-            echo "yarn_lock_sha256=$yarn_lock_sha256"
-            echo "hydra_native_cargo_lock_sha256=$native_lock_sha256"
-            echo "game_agent_cargo_lock_sha256=$agent_lock_sha256"
-            echo "activate=scripts/activate.sh"
-            echo "offline_install=scripts/install-offline.sh"
-            echo "doctor=scripts/doctor.sh"
-          } > "$bundle_root/MANIFEST.txt"
-
-          rm -rf \
-            "$source_dir/node_modules" \
-            "$source_dir/hydra-native" \
-            "$source_dir/hydra-game-agent" \
-            "$source_dir/native/hydra-native/target" \
-            "$source_dir/native/game-agent/target"
-
-          export npm_config_registry="http://127.0.0.1:9"
-          export YARN_REGISTRY="http://127.0.0.1:9"
-          "$bundle_root/scripts/install-offline.sh" "$source_dir"
-          (
-            cd "$source_dir"
-            yarn typecheck
-            yarn test
-          )
-          "$bundle_root/scripts/doctor.sh"
-
-          rm -rf "$source_dir"
-
-          tar -C "$RUNNER_TEMP" -I 'zstd -T0 -8' \
-            -cf "$archive" hydra-toolchain
-          sha256sum "$archive" > "$archive.sha256"
-          split -b 400M -d -a 2 \
-            "$archive" \
-            "$parts_dir/hydra-toolchain-linux-x64.part-"
-          (
-            cd "$parts_dir"
-            sha256sum hydra-toolchain-linux-x64.part-* > SHA256SUMS.parts
-          )
-
-          part_count="$(
-            find "$parts_dir" -maxdepth 1 -type f \
-              -name 'hydra-toolchain-linux-x64.part-*' | wc -l
-          )"
-          test "$part_count" -ge 1
-          if (( part_count > 16 )); then
-            echo "Hydra toolchain exceeds the 16-part transfer limit." >&2
-            exit 1
-          fi
-
-          {
-            echo "archive=$(basename "$archive")"
-            echo "archive_sha256=$(cut -d' ' -f1 "$archive.sha256")"
-            echo "part_count=$part_count"
-            echo "part_size=400M"
-            echo "package_sha256=$package_sha256"
-            echo "yarn_lock_sha256=$yarn_lock_sha256"
-            echo "reassemble=cat hydra-toolchain-linux-x64.part-* > $(basename "$archive")"
-            echo "verify_parts=sha256sum -c SHA256SUMS.parts"
-            echo "extract=tar --zstd -xf $(basename "$archive")"
-            echo
-            ls -lh "$parts_dir"/hydra-toolchain-linux-x64.part-*
-          } > "$parts_dir/PARTS.txt"
-
-          echo "parts_dir=$parts_dir" >> "$GITHUB_OUTPUT"
-          echo "archive_sha=$archive.sha256" >> "$GITHUB_OUTPUT"
-          echo "bundle_root=$bundle_root" >> "$GITHUB_OUTPUT"
-          for index in $(seq -f '%02g' 0 15); do
-            if [[ -f "$parts_dir/hydra-toolchain-linux-x64.part-$index" ]]; then
-              echo "part_$index=true" >> "$GITHUB_OUTPUT"
-            fi
-          done
-
-          ls -lh "$archive" "$archive.sha256" "$parts_dir"/*
+          bash scripts/build-hydra-toolchain.sh \
+            "$GITHUB_WORKSPACE/private-source" \
+            "$RUNNER_TEMP/hydra-toolchain" \
+            "$NODE_VERSION" \
+            "$YARN_VERSION" \
+            "$RUST_TOOLCHAIN"
 
       - name: Upload Hydra toolchain manifest
         uses: actions/upload-artifact@v7

@@ -22,6 +22,7 @@ for file in \
   .github/workflows/build-hydra.yml \
   keys/source-bundles-public.asc \
   scripts/assemble-source-bundle.sh \
+  scripts/build-hydra-toolchain.sh \
   scripts/validate-source-bundle-request.py \
   triggers/private-source-bundle.json \
   triggers/semogsite-source-bundle.json \
@@ -75,6 +76,7 @@ if not isinstance(trigger["ref"], str) or not trigger["ref"]:
 PY
 
 bash -n scripts/assemble-source-bundle.sh
+bash -n scripts/build-hydra-toolchain.sh
 
 export GNUPGHOME="$(mktemp -d)"
 trap 'rm -rf "$GNUPGHOME"' EXIT
@@ -93,12 +95,14 @@ legacy_build_workflow=.github/workflows/build-private-source-bundle.yml
 semogsite_build_workflow=.github/workflows/build-private-semogsite-source-bundle.yml
 hydra_build_workflow=.github/workflows/build-private-hydra-source-bundle.yml
 hydra_toolchain_workflow=.github/workflows/build-hydra.yml
+hydra_toolchain_builder=scripts/build-hydra-toolchain.sh
 
 require_text "$request_workflow" "build/source-bundles"
 require_text "$request_workflow" "build/semogsite-source-bundles"
 require_text "$request_workflow" "build/hydra-source-bundles"
 require_text "$request_workflow" "triggers/semogsite-source-bundle.json"
 require_text "$request_workflow" "triggers/hydra-source-bundle.json"
+require_text "$request_workflow" "scripts/build-hydra-toolchain.sh"
 require_text "$request_workflow" "persist-credentials: false"
 require_text "$request_workflow" "validate-source-bundle-request.py"
 
@@ -154,14 +158,24 @@ require_text "$hydra_toolchain_workflow" "PRIVATE_REPOSITORIES_TOKEN"
 require_text "$hydra_toolchain_workflow" "persist-credentials: false"
 require_text "$hydra_toolchain_workflow" "lfs: false"
 require_text "$hydra_toolchain_workflow" "submodules: false"
-require_text "$hydra_toolchain_workflow" "yarn install --frozen-lockfile --non-interactive"
-require_text "$hydra_toolchain_workflow" "yarn --cwd \"\$project\" install"
-require_text "$hydra_toolchain_workflow" "--offline"
-require_text "$hydra_toolchain_workflow" "cargo fetch"
-require_text "$hydra_toolchain_workflow" "rm -rf \"\$source_dir\""
-require_text "$hydra_toolchain_workflow" "split -b 400M"
-require_text "$hydra_toolchain_workflow" "part_count > 16"
+require_text "$hydra_toolchain_workflow" "bash scripts/build-hydra-toolchain.sh"
+require_text "$hydra_toolchain_workflow" "scripts/build-hydra-toolchain.sh"
 require_text "$hydra_toolchain_workflow" "retention-days: 1"
+require_text "$hydra_toolchain_workflow" "Upload Hydra toolchain part 15"
+
+require_text "$hydra_toolchain_builder" "yarn install --frozen-lockfile --non-interactive"
+require_text "$hydra_toolchain_builder" "yarn --cwd \"\$project\" install"
+require_text "$hydra_toolchain_builder" "verify_exact_input"
+require_text "$hydra_toolchain_builder" "--offline"
+require_text "$hydra_toolchain_builder" "CARGO_NET_OFFLINE=true"
+require_text "$hydra_toolchain_builder" "ELECTRON_CACHE"
+require_text "$hydra_toolchain_builder" "ELECTRON_BUILDER_CACHE"
+require_text "$hydra_toolchain_builder" "npm_config_devdir"
+require_text "$hydra_toolchain_builder" "fresh_home=\"\$(mktemp"
+require_text "$hydra_toolchain_builder" "ELECTRON_MIRROR=\"http://127.0.0.1:9/\""
+require_text "$hydra_toolchain_builder" 'rm -rf "$source_dir"'
+require_text "$hydra_toolchain_builder" "split -b 400M"
+require_text "$hydra_toolchain_builder" "part_count > 16"
 
 if git grep -n -E '^-----BEGIN PGP PRIVATE KEY BLOCK-----$'; then
   fail "private OpenPGP key material is tracked"
