@@ -34,10 +34,17 @@ deno_cache=canonical_registry_proxy_blocked_edge_checks_passed
 Archive:
 
 ```text
-6c89dbb395ace2fc1dd3329198631beb8565d78181a99a116ec6985dc8b88a3f  fichario-offline-linux-x64.tar.zst
+0d17265daae7bd88290d93965d3dfeef3d9b389ba6c88c5a56742e7557090172  fichario-offline-linux-x64.tar.zst
 ```
 
-As partes possuem checksums próprios no artifact `SHA256SUMS.parts`; os valores devem sempre ser lidos do manifest do run, porque uma nova fabricação pode produzir bytes diferentes mesmo para o mesmo source.
+Partes:
+
+```text
+8d1175d4159c1236f1fb1437205f6a5059ac6f522b83840e99d005fc42ed8a00  fichario-offline-linux-x64.part-00
+c22e0903b3bd766e723af9b3248ed24b8def6467c058585ead68c1768d140680  fichario-offline-linux-x64.part-01
+```
+
+Os valores devem sempre ser lidos do manifest do run, porque uma nova fabricação pode produzir bytes diferentes mesmo para o mesmo source.
 
 ## Validação fora do GitHub runner
 
