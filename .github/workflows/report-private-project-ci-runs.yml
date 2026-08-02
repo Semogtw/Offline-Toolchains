@@ -3,6 +3,7 @@ name: Report private project CI runs
 on:
   workflow_run:
     workflows:
+      - Request private project CI
       - Run private project CI
     types:
       - completed
@@ -41,16 +42,18 @@ jobs:
               },
             );
 
-            const projectJobs = jobs.filter((job) => [
+            const relevantJobs = jobs.filter((job) => [
+              'Validate allowlisted private CI request',
+              'Normalize trusted request',
               'GoAnime real CI and Android debug build',
               'ZapZap real Android CI and debug build',
               'SemogSite real checks and production build',
             ].includes(job.name));
 
-            const jobLines = projectJobs.length === 0
-              ? ['- Project job: not started or unavailable']
-              : projectJobs.map((job) =>
-                  `- Project job: \`${job.name}\` — \`${job.conclusion ?? job.status}\``
+            const jobLines = relevantJobs.length === 0
+              ? ['- Relevant job: not started or unavailable']
+              : relevantJobs.map((job) =>
+                  `- Relevant job: \`${job.name}\` — \`${job.conclusion ?? job.status}\``
                 );
 
             const body = [
