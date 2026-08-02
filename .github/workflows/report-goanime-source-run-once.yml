@@ -1,0 +1,51 @@
+name: Report GoAnime source run once
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/report-goanime-source-run-once.yml
+
+permissions:
+  actions: read
+  issues: write
+  contents: write
+
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Report recent private source bundle runs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const response = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'build-private-source-bundle.yml',
+              per_page: 5,
+            });
+            const lines = response.data.workflow_runs.map((run) =>
+              `- ${run.id}: ${run.status}/${run.conclusion ?? 'pending'}; event=${run.event}; head=${run.head_sha}; created=${run.created_at}`
+            );
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 4,
+              body: `<!-- goanime-source-run-report:${context.runId} -->\n### Recent GoAnime private source runs\n\n${lines.join('\n')}`,
+            });
+      - name: Remove observer
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --branch main --single-branch \
+            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" \
+            "$RUNNER_TEMP/main-cleanup"
+          cd "$RUNNER_TEMP/main-cleanup"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/report-goanime-source-run-once.yml
+          git commit -m 'chore(source): remove temporary GoAnime run reporter'
+          git push origin main
