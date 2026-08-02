@@ -6,6 +6,12 @@ on:
       - ops/semogsite-patch-requests
     paths:
       - triggers/semogsite-agent-patch.json
+  pull_request:
+    branches:
+      - main
+    paths:
+      - triggers/semogsite-agent-patch.json
+      - payloads/semogsite-agent-patch.diff.gz.b64
 
 permissions:
   contents: read
@@ -17,7 +23,9 @@ concurrency:
 jobs:
   apply:
     name: Apply verified SemogSite patch
-    if: github.actor == github.repository_owner
+    if: >-
+      github.actor == github.repository_owner &&
+      (github.event_name == 'push' || github.event.pull_request.head.ref == 'ops/semogsite-patch-requests')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
 
@@ -31,7 +39,7 @@ jobs:
       - name: Checkout owner patch request
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: request
           persist-credentials: false
           sparse-checkout: |
