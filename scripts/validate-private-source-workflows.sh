@@ -40,6 +40,12 @@ if printf '%s' '{"project":"zapzap","mode":"ref","ref":"development/android-buil
 else
   fail "ordinary branch paths must be accepted"
 fi
+if printf '%s' '{"project":"semogsite","mode":"ref","ref":"develop/foundation-bootstrap"}' |
+   python3 scripts/validate-source-bundle-request.py - >/dev/null; then
+  :
+else
+  fail "SemogSite source requests must be accepted"
+fi
 
 bash -n scripts/assemble-source-bundle.sh
 
@@ -68,6 +74,7 @@ require_text "$build_workflow" "github.event.workflow_run.actor.login == github.
 require_text "$build_workflow" "PRIVATE_REPOSITORIES_TOKEN"
 require_text "$build_workflow" '"goanime": "Semogtw/goanime-mobile"'
 require_text "$build_workflow" '"zapzap": "Semogtw/Zapzap"'
+require_text "$build_workflow" '"semogsite": "Semogtw/SemogSite"'
 require_text "$build_workflow" "fetch-depth: 0"
 require_text "$build_workflow" "persist-credentials: false"
 require_text "$build_workflow" "lfs: false"
