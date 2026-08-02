@@ -64,6 +64,28 @@ jobs:
               print(f"{key}={value}")
           PY
 
+      - name: Decode verified patch
+        shell: bash
+        env:
+          EXPECTED_PATCH_SHA256: ${{ steps.request.outputs.expected_patch_sha256 }}
+        run: |
+          set -euo pipefail
+          base64 --decode request/payloads/semogsite-agent-patch.diff.gz.b64 \
+            | gzip --decompress > "$RUNNER_TEMP/semogsite-agent.patch"
+          test "$(sha256sum "$RUNNER_TEMP/semogsite-agent.patch" | awk '{print $1}')" = "$EXPECTED_PATCH_SHA256"
+          cp request/triggers/semogsite-agent-patch.json "$RUNNER_TEMP/semogsite-agent-patch.json"
+
+      - name: Upload verified patch
+        uses: actions/upload-artifact@v7
+        with:
+          name: semogsite-agent-patch-verified
+          path: |
+            ${{ runner.temp }}/semogsite-agent.patch
+            ${{ runner.temp }}/semogsite-agent-patch.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
       - name: Require private repository token
         shell: bash
         env:
@@ -92,21 +114,15 @@ jobs:
         env:
           EXPECTED_HEAD: ${{ steps.request.outputs.expected_head }}
           BASE_COMMIT: ${{ steps.request.outputs.base_commit }}
-          EXPECTED_PATCH_SHA256: ${{ steps.request.outputs.expected_patch_sha256 }}
           EXPECTED_TREE: ${{ steps.request.outputs.expected_tree }}
           COMMIT_MESSAGE: ${{ steps.request.outputs.commit_message }}
         run: |
           set -euo pipefail
           test "$(git -C private-source rev-parse HEAD)" = "$EXPECTED_HEAD"
-          base64 --decode request/payloads/semogsite-agent-patch.diff.gz.b64 \
-            | gzip --decompress > "$RUNNER_TEMP/semogsite-agent.patch"
-          test "$(sha256sum "$RUNNER_TEMP/semogsite-agent.patch" | awk '{print $1}')" = "$EXPECTED_PATCH_SHA256"
-
           git -C private-source reset --hard "$BASE_COMMIT"
           git -C private-source apply --index "$RUNNER_TEMP/semogsite-agent.patch"
           git -C private-source diff --cached --check
           test "$(git -C private-source write-tree)" = "$EXPECTED_TREE"
-
           git -C private-source config user.name "Arthur Almeida"
           git -C private-source config user.email "arthurgva1602@gmail.com"
           git -C private-source commit -m "$COMMIT_MESSAGE"
