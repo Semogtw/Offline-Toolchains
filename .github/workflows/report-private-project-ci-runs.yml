@@ -1,0 +1,95 @@
+name: Report private project CI runs
+
+on:
+  workflow_run:
+    workflows:
+      - Run private project CI
+    types:
+      - completed
+
+permissions:
+  actions: read
+  issues: write
+
+concurrency:
+  group: private-project-ci-receipt-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  report:
+    name: Publish sanitized run receipt
+    if: >-
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.actor.login == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Comment completion receipt
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const marker = `<!-- private-project-ci-run:${run.id} -->`;
+            const jobs = await github.paginate(
+              github.rest.actions.listJobsForWorkflowRun,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: run.id,
+                per_page: 100,
+              },
+            );
+
+            const projectJobs = jobs.filter((job) => [
+              'GoAnime real CI and Android debug build',
+              'ZapZap real Android CI and debug build',
+              'SemogSite real checks and production build',
+            ].includes(job.name));
+
+            const jobLines = projectJobs.length === 0
+              ? ['- Project job: not started or unavailable']
+              : projectJobs.map((job) =>
+                  `- Project job: \`${job.name}\` — \`${job.conclusion ?? job.status}\``
+                );
+
+            const body = [
+              marker,
+              `### ${run.name}`,
+              '',
+              `- Run: [${run.id}](${run.html_url})`,
+              `- Conclusion: \`${run.conclusion}\``,
+              `- Trigger event: \`${run.event}\``,
+              `- Public branch: \`${run.head_branch ?? 'n/a'}\``,
+              `- Public head: \`${run.head_sha}\``,
+              `- Actor: \`${run.actor?.login ?? 'unknown'}\``,
+              ...jobLines,
+              '- Private source, private resolved commit, logs, artifacts, and build outputs are intentionally omitted.',
+            ].join('\n');
+
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: 15,
+                per_page: 100,
+              },
+            );
+            const existing = comments.find((comment) => comment.body?.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: 15,
+                body,
+              });
+            }
