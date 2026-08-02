@@ -5,20 +5,27 @@ on:
     branches:
       - build/source-bundles
       - build/semogsite-source-bundles
+      - build/hydra-source-bundles
     paths:
       - triggers/private-source-bundle.json
       - triggers/semogsite-source-bundle.json
+      - triggers/hydra-source-bundle.json
   pull_request:
     paths:
       - .github/workflows/request-private-source-bundle.yml
       - .github/workflows/build-private-source-bundle.yml
       - .github/workflows/build-private-semogsite-source-bundle.yml
+      - .github/workflows/build-private-hydra-source-bundle.yml
+      - .github/workflows/build-hydra.yml
       - scripts/validate-source-bundle-request.py
       - scripts/assemble-source-bundle.sh
       - scripts/validate-private-source-workflows.sh
       - keys/source-bundles-public.asc
       - triggers/private-source-bundle.json
       - triggers/semogsite-source-bundle.json
+      - triggers/hydra-source-bundle.json
+      - triggers/hydra-toolchain.json
+      - docs/HYDRA_TOOLCHAIN.md
       - README.md
       - docs/superpowers/specs/2026-07-31-private-source-bundles-design.md
       - docs/superpowers/plans/2026-07-31-private-source-bundles.md
@@ -45,6 +52,8 @@ jobs:
             triggers/private-source-bundle.json
           python3 scripts/validate-source-bundle-request.py \
             triggers/semogsite-source-bundle.json
+          python3 scripts/validate-source-bundle-request.py \
+            triggers/hydra-source-bundle.json
 
       - name: Verify committed encryption key
         shell: bash
