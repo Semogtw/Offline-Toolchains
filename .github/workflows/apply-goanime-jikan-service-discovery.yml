@@ -117,3 +117,5 @@ jobs:
               issue_number: 4,
               body: `<!-- goanime-jikan-service-discovery-result:${context.runId} -->\n### Apply GoAnime Jikan service discovery hardening result\n\n- Run: ${context.runId}\n- Result: ${{ job.status }}`,
             });
+
+# retry: exact payload restored
