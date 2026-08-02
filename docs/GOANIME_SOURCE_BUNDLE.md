@@ -30,7 +30,8 @@ push triggers/private-source-bundle.json on build/source-bundles
   -> checkout private repository with PRIVATE_REPOSITORIES_TOKEN
   -> resolve exact ref
   -> archive, encrypt and split
-  -> upload one-day artifacts and public receipt metadata
+  -> upload one-day artifacts
+  -> record public artifact metadata on build/source-bundles
 ```
 
 ## Security boundary
@@ -67,22 +68,44 @@ For an exact commit:
 
 Use a full commit SHA for validation checkpoints. Branch names are supported by the schema, but a branch can move between request and later comparison.
 
+## Versioned public receipt
+
+After a successful trusted builder run, `.github/workflows/record-goanime-source-receipt.yml` lists that run's public artifact metadata and updates:
+
+```text
+receipts/goanime-latest.json
+```
+
+on `build/source-bundles`.
+
+The receipt contains only reusable transport metadata:
+
+- workflow run ID and URL;
+- workflow event/head SHA;
+- artifact IDs, names, sizes, creation/expiry timestamps and expired state;
+- receipt schema version and recording time.
+
+It does not download or inspect private source bytes, access `PRIVATE_REPOSITORIES_TOKEN`, import a private OpenPGP key, or modify the request trigger. Builder runs without `private-source-goanime-*` artifacts are ignored.
+
+The receipt replaces reliance on the noisy shared issue-comment feed when locating artifacts. It does not prove the artifact contains the requested source commit; the encrypted archive's internal manifest remains authoritative.
+
 ## Required consumer validation
 
-Never trust an artifact only because its name contains `goanime`.
+Never trust an artifact only because its name contains `goanime` or because it appears in the versioned receipt.
 
 Before extraction or testing:
 
-1. download the public artifact manifest and all encrypted parts;
-2. verify every part size and SHA-256 from the public manifest;
-3. import the private key into a temporary `GNUPGHOME`;
-4. decrypt and concatenate exactly the listed parts;
-5. verify the plaintext archive SHA-256;
-6. extract into a new directory;
-7. read `PRIVATE-MANIFEST.json` inside the archive;
-8. require `project == goanime`;
-9. require both requested and resolved refs to match the intended commit;
-10. reject the bundle before running gates when any value differs.
+1. read `receipts/goanime-latest.json` and require the artifacts to be unexpired;
+2. download the public artifact manifest and every listed encrypted part;
+3. verify every part size and SHA-256 from the public manifest;
+4. import the private key into a temporary `GNUPGHOME`;
+5. decrypt and concatenate exactly the listed parts;
+6. verify the plaintext archive SHA-256;
+7. extract into a new directory;
+8. read `PRIVATE-MANIFEST.json` inside the archive;
+9. require `project == goanime`;
+10. require both requested and resolved refs to match the intended commit;
+11. reject the bundle before running gates when any value differs.
 
 A successful workflow run with the wrong resolved commit is not valid evidence for the requested head.
 
@@ -118,13 +141,17 @@ Run:
 
 ```bash
 bash scripts/validate-private-source-workflows.sh
+bash scripts/validate-source-receipt-workflow.sh
 ```
 
-The guard verifies that:
+The guards verify that:
 
 - the generic request excludes the GoAnime branch;
 - the dedicated request accepts only `project=goanime`;
 - the public-key fingerprint is fixed;
 - the trusted builder still checks branch, actor and event;
 - secret material is not tracked;
-- artifact splitting, retention and cleanup invariants remain present.
+- artifact splitting, retention and cleanup invariants remain present;
+- the receipt workflow reads only public Actions metadata;
+- the receipt workflow cannot access private source credentials or mutate requests;
+- receipts are committed only to `build/source-bundles`.
