@@ -178,6 +178,7 @@ def validate_privileged_workflow(text: str) -> None:
 def validate_report_workflow(text: str) -> None:
     for fragment in (
         "name: Report private project CI runs",
+        "- Request private project CI",
         "- Run private project CI",
         "actions: read",
         "issues: write",
@@ -185,6 +186,8 @@ def validate_report_workflow(text: str) -> None:
         "github.event.workflow_run.actor.login == github.repository_owner",
         "uses: actions/github-script@v8",
         "github.rest.actions.listJobsForWorkflowRun",
+        "Validate allowlisted private CI request",
+        "Normalize trusted request",
         "GoAnime real CI and Android debug build",
         "ZapZap real Android CI and debug build",
         "SemogSite real checks and production build",
