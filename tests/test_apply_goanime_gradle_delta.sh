@@ -34,3 +34,13 @@ bash "$root/scripts/apply-goanime-gradle-delta.sh" \
   "$tmp/delta" "$tmp/target"
 grep -Fqx 'engine jar' \
   "$tmp/target/offline-goanime-maven/io/flutter/flutter_embedding_debug/$engine_version/flutter_embedding_debug-$engine_version.jar"
+
+# A conflicting cached artifact must fail instead of silently replacing bytes.
+printf 'tampered engine jar\n' > \
+  "$engine_cache/jar-hash/flutter_embedding_debug-$engine_version.jar"
+if bash "$root/scripts/apply-goanime-gradle-delta.sh" \
+    "$tmp/delta" "$tmp/target" > "$tmp/conflict.log" 2>&1; then
+  echo 'expected conflicting Flutter Maven artifact to fail' >&2
+  exit 1
+fi
+grep -Fq 'conflicting Flutter Maven artifact' "$tmp/conflict.log"
