@@ -1,0 +1,44 @@
+name: Patch Fichário source gate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/patch-fichario-source-gate.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Add offline source gate
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('.github/workflows/build-fichario.yml')
+          source = path.read_text()
+          old = '''          pnpm --dir "$smoke" verify
+          pnpm --dir "$smoke" test:e2e
+          pnpm --dir "$smoke" test:functions:check
+'''
+          new = '''          pnpm --dir "$smoke" verify
+          pnpm --dir "$smoke" test:source:offline
+          pnpm --dir "$smoke" test:e2e
+          pnpm --dir "$smoke" test:functions:check
+'''
+          if source.count(old) != 1:
+              raise SystemExit('expected verification block exactly once')
+          path.write_text(source.replace(old, new))
+      - name: Commit patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/build-fichario.yml
+          git commit -m 'ci: verify Fichário source gates in offline bundle'
+          git push origin HEAD:main
