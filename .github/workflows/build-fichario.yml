@@ -91,7 +91,21 @@ jobs:
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
           TOOLCHAIN_SHA: ${{ github.sha }}
           SOURCE_DIR: fichario-source
-        run: bash scripts/build-fichario-offline.sh
+        shell: bash
+        run: |
+          set -o pipefail
+          bash -x scripts/build-fichario-offline.sh 2>&1 \
+            | tee "$RUNNER_TEMP/fichario-offline-build.log"
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fichario-offline-build-diagnostics
+          path: ${{ runner.temp }}/fichario-offline-build.log
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 1
 
       - name: Upload manifest
         uses: actions/upload-artifact@v7
