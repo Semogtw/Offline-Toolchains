@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RUN_WORKFLOW = ROOT / ".github/workflows/run-private-project-ci.yml"
+FICHARIO_WORKFLOW = ROOT / ".github/workflows/run-fichario-ci.yml"
 REQUEST_WORKFLOW = ROOT / ".github/workflows/request-private-project-ci.yml"
 REPORT_WORKFLOW = ROOT / ".github/workflows/report-private-project-ci-runs.yml"
 REQUEST_FILE = ROOT / "triggers/private-ci.json"
@@ -143,31 +144,25 @@ def validate_privileged_workflow(text: str) -> None:
         "pnpm check",
         "pnpm build",
         'corepack prepare "$package_manager" --activate',
-        "Fichário Virtual complete verification",
-        "needs.normalize.outputs.project == 'fichario'",
-        "pnpm exec playwright install --with-deps chromium",
-        "uses: denoland/setup-deno@v2",
-        "uses: supabase/setup-cli@v1",
-        "run: pnpm verify:full",
     ):
         require(text, fragment, "privileged workflow")
 
-    require_count(text, "path: private-source", 4, "privileged workflow")
-    require_count(text, "fetch-depth: 1", 4, "privileged workflow")
-    require_count(text, "persist-credentials: false", 6, "privileged workflow")
-    require_count(text, "lfs: false", 4, "privileged workflow")
-    require_count(text, "submodules: false", 4, "privileged workflow")
+    require_count(text, "path: private-source", 3, "privileged workflow")
+    require_count(text, "fetch-depth: 1", 3, "privileged workflow")
+    require_count(text, "persist-credentials: false", 5, "privileged workflow")
+    require_count(text, "lfs: false", 3, "privileged workflow")
+    require_count(text, "submodules: false", 3, "privileged workflow")
     require_count(text, "shell: pwsh", 2, "privileged workflow")
     require_count(
         text,
         'run: rm -rf "$GITHUB_WORKSPACE/private-source"',
-        4,
+        3,
         "privileged workflow",
     )
     require_count(
         text,
         "Build outputs were verified and discarded; no private artifact was uploaded.",
-        4,
+        3,
         "privileged workflow",
     )
 
@@ -181,14 +176,63 @@ def validate_privileged_workflow(text: str) -> None:
         "client_payload.runner",
         "secrets: inherit",
         "persist-credentials: true",
+        "FicharioVirtual",
+        "fichario",
     ):
         forbid(text, fragment, "privileged workflow")
+
+
+def validate_fichario_workflow(text: str) -> None:
+    for fragment in (
+        "name: Run Fichario CI",
+        "workflow_dispatch:",
+        "workflow_run:",
+        "- Request private project CI",
+        "github.event.workflow_run.conclusion == 'success'",
+        "github.event.workflow_run.head_branch == 'build/private-ci'",
+        "github.event.workflow_run.event == 'push'",
+        "github.event.workflow_run.actor.login == github.repository_owner",
+        "github.event.workflow_run.head_repository.full_name == github.repository",
+        "python3 trusted-source/scripts/private_ci_request.py",
+        'test "$PROJECT" = "fichario"',
+        "repository: Semogtw/FicharioVirtual",
+        "ref: ${{ steps.request.outputs.ref }}",
+        "path: public-source",
+        "persist-credentials: false",
+        "fetch-depth: 1",
+        "uses: pnpm/action-setup@v6",
+        "version: 10",
+        "uses: actions/setup-node@v6",
+        'node-version: "22.16.0"',
+        "pnpm install --frozen-lockfile",
+        "pnpm exec playwright install --with-deps chromium",
+        "uses: denoland/setup-deno@v2",
+        "uses: supabase/setup-cli@v1",
+        "run: pnpm verify:full",
+        'run: rm -rf "$GITHUB_WORKSPACE/public-source"',
+        "Fichário Virtual complete verification",
+    ):
+        require(text, fragment, "Fichario workflow")
+
+    for fragment in (
+        "PRIVATE_REPOSITORIES_TOKEN",
+        "secrets.",
+        "actions/upload-artifact",
+        "actions/cache",
+        "cache: true",
+        "persist-credentials: true",
+        "client_payload.repository",
+        "client_payload.command",
+        "secrets: inherit",
+    ):
+        forbid(text, fragment, "Fichario workflow")
 
 
 def validate_report_workflow(text: str) -> None:
     for fragment in (
         "name: Report private project CI runs",
         "- Run private project CI",
+        "- Run Fichario CI",
         "actions: read",
         "issues: write",
         "github.event.workflow_run.head_repository.full_name == github.repository",
@@ -253,6 +297,7 @@ def main() -> int:
         validate_request_library(read(REQUEST_LIBRARY))
         validate_request_workflow(read(REQUEST_WORKFLOW))
         validate_privileged_workflow(read(RUN_WORKFLOW))
+        validate_fichario_workflow(read(FICHARIO_WORKFLOW))
         validate_report_workflow(read(REPORT_WORKFLOW))
         validate_request_json()
         validate_docs()
