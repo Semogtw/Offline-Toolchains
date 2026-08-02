@@ -16,6 +16,7 @@ require_text() {
 
 for file in \
   .github/workflows/request-private-source-bundle.yml \
+  .github/workflows/request-goanime-source-bundle.yml \
   .github/workflows/build-private-source-bundle.yml \
   .github/workflows/build-private-semogsite-source-bundle.yml \
   .github/workflows/build-private-hydra-source-bundle.yml \
@@ -91,6 +92,7 @@ fingerprint="$({
   fail "tracked key material must not include a secret key"
 
 request_workflow=.github/workflows/request-private-source-bundle.yml
+goanime_request_workflow=.github/workflows/request-goanime-source-bundle.yml
 legacy_build_workflow=.github/workflows/build-private-source-bundle.yml
 semogsite_build_workflow=.github/workflows/build-private-semogsite-source-bundle.yml
 hydra_build_workflow=.github/workflows/build-private-hydra-source-bundle.yml
@@ -106,7 +108,15 @@ require_text "$request_workflow" "scripts/build-hydra-toolchain.sh"
 require_text "$request_workflow" "persist-credentials: false"
 require_text "$request_workflow" "validate-source-bundle-request.py"
 
+require_text "$goanime_request_workflow" "name: Request GoAnime source bundle"
+require_text "$goanime_request_workflow" "build/source-bundles"
+require_text "$goanime_request_workflow" "triggers/private-source-bundle.json"
+require_text "$goanime_request_workflow" "persist-credentials: false"
+require_text "$goanime_request_workflow" "validate-source-bundle-request.py"
+require_text "$goanime_request_workflow" "EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0"
+
 require_text "$legacy_build_workflow" "workflow_run"
+require_text "$legacy_build_workflow" "Request GoAnime source bundle"
 require_text "$legacy_build_workflow" "github.event.workflow_run.head_branch == 'build/source-bundles'"
 require_text "$legacy_build_workflow" "github.event.workflow_run.actor.login == github.repository_owner"
 require_text "$legacy_build_workflow" "PRIVATE_REPOSITORIES_TOKEN"
