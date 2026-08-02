@@ -4,6 +4,7 @@ on:
   workflow_run:
     workflows:
       - Run private project CI
+      - Run Fichario CI
     types:
       - completed
 
@@ -45,6 +46,7 @@ jobs:
               'GoAnime real CI and Android debug build',
               'ZapZap real Android CI and debug build',
               'SemogSite real checks and production build',
+              'Fichário Virtual complete verification',
             ].includes(job.name));
 
             const jobLines = projectJobs.length === 0
