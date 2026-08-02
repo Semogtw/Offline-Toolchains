@@ -1,3 +1,5 @@
+import org.gradle.api.initialization.resolve.RepositoriesMode
+
 def goAnimeOfflineRepository = new File(
     gradle.gradleUserHomeDir,
     'offline-goanime-maven'
@@ -5,14 +7,27 @@ def goAnimeOfflineRepository = new File(
 def goAnimeOfflineRepositoryUri = goAnimeOfflineRepository.toURI()
 
 settingsEvaluated { settings ->
+    def dependencyResolutionManagement
     try {
-        settings.dependencyResolutionManagement.repositories.maven {
-            name = 'GoAnimeOfflineDelta'
-            url = goAnimeOfflineRepositoryUri
-        }
+        dependencyResolutionManagement = settings.dependencyResolutionManagement
     } catch (MissingPropertyException ignored) {
         throw new GradleException(
             'GoAnime offline Maven delta requires dependencyResolutionManagement.'
         )
+    }
+
+    dependencyResolutionManagement.repositories.maven {
+        name = 'GoAnimeOfflineDelta'
+        url = goAnimeOfflineRepositoryUri
+    }
+
+    def repositoryMode = dependencyResolutionManagement.repositoriesMode.get()
+    if (repositoryMode != RepositoriesMode.FAIL_ON_PROJECT_REPOS) {
+        settings.gradle.beforeProject { project ->
+            project.repositories.maven {
+                name = 'GoAnimeOfflineDeltaProject'
+                url = goAnimeOfflineRepositoryUri
+            }
+        }
     }
 }
