@@ -72,3 +72,5 @@ dependency_overrides:
 
 flutter:
   uses-material-design: true
+
+# Connector rebuild marker: 2026-08-02T12:45:00-03:00
