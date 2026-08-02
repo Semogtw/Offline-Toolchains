@@ -1,0 +1,460 @@
+name: Run private project CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: Allowlisted private project
+        required: true
+        type: choice
+        options:
+          - goanime
+          - zapzap
+          - semogsite
+      ref:
+        description: Exact branch, tag, or commit; empty uses the project default
+        required: false
+        default: ""
+        type: string
+  repository_dispatch:
+    types:
+      - private-project-ci
+  workflow_run:
+    workflows:
+      - Request private project CI
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-project-ci-${{ github.event_name }}-${{ github.event.workflow_run.id || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  normalize:
+    name: Normalize trusted request
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'build/private-ci' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.actor.login == github.repository_owner &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      project: ${{ steps.request.outputs.project }}
+      repository: ${{ steps.request.outputs.repository }}
+      ref: ${{ steps.request.outputs.ref }}
+      default_ref: ${{ steps.request.outputs.default_ref }}
+
+    steps:
+      - name: Require owner for direct dispatches
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch'
+        shell: bash
+        env:
+          ACTOR: ${{ github.actor }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          test "$ACTOR" = "$OWNER"
+
+      - name: Checkout trusted workflow implementation
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: trusted-source
+          persist-credentials: false
+          sparse-checkout: scripts/private_ci_request.py
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout connector request revision
+        if: github.event_name == 'workflow_run'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          path: request-source
+          persist-credentials: false
+          sparse-checkout: triggers/private-ci.json
+          sparse-checkout-cone-mode: false
+
+      - name: Normalize request
+        id: request
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_PROJECT: ${{ github.event_name == 'workflow_dispatch' && inputs.project || github.event.client_payload.project }}
+          INPUT_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.event.client_payload.ref }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "workflow_run" ]]; then
+            request_file="request-source/triggers/private-ci.json"
+          else
+            request_file="$RUNNER_TEMP/private-ci-request.json"
+            python3 - "$request_file" <<'PY'
+          import json
+          import os
+          import sys
+
+          output_path = sys.argv[1]
+          payload = {
+              "project": os.environ.get("INPUT_PROJECT", ""),
+              "ref": os.environ.get("INPUT_REF", ""),
+          }
+          with open(output_path, "w", encoding="utf-8") as stream:
+              json.dump(payload, stream)
+          PY
+          fi
+
+          normalized="$(
+            python3 trusted-source/scripts/private_ci_request.py "$request_file"
+          )"
+          python3 - "$normalized" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          request = json.loads(sys.argv[1])
+          output_path = sys.argv[2]
+          with open(output_path, "a", encoding="utf-8") as stream:
+              for key in ("project", "repository", "ref", "default_ref"):
+                  value = request[key]
+                  if "\n" in value or "\r" in value:
+                      raise SystemExit(f"unsafe newline in normalized {key}")
+                  stream.write(f"{key}={value}\n")
+          PY
+
+      - name: Summarize request
+        shell: bash
+        env:
+          PROJECT: ${{ steps.request.outputs.project }}
+          REPOSITORY: ${{ steps.request.outputs.repository }}
+          REQUESTED_REF: ${{ steps.request.outputs.ref }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          {
+            echo "## Private project CI request"
+            echo
+            echo "- Event: \`$EVENT_NAME\`"
+            echo "- Project: \`$PROJECT\`"
+            echo "- Repository: \`$REPOSITORY\`"
+            echo "- Ref: \`$REQUESTED_REF\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  goanime:
+    name: GoAnime real CI and Android debug build
+    needs: normalize
+    if: needs.normalize.outputs.project == 'goanime'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPOSITORIES_TOKEN" || {
+            echo "Missing Actions secret PRIVATE_REPOSITORIES_TOKEN." >&2
+            exit 1
+          }
+
+      - name: Checkout private GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ needs.normalize.outputs.repository }}
+          ref: ${{ needs.normalize.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Record resolved private commit
+        id: source
+        shell: bash
+        run: echo "sha=$(git -C private-source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Expose Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+
+      - name: Disable Flutter analytics
+        working-directory: private-source
+        run: flutter config --no-analytics
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get
+
+      - name: Require PowerShell
+        shell: bash
+        run: command -v pwsh >/dev/null
+
+      - name: Validate project health
+        working-directory: private-source
+        shell: pwsh
+        run: ./tools/validate_project_health.ps1
+
+      - name: Check formatting
+        working-directory: private-source
+        shell: bash
+        run: dart format --output=none --set-exit-if-changed lib test packages tools
+
+      - name: Analyze
+        working-directory: private-source
+        run: flutter analyze --no-pub
+
+      - name: Run tests
+        working-directory: private-source
+        run: flutter test --no-pub
+
+      - name: Validate release workflow invariants
+        working-directory: private-source
+        shell: pwsh
+        run: ./tools/validate_release_workflows.ps1
+
+      - name: Build Android debug APK
+        working-directory: private-source
+        run: flutter build apk --debug --no-pub
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
+
+      - name: Summarize result
+        if: always()
+        shell: bash
+        env:
+          REQUESTED_REF: ${{ needs.normalize.outputs.ref }}
+          RESOLVED_SHA: ${{ steps.source.outputs.sha }}
+          RESULT: ${{ job.status }}
+        run: |
+          {
+            echo "## GoAnime public-runner CI"
+            echo
+            echo "- Requested ref: \`$REQUESTED_REF\`"
+            echo "- Resolved commit: \`${RESOLVED_SHA:-unresolved}\`"
+            echo "- Result: \`$RESULT\`"
+            echo "- Build outputs were verified and discarded; no private artifact was uploaded."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  zapzap:
+    name: ZapZap real Android CI and debug build
+    needs: normalize
+    if: needs.normalize.outputs.project == 'zapzap'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPOSITORIES_TOKEN" || {
+            echo "Missing Actions secret PRIVATE_REPOSITORIES_TOKEN." >&2
+            exit 1
+          }
+
+      - name: Checkout private ZapZap source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ needs.normalize.outputs.repository }}
+          ref: ${{ needs.normalize.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Record resolved private commit
+        id: source
+        shell: bash
+        run: echo "sha=$(git -C private-source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Expose Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35 components
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Configure Gradle without shared project cache
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-disabled: true
+
+      - name: Ensure Gradle wrapper is executable
+        working-directory: private-source
+        run: chmod +x ./gradlew
+
+      - name: Run pure tests
+        working-directory: private-source
+        run: bash ./tools/checks/run_pure_tests.sh
+
+      - name: Audit sources
+        working-directory: private-source
+        run: bash ./tools/checks/audit_sources.sh
+
+      - name: Verify Android baseline
+        working-directory: private-source
+        run: bash ./tools/checks/verify_android_baseline.sh
+
+      - name: Run Android unit tests
+        working-directory: private-source
+        run: ./gradlew --no-daemon testDebugUnitTest
+
+      - name: Run Android lint
+        working-directory: private-source
+        run: ./gradlew --no-daemon lintDebug
+
+      - name: Build Android debug APK
+        working-directory: private-source
+        run: ./gradlew --no-daemon :app:assembleDebug
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
+
+      - name: Summarize result
+        if: always()
+        shell: bash
+        env:
+          REQUESTED_REF: ${{ needs.normalize.outputs.ref }}
+          RESOLVED_SHA: ${{ steps.source.outputs.sha }}
+          RESULT: ${{ job.status }}
+        run: |
+          {
+            echo "## ZapZap public-runner CI"
+            echo
+            echo "- Requested ref: \`$REQUESTED_REF\`"
+            echo "- Resolved commit: \`${RESOLVED_SHA:-unresolved}\`"
+            echo "- Result: \`$RESULT\`"
+            echo "- Build outputs were verified and discarded; no private artifact was uploaded."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  semogsite:
+    name: SemogSite real checks and production build
+    needs: normalize
+    if: needs.normalize.outputs.project == 'semogsite'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPOSITORIES_TOKEN" || {
+            echo "Missing Actions secret PRIVATE_REPOSITORIES_TOKEN." >&2
+            exit 1
+          }
+
+      - name: Checkout private SemogSite source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ needs.normalize.outputs.repository }}
+          ref: ${{ needs.normalize.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Record resolved private commit
+        id: source
+        shell: bash
+        run: echo "sha=$(git -C private-source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          check-latest: false
+
+      - name: Activate repository-pinned pnpm
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_manager="$(
+            node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).packageManager"
+          )"
+          case "$package_manager" in
+            pnpm@*) ;;
+            *)
+              echo "package.json must declare packageManager as pnpm@<version>." >&2
+              exit 1
+              ;;
+          esac
+          corepack enable
+          corepack prepare "$package_manager" --activate
+          pnpm --version
+
+      - name: Install locked dependencies
+        working-directory: private-source
+        run: pnpm install --frozen-lockfile
+
+      - name: Run guardrails, typechecks and tests
+        working-directory: private-source
+        run: pnpm check
+
+      - name: Build production workspaces
+        working-directory: private-source
+        run: pnpm build
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
+
+      - name: Summarize result
+        if: always()
+        shell: bash
+        env:
+          REQUESTED_REF: ${{ needs.normalize.outputs.ref }}
+          RESOLVED_SHA: ${{ steps.source.outputs.sha }}
+          RESULT: ${{ job.status }}
+        run: |
+          {
+            echo "## SemogSite public-runner CI"
+            echo
+            echo "- Requested ref: \`$REQUESTED_REF\`"
+            echo "- Resolved commit: \`${RESOLVED_SHA:-unresolved}\`"
+            echo "- Result: \`$RESULT\`"
+            echo "- Build outputs were verified and discarded; no private artifact was uploaded."
+          } >> "$GITHUB_STEP_SUMMARY"

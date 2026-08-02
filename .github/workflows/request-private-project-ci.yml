@@ -1,0 +1,58 @@
+name: Request private project CI
+
+on:
+  push:
+    branches:
+      - build/private-ci
+    paths:
+      - triggers/private-ci.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-ci-request-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate allowlisted private CI request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Require an owner-authored push
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          test "$EVENT_NAME" = "push"
+          test "$ACTOR" = "$OWNER"
+
+      - name: Checkout trusted request validator
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: trusted-source
+          persist-credentials: false
+          sparse-checkout: scripts/private_ci_request.py
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout request revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: request-source
+          persist-credentials: false
+          sparse-checkout: triggers/private-ci.json
+          sparse-checkout-cone-mode: false
+
+      - name: Validate request
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 trusted-source/scripts/private_ci_request.py \
+            request-source/triggers/private-ci.json
