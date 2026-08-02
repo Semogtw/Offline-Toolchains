@@ -1,0 +1,2 @@
+GoAnime exact Gradle Maven delta trigger.
+Update this file to request a fresh one-day artifact set.
