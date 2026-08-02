@@ -1,0 +1,29 @@
+name: Toolchain security gates
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Validate shell syntax
+        run: |
+          bash -n scripts/check-no-private-material.sh
+          bash -n scripts/build-fichario-offline.sh
+
+      - name: Reject tracked private material
+        run: bash scripts/check-no-private-material.sh
