@@ -5,6 +5,7 @@ on:
     workflows:
       - Run private project CI
       - Run Fichario CI
+      - Bootstrap Fichario lockfile
     types:
       - completed
 
@@ -47,6 +48,7 @@ jobs:
               'ZapZap real Android CI and debug build',
               'SemogSite real checks and production build',
               'Fichário Virtual complete verification',
+              'Fichário lockfile bootstrap',
             ].includes(job.name));
 
             const jobLines = projectJobs.length === 0
