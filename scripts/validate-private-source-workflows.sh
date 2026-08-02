@@ -99,7 +99,6 @@ hydra_build_workflow=.github/workflows/build-private-hydra-source-bundle.yml
 hydra_toolchain_workflow=.github/workflows/build-hydra.yml
 hydra_toolchain_builder=scripts/build-hydra-toolchain.sh
 
-require_text "$request_workflow" "build/source-bundles"
 require_text "$request_workflow" "build/semogsite-source-bundles"
 require_text "$request_workflow" "build/hydra-source-bundles"
 require_text "$request_workflow" "triggers/semogsite-source-bundle.json"
@@ -107,16 +106,20 @@ require_text "$request_workflow" "triggers/hydra-source-bundle.json"
 require_text "$request_workflow" "scripts/build-hydra-toolchain.sh"
 require_text "$request_workflow" "persist-credentials: false"
 require_text "$request_workflow" "validate-source-bundle-request.py"
+if grep -Fq -- "      - build/source-bundles" "$request_workflow"; then
+  fail "$request_workflow must not trigger for GoAnime requests"
+fi
 
-require_text "$goanime_request_workflow" "name: Request GoAnime source bundle"
+require_text "$goanime_request_workflow" "name: Request private source bundle"
 require_text "$goanime_request_workflow" "build/source-bundles"
 require_text "$goanime_request_workflow" "triggers/private-source-bundle.json"
 require_text "$goanime_request_workflow" "persist-credentials: false"
 require_text "$goanime_request_workflow" "validate-source-bundle-request.py"
+require_text "$goanime_request_workflow" 'test "$(jq -r '\'' .project'\'' triggers/private-source-bundle.json)" = "goanime"'
 require_text "$goanime_request_workflow" "EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0"
 
 require_text "$legacy_build_workflow" "workflow_run"
-require_text "$legacy_build_workflow" "Request GoAnime source bundle"
+require_text "$legacy_build_workflow" "Request private source bundle"
 require_text "$legacy_build_workflow" "github.event.workflow_run.head_branch == 'build/source-bundles'"
 require_text "$legacy_build_workflow" "github.event.workflow_run.actor.login == github.repository_owner"
 require_text "$legacy_build_workflow" "PRIVATE_REPOSITORIES_TOKEN"
