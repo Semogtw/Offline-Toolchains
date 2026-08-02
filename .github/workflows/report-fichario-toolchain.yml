@@ -1,0 +1,45 @@
+name: Report Fichário toolchain build
+
+on:
+  workflow_run:
+    workflows:
+      - Build Fichário offline workspace
+    types:
+      - completed
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  report:
+    if: github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Publish build receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          title='[CI] Fichário offline workspace'
+          issue_number="$(
+            gh issue list --state all --limit 100 --json number,title \
+              --jq '.[] | select(.title == "[CI] Fichário offline workspace") | .number' \
+              | head -n 1
+          )"
+          cat > /tmp/receipt.md <<EOF
+          Status: $CONCLUSION
+          Commit: $HEAD_SHA
+          Run ID: $RUN_ID
+          Run: $RUN_URL
+          EOF
+          if [ -z "$issue_number" ]; then
+            gh issue create --title "$title" --body-file /tmp/receipt.md
+          else
+            gh issue edit "$issue_number" --body-file /tmp/receipt.md
+          fi
