@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { Hono } from "hono";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import React from "react";
 import { QueryClient } from "@tanstack/react-query";
 import { createRootRoute } from "@tanstack/react-router";
@@ -34,6 +35,8 @@ assert.equal(queryClient.getQueryData(["toolchain"]), "ready");
 
 const route = createRootRoute();
 assert.ok(route);
+const mcp = new McpServer({ name: "semogsite-toolchain-smoke", version: "0.0.0" });
+assert.ok(mcp);
 assert.equal(React.version, "18.3.1");
 
 console.log(
@@ -43,6 +46,7 @@ console.log(
       node: process.version,
       modulesAbi: process.versions.modules,
       react: React.version,
+      mcpSdk: true,
     },
     null,
     2,
