@@ -174,7 +174,10 @@ lock_sha="$(sha256sum "$root/workspace/pnpm-lock.yaml" | cut -d' ' -f1)"
 } > "$root/MANIFEST.txt"
 
 tar -C "$RUNNER_TEMP" -I 'zstd -T0 -8' -cf "$archive" fichario-offline
-sha256sum "$archive" > "$archive.sha256"
+(
+  cd "$RUNNER_TEMP"
+  sha256sum "$(basename "$archive")" > "$(basename "$archive").sha256"
+)
 split -b 350M -d -a 2 "$archive" "$parts/fichario-offline-linux-x64.part-"
 (
   cd "$parts"
