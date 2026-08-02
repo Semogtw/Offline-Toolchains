@@ -1,0 +1,266 @@
+name: Build encrypted SemogSite source bundle
+
+on:
+  workflow_run:
+    workflows:
+      - Request private source bundle
+    types:
+      - completed
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+concurrency:
+  group: private-source-semogsite-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Encrypt SemogSite Git export
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'build/semogsite-source-bundles' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.actor.login == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout trusted workflow implementation
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Checkout connector request revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          path: request-source
+          persist-credentials: false
+          sparse-checkout: triggers/semogsite-source-bundle.json
+          sparse-checkout-cone-mode: false
+
+      - name: Normalize fixed SemogSite request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request_file="request-source/triggers/semogsite-source-bundle.json"
+          normalized="$(python3 scripts/validate-source-bundle-request.py "$request_file")"
+          python3 - "$normalized" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          request = json.loads(sys.argv[1])
+          if request != {
+              "project": "semogsite",
+              "mode": "ref",
+              "ref": request["ref"],
+          }:
+              raise SystemExit("SemogSite exporter accepts only project=semogsite and mode=ref")
+          if not request["ref"]:
+              raise SystemExit("SemogSite exporter requires an exact branch, tag or commit")
+          with open(sys.argv[2], "a", encoding="utf-8") as stream:
+              stream.write(f"ref={request['ref']}\n")
+          PY
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPOSITORIES_TOKEN" || {
+            echo "Missing Actions secret PRIVATE_REPOSITORIES_TOKEN." >&2
+            exit 1
+          }
+
+      - name: Checkout fixed SemogSite repository
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/SemogSite
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          ref: ${{ steps.request.outputs.ref }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+
+      - name: Build and encrypt exact-ref export
+        id: bundle
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+
+          source_dir="$GITHUB_WORKSPACE/private-source"
+          work_dir="$RUNNER_TEMP/private-source-semogsite"
+          package_dir="$work_dir/package"
+          transfer_dir="$work_dir/transfer"
+          plaintext_archive="$work_dir/private-source-package.tar.zst"
+          encrypted_file="$transfer_dir/private-source.gpg"
+          gpg_home="$work_dir/gpg"
+
+          rm -rf "$work_dir"
+          mkdir -p "$package_dir" "$transfer_dir" "$gpg_home"
+          chmod 700 "$gpg_home"
+
+          cleanup() {
+            rm -rf "$package_dir" "$plaintext_archive" "$gpg_home" "$source_dir"
+          }
+          trap cleanup EXIT
+
+          resolved_commit="$(git -C "$source_dir" rev-parse --verify HEAD^{commit})"
+          git -C "$source_dir" update-ref refs/heads/offline-export "$resolved_commit"
+          git -C "$source_dir" bundle create \
+            "$package_dir/repository.bundle" refs/heads/offline-export
+          git -C "$source_dir" bundle verify "$package_dir/repository.bundle"
+          git -C "$source_dir" for-each-ref \
+            --format='%(refname)%09%(objectname)' \
+            refs/heads refs/tags > "$package_dir/REFS.txt"
+
+          python3 - \
+            "$package_dir/PRIVATE-MANIFEST.json" \
+            "$resolved_commit" <<'PY'
+          import datetime
+          import json
+          import sys
+
+          path, commit = sys.argv[1:]
+          manifest = {
+              "schema_version": 1,
+              "project": "semogsite",
+              "repository": "Semogtw/SemogSite",
+              "mode": "ref",
+              "resolved_commit": commit,
+              "format": "bundle",
+              "created_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              "excludes": [
+                  "git-lfs objects",
+                  "submodule repositories",
+                  "untracked files",
+                  "stashes",
+                  "local-only commits",
+              ],
+          }
+          with open(path, "w", encoding="utf-8") as stream:
+              json.dump(manifest, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          PY
+
+          tar -C "$package_dir" -I 'zstd -T0 -6' \
+            -cf "$plaintext_archive" .
+
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import keys/source-bundles-public.asc
+          fingerprint="$({
+            gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT"
+          } | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+
+          gpg --batch --yes --trust-model always \
+            --recipient "$EXPECTED_FINGERPRINT" \
+            --output "$encrypted_file" \
+            --encrypt "$plaintext_archive"
+          test -s "$encrypted_file"
+
+          size_bytes="$(stat -c '%s' "$encrypted_file")"
+          if (( size_bytes > 500 * 1024 * 1024 )); then
+            echo "Encrypted SemogSite export exceeds the one-artifact safety limit." >&2
+            exit 1
+          fi
+
+          (
+            cd "$transfer_dir"
+            sha256sum private-source.gpg > ENCRYPTED.sha256
+          )
+          python3 - \
+            "$transfer_dir/TRANSFER.json" \
+            "$EXPECTED_FINGERPRINT" \
+            "$GITHUB_RUN_ID" \
+            "$size_bytes" <<'PY'
+          import datetime
+          import json
+          import sys
+
+          path, fingerprint, run_id, size_bytes = sys.argv[1:]
+          transfer = {
+              "schema_version": 1,
+              "project": "semogsite",
+              "mode": "ref",
+              "encryption": "OpenPGP",
+              "recipient_fingerprint": fingerprint,
+              "workflow_run_id": run_id,
+              "size_bytes": int(size_bytes),
+              "created_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+          }
+          with open(path, "w", encoding="utf-8") as stream:
+              json.dump(transfer, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          PY
+
+          rm -rf "$package_dir" "$plaintext_archive" "$gpg_home" "$source_dir"
+          trap - EXIT
+          echo "transfer_dir=$transfer_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Upload encrypted SemogSite source bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: private-source-semogsite-ref
+          path: ${{ steps.bundle.outputs.transfer_dir }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  report:
+    name: Publish sanitized source-bundle receipt
+    needs: build
+    if: always() && needs.build.result != 'skipped'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Update source-bundle receipt
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const runId = context.runId;
+            const artifacts = await github.paginate(
+              github.rest.actions.listWorkflowRunArtifacts,
+              { owner, repo, run_id: runId, per_page: 100 },
+            );
+            const selected = artifacts.filter(
+              (artifact) => artifact.name === 'private-source-semogsite-ref',
+            );
+            const artifactLines = selected.length === 0
+              ? '- Artifacts: none'
+              : [
+                  '- Artifacts:',
+                  ...selected.map((artifact) =>
+                    `  - \`${artifact.name}\` — ID \`${artifact.id}\` — ${artifact.size_in_bytes} bytes — expires ${artifact.expires_at}`
+                  ),
+                ].join('\n');
+            const marker = `<!-- private-source-run:${runId} -->`;
+            const body = [
+              marker,
+              '### Build encrypted SemogSite source bundle',
+              '',
+              `- Run: [${runId}](https://github.com/${owner}/${repo}/actions/runs/${runId})`,
+              `- Conclusion: \`${{ toJSON(needs.build.result) }}\``,
+              '- Branch: `main`',
+              `- Actor: \`${context.actor}\``,
+              artifactLines,
+              '- Private source, requested ref, resolved commit, logs, and plaintext are intentionally omitted.',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: 4,
+              body,
+            });
