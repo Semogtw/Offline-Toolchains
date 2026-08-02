@@ -1,0 +1,77 @@
+name: Dispatch GoAnime source bundle
+
+on:
+  workflow_run:
+    workflows:
+      - Request GoAnime source bundle
+    types:
+      - completed
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: dispatch-goanime-source-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    name: Dispatch trusted private builder
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'build/source-bundles' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.actor.login == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout trusted dispatcher
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Checkout validated request revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          path: request-source
+          persist-credentials: false
+          sparse-checkout: triggers/private-source-bundle.json
+          sparse-checkout-cone-mode: false
+
+      - name: Normalize GoAnime request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          normalized="$(python3 scripts/validate-source-bundle-request.py \
+            request-source/triggers/private-source-bundle.json)"
+          python3 - "$normalized" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          request = json.loads(sys.argv[1])
+          if request["project"] != "goanime":
+              raise SystemExit("Dedicated GoAnime request must use project=goanime")
+          with open(sys.argv[2], "a", encoding="utf-8") as stream:
+              stream.write(f"mode={request['mode']}\n")
+              stream.write(f"ref={request['ref']}\n")
+          PY
+
+      - name: Dispatch trusted builder
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUEST_MODE: ${{ steps.request.outputs.mode }}
+          REQUEST_REF: ${{ steps.request.outputs.ref }}
+        run: |
+          set -euo pipefail
+          gh workflow run build-private-source-bundle.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f project=goanime \
+            -f mode="$REQUEST_MODE" \
+            -f ref="$REQUEST_REF"
