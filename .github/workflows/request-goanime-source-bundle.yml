@@ -1,4 +1,4 @@
-name: Request GoAnime source bundle
+name: Request private source bundle
 
 on:
   push:
