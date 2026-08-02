@@ -1,80 +1,141 @@
 # Handoff para o próximo agente
 
-**Atualizado em:** 2026-08-01 03:57 BRT  
+**Atualizado em:** 2026-08-01 22:53 BRT  
 **Escopo:** `Semogtw/Offline-Toolchains`  
-**Estado:** correções registradas; não gerar novos artifacts nesta sessão.
+**Estado:** toolchain exata do GoAnime-Mobile comprovada contra o checkout privado; não refabricar bundles grandes sem mudança de entrada.
 
-## Regra de retomada
+## Resultado consolidado
 
-Não use artifacts antigos como prova de build offline do GoAnime. A retomada deve começar pela geração deliberada de uma nova base Android e de um novo bundle GoAnime a partir da `main` atual. Não altere o gatilho nem execute workflows apenas para “ver se funciona” sem antes ler este arquivo.
+A cadeia pública agora consegue restaurar e validar, fora do runner, o runtime privado atual do **GoAnime-Mobile** sem alterar o `pubspec.lock` e sem acessar repositórios de dependências durante o build:
 
-## O que foi comprovado
+- Flutter 3.44.1 / Dart 3.12.1;
+- PowerShell 7.6.3;
+- JDK 17.0.19;
+- Android SDK 33, 35 e 36;
+- build-tools 34, 35 e 36;
+- NDK 27.0.12077973 e 28.2.13676358;
+- cache Pub exato para as 148 entradas hosted do lock privado;
+- delta Maven incremental para lacunas Gradle exatas;
+- exposição automática dos artifacts `io.flutter` já presentes no cache Gradle como repositório Maven local;
+- preload offline do `media_kit` já incorporado ao bundle base.
 
-- source bundle privado do GoAnime foi baixado pelo conector, verificado, descriptografado em keyring temporário e restaurado como Git bundle completo;
-- a chave privada nunca foi versionada e deve permanecer fora do GitHub;
-- artifacts segmentados em 400 MiB são baixáveis pelo conector;
-- Flutter 3.44.1, Dart 3.12.1 e PowerShell 7.6.3 executam fora do runner;
-- checksums relativos e `safe.directory` portátil já foram corrigidos anteriormente;
-- a base Android geração 5 foi remontada e verificada localmente;
-- JDK 17, SDK 35/36, build-tools, CMake, NDK 27.0.12077973 e NDK 28.2.13676358 estão presentes nessa base;
-- o NDK 28.2 é necessário para o build Android observado com Flutter 3.44.1.
+## Provas observadas
 
-## Erro encontrado e correção aplicada no fabricante GoAnime
+### Cache Pub exato
 
-`media_kit_libs_android_video 1.3.8` não usa a resolução offline normal do Gradle para seus binários nativos. O `android/build.gradle` do pacote chama `URL.openStream()` para quatro JARs da release `libmpv-android-video-build v1.1.7` durante a configuração do build.
+Run `30720581099`, commit `1b0a2800a8f75e9f25702a99e11a1623cf5caa67`:
 
-Isso fazia `flutter build apk --debug --no-pub` tentar acessar GitHub mesmo com o cache Gradle e o SDK Android completos.
+- artifact manifest `8824726357`;
+- artifact part 00 `8824726620`;
+- 148 versões hosted;
+- aplicação sobre o bundle base concluída;
+- `flutter pub get --offline --enforce-lockfile` passou no checkout privado;
+- SHA-256 de `pubspec.lock` permaneceu `d0b0b0fcc4dbedc296fa5bdb1e514d8e357d92ee1dc4068a5c6e17a21eb6786e`.
 
-O workflow `build-goanime.yml` foi alterado para:
+A antiga limitação de lockfile não está mais aberta para o estado atual do GoAnime. Regere o delta quando o lock privado mudar.
 
-1. verificar a versão esperada do pacote `media_kit_libs_android_video`;
-2. capturar os quatro JARs baixados no build online da fixture;
-3. verificar os MD5 oficiais usados pelo próprio plugin;
-4. armazenar os JARs em `GRADLE_USER_HOME/offline-media-kit/v1.1.7`;
-5. instalar um init script Gradle que os copia para o `buildDir` do plugin antes da avaliação;
-6. apagar o build anterior do plugin na validação;
-7. executar um APK debug usando o bundle copiado;
-8. falhar se o log contiver `Downloading file from:`;
-9. exigir a existência de `app-debug.apk`.
+### Base Android corrigida
 
-A alteração foi registrada no commit `01912a7` com `[skip ci]` para não continuar o processo automaticamente. **Ainda não existe run novo comprovando essa correção.**
+Run `30723103034`, commit `7052c693eba61f55620994412db4e6974d713b53`:
 
-## Próxima execução intencional
+- manifest `8825488903`;
+- parts `8825489746`, `8825490584`, `8825491452`, `8825492323` e `8825492866`;
+- SDK 33/35/36 validado;
+- proxies definidos como string vazia são removidos pelo `activate.sh`;
+- archive remontado e verificado localmente.
 
-1. Conferir que a `main` contém a correção de preload do `media_kit`.
-2. Copiar/sincronizar essa revisão para a branch persistente `build/toolchains`, se ela não estiver atualizada.
-3. Incrementar `triggers/build.txt` somente quando estiver pronto para consumir os artifacts no mesmo dia.
-4. Acompanhar o run `Build GoAnime offline cache` até `completed/success`.
-5. Conferir no job que `Validate copied bundle offline` executou um build APK, não apenas `gradle tasks`.
-6. Baixar manifesto e todas as partes; verificar `SHA256SUMS.parts` e o SHA-256 final de `PARTS.txt`.
-7. Inspecionar o bundle extraído:
+SDK 33 é necessário por plugins Android do checkout atual. Não remova plataformas antigas apenas porque `compileSdk` é mais novo.
+
+### Delta Maven Gradle
+
+O delta incremental resolve coordenadas públicas ausentes sem reconstruir o bundle Flutter de vários gigabytes.
+
+Run final `30727767677`, commit `50e1174edcce1df004078569a0cca42983cf810c`:
+
+- manifest `8826954503`;
+- part 00 `8826954622`;
+- testes de manifesto e instalador passaram;
+- resolução em `GRADLE_USER_HOME` vazio com `--offline` passou;
+- o instalador é idempotente;
+- o init script respeita `RepositoriesMode.FAIL_ON_PROJECT_REPOS` dos included builds do Flutter e injeta por projeto somente quando a política permite;
+- o instalador converte automaticamente o cache `caches/modules-2/files-2.1/io.flutter` em layout Maven canônico dentro de `offline-goanime-maven`, verificando conflitos por SHA-256.
+
+A coordenada atualmente declarada é `org.jetbrains.kotlin:kotlin-stdlib-common:2.2.0`. Esse módulo é POM-only e resolve para `kotlin-stdlib:2.2.0`; não exija um JAR inexistente de `kotlin-stdlib-common`.
+
+### APK privado real
+
+Source bundle run `30722535097` foi verificado e descriptografado em `GNUPGHOME` temporário. O manifesto privado resolveu para:
+
+`dea5a81c6afc66a401bc0d2208133768bc11ce32`
+
+Sobre esse source foram reaplicados exatamente os 11 arquivos de runtime formatados e já publicados posteriormente na `main`. A comparação com a `main` observada mostrou que os demais commits eram apenas workflows Jikan.
+
+Build executado com Gradle real:
 
 ```bash
-test -d goanime-toolchain/gradle-home/offline-media-kit/v1.1.7
-test -f goanime-toolchain/gradle-home/init.d/goanime-offline-media-kit.gradle
+./gradlew --offline --no-daemon --max-workers=1 assembleDebug
 ```
 
-8. Combinar com a base Android geração 5 e executar no checkout real:
+Configuração relevante:
+
+- heap Gradle de 3328 MiB;
+- compilador Kotlin no processo;
+- endpoints Pub/Flutter apontados para loopback inválido;
+- variáveis de proxy removidas;
+- nenhum padrão de download encontrado no log.
+
+Resultado:
+
+- `BUILD SUCCESSFUL`;
+- 506 tasks, 243 executadas e 263 up-to-date;
+- APK debug com 224.540.372 bytes;
+- SHA-256 `ae9ba305d5a2fcc830efcabad9b0b52b711142dfe80a39f0ed84559debae4031`;
+- ZIP íntegro;
+- assinatura Android debug v2 válida;
+- `compileSdk`/`targetSdk` 36 e `minSdk` 24.
+
+Isso prova o APK debug offline do checkout privado equivalente ao runtime da `main`. Não é prova de release assinada nem substitui testes em dispositivo real.
+
+## Ordem canônica de uso
+
+1. Extraia e ative `android-base-linux-x64-*`.
+2. Extraia e ative `goanime-flutter-cache-linux-x64-*`.
+3. Aplique `goanime-lock-delta-linux-x64-*` ao bundle Flutter.
+4. Aplique `goanime-gradle-delta-linux-x64-*` ao `GRADLE_USER_HOME` do bundle.
+5. No source privado:
 
 ```bash
 source ./android-base/activate.sh
-source ./goanime-toolchain/activate.sh
-flutter build apk --debug --no-pub
+source ./goanime-toolchain/activate-exact.sh
+flutter pub get --offline --enforce-lockfile
+flutter analyze --no-pub
+flutter test --no-pub --concurrency=1
+./android/gradlew --offline --no-daemon --max-workers=1 assembleDebug
 ```
 
-9. Tratar qualquer ocorrência de `Downloading file from:` como falha da toolchain.
+Use aproximadamente 3,25 GiB de heap para o Gradle. Com 2 GiB, `JetifyTransform` do JAR ARM64 do engine ficou sem heap; configurações antigas de 8 GiB por daemon causaram pressão suficiente para reinicializar o ambiente.
 
-## Limitação ainda aberta: lockfile
+## Quando regenerar
 
-O Pub cache da fixture resolve um grafo compatível, mas não espelha todas as versões exatas do `pubspec.lock` privado. Um `flutter pub get --offline --enforce-lockfile` no checkout real já mostrou que dezenas de versões seriam substituídas.
+- base Android: quando SDK/build-tools/NDK/JDK exigidos mudarem;
+- bundle Flutter: quando Flutter, Gradle wrapper, AGP, Kotlin, media_kit ou conjunto amplo de caches mudar;
+- delta Pub: sempre que `pubspec.lock` mudar;
+- delta Gradle: quando o build offline apontar uma coordenada Maven pública realmente ausente.
 
-Não modificar o lock real para acomodar o cache. A solução futura é uma lista pública sanitizada de dependências `hosted` e versões exatas, ou um lock sanitizado sem URLs privadas, dependências Git privadas ou credenciais.
+Não use Actions para repetir uma prova já coberta sem alteração de entrada. Prefira os deltas pequenos antes de reconstruir bundles grandes.
+
+## Limites ainda válidos
+
+- APK debug não é release assinada;
+- Android SAF real e playback HLS em Android/Windows ainda exigem ambiente alvo real;
+- o `applicationId` observado continua `com.example.goanime_mobile` e deve ser tratado em trabalho próprio;
+- avisos de migração futura para Built-in Kotlin não bloquearam o build atual.
 
 ## Segurança
 
 - nunca versionar ou anexar a chave privada OpenPGP;
-- usar `GNUPGHOME` temporário e removê-lo após descriptografar;
-- não publicar checkout, patches privados, Firebase, Shorebird, signing ou `local.properties` neste repositório público;
+- usar `GNUPGHOME` temporário e removê-lo após a descriptografia;
+- nunca publicar source privado, patches privados, Firebase, Shorebird, signing, APKs ou `local.properties` neste repositório público;
+- verificar digests dos ZIPs, `SHA256SUMS.parts` e SHA global antes de extrair;
 - não ampliar o PAT privado para escrita;
-- verificar hashes antes de extrair ou executar artifacts;
-- não confundir run `queued`/`in_progress` com sucesso.
+- não confundir run `queued` ou `in_progress` com sucesso.
