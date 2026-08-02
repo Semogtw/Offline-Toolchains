@@ -1,0 +1,9 @@
+{
+  "repository": "Semogtw/SemogSite",
+  "branch": "develop/editorial-workspace",
+  "base_commit": "b24763bf783811b77522a3cf56038d93ff984fb4",
+  "expected_head": "39154d210f04e44c07352da5ed88010c5960fb36",
+  "expected_patch_sha256": "5349156abc8733263119d616eabcad98913a2e004eb577d400222b743cdbacfc",
+  "expected_tree": "6a1e7cc1fa0802bc0d834bbefa74cd6f7e04cc02",
+  "commit_message": "feat(editorial): complete publication lifecycle controls"
+}
