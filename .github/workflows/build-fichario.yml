@@ -99,6 +99,7 @@ jobs:
             "$root/pnpm-store" \
             "$root/playwright-browsers" \
             "$root/deno/bin" \
+            "$root/deno/cache" \
             "$root/supabase/bin" \
             "$root/workspace" \
             "$root/bin" \
@@ -112,6 +113,8 @@ jobs:
           export PATH="$root/pnpm/bin:$root/node/bin:$root/deno/bin:$root/supabase/bin:$PATH"
           export PNPM_STORE_DIR="$root/pnpm-store"
           export PLAYWRIGHT_BROWSERS_PATH="$root/playwright-browsers"
+          export DENO_DIR="$root/deno/cache"
+          export DENO_NO_UPDATE_CHECK=1
           export npm_config_audit=false
           export npm_config_fund=false
           export npm_config_update_notifier=false
@@ -120,6 +123,7 @@ jobs:
             --frozen-lockfile \
             --store-dir "$PNPM_STORE_DIR"
           pnpm --dir fichario-source exec playwright install chromium
+          pnpm --dir fichario-source test:functions:check
 
           cp -a fichario-source/. "$root/workspace/"
           rm -rf \
@@ -136,6 +140,8 @@ jobs:
           export PATH="$toolchain_root/pnpm/bin:$toolchain_root/node/bin:$toolchain_root/deno/bin:$toolchain_root/supabase/bin:$PATH"
           export PNPM_STORE_DIR="$toolchain_root/pnpm-store"
           export PLAYWRIGHT_BROWSERS_PATH="$toolchain_root/playwright-browsers"
+          export DENO_DIR="$toolchain_root/deno/cache"
+          export DENO_NO_UPDATE_CHECK=1
           export npm_config_audit=false
           export npm_config_fund=false
           export npm_config_update_notifier=false
@@ -149,6 +155,7 @@ jobs:
           # shellcheck source=/dev/null
           source "$toolchain_root/bin/activate"
           export npm_config_registry="http://127.0.0.1:9"
+          export NPM_CONFIG_REGISTRY="http://127.0.0.1:9"
           pnpm --dir "$workspace" install \
             --offline \
             --frozen-lockfile \
@@ -169,6 +176,8 @@ jobs:
           test -f "$workspace/pnpm-lock.yaml"
           test -d "$PNPM_STORE_DIR"
           test -d "$PLAYWRIGHT_BROWSERS_PATH"
+          test -d "$DENO_DIR"
+          find "$DENO_DIR" -type f -print -quit | grep -q .
           pnpm --dir "$workspace" exec playwright --version
           echo "Fichário offline workspace doctor: PASS"
           EOF
@@ -177,6 +186,8 @@ jobs:
           cp -a "$root/workspace" "$smoke"
           "$root/bin/install-offline" "$smoke"
           source "$root/bin/activate"
+          export npm_config_registry="http://127.0.0.1:9"
+          export NPM_CONFIG_REGISTRY="http://127.0.0.1:9"
           pnpm --dir "$smoke" verify
           pnpm --dir "$smoke" test:source:offline
           pnpm --dir "$smoke" test:e2e
@@ -198,6 +209,7 @@ jobs:
             echo "supabase_version=$(supabase --version)"
             echo "package_sha256=$package_sha"
             echo "lock_sha256=$lock_sha"
+            echo "deno_cache=populated_and_smoke_tested_with_registry_blocked"
             echo "database_gate_note=Supabase CLI is included; local DB tests still require Docker and Supabase container images"
           } > "$root/MANIFEST.txt"
 
