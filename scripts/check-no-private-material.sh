@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-private_name_pattern='(^|/)([^/]*private[^/]*\.asc|id_(rsa|ed25519|ecdsa)(\.pub)?|[^/]*private[_-]?key[^/]*)$'
+private_name_pattern='(^|/)([^/]*private[^/]*\.asc|id_(rsa|ed25519|ecdsa)|[^/]*private[_-]?key[^/]*)$'
 tracked_private_names="$(git ls-files | grep -E -i "$private_name_pattern" || true)"
 if [[ -n "$tracked_private_names" ]]; then
   echo 'Tracked filenames look like private key material:' >&2
