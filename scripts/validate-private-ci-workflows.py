@@ -121,11 +121,11 @@ def validate_privileged_workflow(text: str) -> None:
         "repository: ${{ needs.normalize.outputs.repository }}",
         "ref: ${{ needs.normalize.outputs.ref }}",
         "flutter pub get",
-        "pwsh ./tools/validate_project_health.ps1",
+        "run: ./tools/validate_project_health.ps1",
         "dart format --output=none --set-exit-if-changed lib test packages tools",
         "flutter analyze --no-pub",
         "flutter test --no-pub",
-        "pwsh ./tools/validate_release_workflows.ps1",
+        "run: ./tools/validate_release_workflows.ps1",
         "flutter build apk --debug --no-pub",
         "bash ./tools/checks/run_pure_tests.sh",
         "bash ./tools/checks/audit_sources.sh",
@@ -145,6 +145,7 @@ def validate_privileged_workflow(text: str) -> None:
     require_count(text, "persist-credentials: false", 5, "privileged workflow")
     require_count(text, "lfs: false", 3, "privileged workflow")
     require_count(text, "submodules: false", 3, "privileged workflow")
+    require_count(text, "shell: pwsh", 2, "privileged workflow")
     require_count(
         text,
         'run: rm -rf "$GITHUB_WORKSPACE/private-source"',
