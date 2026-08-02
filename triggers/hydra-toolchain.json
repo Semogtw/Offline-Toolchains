@@ -1,0 +1,6 @@
+{
+  "profile": "hydra",
+  "ref": "main",
+  "requested_at_utc": "2026-08-02T05:53:00Z",
+  "reason": "Build the initial portable Node, Yarn, Rust and exact Hydra dependency cache"
+}
