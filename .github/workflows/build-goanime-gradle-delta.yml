@@ -97,20 +97,25 @@ jobs:
             cat <<'EOF'
           configurations {
               delta
+              rawDelta
           }
           dependencies {
           EOF
             while IFS= read -r coordinate; do
               [[ -z "$coordinate" || "$coordinate" == \#* ]] && continue
               printf "    delta '%s'\n" "$coordinate"
+              printf "    rawDelta '%s@jar'\n" "$coordinate"
             done < "$GITHUB_WORKSPACE/$MODULE_MANIFEST"
             cat <<'EOF'
           }
           tasks.register('hydrate') {
-              inputs.files(configurations.delta)
+              inputs.files(configurations.delta, configurations.rawDelta)
               doLast {
                   configurations.delta.files.each { file ->
                       println "hydrated=${file.name}"
+                  }
+                  configurations.rawDelta.files.each { file ->
+                      println "hydratedRaw=${file.name}"
                   }
               }
           }
@@ -181,10 +186,13 @@ jobs:
 
           test -f \
             "$repository/org/jetbrains/kotlin/kotlin-stdlib-common/2.2.0/kotlin-stdlib-common-2.2.0.jar"
-          test -f \
-            "$repository/org/jetbrains/kotlin/kotlin-stdlib-common/2.2.0/kotlin-stdlib-common-2.2.0.pom" \
-            -o -f \
-            "$repository/org/jetbrains/kotlin/kotlin-stdlib-common/2.2.0/kotlin-stdlib-common-2.2.0.module"
+          if [[ ! -f \
+              "$repository/org/jetbrains/kotlin/kotlin-stdlib-common/2.2.0/kotlin-stdlib-common-2.2.0.pom" && \
+              ! -f \
+              "$repository/org/jetbrains/kotlin/kotlin-stdlib-common/2.2.0/kotlin-stdlib-common-2.2.0.module" ]]; then
+            echo 'Missing Kotlin common POM/module metadata.' >&2
+            exit 1
+          fi
 
           cp "$MODULE_MANIFEST" "$delta_root/MODULES.txt"
           cp scripts/goanime-offline-maven.init.gradle \
@@ -246,7 +254,7 @@ jobs:
           export GRADLE_USER_HOME="$target_home"
           gradle --offline --no-daemon -p "$project" hydrate | \
             tee "$validation/offline-resolution.log"
-          grep -Fq 'hydrated=kotlin-stdlib-common-2.2.0.jar' \
+          grep -Fq 'hydratedRaw=kotlin-stdlib-common-2.2.0.jar' \
             "$validation/offline-resolution.log"
 
       - name: Upload delta manifest
