@@ -1,199 +1,148 @@
-# Public Runner Private CI Hub Implementation Plan
+# Public Runner Project CI Hub Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** use `superpowers:executing-plans` or an equivalent task-by-task workflow. Preserve small commits and verify contracts before changing the permanent request branch.
 
-**Goal:** Add secure native public-repository workflows that execute the real CI and debug-build workloads of GoAnime, ZapZap, and SemogSite after an allowlisted private checkout.
+**Goal:** Maintain secure public-repository workflows that execute canonical verification for allowlisted private projects and the public `Semogtw/FicharioVirtual` repository.
 
-**Architecture:** A no-secret request workflow validates connector-written JSON on `build/private-ci`. A privileged workflow on the default branch normalizes manual, API, or trusted workflow-run requests and dispatches one of three project-specific jobs. A static validator and public validation workflow enforce the security contract.
+**Architecture:** A no-secret request workflow validates connector-written JSON on `build/private-ci`. Private projects run in a token-scoped workflow. Fichário runs in a separate token-free workflow. A static validator, public validation workflow and sanitized issue receipts enforce and expose the operational contract.
 
-**Tech Stack:** GitHub Actions YAML, Bash, Python 3 standard library, Flutter 3.44.1, JDK 17, Android SDK 35, Gradle, Node.js 22, Corepack, pnpm.
+**Tech Stack:** GitHub Actions YAML, Bash, Python 3, Flutter, JDK/Android, Node.js, pnpm, Playwright, Deno, Supabase CLI and Docker-backed local services.
 
-## Global Constraints
+## Global constraints
 
-- Heavy verification and build commands must execute as runs of `Semogtw/Offline-Toolchains`.
-- Supported repositories are exactly `Semogtw/goanime-mobile`, `Semogtw/Zapzap`, and `Semogtw/SemogSite`.
-- `PRIVATE_REPOSITORIES_TOKEN` is read-only and is never persisted by checkout.
-- No private source, APK, build directory, test report, source archive, or project-derived cache is uploaded from the public workflow.
-- Event payloads may select only an allowlisted project key and a validated Git ref.
-- All project checkouts use `lfs: false`, `submodules: false`, and `persist-credentials: false`.
+- Heavy verification runs belong to `Semogtw/Offline-Toolchains`.
+- Allowlisted repositories are fixed in code:
+  - `Semogtw/goanime-mobile`;
+  - `Semogtw/Zapzap`;
+  - `Semogtw/SemogSite`;
+  - `Semogtw/FicharioVirtual`.
+- Payloads may select only an allowlisted project and validated Git ref.
+- `PRIVATE_REPOSITORIES_TOKEN` is read-only, checkout-only and never exposed to Fichário.
+- Project workflows upload no source, build, report or project-derived cache artifact.
+- All checkouts disable credential persistence, LFS and submodules and are deleted in `always()` cleanup.
 
 ---
 
-### Task 1: Request validation library
+## Implemented foundation
+
+### Request validation library
+
+- `scripts/private_ci_request.py` maps project keys to fixed repositories/default refs.
+- `scripts/test_private_ci_request.py` covers mappings, valid refs and rejected payloads.
+- `triggers/private-ci.json` on `build/private-ci` is the only normal connector mutation surface.
+
+### Connector request workflow
+
+`Request private project CI`:
+
+- accepts only owner-authored pushes on `build/private-ci` changing the trigger JSON;
+- checks out trusted validator code from `main`;
+- checks out only the exact request file from the request revision;
+- has no private secret and runs no project source.
+
+### Private execution workflow
+
+`Run private project CI` retains fixed jobs for:
+
+- GoAnime: health, formatting, analysis, tests, release workflow validation and debug APK;
+- ZapZap: pure/source/baseline gates, Android unit tests, lint and debug APK;
+- SemogSite: dependency install policy, `pnpm check` and `pnpm build`.
+
+### Static contract and receipts
+
+- `scripts/validate-private-ci-workflows.py` enforces mappings, commands, trust checks, checkout flags and output restrictions.
+- `Report private project CI runs` writes sanitized completion receipts to issue #15.
+
+---
+
+## Fichário extension
+
+### Task 1: Allowlist the public repository
 
 **Files:**
-- Create: `scripts/private_ci_request.py`
-- Create: `scripts/test_private_ci_request.py`
+- Modify: `scripts/private_ci_request.py`
+- Modify: `scripts/test_private_ci_request.py`
 
-**Interfaces:**
-- Consumes: JSON request containing `project` and optional `ref`.
-- Produces: normalized JSON containing `project`, `repository`, `ref`, and `default_ref`; exits non-zero for invalid input.
+- [x] Add `fichario` mapped exactly to `Semogtw/FicharioVirtual` and default `main`.
+- [x] Add a regression test that rejects any payload attempt to replace the repository.
 
-- [ ] **Step 1: Write unit tests for the three fixed mappings, default refs, valid SHA/branch refs, rejected arbitrary projects, and unsafe refs.**
-
-Run: `python3 scripts/test_private_ci_request.py`
-Expected before implementation: import failure for `private_ci_request`.
-
-- [ ] **Step 2: Implement `normalize_request(payload)` and a CLI that reads one JSON file and prints compact normalized JSON.**
-
-- [ ] **Step 3: Run unit tests.**
-
-Run: `python3 scripts/test_private_ci_request.py`
-Expected: all tests pass.
-
-- [ ] **Step 4: Commit.**
-
-```bash
-git add scripts/private_ci_request.py scripts/test_private_ci_request.py
-git commit -m "feat(ci): validate private project requests"
-```
-
-### Task 2: Connector request workflow
+### Task 2: Add a separate token-free workflow
 
 **Files:**
-- Create: `.github/workflows/request-private-project-ci.yml`
-- Create: `triggers/private-ci.json`
+- Create: `.github/workflows/run-fichario-ci.yml`
 
-**Interfaces:**
-- Consumes: pushes to `build/private-ci` changing `triggers/private-ci.json`.
-- Produces: a successful or failed no-secret workflow run named `Request private project CI`.
+- [x] Accept manual exact refs and trusted successful request-workflow events.
+- [x] Reuse the trusted request validator from `main`.
+- [x] Require normalized project `fichario` before starting the verification job.
+- [x] Fix checkout repository to `Semogtw/FicharioVirtual`.
+- [x] Disable persisted credentials, LFS and submodules.
+- [x] Install pnpm 10 and Node.js 22.16.
+- [x] Install frozen dependencies and Chromium with host packages.
+- [x] Install Deno 2.8.1 and Supabase CLI.
+- [x] Run only `pnpm verify:full`.
+- [x] Remove checkout in `always()` cleanup and upload no artifacts.
 
-- [ ] **Step 1: Add a request workflow limited to the permanent branch and trigger file.**
-
-The job checks out only the trigger JSON with `persist-credentials: false` and runs:
-
-```bash
-python3 scripts/private_ci_request.py request-source/triggers/private-ci.json
-```
-
-The trusted validator script is checked out from `main` into a separate directory before execution.
-
-- [ ] **Step 2: Add a valid initial trigger for ZapZap's active branch.**
-
-```json
-{
-  "project": "zapzap",
-  "ref": "development/android-build-recovery"
-}
-```
-
-- [ ] **Step 3: Commit.**
-
-```bash
-git add .github/workflows/request-private-project-ci.yml triggers/private-ci.json
-git commit -m "feat(ci): add connector request bridge"
-```
-
-### Task 3: Privileged public CI workflow
+### Task 3: Extend static security contracts
 
 **Files:**
-- Create: `.github/workflows/run-private-project-ci.yml`
+- Modify: `scripts/validate-private-ci-workflows.py`
 
-**Interfaces:**
-- Consumes: `workflow_dispatch`, `repository_dispatch` type `private-project-ci`, or a successful trusted run of `Request private project CI`.
-- Produces: one real project CI job and a public GitHub job summary; no uploaded artifacts.
+- [x] Require the Fichário workflow, fixed repository, exact tool setup and canonical aggregate command.
+- [x] Forbid private token/secrets, artifact upload, caches, persistent credentials and payload-controlled commands.
+- [x] Keep existing private workflow counts and boundaries unchanged.
 
-- [ ] **Step 1: Add a normalization job that checks out trusted implementation from `main`, obtains the request from the matching event source, runs `private_ci_request.py`, and exposes project/repository/ref outputs.**
-
-- [ ] **Step 2: Add the GoAnime job.**
-
-Use Flutter 3.44.1 and run:
-
-```bash
-flutter pub get
-pwsh ./tools/validate_project_health.ps1
-dart format --output=none --set-exit-if-changed lib test packages tools
-flutter analyze --no-pub
-flutter test --no-pub
-pwsh ./tools/validate_release_workflows.ps1
-flutter build apk --debug --no-pub
-```
-
-- [ ] **Step 3: Add the ZapZap job.**
-
-Use JDK 17, Android SDK 35, and run:
-
-```bash
-bash ./tools/checks/run_pure_tests.sh
-bash ./tools/checks/audit_sources.sh
-bash ./tools/checks/verify_android_baseline.sh
-./gradlew --no-daemon testDebugUnitTest
-./gradlew --no-daemon lintDebug
-./gradlew --no-daemon :app:assembleDebug
-```
-
-- [ ] **Step 4: Add the SemogSite job.**
-
-Use Node.js 22, activate the exact package manager from `package.json`, and run:
-
-```bash
-pnpm install --frozen-lockfile
-pnpm check
-pnpm build
-```
-
-- [ ] **Step 5: Add `always()` cleanup steps that remove the private checkout and write only project/ref/result metadata to the public job summary.**
-
-- [ ] **Step 6: Commit.**
-
-```bash
-git add .github/workflows/run-private-project-ci.yml
-git commit -m "feat(ci): run private project builds on public runners"
-```
-
-### Task 4: Static contract validator
+### Task 4: Extend sanitized receipts
 
 **Files:**
-- Create: `scripts/validate-private-ci-workflows.py`
-- Create: `.github/workflows/validate-private-ci.yml`
+- Modify: `.github/workflows/report-private-project-ci-runs.yml`
 
-**Interfaces:**
-- Consumes: repository files from a normal public checkout.
-- Produces: exit code 0 only when the request and privileged workflows preserve the documented allowlist and security invariants.
+- [x] Observe `Run Fichario CI` completion.
+- [x] Include `Fichário Virtual complete verification` in recognized project jobs.
+- [x] Preserve omission of source, resolved private SHA, logs, artifacts, secrets and outputs.
 
-- [ ] **Step 1: Implement checks for fixed repositories/default refs, trusted workflow-run branch/actor/event checks, safe checkout flags, exact project commands, absence of `upload-artifact`, and absence of payload-provided commands or repository names.**
+### Task 5: Document operations and architecture
 
-- [ ] **Step 2: Add a public validation workflow for relevant pushes and pull requests.**
+**Files:**
+- Modify: `docs/private-project-ci.md`
+- Modify: `docs/superpowers/specs/2026-08-01-public-private-ci-hub-design.md`
+- Modify: this plan
 
-Run:
+- [x] Document `fichario`, `Semogtw/FicharioVirtual`, token-free separation and `pnpm verify:full`.
+
+### Task 6: Verify the hub contract
+
+- [ ] Reconstruct or check out the public hub files in a runnable environment.
+- [ ] Run:
 
 ```bash
 python3 scripts/test_private_ci_request.py
+python3 scripts/test-private-ci-toolchain-policy.py
+python3 scripts/test-semogsite-install-policy.py
 python3 scripts/validate-private-ci-workflows.py
 ```
 
-- [ ] **Step 3: Run both validators in a clean checkout.**
+- [ ] Parse all changed workflow YAML.
+- [ ] Run Bash syntax checks for every new `run:` block where applicable.
+- [ ] Fix the first concrete failure before changing the request branch.
 
-Expected: PASS.
+### Task 7: Request exact Fichário HEAD verification
 
-- [ ] **Step 4: Commit.**
+- [ ] Resolve the latest `Semogtw/FicharioVirtual@main` SHA.
+- [ ] Update only `triggers/private-ci.json` on `build/private-ci`:
 
-```bash
-git add scripts/validate-private-ci-workflows.py .github/workflows/validate-private-ci.yml
-git commit -m "test(ci): enforce private CI hub contract"
+```json
+{
+  "project": "fichario",
+  "ref": "<exact-40-character-sha>"
+}
 ```
 
-### Task 5: Documentation and request branch
+- [ ] Observe request and execution receipts in issue #15.
+- [ ] Use the public run ID to inspect the first failing job/step if the run is red.
+- [ ] Apply code fixes in Fichário and repeat with the new exact SHA until the canonical gate is green or an external blocker is proven.
 
-**Files:**
-- Modify: `README.md`
-- Create branch: `build/private-ci`
+### Task 8: Record evidence and remove dead project-local CI
 
-**Interfaces:**
-- Documents: secret scope, manual/API/connector triggers, public-log warning, supported commands, and the absence of public build artifacts.
-- Produces: a permanent connector request branch initialized from the final default-branch commit.
-
-- [ ] **Step 1: Document the public CI hub, token configuration, supported projects/default refs, trigger examples, and security limitations.**
-
-- [ ] **Step 2: Run the static validators after documentation changes.**
-
-- [ ] **Step 3: Commit documentation.**
-
-```bash
-git add README.md
-git commit -m "docs: explain public runner private CI hub"
-```
-
-- [ ] **Step 4: Merge the implementation branch after validation, then create `build/private-ci` from the merged default branch.**
-
-- [ ] **Step 5: Change only `triggers/private-ci.json` on `build/private-ci` to request future connector-driven runs.**
+- [ ] Update Fichário validation documentation with exact SHA, run ID, commands and conclusion.
+- [ ] Remove the unobservable `.github/workflows/validate-current-head.yml` from Fichário after the hub path is proven.
+- [ ] Never reuse the historical green checkpoint as evidence for a later HEAD.
