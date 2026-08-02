@@ -1,0 +1,30 @@
+def goAnimeOfflineRepository = new File(
+    gradle.gradleUserHomeDir,
+    'offline-goanime-maven',
+)
+
+settingsEvaluated { settings ->
+    settings.pluginManagement.repositories.maven {
+        name = 'GoAnimeOfflineDeltaPlugins'
+        url = settings.uri(goAnimeOfflineRepository)
+    }
+    try {
+        settings.dependencyResolutionManagement.repositories.maven {
+            name = 'GoAnimeOfflineDelta'
+            url = settings.uri(goAnimeOfflineRepository)
+        }
+    } catch (MissingPropertyException ignored) {
+        // Older Gradle settings without dependencyResolutionManagement.
+    }
+}
+
+gradle.beforeProject { project ->
+    project.buildscript.repositories.maven {
+        name = 'GoAnimeOfflineDeltaBuildscript'
+        url = project.uri(goAnimeOfflineRepository)
+    }
+    project.repositories.maven {
+        name = 'GoAnimeOfflineDeltaProject'
+        url = project.uri(goAnimeOfflineRepository)
+    }
+}
