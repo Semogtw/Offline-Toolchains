@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+"""Enforce the security and execution contract of the public private-CI hub."""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+RUN_WORKFLOW = ROOT / ".github/workflows/run-private-project-ci.yml"
+REQUEST_WORKFLOW = ROOT / ".github/workflows/request-private-project-ci.yml"
+REQUEST_FILE = ROOT / "triggers/private-ci.json"
+REQUEST_LIBRARY = ROOT / "scripts/private_ci_request.py"
+DESIGN = ROOT / "docs/superpowers/specs/2026-08-01-public-private-ci-hub-design.md"
+PLAN = ROOT / "docs/superpowers/plans/2026-08-01-public-private-ci-hub.md"
+
+EXPECTED_PROJECTS = {
+    "goanime": {
+        "repository": "Semogtw/goanime-mobile",
+        "default_ref": "main",
+    },
+    "zapzap": {
+        "repository": "Semogtw/Zapzap",
+        "default_ref": "development/android-build-recovery",
+    },
+    "semogsite": {
+        "repository": "Semogtw/SemogSite",
+        "default_ref": "develop/foundation-bootstrap",
+    },
+}
+
+
+class ContractError(RuntimeError):
+    """Raised when a checked repository file violates the private-CI contract."""
+
+
+def read(path: Path) -> str:
+    if not path.is_file():
+        raise ContractError(f"missing required file: {path.relative_to(ROOT)}")
+    return path.read_text(encoding="utf-8")
+
+
+def require(text: str, fragment: str, context: str) -> None:
+    if fragment not in text:
+        raise ContractError(f"{context}: missing required fragment: {fragment!r}")
+
+
+def require_count(text: str, fragment: str, count: int, context: str) -> None:
+    actual = text.count(fragment)
+    if actual != count:
+        raise ContractError(
+            f"{context}: expected {count} occurrences of {fragment!r}, found {actual}"
+        )
+
+
+def forbid(text: str, fragment: str, context: str) -> None:
+    if fragment in text:
+        raise ContractError(f"{context}: forbidden fragment present: {fragment!r}")
+
+
+def validate_request_library(text: str) -> None:
+    for project, config in EXPECTED_PROJECTS.items():
+        require(text, f'"{project}": {{', "request library")
+        require(text, f'"repository": "{config["repository"]}"', "request library")
+        require(text, f'"default_ref": "{config["default_ref"]}"', "request library")
+
+    for safety_check in (
+        '".." in ref',
+        '"@{" in ref',
+        '"//" in ref',
+        'ref.endswith(".lock")',
+        "unknown_keys = set(payload) - _ALLOWED_KEYS",
+    ):
+        require(text, safety_check, "request library")
+
+
+def validate_request_workflow(text: str) -> None:
+    for fragment in (
+        "name: Request private project CI",
+        "- build/private-ci",
+        "- triggers/private-ci.json",
+        'test "$ACTOR" = "$OWNER"',
+        "ref: main",
+        "path: trusted-source",
+        "persist-credentials: false",
+        "sparse-checkout: scripts/private_ci_request.py",
+        "ref: ${{ github.sha }}",
+        "sparse-checkout: triggers/private-ci.json",
+        "python3 trusted-source/scripts/private_ci_request.py",
+    ):
+        require(text, fragment, "request workflow")
+
+    for fragment in (
+        "secrets.",
+        "PRIVATE_REPOSITORIES_TOKEN",
+        "actions/upload-artifact",
+        "repository:",
+        "client_payload",
+    ):
+        forbid(text, fragment, "request workflow")
+
+
+def validate_privileged_workflow(text: str) -> None:
+    for fragment in (
+        "name: Run private project CI",
+        "workflow_dispatch:",
+        "repository_dispatch:",
+        "- private-project-ci",
+        "workflow_run:",
+        "- Request private project CI",
+        "github.event.workflow_run.conclusion == 'success'",
+        "github.event.workflow_run.head_branch == 'build/private-ci'",
+        "github.event.workflow_run.event == 'push'",
+        "github.event.workflow_run.actor.login == github.repository_owner",
+        "github.event.workflow_run.head_repository.full_name == github.repository",
+        'test "$ACTOR" = "$OWNER"',
+        "ref: main",
+        "python3 trusted-source/scripts/private_ci_request.py",
+        "PRIVATE_REPOSITORIES_TOKEN",
+        "repository: ${{ needs.normalize.outputs.repository }}",
+        "ref: ${{ needs.normalize.outputs.ref }}",
+        "flutter pub get",
+        "pwsh ./tools/validate_project_health.ps1",
+        "dart format --output=none --set-exit-if-changed lib test packages tools",
+        "flutter analyze --no-pub",
+        "flutter test --no-pub",
+        "pwsh ./tools/validate_release_workflows.ps1",
+        "flutter build apk --debug --no-pub",
+        "bash ./tools/checks/run_pure_tests.sh",
+        "bash ./tools/checks/audit_sources.sh",
+        "bash ./tools/checks/verify_android_baseline.sh",
+        "./gradlew --no-daemon testDebugUnitTest",
+        "./gradlew --no-daemon lintDebug",
+        "./gradlew --no-daemon :app:assembleDebug",
+        "pnpm install --frozen-lockfile",
+        "pnpm check",
+        "pnpm build",
+        'corepack prepare "$package_manager" --activate',
+    ):
+        require(text, fragment, "privileged workflow")
+
+    require_count(text, "path: private-source", 3, "privileged workflow")
+    require_count(text, "fetch-depth: 1", 3, "privileged workflow")
+    require_count(text, "persist-credentials: false", 5, "privileged workflow")
+    require_count(text, "lfs: false", 3, "privileged workflow")
+    require_count(text, "submodules: false", 3, "privileged workflow")
+    require_count(
+        text,
+        'run: rm -rf "$GITHUB_WORKSPACE/private-source"',
+        3,
+        "privileged workflow",
+    )
+    require_count(
+        text,
+        "Build outputs were verified and discarded; no private artifact was uploaded.",
+        3,
+        "privileged workflow",
+    )
+
+    for fragment in (
+        "actions/upload-artifact",
+        "actions/cache",
+        "cache: true",
+        "client_payload.repository",
+        "client_payload.command",
+        "client_payload.script",
+        "client_payload.runner",
+        "secrets: inherit",
+        "persist-credentials: true",
+    ):
+        forbid(text, fragment, "privileged workflow")
+
+
+def validate_request_json() -> None:
+    try:
+        payload = json.loads(read(REQUEST_FILE))
+    except json.JSONDecodeError as exc:
+        raise ContractError(
+            f"trigger request is invalid JSON at line {exc.lineno}, column {exc.colno}"
+        ) from exc
+
+    sys.path.insert(0, str((ROOT / "scripts").resolve()))
+    from private_ci_request import normalize_request
+
+    normalized = normalize_request(payload)
+    if normalized["project"] not in EXPECTED_PROJECTS:
+        raise ContractError("trigger request normalized to an unsupported project")
+
+
+def validate_docs() -> None:
+    design = read(DESIGN)
+    plan = read(PLAN)
+    for project, config in EXPECTED_PROJECTS.items():
+        require(design, f"`{project}`", "design")
+        require(design, f"`{config['repository']}`", "design")
+        require(plan, config["repository"], "plan")
+    forbid(design, "TBD", "design")
+    forbid(plan, "TBD", "plan")
+
+
+def main() -> int:
+    try:
+        validate_request_library(read(REQUEST_LIBRARY))
+        validate_request_workflow(read(REQUEST_WORKFLOW))
+        validate_privileged_workflow(read(RUN_WORKFLOW))
+        validate_request_json()
+        validate_docs()
+    except (ContractError, ValueError) as exc:
+        print(f"private CI workflow contract: FAIL: {exc}", file=sys.stderr)
+        return 1
+
+    print("private CI workflow contract: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
