@@ -15,8 +15,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Patch cached-only Deno verification
-        shell: python
+        shell: bash
         run: |
+          set -euo pipefail
+          python3 <<'PY'
           from pathlib import Path
 
           path = Path('.github/workflows/build-fichario.yml')
@@ -35,6 +37,7 @@ jobs:
           if source.count(old) != 1:
               raise SystemExit('expected Deno smoke block exactly once')
           path.write_text(source.replace(old, new))
+          PY
       - name: Commit patch
         shell: bash
         run: |
