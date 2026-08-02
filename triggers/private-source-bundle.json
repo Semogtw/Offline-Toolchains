@@ -1,5 +1,5 @@
 {
   "project": "goanime",
-  "mode": "full",
-  "ref": ""
+  "mode": "ref",
+  "ref": "7f1864c2d9fa8feef5fc866d3a59b2c26f1c0906"
 }
