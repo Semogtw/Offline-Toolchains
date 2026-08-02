@@ -1,0 +1,295 @@
+name: Build Fichário offline workspace
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build-fichario.yml
+      - triggers/fichario-toolchain.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fichario-offline-workspace
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22.16.0"
+  PNPM_VERSION: "10.34.5"
+  DENO_VERSION: "2.8.1"
+  SUPABASE_VERSION: "2.111.0"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout toolchain definitions
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Read requested Fichário ref
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref="$(jq -r '.ref // "main"' triggers/fichario-toolchain.json)"
+          test -n "$ref"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout Fichário source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/FicharioVirtual
+          ref: ${{ steps.request.outputs.ref }}
+          path: fichario-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+
+      - name: Resolve source commit
+        id: source
+        shell: bash
+        run: echo "sha=$(git -C fichario-source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          check-latest: false
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+          cache: false
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v2
+        with:
+          version: ${{ env.SUPABASE_VERSION }}
+
+      - name: Install archive tooling
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends zstd
+
+      - name: Build and verify portable workspace
+        id: bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          root="$RUNNER_TEMP/fichario-offline"
+          archive="$RUNNER_TEMP/fichario-offline-linux-x64.tar.zst"
+          parts="$RUNNER_TEMP/fichario-offline-parts"
+          smoke="$RUNNER_TEMP/fichario-offline-smoke"
+          node_root="$(dirname "$(dirname "$(readlink -f "$(command -v node)")")")"
+
+          rm -rf "$root" "$archive" "$parts" "$smoke"
+          mkdir -p \
+            "$root/node" \
+            "$root/pnpm" \
+            "$root/pnpm-store" \
+            "$root/playwright-browsers" \
+            "$root/deno/bin" \
+            "$root/supabase/bin" \
+            "$root/workspace" \
+            "$root/bin" \
+            "$parts"
+
+          cp -a "$node_root/." "$root/node/"
+          "$root/node/bin/npm" install --global --prefix "$root/pnpm" "pnpm@$PNPM_VERSION"
+          install -m 0755 "$(command -v deno)" "$root/deno/bin/deno"
+          install -m 0755 "$(command -v supabase)" "$root/supabase/bin/supabase"
+
+          export PATH="$root/pnpm/bin:$root/node/bin:$root/deno/bin:$root/supabase/bin:$PATH"
+          export PNPM_STORE_DIR="$root/pnpm-store"
+          export PLAYWRIGHT_BROWSERS_PATH="$root/playwright-browsers"
+          export npm_config_audit=false
+          export npm_config_fund=false
+          export npm_config_update_notifier=false
+
+          pnpm --dir fichario-source install \
+            --frozen-lockfile \
+            --store-dir "$PNPM_STORE_DIR"
+          pnpm --dir fichario-source exec playwright install chromium
+
+          cp -a fichario-source/. "$root/workspace/"
+          rm -rf \
+            "$root/workspace/.git" \
+            "$root/workspace/node_modules" \
+            "$root/workspace/.svelte-kit" \
+            "$root/workspace/build" \
+            "$root/workspace/playwright-report" \
+            "$root/workspace/test-results"
+
+          cat > "$root/bin/activate" <<'EOF'
+          #!/usr/bin/env bash
+          toolchain_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+          export PATH="$toolchain_root/pnpm/bin:$toolchain_root/node/bin:$toolchain_root/deno/bin:$toolchain_root/supabase/bin:$PATH"
+          export PNPM_STORE_DIR="$toolchain_root/pnpm-store"
+          export PLAYWRIGHT_BROWSERS_PATH="$toolchain_root/playwright-browsers"
+          export npm_config_audit=false
+          export npm_config_fund=false
+          export npm_config_update_notifier=false
+          EOF
+
+          cat > "$root/bin/install-offline" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          toolchain_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+          workspace="${1:-$toolchain_root/workspace}"
+          # shellcheck source=/dev/null
+          source "$toolchain_root/bin/activate"
+          export npm_config_registry="http://127.0.0.1:9"
+          pnpm --dir "$workspace" install \
+            --offline \
+            --frozen-lockfile \
+            --store-dir "$PNPM_STORE_DIR"
+          EOF
+
+          cat > "$root/bin/doctor" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          toolchain_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+          workspace="${1:-$toolchain_root/workspace}"
+          # shellcheck source=/dev/null
+          source "$toolchain_root/bin/activate"
+          node --version
+          pnpm --version
+          deno --version
+          supabase --version
+          test -f "$workspace/pnpm-lock.yaml"
+          test -d "$PNPM_STORE_DIR"
+          test -d "$PLAYWRIGHT_BROWSERS_PATH"
+          pnpm --dir "$workspace" exec playwright --version
+          echo "Fichário offline workspace doctor: PASS"
+          EOF
+          chmod +x "$root/bin/activate" "$root/bin/install-offline" "$root/bin/doctor"
+
+          cp -a "$root/workspace" "$smoke"
+          "$root/bin/install-offline" "$smoke"
+          source "$root/bin/activate"
+          pnpm --dir "$smoke" verify
+          pnpm --dir "$smoke" test:e2e
+          pnpm --dir "$smoke" test:functions:check
+          "$root/bin/doctor" "$smoke"
+
+          package_sha="$(sha256sum "$root/workspace/package.json" | cut -d' ' -f1)"
+          lock_sha="$(sha256sum "$root/workspace/pnpm-lock.yaml" | cut -d' ' -f1)"
+          {
+            echo "schema_version=1"
+            echo "source_repository=Semogtw/FicharioVirtual"
+            echo "source_ref=${{ steps.request.outputs.ref }}"
+            echo "source_commit=${{ steps.source.outputs.sha }}"
+            echo "toolchain_commit=$GITHUB_SHA"
+            echo "created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "node_version=$(node --version)"
+            echo "pnpm_version=$(pnpm --version)"
+            echo "deno_version=$(deno --version | head -n 1)"
+            echo "supabase_version=$(supabase --version)"
+            echo "package_sha256=$package_sha"
+            echo "lock_sha256=$lock_sha"
+            echo "database_gate_note=Supabase CLI is included; local DB tests still require Docker and Supabase container images"
+          } > "$root/MANIFEST.txt"
+
+          tar -C "$RUNNER_TEMP" -I 'zstd -T0 -8' -cf "$archive" fichario-offline
+          sha256sum "$archive" > "$archive.sha256"
+          split -b 350M -d -a 2 "$archive" "$parts/fichario-offline-linux-x64.part-"
+          (cd "$parts" && sha256sum fichario-offline-linux-x64.part-* > SHA256SUMS.parts)
+
+          part_count="$(find "$parts" -maxdepth 1 -type f -name 'fichario-offline-linux-x64.part-*' | wc -l)"
+          test "$part_count" -ge 1
+          test "$part_count" -le 6
+          {
+            echo "archive=$(basename "$archive")"
+            echo "archive_sha256=$(cut -d' ' -f1 "$archive.sha256")"
+            echo "part_count=$part_count"
+            echo "reassemble=cat fichario-offline-linux-x64.part-* > $(basename "$archive")"
+            echo "verify_parts=sha256sum -c SHA256SUMS.parts"
+            echo "extract=tar --zstd -xf $(basename "$archive")"
+          } > "$parts/PARTS.txt"
+
+          echo "parts=$parts" >> "$GITHUB_OUTPUT"
+          echo "archive_sha=$archive.sha256" >> "$GITHUB_OUTPUT"
+          echo "root=$root" >> "$GITHUB_OUTPUT"
+          for index in 00 01 02 03 04 05; do
+            if [[ -f "$parts/fichario-offline-linux-x64.part-$index" ]]; then
+              echo "part_$index=true" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
+      - name: Upload manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: fichario-offline-linux-x64-manifest
+          path: |
+            ${{ steps.bundle.outputs.parts }}/PARTS.txt
+            ${{ steps.bundle.outputs.parts }}/SHA256SUMS.parts
+            ${{ steps.bundle.outputs.archive_sha }}
+            ${{ steps.bundle.outputs.root }}/MANIFEST.txt
+            ${{ steps.bundle.outputs.root }}/workspace/package.json
+            ${{ steps.bundle.outputs.root }}/workspace/pnpm-lock.yaml
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload part 00
+        if: steps.bundle.outputs.part_00 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: fichario-offline-linux-x64-part-00
+          path: ${{ steps.bundle.outputs.parts }}/fichario-offline-linux-x64.part-00
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload part 01
+        if: steps.bundle.outputs.part_01 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: fichario-offline-linux-x64-part-01
+          path: ${{ steps.bundle.outputs.parts }}/fichario-offline-linux-x64.part-01
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload part 02
+        if: steps.bundle.outputs.part_02 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: fichario-offline-linux-x64-part-02
+          path: ${{ steps.bundle.outputs.parts }}/fichario-offline-linux-x64.part-02
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload part 03
+        if: steps.bundle.outputs.part_03 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: fichario-offline-linux-x64-part-03
+          path: ${{ steps.bundle.outputs.parts }}/fichario-offline-linux-x64.part-03
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload part 04
+        if: steps.bundle.outputs.part_04 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: fichario-offline-linux-x64-part-04
+          path: ${{ steps.bundle.outputs.parts }}/fichario-offline-linux-x64.part-04
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload part 05
+        if: steps.bundle.outputs.part_05 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: fichario-offline-linux-x64-part-05
+          path: ${{ steps.bundle.outputs.parts }}/fichario-offline-linux-x64.part-05
+          compression-level: 0
+          retention-days: 1
