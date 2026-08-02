@@ -83,6 +83,8 @@ jobs:
           set -euo pipefail
           expected_parent=46240ee8d1e473ef9b45b7c0e6acc29ea8d30657
           test "$(git rev-parse HEAD)" = "$expected_parent"
+          git config user.name 'OpenAI Local Agent'
+          git config user.email 'actions@users.noreply.github.com'
           git am --3way \
             "$RUNNER_TEMP/goanime-jikan-service-discovery.patch"
           git diff --check HEAD~2
@@ -118,4 +120,4 @@ jobs:
               body: `<!-- goanime-jikan-service-discovery-result:${context.runId} -->\n### Apply GoAnime Jikan service discovery hardening result\n\n- Run: ${context.runId}\n- Result: ${{ job.status }}`,
             });
 
-# retry: exact payload restored
+# retry: configure a local committer identity for git am
