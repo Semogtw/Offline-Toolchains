@@ -25,6 +25,17 @@ class NormalizeRequestTests(unittest.TestCase):
                 self.assertEqual(normalized["ref"], config["default_ref"])
                 self.assertEqual(normalized["default_ref"], config["default_ref"])
 
+    def test_fichario_mapping_is_fixed_to_the_public_repository(self) -> None:
+        self.assertEqual(
+            normalize_request({"project": "fichario"}),
+            {
+                "project": "fichario",
+                "repository": "Semogtw/FicharioVirtual",
+                "ref": "main",
+                "default_ref": "main",
+            },
+        )
+
     def test_accepts_safe_branch_tag_and_sha_refs(self) -> None:
         refs = [
             "main",
