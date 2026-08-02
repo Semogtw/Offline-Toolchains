@@ -10,10 +10,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RUN_WORKFLOW = ROOT / ".github/workflows/run-private-project-ci.yml"
 REQUEST_WORKFLOW = ROOT / ".github/workflows/request-private-project-ci.yml"
+REPORT_WORKFLOW = ROOT / ".github/workflows/report-private-project-ci-runs.yml"
 REQUEST_FILE = ROOT / "triggers/private-ci.json"
 REQUEST_LIBRARY = ROOT / "scripts/private_ci_request.py"
 DESIGN = ROOT / "docs/superpowers/specs/2026-08-01-public-private-ci-hub-design.md"
 PLAN = ROOT / "docs/superpowers/plans/2026-08-01-public-private-ci-hub.md"
+OPERATIONS = ROOT / "docs/private-project-ci.md"
 
 EXPECTED_PROJECTS = {
     "goanime": {
@@ -173,6 +175,37 @@ def validate_privileged_workflow(text: str) -> None:
         forbid(text, fragment, "privileged workflow")
 
 
+def validate_report_workflow(text: str) -> None:
+    for fragment in (
+        "name: Report private project CI runs",
+        "- Run private project CI",
+        "actions: read",
+        "issues: write",
+        "github.event.workflow_run.head_repository.full_name == github.repository",
+        "github.event.workflow_run.actor.login == github.repository_owner",
+        "uses: actions/github-script@v8",
+        "github.rest.actions.listJobsForWorkflowRun",
+        "GoAnime real CI and Android debug build",
+        "ZapZap real Android CI and debug build",
+        "SemogSite real checks and production build",
+        "issue_number: 15",
+        "Private source, private resolved commit, logs, artifacts, and build outputs are intentionally omitted.",
+    ):
+        require(text, fragment, "receipt workflow")
+
+    for fragment in (
+        "PRIVATE_REPOSITORIES_TOKEN",
+        "secrets.",
+        "contents: write",
+        "actions/upload-artifact",
+        "actions/cache",
+        "downloadJobLogsForWorkflowRun",
+        "downloadWorkflowRunLogs",
+        "client_payload",
+    ):
+        forbid(text, fragment, "receipt workflow")
+
+
 def validate_request_json() -> None:
     try:
         payload = json.loads(read(REQUEST_FILE))
@@ -192,10 +225,13 @@ def validate_request_json() -> None:
 def validate_docs() -> None:
     design = read(DESIGN)
     plan = read(PLAN)
+    operations = read(OPERATIONS)
     for project, config in EXPECTED_PROJECTS.items():
         require(design, f"`{project}`", "design")
         require(design, f"`{config['repository']}`", "design")
         require(plan, config["repository"], "plan")
+    require(operations, "Public private CI run receipts", "operations")
+    require(operations, "issue #15", "operations")
     forbid(design, "TBD", "design")
     forbid(plan, "TBD", "plan")
 
@@ -205,6 +241,7 @@ def main() -> int:
         validate_request_library(read(REQUEST_LIBRARY))
         validate_request_workflow(read(REQUEST_WORKFLOW))
         validate_privileged_workflow(read(RUN_WORKFLOW))
+        validate_report_workflow(read(REPORT_WORKFLOW))
         validate_request_json()
         validate_docs()
     except (ContractError, ValueError) as exc:

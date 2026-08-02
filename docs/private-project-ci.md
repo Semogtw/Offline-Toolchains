@@ -100,6 +100,20 @@ The private-project workflow intentionally does not use `actions/upload-artifact
 
 Toolchain-building workflows in this repository remain separate and may publish artifacts that contain only public tools and public dependency caches.
 
+## Sanitized run receipts
+
+`Report private project CI runs` records each completed public run as a comment in the open **Public private CI run receipts** issue #15. This makes connector-triggered executions observable without requiring a general workflow-run listing API.
+
+A receipt contains only:
+
+- public workflow run ID and link;
+- overall conclusion and trigger event;
+- public branch and public workflow head SHA;
+- public actor;
+- selected project job name and conclusion.
+
+It explicitly omits private source, the resolved private commit SHA, logs, artifacts, secrets, and build outputs. The reporter has only `actions: read` and `issues: write`; it does not receive `PRIVATE_REPOSITORIES_TOKEN`.
+
 ## Validation
 
 Run before modifying the private CI flow:

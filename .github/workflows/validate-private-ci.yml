@@ -5,11 +5,13 @@ on:
     paths:
       - .github/workflows/request-private-project-ci.yml
       - .github/workflows/run-private-project-ci.yml
+      - .github/workflows/report-private-project-ci-runs.yml
       - .github/workflows/validate-private-ci.yml
       - scripts/private_ci_request.py
       - scripts/test_private_ci_request.py
       - scripts/validate-private-ci-workflows.py
       - triggers/private-ci.json
+      - docs/private-project-ci.md
       - docs/superpowers/specs/2026-08-01-public-private-ci-hub-design.md
       - docs/superpowers/plans/2026-08-01-public-private-ci-hub.md
   push:
@@ -19,11 +21,13 @@ on:
     paths:
       - .github/workflows/request-private-project-ci.yml
       - .github/workflows/run-private-project-ci.yml
+      - .github/workflows/report-private-project-ci-runs.yml
       - .github/workflows/validate-private-ci.yml
       - scripts/private_ci_request.py
       - scripts/test_private_ci_request.py
       - scripts/validate-private-ci-workflows.py
       - triggers/private-ci.json
+      - docs/private-project-ci.md
       - docs/superpowers/specs/2026-08-01-public-private-ci-hub-design.md
       - docs/superpowers/plans/2026-08-01-public-private-ci-hub.md
 
@@ -59,6 +63,7 @@ jobs:
           ' \
             .github/workflows/request-private-project-ci.yml \
             .github/workflows/run-private-project-ci.yml \
+            .github/workflows/report-private-project-ci-runs.yml \
             .github/workflows/validate-private-ci.yml
 
       - name: Run request validator tests
