@@ -1,0 +1,128 @@
+name: Record GoAnime source receipt
+
+on:
+  workflow_run:
+    workflows:
+      - Build encrypted private source bundle
+    types:
+      - completed
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: record-goanime-source-receipt
+  cancel-in-progress: false
+
+jobs:
+  record:
+    name: Record public artifact metadata
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_run' &&
+      github.event.workflow_run.actor.login == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout receipt branch
+        uses: actions/checkout@v6
+        with:
+          ref: build/source-bundles
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Build public GoAnime receipt
+        id: receipt
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_RUN_URL: ${{ github.event.workflow_run.html_url }}
+          SOURCE_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_EVENT: ${{ github.event.workflow_run.event }}
+        run: |
+          set -euo pipefail
+          mkdir -p receipts
+          gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/artifacts?per_page=100" \
+            > "$RUNNER_TEMP/artifacts.json"
+          python3 - \
+            "$RUNNER_TEMP/artifacts.json" \
+            receipts/goanime-latest.json \
+            "$SOURCE_RUN_ID" \
+            "$SOURCE_RUN_URL" \
+            "$SOURCE_HEAD_SHA" \
+            "$SOURCE_EVENT" <<'PY'
+          import datetime as dt
+          import json
+          import sys
+          from pathlib import Path
+
+          source = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          artifacts = []
+          for artifact in source.get("artifacts", []):
+              name = artifact.get("name", "")
+              if not name.startswith("private-source-goanime-"):
+                  continue
+              artifacts.append(
+                  {
+                      "artifact_id": artifact["id"],
+                      "name": name,
+                      "size_bytes": artifact.get("size_in_bytes"),
+                      "expired": bool(artifact.get("expired", False)),
+                      "created_at": artifact.get("created_at"),
+                      "expires_at": artifact.get("expires_at"),
+                  }
+              )
+
+          if not artifacts:
+              raise SystemExit(3)
+
+          artifacts.sort(key=lambda item: item["name"])
+          receipt = {
+              "schema_version": 1,
+              "run_id": int(sys.argv[3]),
+              "run_url": sys.argv[4],
+              "workflow_head_sha": sys.argv[5],
+              "workflow_event": sys.argv[6],
+              "recorded_at_utc": dt.datetime.now(dt.timezone.utc)
+              .replace(microsecond=0)
+              .isoformat()
+              .replace("+00:00", "Z"),
+              "artifacts": artifacts,
+          }
+          Path(sys.argv[2]).write_text(
+              json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+        continue-on-error: true
+
+      - name: Skip runs without GoAnime artifacts
+        if: steps.receipt.outcome == 'failure'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f receipts/goanime-latest.json ]]; then
+            echo "No GoAnime source artifacts were produced by this run."
+            exit 0
+          fi
+          echo "Receipt generation failed after creating output." >&2
+          exit 1
+
+      - name: Publish receipt
+        if: steps.receipt.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add receipts/goanime-latest.json
+          if git diff --cached --quiet -- receipts/goanime-latest.json; then
+            echo "Receipt is unchanged."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "ci: record latest GoAnime source artifacts"
+          git push origin HEAD:build/source-bundles
