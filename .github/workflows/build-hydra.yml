@@ -1,0 +1,320 @@
+name: Build Hydra offline toolchain
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Hydra branch, tag or commit
+        required: false
+        default: main
+        type: string
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-hydra.yml
+      - scripts/build-hydra-toolchain.sh
+      - scripts/validate-source-bundle-request.py
+      - triggers/hydra-toolchain.json
+      - docs/HYDRA_TOOLCHAIN.md
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hydra-toolchain-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22.23.1"
+  YARN_VERSION: "1.22.22"
+  RUST_TOOLCHAIN: stable
+
+jobs:
+  build:
+    name: Node, Yarn, Rust and exact Hydra dependency caches
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout trusted toolchain definitions
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Resolve and validate Hydra ref
+        id: request
+        shell: bash
+        env:
+          DISPATCH_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${DISPATCH_REF:-}" ]]; then
+            ref="$DISPATCH_REF"
+          else
+            ref="$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          request = json.loads(
+              Path("triggers/hydra-toolchain.json").read_text(encoding="utf-8")
+          )
+          if request.get("profile") != "hydra":
+              raise SystemExit("Hydra toolchain trigger must use profile=hydra")
+          ref = request.get("ref")
+          if not isinstance(ref, str) or not ref:
+              raise SystemExit("Hydra toolchain trigger requires a non-empty ref")
+          print(ref)
+          PY
+          )"
+          fi
+
+          normalized="$(
+            printf '{"project":"hydra","mode":"ref","ref":%s}\n' \
+              "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$ref")" |
+              python3 scripts/validate-source-bundle-request.py -
+          )"
+          python3 - "$normalized" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          request = json.loads(sys.argv[1])
+          with open(sys.argv[2], "a", encoding="utf-8") as stream:
+              stream.write(f"ref={request['ref']}\n")
+          PY
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPOSITORIES_TOKEN" || {
+            echo "Missing Actions secret PRIVATE_REPOSITORIES_TOKEN." >&2
+            exit 1
+          }
+
+      - name: Checkout fixed Hydra repository
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/HydraPersonalizado
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          ref: ${{ steps.request.outputs.ref }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+
+      - name: Set up pinned Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          check-latest: false
+
+      - name: Install native build prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            git \
+            libgtk-4-dev \
+            libgtk4-layer-shell-dev \
+            pkg-config \
+            python3 \
+            zstd
+
+      - name: Build and prove portable Hydra toolchain
+        id: bundle
+        shell: bash
+        env:
+          HYDRA_REF: ${{ steps.request.outputs.ref }}
+        run: |
+          set -euo pipefail
+          bash scripts/build-hydra-toolchain.sh \
+            "$GITHUB_WORKSPACE/private-source" \
+            "$RUNNER_TEMP/hydra-toolchain" \
+            "$NODE_VERSION" \
+            "$YARN_VERSION" \
+            "$RUST_TOOLCHAIN"
+
+      - name: Upload Hydra toolchain manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: hydra-toolchain-linux-x64-manifest
+          path: |
+            ${{ steps.bundle.outputs.parts_dir }}/PARTS.txt
+            ${{ steps.bundle.outputs.parts_dir }}/SHA256SUMS.parts
+            ${{ steps.bundle.outputs.archive_sha }}
+            ${{ steps.bundle.outputs.bundle_root }}/MANIFEST.txt
+            ${{ steps.bundle.outputs.bundle_root }}/reference-inputs/package.json
+            ${{ steps.bundle.outputs.bundle_root }}/reference-inputs/yarn.lock
+            ${{ steps.bundle.outputs.bundle_root }}/reference-inputs/hydra-native.Cargo.lock
+            ${{ steps.bundle.outputs.bundle_root }}/reference-inputs/game-agent.Cargo.lock
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Hydra toolchain part 00
+        if: steps.bundle.outputs.part_00 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: hydra-toolchain-linux-x64-part-00
+          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-00
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Hydra toolchain part 01
+        if: steps.bundle.outputs.part_01 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: hydra-toolchain-linux-x64-part-01
+          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-01
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Hydra toolchain part 02
+        if: steps.bundle.outputs.part_02 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: hydra-toolchain-linux-x64-part-02
+          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-02
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Hydra toolchain part 03
+        if: steps.bundle.outputs.part_03 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: hydra-toolchain-linux-x64-part-03
+          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-03
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Hydra toolchain part 04
+        if: steps.bundle.outputs.part_04 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: hydra-toolchain-linux-x64-part-04
+          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-04
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Hydra toolchain part 05
+        if: steps.bundle.outputs.part_05 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: hydra-toolchain-linux-x64-part-05
+          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-05
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Hydra toolchain part 06
+        if: steps.bundle.outputs.part_06 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: hydra-toolchain-linux-x64-part-06
+          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-06
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Hydra toolchain part 07
+        if: steps.bundle.outputs.part_07 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: hydra-toolchain-linux-x64-part-07
+          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-07
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Hydra toolchain part 08
+        if: steps.bundle.outputs.part_08 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: hydra-toolchain-linux-x64-part-08
+          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-08
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Hydra toolchain part 09
+        if: steps.bundle.outputs.part_09 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: hydra-toolchain-linux-x64-part-09
+          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-09
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Hydra toolchain part 10
+        if: steps.bundle.outputs.part_10 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: hydra-toolchain-linux-x64-part-10
+          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-10
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Hydra toolchain part 11
+        if: steps.bundle.outputs.part_11 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: hydra-toolchain-linux-x64-part-11
+          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-11
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Hydra toolchain part 12
+        if: steps.bundle.outputs.part_12 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: hydra-toolchain-linux-x64-part-12
+          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-12
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Hydra toolchain part 13
+        if: steps.bundle.outputs.part_13 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: hydra-toolchain-linux-x64-part-13
+          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-13
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Hydra toolchain part 14
+        if: steps.bundle.outputs.part_14 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: hydra-toolchain-linux-x64-part-14
+          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-14
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Hydra toolchain part 15
+        if: steps.bundle.outputs.part_15 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: hydra-toolchain-linux-x64-part-15
+          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-15
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
