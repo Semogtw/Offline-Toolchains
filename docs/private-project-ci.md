@@ -8,7 +8,7 @@ The `Run private project CI` workflow performs the real verification and build w
 | --- | --- | --- | --- |
 | `goanime` | `Semogtw/goanime-mobile` | `main` | Flutter health, formatting, analysis, tests, release-workflow validation, debug APK build |
 | `zapzap` | `Semogtw/Zapzap` | `development/android-build-recovery` | pure tests, source audit, Android baseline, unit tests, lint, debug APK build |
-| `semogsite` | `Semogtw/SemogSite` | `develop/foundation-bootstrap` | frozen pnpm install, guardrails/typechecks/tests, production build |
+| `semogsite` | `Semogtw/SemogSite` | `develop/foundation-bootstrap` | pnpm install using frozen mode when a lockfile exists or documented bootstrap mode when absent, guardrails/typechecks/tests, production build |
 
 The repository and commands are fixed in versioned code. Requests can select only a project key and a validated Git ref.
 
@@ -88,6 +88,17 @@ Example request:
 
 Only the trigger JSON should normally change on `build/private-ci`. Do not develop workflow code on that branch.
 
+## SemogSite dependency modes
+
+The SemogSite job follows the project's offline-toolchain contract:
+
+- when `pnpm-lock.yaml` exists, CI runs `pnpm install --frozen-lockfile` and rejects manifest drift;
+- when the lockfile is absent, CI emits a warning and runs `pnpm install --no-frozen-lockfile` only for the intentional bootstrap state;
+- the selected mode is written to the job summary;
+- generated files remain inside the ephemeral private checkout and are discarded after checks and build.
+
+Bootstrap mode is not a permanent substitute for reproducibility. After dependency selection stabilizes, generate, review, and commit `pnpm-lock.yaml`; subsequent public CI runs automatically return to frozen mode.
+
 ## Public visibility
 
 The workflow run, step names, exit status, requested ref, resolved commit SHA, and command output are public because the run belongs to a public repository. Project source is not uploaded automatically, but build tools and tests may print package names, file paths, test names, diagnostics, or stack traces.
@@ -120,10 +131,12 @@ Run before modifying the private CI flow:
 
 ```bash
 python3 scripts/test_private_ci_request.py
+python3 scripts/test-private-ci-toolchain-policy.py
+python3 scripts/test-semogsite-install-policy.py
 python3 scripts/validate-private-ci-workflows.py
 ```
 
-The public `Validate private CI hub` workflow also parses the YAML and runs both validators for relevant pushes and pull requests.
+The public `Validate private CI hub` workflow also parses the YAML and runs these validators for relevant pushes and pull requests.
 
 ## Current limitations
 
