@@ -1,0 +1,49 @@
+name: Export verified SemogSite agent patch
+
+on:
+  push:
+    branches:
+      - ops/semogsite-patch-requests
+    paths:
+      - triggers/export-semogsite-agent-patch.txt
+      - .github/workflows/export-semogsite-agent-patch.yml
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout patch request
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            payloads/semogsite-agent-patch.diff.gz.b64
+            triggers/semogsite-agent-patch.json
+          sparse-checkout-cone-mode: false
+
+      - name: Validate fixed payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 --decode payloads/semogsite-agent-patch.diff.gz.b64 \
+            | gzip --decompress > "$RUNNER_TEMP/semogsite-agent.patch"
+          test "$(sha256sum "$RUNNER_TEMP/semogsite-agent.patch" | awk '{print $1}')" = \
+            "5349156abc8733263119d616eabcad98913a2e004eb577d400222b743cdbacfc"
+          cp triggers/semogsite-agent-patch.json "$RUNNER_TEMP/semogsite-agent-patch.json"
+
+      - name: Upload verified patch
+        uses: actions/upload-artifact@v7
+        with:
+          name: semogsite-agent-patch-verified
+          path: |
+            ${{ runner.temp }}/semogsite-agent.patch
+            ${{ runner.temp }}/semogsite-agent-patch.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
