@@ -10,7 +10,7 @@ O archive inclui:
 - Node.js `22.16.0`;
 - pnpm `10.34.5` e store compatível com o lockfile;
 - Chromium do Playwright;
-- Deno `2.8.1`;
+- Deno `2.8.1` e cache npm necessário às Edge Functions;
 - Supabase CLI `2.111.0`;
 - scripts de ativação, instalação offline e diagnóstico.
 
@@ -51,7 +51,7 @@ source ./fichario-offline/bin/activate
 cd ./fichario-offline/workspace
 ```
 
-A instalação força o registry para loopback inválido e usa `pnpm --offline --frozen-lockfile`, evitando downloads silenciosos.
+A instalação força o registry para loopback inválido e usa `pnpm --offline --frozen-lockfile`, evitando downloads silenciosos. A ativação também aponta `DENO_DIR` para o cache empacotado e desativa a consulta de atualização do Deno.
 
 ## Gates disponíveis offline
 
@@ -61,6 +61,8 @@ pnpm test:e2e
 pnpm test:source:offline
 pnpm test:functions:check
 ```
+
+Durante a fabricação, o workflow popula o cache Deno online e repete `test:functions:check` com os registries npm apontados para um endereço loopback inválido. Assim, a publicação só ocorre quando as Edge Functions conseguem ser verificadas usando exclusivamente o cache incluído.
 
 `pnpm test:db:local` requer adicionalmente:
 
@@ -83,3 +85,5 @@ serve exclusivamente para descriptografar source bundles privados já cifrados p
 ## Evidência inicial
 
 A primeira fabricação bem-sucedida ocorreu no run `30769889858`, commit de toolchain `2e86407f16930ba38e5c48f1f918f11bea6eac67`, produzindo manifest e duas partes. O workflow executou instalação offline, frontend, navegador, Edge Functions e diagnóstico antes de publicar os artifacts.
+
+A geração atual adiciona os cinco gates de fonte e um smoke test de Edge Functions com registry bloqueado. O recibo mais recente na issue de CI é a fonte de verdade para a versão vigente do bundle.
