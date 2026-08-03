@@ -107,6 +107,36 @@ jobs:
           compression-level: 6
           retention-days: 1
 
+      - name: Prepare Prettier repair snapshot
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare "pnpm@${PNPM_VERSION}" --activate
+          cd fichario-source
+          pnpm install --frozen-lockfile
+          pnpm exec prettier --write .
+          repair="$RUNNER_TEMP/fichario-prettier-repair"
+          rm -rf "$repair"
+          mkdir -p "$repair"
+          while IFS= read -r -d '' path; do
+            mkdir -p "$repair/$(dirname "$path")"
+            cp "$path" "$repair/$path"
+          done < <(git diff --name-only --diff-filter=ACMRT -z)
+          git diff --name-only > "$repair/FILES.txt"
+          test -s "$repair/FILES.txt"
+
+      - name: Upload Prettier repair snapshot
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fichario-prettier-repair
+          path: ${{ runner.temp }}/fichario-prettier-repair
+          if-no-files-found: warn
+          compression-level: 6
+          retention-days: 1
+
       - name: Upload manifest
         uses: actions/upload-artifact@v7
         with:
