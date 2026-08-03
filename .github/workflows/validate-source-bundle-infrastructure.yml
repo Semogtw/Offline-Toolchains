@@ -7,13 +7,16 @@ on:
       - .github/workflows/request-goanime-source-bundle.yml
       - .github/workflows/build-private-source-bundle.yml
       - .github/workflows/record-goanime-source-receipt.yml
+      - .github/workflows/record-goanime-toolchain-receipt.yml
       - .github/workflows/validate-source-bundle-infrastructure.yml
       - scripts/assemble-source-bundle.sh
       - scripts/validate-source-bundle-request.py
       - scripts/validate-private-source-workflows.sh
       - scripts/validate-source-receipt-workflow.sh
       - scripts/verify_goanime_source_receipt.py
+      - scripts/verify_goanime_toolchain_receipt.py
       - scripts/tests/test_verify_goanime_source_receipt.py
+      - scripts/tests/test_verify_goanime_toolchain_receipt.py
       - keys/source-bundles-public.asc
       - triggers/private-source-bundle.json
       - docs/GOANIME_SOURCE_BUNDLE.md
@@ -25,13 +28,16 @@ on:
       - .github/workflows/request-goanime-source-bundle.yml
       - .github/workflows/build-private-source-bundle.yml
       - .github/workflows/record-goanime-source-receipt.yml
+      - .github/workflows/record-goanime-toolchain-receipt.yml
       - .github/workflows/validate-source-bundle-infrastructure.yml
       - scripts/assemble-source-bundle.sh
       - scripts/validate-source-bundle-request.py
       - scripts/validate-private-source-workflows.sh
       - scripts/validate-source-receipt-workflow.sh
       - scripts/verify_goanime_source_receipt.py
+      - scripts/verify_goanime_toolchain_receipt.py
       - scripts/tests/test_verify_goanime_source_receipt.py
+      - scripts/tests/test_verify_goanime_toolchain_receipt.py
       - keys/source-bundles-public.asc
       - docs/GOANIME_SOURCE_BUNDLE.md
 
