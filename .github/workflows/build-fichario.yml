@@ -116,7 +116,9 @@ jobs:
           corepack prepare "pnpm@${PNPM_VERSION}" --activate
           cd fichario-source
           pnpm install --frozen-lockfile
+          git restore --source=HEAD -- package.json pnpm-lock.yaml
           pnpm exec prettier --write .
+          git restore --source=HEAD -- package.json pnpm-lock.yaml
           repair="$RUNNER_TEMP/fichario-prettier-repair"
           rm -rf "$repair"
           mkdir -p "$repair"
