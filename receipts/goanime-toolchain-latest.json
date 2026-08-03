@@ -1,0 +1,106 @@
+{
+  "artifacts": [
+    {
+      "artifact_id": 8842126843,
+      "created_at": "2026-08-03T01:10:33Z",
+      "expired": false,
+      "expires_at": "2026-08-04T01:10:32Z",
+      "name": "goanime-flutter-cache-linux-x64-manifest",
+      "size_bytes": 3279
+    },
+    {
+      "artifact_id": 8842127511,
+      "created_at": "2026-08-03T01:10:36Z",
+      "expired": false,
+      "expires_at": "2026-08-04T01:10:33Z",
+      "name": "goanime-flutter-cache-linux-x64-part-00",
+      "size_bytes": 419430592
+    },
+    {
+      "artifact_id": 8842128096,
+      "created_at": "2026-08-03T01:10:38Z",
+      "expired": false,
+      "expires_at": "2026-08-04T01:10:36Z",
+      "name": "goanime-flutter-cache-linux-x64-part-01",
+      "size_bytes": 419430592
+    },
+    {
+      "artifact_id": 8842128691,
+      "created_at": "2026-08-03T01:10:41Z",
+      "expired": false,
+      "expires_at": "2026-08-04T01:10:39Z",
+      "name": "goanime-flutter-cache-linux-x64-part-02",
+      "size_bytes": 419430592
+    },
+    {
+      "artifact_id": 8842129416,
+      "created_at": "2026-08-03T01:10:44Z",
+      "expired": false,
+      "expires_at": "2026-08-04T01:10:41Z",
+      "name": "goanime-flutter-cache-linux-x64-part-03",
+      "size_bytes": 419430592
+    },
+    {
+      "artifact_id": 8842130071,
+      "created_at": "2026-08-03T01:10:47Z",
+      "expired": false,
+      "expires_at": "2026-08-04T01:10:44Z",
+      "name": "goanime-flutter-cache-linux-x64-part-04",
+      "size_bytes": 419430592
+    },
+    {
+      "artifact_id": 8842130813,
+      "created_at": "2026-08-03T01:10:50Z",
+      "expired": false,
+      "expires_at": "2026-08-04T01:10:47Z",
+      "name": "goanime-flutter-cache-linux-x64-part-05",
+      "size_bytes": 419430592
+    },
+    {
+      "artifact_id": 8842131539,
+      "created_at": "2026-08-03T01:10:53Z",
+      "expired": false,
+      "expires_at": "2026-08-04T01:10:50Z",
+      "name": "goanime-flutter-cache-linux-x64-part-06",
+      "size_bytes": 419430592
+    },
+    {
+      "artifact_id": 8842132205,
+      "created_at": "2026-08-03T01:10:56Z",
+      "expired": false,
+      "expires_at": "2026-08-04T01:10:53Z",
+      "name": "goanime-flutter-cache-linux-x64-part-07",
+      "size_bytes": 419430592
+    },
+    {
+      "artifact_id": 8842132863,
+      "created_at": "2026-08-03T01:10:59Z",
+      "expired": false,
+      "expires_at": "2026-08-04T01:10:56Z",
+      "name": "goanime-flutter-cache-linux-x64-part-08",
+      "size_bytes": 419430592
+    },
+    {
+      "artifact_id": 8842133542,
+      "created_at": "2026-08-03T01:11:02Z",
+      "expired": false,
+      "expires_at": "2026-08-04T01:10:59Z",
+      "name": "goanime-flutter-cache-linux-x64-part-09",
+      "size_bytes": 419430592
+    },
+    {
+      "artifact_id": 8842133884,
+      "created_at": "2026-08-03T01:11:03Z",
+      "expired": false,
+      "expires_at": "2026-08-04T01:11:02Z",
+      "name": "goanime-flutter-cache-linux-x64-part-10",
+      "size_bytes": 126863359
+    }
+  ],
+  "recorded_at_utc": "2026-08-03T01:11:29Z",
+  "run_id": 30775806688,
+  "run_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/30775806688",
+  "schema_version": 1,
+  "workflow_event": "push",
+  "workflow_head_sha": "a78f0bfd085225fe46f791774b4c16e09da4d3af"
+}
