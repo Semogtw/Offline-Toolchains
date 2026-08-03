@@ -1,26 +1,26 @@
 {
   "artifacts": [
     {
-      "artifact_id": 8844415960,
-      "created_at": "2026-08-03T04:04:42Z",
+      "artifact_id": 8845379442,
+      "created_at": "2026-08-03T05:10:27Z",
       "expired": false,
-      "expires_at": "2026-08-04T04:04:42Z",
+      "expires_at": "2026-08-04T05:10:27Z",
       "name": "private-source-goanime-ref-manifest",
       "size_bytes": 864
     },
     {
-      "artifact_id": 8844416507,
-      "created_at": "2026-08-03T04:04:44Z",
+      "artifact_id": 8845379948,
+      "created_at": "2026-08-03T05:10:29Z",
       "expired": false,
-      "expires_at": "2026-08-04T04:04:42Z",
+      "expires_at": "2026-08-04T05:10:27Z",
       "name": "private-source-goanime-ref-part-000",
-      "size_bytes": 235410466
+      "size_bytes": 235464682
     }
   ],
-  "recorded_at_utc": "2026-08-03T04:04:56Z",
-  "run_id": 30783386212,
-  "run_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/30783386212",
+  "recorded_at_utc": "2026-08-03T05:10:46Z",
+  "run_id": 30786366245,
+  "run_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/30786366245",
   "schema_version": 1,
   "workflow_event": "workflow_run",
-  "workflow_head_sha": "94429d123c069239c15700ec9c8c902bb3d02f31"
+  "workflow_head_sha": "1eb6bbfba6ea5ae291f48917a8509413da20845d"
 }
