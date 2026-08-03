@@ -1,0 +1,26 @@
+{
+  "artifacts": [
+    {
+      "artifact_id": 8842350354,
+      "created_at": "2026-08-03T01:29:10Z",
+      "expired": false,
+      "expires_at": "2026-08-04T01:29:09Z",
+      "name": "private-source-goanime-ref-manifest",
+      "size_bytes": 864
+    },
+    {
+      "artifact_id": 8842351006,
+      "created_at": "2026-08-03T01:29:13Z",
+      "expired": false,
+      "expires_at": "2026-08-04T01:29:10Z",
+      "name": "private-source-goanime-ref-part-000",
+      "size_bytes": 235417278
+    }
+  ],
+  "recorded_at_utc": "2026-08-03T01:29:34Z",
+  "run_id": 30776951585,
+  "run_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/30776951585",
+  "schema_version": 1,
+  "workflow_event": "workflow_run",
+  "workflow_head_sha": "5a60dad3c0df4704fd313360b37b21c157861d0c"
+}
