@@ -1,0 +1,67 @@
+name: Validate source bundle infrastructure
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/request-private-source-bundle.yml
+      - .github/workflows/request-goanime-source-bundle.yml
+      - .github/workflows/build-private-source-bundle.yml
+      - .github/workflows/record-goanime-source-receipt.yml
+      - .github/workflows/validate-source-bundle-infrastructure.yml
+      - scripts/assemble-source-bundle.sh
+      - scripts/validate-source-bundle-request.py
+      - scripts/validate-private-source-workflows.sh
+      - scripts/validate-source-receipt-workflow.sh
+      - scripts/verify_goanime_source_receipt.py
+      - scripts/tests/test_verify_goanime_source_receipt.py
+      - keys/source-bundles-public.asc
+      - triggers/private-source-bundle.json
+      - docs/GOANIME_SOURCE_BUNDLE.md
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/request-private-source-bundle.yml
+      - .github/workflows/request-goanime-source-bundle.yml
+      - .github/workflows/build-private-source-bundle.yml
+      - .github/workflows/record-goanime-source-receipt.yml
+      - .github/workflows/validate-source-bundle-infrastructure.yml
+      - scripts/assemble-source-bundle.sh
+      - scripts/validate-source-bundle-request.py
+      - scripts/validate-private-source-workflows.sh
+      - scripts/validate-source-receipt-workflow.sh
+      - scripts/verify_goanime_source_receipt.py
+      - scripts/tests/test_verify_goanime_source_receipt.py
+      - keys/source-bundles-public.asc
+      - docs/GOANIME_SOURCE_BUNDLE.md
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-source-bundles-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Validate request and builder boundaries
+        shell: bash
+        run: bash scripts/validate-private-source-workflows.sh
+
+      - name: Validate versioned receipt workflow
+        shell: bash
+        run: bash scripts/validate-source-receipt-workflow.sh
+
+      - name: Test receipt consumer
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+
+      - name: Compile Python helpers
+        run: python3 -m compileall -q scripts
