@@ -1,3 +1,5 @@
 GoAnime exact lock delta trigger.
 Update this file to request a fresh one-day artifact set.
-requested_at_utc=2026-08-01T22:08:00Z
+requested_at_utc=2026-08-03T01:35:00Z
+reason=complete 42 hosted versions missing from full portable bundle
+source_lock_sha256=d0b0b0fcc4dbedc296fa5bdb1e514d8e357d92ee1dc4068a5c6e17a21eb6786e
