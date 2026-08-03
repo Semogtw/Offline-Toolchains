@@ -1,5 +1,5 @@
 {
   "profile": "semogsite",
-  "requested_at_utc": "2026-08-01T23:09:00Z",
-  "reason": "Validate the initial Node, pnpm, Playwright and SQLite offline dependency bundle"
+  "requested_at_utc": "2026-08-03T08:20:00Z",
+  "reason": "Validate workflow orchestration domain and SQLite persistence on develop/workflow-control-core"
 }
