@@ -1,0 +1,305 @@
+diff --git a/infra/jikan/scripts/validate-images.sh b/infra/jikan/scripts/validate-images.sh
+index 43e9d6f..8a4fe64 100755
+--- a/infra/jikan/scripts/validate-images.sh
++++ b/infra/jikan/scripts/validate-images.sh
+@@ -10,12 +10,19 @@ cd "$ROOT_DIR"
+ source "$ROOT_DIR/scripts/image-reference.sh"
+ 
+ ALLOW_FLOATING_IMAGES="${ALLOW_FLOATING_IMAGES:-0}"
++REQUIRED_IMAGE_PLATFORM="${REQUIRED_IMAGE_PLATFORM:-linux/arm64}"
+ 
+ if [[ ! "$ALLOW_FLOATING_IMAGES" =~ ^[01]$ ]]; then
+   printf 'ALLOW_FLOATING_IMAGES must be 0 or 1.\n' >&2
+   exit 64
+ fi
+-for required_command in docker mktemp rm; do
++if [[ ! "$REQUIRED_IMAGE_PLATFORM" =~ ^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$ ]]; then
++  printf 'REQUIRED_IMAGE_PLATFORM must use os/architecture form.\n' >&2
++  exit 64
++fi
++REQUIRED_IMAGE_OS="${REQUIRED_IMAGE_PLATFORM%%/*}"
++REQUIRED_IMAGE_ARCHITECTURE="${REQUIRED_IMAGE_PLATFORM#*/}"
++for required_command in docker mktemp rm awk; do
+   if ! command -v "$required_command" >/dev/null 2>&1; then
+     printf 'Required command not found: %s\n' "$required_command" >&2
+     exit 69
+@@ -78,6 +85,73 @@ if [[ "${#resolved_images[@]}" -eq 0 ]]; then
+   exit 1
+ fi
+ 
++manifest_supports_platform() {
++  local required_os="$1"
++  local required_architecture="$2"
++  awk -v required_os="$required_os" \
++    -v required_architecture="$required_architecture" '
++    function extract_string(field, text, value) {
++      value = text
++      sub("^.*\"" field "\"[[:space:]]*:[[:space:]]*\"", "", value)
++      if (value == text) {
++        return ""
++      }
++      sub("\".*$", "", value)
++      return value
++    }
++    function finish_platform() {
++      if (architecture != "" && os != "") {
++        complete_platforms++
++        if (architecture == required_architecture && os == required_os) {
++          found = 1
++        }
++      } else {
++        malformed = 1
++      }
++      in_platform = 0
++      depth = 0
++      architecture = ""
++      os = ""
++    }
++    {
++      current = $0
++      if (!in_platform && current ~ /"platform"[[:space:]]*:/) {
++        in_platform = 1
++        platform_blocks++
++        platform_fragment = current
++        sub(/^.*"platform"[[:space:]]*:[[:space:]]*/, "", platform_fragment)
++        depth += gsub(/\{/, "", platform_fragment)
++        depth -= gsub(/\}/, "", platform_fragment)
++      } else if (in_platform) {
++        depth += gsub(/\{/, "", current)
++        depth -= gsub(/\}/, "", current)
++      }
++
++      if (in_platform && current ~ /"architecture"[[:space:]]*:/) {
++        architecture = extract_string("architecture", current)
++      }
++      if (in_platform && current ~ /"os"[[:space:]]*:/) {
++        os = extract_string("os", current)
++      }
++      if (in_platform && depth <= 0) {
++        finish_platform()
++      }
++    }
++    END {
++      if (in_platform) {
++        malformed = 1
++      }
++      if (found) {
++        exit 0
++      }
++      if (platform_blocks == 0 || complete_platforms == 0 || malformed) {
++        exit 2
++      }
++      exit 1
++    }
++  '
++}
++
+ failures=0
+ for image in "${resolved_images[@]}"; do
+   if ! validate_pinned_image_reference \
+@@ -90,3 +164,34 @@ if [[ "$failures" -gt 0 ]]; then
+   printf 'Set explicit stable tags or ALLOW_FLOATING_IMAGES=1 for a temporary local test.\n' >&2
+   exit 1
+ fi
++
++platform_failures=0
++for image in "${resolved_images[@]}"; do
++  manifest_output=''
++  if ! manifest_output="$(docker manifest inspect --verbose "$image")"; then
++    printf 'Could not inspect image manifest: %s\n' "$image" >&2
++    exit 74
++  fi
++
++  if manifest_supports_platform \
++    "$REQUIRED_IMAGE_OS" "$REQUIRED_IMAGE_ARCHITECTURE" \
++    <<< "$manifest_output"; then
++    continue
++  else
++    manifest_status=$?
++  fi
++  if [[ "$manifest_status" -eq 1 ]]; then
++    printf 'Image %s does not publish required platform %s.\n' \
++      "$image" "$REQUIRED_IMAGE_PLATFORM" >&2
++    platform_failures=$((platform_failures + 1))
++    continue
++  fi
++  printf 'Could not determine published platforms for image: %s\n' \
++    "$image" >&2
++  exit 74
++
++done
++
++if [[ "$platform_failures" -gt 0 ]]; then
++  exit 1
++fi
+diff --git a/infra/jikan/tests/preflight_contract_test.sh b/infra/jikan/tests/preflight_contract_test.sh
+index 8f0f9dc..1df0900 100755
+--- a/infra/jikan/tests/preflight_contract_test.sh
++++ b/infra/jikan/tests/preflight_contract_test.sh
+@@ -51,6 +51,22 @@ if [[ "${1:-}" == "compose" && "${2:-}" == "config" && "${3:-}" == "--images" ]]
+     docker.io/typesense/typesense:0.24.1
+   exit 0
+ fi
++if [[ "${1:-}" == "manifest" && "${2:-}" == "inspect" &&
++  "${3:-}" == "--verbose" && -n "${4:-}" ]]; then
++  cat <<'JSON'
++[
++  {
++    "Descriptor": {
++      "platform": {
++        "architecture": "arm64",
++        "os": "linux"
++      }
++    }
++  }
++]
++JSON
++  exit 0
++fi
+ if [[ "${1:-}" == "compose" && "${2:-}" == "config" && "${3:-}" == "--environment" ]]; then
+   printf 'METADATA_BIND_ADDRESS=%s\n' \
+     "${FAKE_COMPOSE_BIND_ADDRESS:-${METADATA_BIND_ADDRESS:-127.0.0.1}}"
+diff --git a/infra/jikan/tests/validate_images_contract_test.sh b/infra/jikan/tests/validate_images_contract_test.sh
+index acb0201..22d62cb 100755
+--- a/infra/jikan/tests/validate_images_contract_test.sh
++++ b/infra/jikan/tests/validate_images_contract_test.sh
+@@ -31,6 +31,58 @@ if [[ "${1:-}" == "compose" && "${2:-}" == "config" && "${3:-}" == "--images" ]]
+   fi
+   exit 0
+ fi
++if [[ "${1:-}" == "manifest" && "${2:-}" == "inspect" &&
++  "${3:-}" == "--verbose" && -n "${4:-}" ]]; then
++  image="$4"
++  if [[ -n "${FAKE_MANIFEST_INSPECT_STATUS:-}" ]]; then
++    printf 'fixture manifest inspection failure for %s\n' "$image" >&2
++    exit "$FAKE_MANIFEST_INSPECT_STATUS"
++  fi
++  if [[ "${FAKE_MALFORMED_MANIFEST:-0}" == '1' ]]; then
++    printf '{"Descriptor": {"platform": null}}\n'
++    exit 0
++  fi
++  if [[ "${FAKE_SPLIT_PLATFORM_FIELDS:-0}" == '1' ]]; then
++    cat <<'JSON'
++[
++  {
++    "Descriptor": {
++      "platform": {
++        "architecture": "amd64",
++        "os": "linux"
++      }
++    }
++  },
++  {
++    "Descriptor": {
++      "platform": {
++        "architecture": "arm64",
++        "os": "windows"
++      }
++    }
++  }
++]
++JSON
++    exit 0
++  fi
++  architecture='arm64'
++  if [[ "$image" == *amd64-only* ]]; then
++    architecture='amd64'
++  fi
++  cat <<JSON
++[
++  {
++    "Descriptor": {
++      "platform": {
++        "architecture": "$architecture",
++        "os": "linux"
++      }
++    }
++  }
++]
++JSON
++  exit 0
++fi
+ exit 1
+ EOF
+ chmod +x "$FAKE_BIN/docker"
+@@ -202,6 +254,80 @@ grep -Fq 'Could not remove the temporary Docker Compose image listing' \
+ 
+ FAKE_IMAGES='docker.io/jikanme/jikan-rest:v4.2.4 docker.io/mongo:focal docker.io/redis:6-alpine docker.io/typesense/typesense:0.24.1' \
+   bash "$FIXTURE_ROOT/scripts/validate-images.sh" >/dev/null
++manifest_call_count="$(grep -Fc 'docker manifest inspect --verbose ' "$CALL_LOG")"
++[[ "$manifest_call_count" -eq 4 ]] || \
++  fail "expected one ARM64 manifest inspection per image, got $manifest_call_count"
++
++: > "$CALL_LOG"
++set +e
++REQUIRED_IMAGE_PLATFORM='linux' \
++  FAKE_IMAGES='docker.io/jikanme/jikan-rest:v4.2.4' \
++  bash "$FIXTURE_ROOT/scripts/validate-images.sh" \
++  >"$TEMP_ROOT/invalid-platform.out" 2>&1
++invalid_platform_status=$?
++set -e
++[[ "$invalid_platform_status" -eq 64 ]] || \
++  fail "invalid required image platform must exit 64, got $invalid_platform_status"
++grep -Fq 'REQUIRED_IMAGE_PLATFORM must use os/architecture form' \
++  "$TEMP_ROOT/invalid-platform.out" || \
++  fail 'invalid required image platform was not actionable'
++[[ ! -s "$CALL_LOG" ]] || \
++  fail 'invalid required image platform reached Docker'
++
++set +e
++FAKE_IMAGES='example.invalid/amd64-only:v1' \
++  bash "$FIXTURE_ROOT/scripts/validate-images.sh" \
++  >"$TEMP_ROOT/unsupported-arm64.out" 2>&1
++unsupported_arm64_status=$?
++set -e
++[[ "$unsupported_arm64_status" -eq 1 ]] || \
++  fail "image without linux/arm64 must exit 1, got $unsupported_arm64_status"
++grep -Fq 'does not publish required platform linux/arm64' \
++  "$TEMP_ROOT/unsupported-arm64.out" || \
++  fail 'unsupported linux/arm64 image was not actionable'
++
++FAKE_IMAGES='example.invalid/amd64-only:v1' \
++  REQUIRED_IMAGE_PLATFORM='linux/amd64' \
++  bash "$FIXTURE_ROOT/scripts/validate-images.sh" >/dev/null
++
++set +e
++FAKE_SPLIT_PLATFORM_FIELDS=1 \
++  FAKE_IMAGES='example.invalid/split-platforms:v1' \
++  bash "$FIXTURE_ROOT/scripts/validate-images.sh" \
++  >"$TEMP_ROOT/split-platforms.out" 2>&1
++split_platforms_status=$?
++set -e
++[[ "$split_platforms_status" -eq 1 ]] || \
++  fail "separate linux and arm64 descriptors must exit 1, got $split_platforms_status"
++grep -Fq 'does not publish required platform linux/arm64' \
++  "$TEMP_ROOT/split-platforms.out" || \
++  fail 'split platform fields produced a false-positive platform match'
++
++set +e
++FAKE_MANIFEST_INSPECT_STATUS=42 \
++  FAKE_IMAGES='docker.io/jikanme/jikan-rest:v4.2.4' \
++  bash "$FIXTURE_ROOT/scripts/validate-images.sh" \
++  >"$TEMP_ROOT/manifest-inspect-failure.out" 2>&1
++manifest_inspect_status=$?
++set -e
++[[ "$manifest_inspect_status" -eq 74 ]] || \
++  fail "manifest inspection failure must exit 74, got $manifest_inspect_status"
++grep -Fq 'Could not inspect image manifest' \
++  "$TEMP_ROOT/manifest-inspect-failure.out" || \
++  fail 'manifest inspection failure was not actionable'
++
++set +e
++FAKE_MALFORMED_MANIFEST=1 \
++  FAKE_IMAGES='docker.io/jikanme/jikan-rest:v4.2.4' \
++  bash "$FIXTURE_ROOT/scripts/validate-images.sh" \
++  >"$TEMP_ROOT/malformed-manifest.out" 2>&1
++malformed_manifest_status=$?
++set -e
++[[ "$malformed_manifest_status" -eq 74 ]] || \
++  fail "malformed manifest inspection must exit 74, got $malformed_manifest_status"
++grep -Fq 'Could not determine published platforms' \
++  "$TEMP_ROOT/malformed-manifest.out" || \
++  fail 'malformed manifest inspection was not actionable'
+ 
+ if FAKE_IMAGES='docker.io/jikanme/jikan-rest:latest docker.io/mongo:focal' \
+   bash "$FIXTURE_ROOT/scripts/validate-images.sh" \
