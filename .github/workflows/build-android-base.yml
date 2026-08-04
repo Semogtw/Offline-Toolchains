@@ -11,6 +11,7 @@ on:
       - main
     paths:
       - .github/workflows/build-android-base.yml
+      - triggers/android-base.txt
 
 permissions:
   contents: read
