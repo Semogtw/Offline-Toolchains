@@ -1,0 +1,67 @@
+name: Publish Jikan ARM64 platform gate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/jikan-session/arm64-platform.patch
+      - .github/jikan-session/arm64-platform.json
+      - .github/workflows/publish-jikan-arm64.yml
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout transport branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Preserve and validate transport
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .github/jikan-session/arm64-platform.patch /tmp/arm64-platform.patch
+          cp .github/jikan-session/arm64-platform.json /tmp/arm64-platform.json
+          expected_patch_sha="$(python3 -c 'import json; print(json.load(open("/tmp/arm64-platform.json"))["patch_sha256"])')"
+          printf '%s  %s\n' "$expected_patch_sha" /tmp/arm64-platform.patch | sha256sum --check --strict
+
+      - name: Apply and verify on target branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_branch="$(python3 -c 'import json; print(json.load(open("/tmp/arm64-platform.json"))["target_branch"])')"
+          expected_parent="$(python3 -c 'import json; print(json.load(open("/tmp/arm64-platform.json"))["expected_parent"])')"
+          commit_message="$(python3 -c 'import json; print(json.load(open("/tmp/arm64-platform.json"))["commit_message"])')"
+          git fetch origin "$target_branch"
+          git checkout -B "$target_branch" "origin/$target_branch"
+          actual_parent="$(git rev-parse HEAD)"
+          if [[ "$actual_parent" != "$expected_parent" ]]; then
+            printf 'Target branch moved: expected %s, found %s\n' "$expected_parent" "$actual_parent" >&2
+            exit 75
+          fi
+          git apply --check /tmp/arm64-platform.patch
+          git apply /tmp/arm64-platform.patch
+          changed="$(git diff --name-only | sort)"
+          expected=$'infra/jikan/scripts/validate-images.sh\ninfra/jikan/tests/preflight_contract_test.sh\ninfra/jikan/tests/validate_images_contract_test.sh'
+          [[ "$changed" == "$expected" ]] || {
+            printf 'Unexpected changed paths:\n%s\n' "$changed" >&2
+            exit 1
+          }
+          git diff --check
+          bash infra/jikan/tests/validate_images_contract_test.sh
+          bash infra/jikan/tests/preflight_contract_test.sh
+          bash infra/jikan/tests/run.sh
+          npm --prefix services/metadata-api run check
+          npm --prefix services/metadata-api test
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- \
+            infra/jikan/scripts/validate-images.sh \
+            infra/jikan/tests/preflight_contract_test.sh \
+            infra/jikan/tests/validate_images_contract_test.sh
+          git commit -m "$commit_message"
+          git push origin "HEAD:$target_branch"
