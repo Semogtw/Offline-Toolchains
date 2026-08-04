@@ -1,6 +1,6 @@
 GoAnime exact lock delta trigger.
 Update this file to request a fresh one-day artifact set.
-requested_at_utc=2026-08-04T02:00:00Z
-reason=validate current GoAnime-Mobile main with exact hosted lock versions
+requested_at_utc=2026-08-04T02:27:00Z
+reason=publish a consumable receipt for current GoAnime-Mobile exact hosted lock versions
 source_lock_sha256=d0b0b0fcc4dbedc296fa5bdb1e514d8e357d92ee1dc4068a5c6e17a21eb6786e
-source_commit=10d6b6fed2a9b83e008d82f59a193e879de9604e
+source_commit=ad48d0bf5d52a3b79fa7375c64d5ff5baebc3953
