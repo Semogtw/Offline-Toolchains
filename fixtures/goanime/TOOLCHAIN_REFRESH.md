@@ -5,10 +5,10 @@ This marker keeps rebuild requests explicit and auditable without changing the d
 Requested for validation of the current non-Jikan `Semogtw/goanime-mobile` development line, based on the exact functional snapshot:
 
 ```text
-3010d3d633fa2beab00ecc5f76c755e5c5cf281b
+10d6b6fed2a9b83e008d82f59a193e879de9604e
 ```
 
-A second build was requested on 2026-08-02 after the receipt publisher and verifier became active. This avoids depending on an earlier run whose completion state was not reusable through the connector.
+A fresh build was requested on 2026-08-04 UTC because the previous one-day artifact had expired before this validation session began.
 
 Required bundle contents and validation:
 
