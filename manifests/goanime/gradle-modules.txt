@@ -1,2 +1,3 @@
 # Exact public Maven coordinates required by the private GoAnime Android build.
+io.flutter:flutter_embedding_debug:1.0.0-c416acfeb8126e097f758c664aaa3da929e27da0
 org.jetbrains.kotlin:kotlin-stdlib-common:2.2.0
