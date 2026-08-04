@@ -1,0 +1,26 @@
+{
+  "artifacts": [
+    {
+      "artifact_id": 8878162897,
+      "created_at": "2026-08-04T02:28:57Z",
+      "expired": false,
+      "expires_at": "2026-08-05T02:28:57Z",
+      "name": "goanime-lock-delta-linux-x64-manifest",
+      "size_bytes": 721
+    },
+    {
+      "artifact_id": 8878163436,
+      "created_at": "2026-08-04T02:28:59Z",
+      "expired": false,
+      "expires_at": "2026-08-05T02:28:57Z",
+      "name": "goanime-lock-delta-linux-x64-part-00",
+      "size_bytes": 159819007
+    }
+  ],
+  "recorded_at_utc": "2026-08-04T02:29:21Z",
+  "run_id": 30871861877,
+  "run_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/30871861877",
+  "schema_version": 1,
+  "workflow_event": "push",
+  "workflow_head_sha": "fdb580fa5fa3511d6fcf468cedb6bac0fc540c50"
+}
