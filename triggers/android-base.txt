@@ -1,0 +1,8 @@
+Shared Android base refresh trigger.
+Update this file only when the one-day Android SDK/JDK artifact has expired and a fresh deterministic bundle is required.
+requested_at_utc=2026-08-04T03:02:00Z
+reason=build GoAnime-Mobile debug APK after episode transition metrics integration
+required_platforms=android-33,android-35,android-36
+required_build_tools=34.0.0,35.0.0,36.0.0
+required_ndk=27.0.12077973,28.2.13676358
+required_cmake=3.22.1
