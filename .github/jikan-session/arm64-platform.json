@@ -1,0 +1,6 @@
+{
+  "target_branch": "feat/self-hosted-metadata-api-2026-07-30",
+  "expected_parent": "247cd9e850773a333e86535b9741d354059e93cf",
+  "patch_sha256": "196f30f1080094f84d670c7f0e849bfa02ed8f140d18dc56634da660024d0035",
+  "commit_message": "feat(jikan): validate required image platform manifests"
+}
