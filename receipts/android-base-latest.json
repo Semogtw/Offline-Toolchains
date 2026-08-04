@@ -1,0 +1,58 @@
+{
+  "artifacts": [
+    {
+      "artifact_id": 8878711474,
+      "created_at": "2026-08-04T03:03:27Z",
+      "expired": false,
+      "expires_at": "2026-08-05T03:03:27Z",
+      "name": "android-base-linux-x64-manifest",
+      "size_bytes": 1599
+    },
+    {
+      "artifact_id": 8878712351,
+      "created_at": "2026-08-04T03:03:30Z",
+      "expired": false,
+      "expires_at": "2026-08-05T03:03:27Z",
+      "name": "android-base-linux-x64-part-00",
+      "size_bytes": 419430574
+    },
+    {
+      "artifact_id": 8878713197,
+      "created_at": "2026-08-04T03:03:33Z",
+      "expired": false,
+      "expires_at": "2026-08-05T03:03:30Z",
+      "name": "android-base-linux-x64-part-01",
+      "size_bytes": 419430574
+    },
+    {
+      "artifact_id": 8878714025,
+      "created_at": "2026-08-04T03:03:36Z",
+      "expired": false,
+      "expires_at": "2026-08-05T03:03:33Z",
+      "name": "android-base-linux-x64-part-02",
+      "size_bytes": 419430574
+    },
+    {
+      "artifact_id": 8878714916,
+      "created_at": "2026-08-04T03:03:39Z",
+      "expired": false,
+      "expires_at": "2026-08-05T03:03:36Z",
+      "name": "android-base-linux-x64-part-03",
+      "size_bytes": 419430574
+    },
+    {
+      "artifact_id": 8878715437,
+      "created_at": "2026-08-04T03:03:40Z",
+      "expired": false,
+      "expires_at": "2026-08-05T03:03:39Z",
+      "name": "android-base-linux-x64-part-04",
+      "size_bytes": 184089504
+    }
+  ],
+  "recorded_at_utc": "2026-08-04T03:03:53Z",
+  "run_id": 30873505916,
+  "run_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/30873505916",
+  "schema_version": 1,
+  "workflow_event": "push",
+  "workflow_head_sha": "776480c3ee0cf441eca8ea76225707a7601f6196"
+}
