@@ -1,0 +1,26 @@
+{
+  "artifacts": [
+    {
+      "artifact_id": 8879011339,
+      "created_at": "2026-08-04T03:19:55Z",
+      "expired": false,
+      "expires_at": "2026-08-05T03:19:55Z",
+      "name": "goanime-gradle-delta-linux-x64-manifest",
+      "size_bytes": 733
+    },
+    {
+      "artifact_id": 8879011631,
+      "created_at": "2026-08-04T03:19:56Z",
+      "expired": false,
+      "expires_at": "2026-08-05T03:19:55Z",
+      "name": "goanime-gradle-delta-linux-x64-part-00",
+      "size_bytes": 6555786
+    }
+  ],
+  "recorded_at_utc": "2026-08-04T03:20:08Z",
+  "run_id": 30874409154,
+  "run_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/30874409154",
+  "schema_version": 1,
+  "workflow_event": "push",
+  "workflow_head_sha": "4047f808d2e77a83292ad19058ac6f2574269874"
+}
