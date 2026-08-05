@@ -190,7 +190,7 @@ require_text "$hydra_toolchain_builder" 'rm -rf "$source_dir"'
 require_text "$hydra_toolchain_builder" "split -b 400M"
 require_text "$hydra_toolchain_builder" "part_count > 16"
 
-if git grep -n -E '^-----BEGIN PGP PRIVATE KEY BLOCK-----$'; then
+if git grep -n -E '^-----BEGIN PGP PRIVATE KEY BLOCK-----$' -- ':!scripts/validate-private-source-workflows.sh'; then
   fail "private OpenPGP key material is tracked"
 fi
 if git grep -n -- 'ghp_' -- ':!scripts/validate-private-source-workflows.sh'; then
