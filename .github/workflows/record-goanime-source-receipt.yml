@@ -98,6 +98,8 @@ jobs:
               encoding="utf-8",
           )
           PY
+          python3 scripts/verify_goanime_source_receipt.py \
+            receipts/goanime-latest.json
         continue-on-error: true
 
       - name: Skip runs without GoAnime artifacts
