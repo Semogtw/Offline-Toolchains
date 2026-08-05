@@ -30,7 +30,7 @@ env:
 
 jobs:
   build:
-    name: Validate, publish and build APK
+    name: Validate and build read-only source
     runs-on: ubuntu-24.04
     timeout-minutes: 120
 
@@ -57,7 +57,7 @@ jobs:
             scripts/build_goanime_mobile_functional_apk.sh
           sparse-checkout-cone-mode: false
 
-      - name: Checkout private GoAnime Mobile source
+      - name: Checkout private GoAnime Mobile source read-only
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
@@ -65,7 +65,7 @@ jobs:
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
           lfs: false
           submodules: false
           show-progress: false
@@ -86,7 +86,7 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
 
-      - name: Validate source, publish with skip-ci and build APK
+      - name: Validate and build local verified workspace
         shell: bash
         run: |
           bash "$GITHUB_WORKSPACE/toolchains/scripts/build_goanime_mobile_functional_apk.sh" \
