@@ -91,9 +91,6 @@ def verify_receipt(
         name = artifact.get("name")
         if not isinstance(name, str) or not name.startswith(GOANIME_PREFIX):
             raise ValueError(f"artifact {index} is not a GoAnime source artifact")
-        if name in names:
-            raise ValueError(f"duplicate artifact name: {name}")
-        names.add(name)
 
         _positive_int(artifact.get("size_bytes"), "size_bytes")
         if artifact.get("expired") is not False:
@@ -106,6 +103,10 @@ def verify_receipt(
         if name.endswith("-manifest"):
             manifests.append(artifact)
             continue
+
+        if name in names:
+            raise ValueError(f"duplicate artifact name: {name}")
+        names.add(name)
         match = PART_PATTERN.search(name)
         if match is None:
             raise ValueError(f"unexpected GoAnime artifact name: {name}")
