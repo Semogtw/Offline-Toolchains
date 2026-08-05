@@ -32,7 +32,6 @@ bash ./tools/validate_release_workflows.sh
 dart format --output=none --set-exit-if-changed lib test packages tools
 
 python3 - <<'PY'
-from pathlib import Path
 import subprocess
 
 allowed_exact = {
@@ -56,6 +55,8 @@ if not changed:
     raise SystemExit('Expected the checkpoint migration to change source files.')
 PY
 
+SOURCE_BASE_SHA="$(git rev-parse HEAD)"
+export SOURCE_BASE_SHA
 git config user.name 'github-actions[bot]'
 git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 git add \
@@ -67,7 +68,6 @@ git add \
   lib/services/download/hls/hls_download_engine_support.dart \
   test
 git commit -m 'fix(downloads): preserve opaque HLS checkpoint references [skip ci]'
-git push origin HEAD:main
 SOURCE_SHA="$(git rev-parse HEAD)"
 export SOURCE_SHA
 
@@ -175,7 +175,9 @@ from pathlib import Path
 presence = json.loads(Path('/tmp/goanime-config-presence.json').read_text())
 manifest = {
     'artifact': 'GoAnime-Mobile-functional-arm64.apk',
-    'sourceCommit': os.environ['SOURCE_SHA'],
+    'sourceBaseCommit': os.environ['SOURCE_BASE_SHA'],
+    'verifiedWorkspaceCommit': os.environ['SOURCE_SHA'],
+    'workspaceCommitPublished': False,
     'flutterVersion': os.environ.get('FLUTTER_VERSION', '3.44.1'),
     'abi': 'arm64-v8a',
     'buildMode': 'release',
