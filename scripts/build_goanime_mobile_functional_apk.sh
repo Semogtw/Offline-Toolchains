@@ -92,6 +92,7 @@ names = [
     'UPDATE_APPCAST_URL',
     'ANIME_METADATA_SEED_MANIFEST_URL',
     'RUNTIME_DATABASE_MANIFEST_URL',
+    'TMDB_API_KEY',
 ]
 values = {name: os.environ.get(name, '') for name in names}
 Path('/tmp/goanime-build-defines.json').write_text(
