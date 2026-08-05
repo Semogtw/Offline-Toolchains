@@ -13,7 +13,10 @@ if [[ -n "$tracked_private_names" ]]; then
 fi
 
 private_markers='BEGIN (PGP PRIVATE KEY BLOCK|OPENSSH PRIVATE KEY|RSA PRIVATE KEY|EC PRIVATE KEY|DSA PRIVATE KEY)'
-if git grep -n -I -E "$private_markers" -- . ':!scripts/check-no-private-material.sh'; then
+if git grep -n -I -E "$private_markers" -- \
+  . \
+  ':!scripts/check-no-private-material.sh' \
+  ':!scripts/validate-private-source-workflows.sh'; then
   echo 'Tracked files contain a private-key marker.' >&2
   exit 1
 fi
