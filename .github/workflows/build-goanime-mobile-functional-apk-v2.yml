@@ -1,0 +1,297 @@
+name: Build GoAnime Mobile functional APK v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build-goanime-mobile-functional-apk-v2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-mobile-functional-apk-v2
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: 3.44.1
+  FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID || vars.FIREBASE_PROJECT_ID }}
+  FIREBASE_WEB_API_KEY: ${{ secrets.FIREBASE_WEB_API_KEY || vars.FIREBASE_WEB_API_KEY }}
+  UPDATE_MANIFEST_URL: ${{ secrets.UPDATE_MANIFEST_URL || vars.UPDATE_MANIFEST_URL }}
+  UPDATE_APPCAST_URL: ${{ secrets.UPDATE_APPCAST_URL || vars.UPDATE_APPCAST_URL }}
+  ANIME_METADATA_SEED_MANIFEST_URL: ${{ secrets.ANIME_METADATA_SEED_MANIFEST_URL || vars.ANIME_METADATA_SEED_MANIFEST_URL }}
+  RUNTIME_DATABASE_MANIFEST_URL: ${{ secrets.RUNTIME_DATABASE_MANIFEST_URL || vars.RUNTIME_DATABASE_MANIFEST_URL }}
+  GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+  ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+  ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+  ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+  ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+jobs:
+  build:
+    name: Validate source and build Android APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPOSITORIES_TOKEN" || {
+            echo 'Missing PRIVATE_REPOSITORIES_TOKEN.' >&2
+            exit 1
+          }
+
+      - name: Checkout trusted Toolchains patch helper
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: toolchains
+          persist-credentials: false
+          sparse-checkout: scripts/patch_goanime_hls_checkpoint.py
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout private GoAnime Mobile source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: main
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Expose Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Apply structural HLS checkpoint migration
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/toolchains/scripts/patch_goanime_hls_checkpoint.py"
+          dart format \
+            lib/services/download/download_queue_manager_hls.dart \
+            lib/services/download/hls/hls_package_store.dart \
+            lib/services/download/hls/hls_transfer_models.dart \
+            lib/services/download/hls/filesystem_hls_package_store.dart \
+            lib/services/download/hls/saf_hls_package_store.dart \
+            lib/services/download/hls/hls_download_engine_support.dart
+          git diff --check
+
+      - name: Run focused HLS tests
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter test --no-pub test/services/download/hls/hls_checkpoint_reference_test.dart
+          flutter test --no-pub test/services/download/hls
+
+      - name: Run repository-wide verification
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tools/tests -p 'test_*.py'
+          python3 tools/validate_repository_guards.py
+          flutter analyze --no-pub
+          flutter test --no-pub
+          (cd packages/goanime_core && dart test)
+          bash ./tools/validate_release_workflows.sh
+          dart format --output=none --set-exit-if-changed lib test packages tools
+
+      - name: Publish verified app source without app-repository Actions
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'No source changes to publish.'
+          else
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add \
+              lib/services/download/download_queue_manager_hls.dart \
+              lib/services/download/hls/hls_package_store.dart \
+              lib/services/download/hls/hls_transfer_models.dart \
+              lib/services/download/hls/filesystem_hls_package_store.dart \
+              lib/services/download/hls/saf_hls_package_store.dart \
+              lib/services/download/hls/hls_download_engine_support.dart
+            git commit -m 'fix(downloads): preserve opaque HLS checkpoint references [skip ci]'
+            git push origin HEAD:main
+          fi
+          echo "SOURCE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Prepare client-safe build configuration
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${RUNTIME_DATABASE_MANIFEST_URL:-}" ] && [ -n "${UPDATE_MANIFEST_URL:-}" ]; then
+            case "$UPDATE_MANIFEST_URL" in
+              */latest/update.json)
+                RUNTIME_DATABASE_MANIFEST_URL="${UPDATE_MANIFEST_URL%/update.json}/runtime_database_manifest.json"
+                export RUNTIME_DATABASE_MANIFEST_URL
+                ;;
+            esac
+          fi
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          names = [
+              'FIREBASE_PROJECT_ID',
+              'FIREBASE_WEB_API_KEY',
+              'UPDATE_MANIFEST_URL',
+              'UPDATE_APPCAST_URL',
+              'ANIME_METADATA_SEED_MANIFEST_URL',
+              'RUNTIME_DATABASE_MANIFEST_URL',
+          ]
+          values = {name: os.environ.get(name, '') for name in names}
+          Path('/tmp/goanime-build-defines.json').write_text(
+              json.dumps({name: value for name, value in values.items() if value})
+          )
+          Path('/tmp/goanime-config-presence.json').write_text(
+              json.dumps({name: bool(value) for name, value in values.items()}, indent=2)
+          )
+          PY
+
+          if [ -n "${GOOGLE_SERVICES_JSON_BASE64:-}" ]; then
+            printf '%s' "$GOOGLE_SERVICES_JSON_BASE64" | base64 --decode > android/app/google-services.json
+            echo 'GOOGLE_SERVICES_PRESENT=true' >> "$GITHUB_ENV"
+          else
+            echo 'GOOGLE_SERVICES_PRESENT=false' >> "$GITHUB_ENV"
+          fi
+
+      - name: Restore Android signing when fully configured
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          present=0
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            [ -n "${!name:-}" ] && present=$((present + 1))
+          done
+
+          if [ "$present" -eq 4 ]; then
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/goanime-release.jks
+            {
+              echo "storePassword=$ANDROID_KEYSTORE_PASSWORD"
+              echo "keyPassword=$ANDROID_KEY_PASSWORD"
+              echo "keyAlias=$ANDROID_KEY_ALIAS"
+              echo "storeFile=goanime-release.jks"
+            } > android/key.properties
+            echo 'APK_SIGNING=release-keystore' >> "$GITHUB_ENV"
+          elif [ "$present" -eq 0 ]; then
+            echo 'APK_SIGNING=debug-fallback' >> "$GITHUB_ENV"
+          else
+            echo 'Android signing secrets are only partially configured.' >&2
+            exit 1
+          fi
+
+      - name: Build and verify release APK
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter build apk \
+            --release \
+            --target-platform android-arm64 \
+            --no-pub \
+            --dart-define-from-file=/tmp/goanime-build-defines.json
+
+          output="$RUNNER_TEMP/goanime-mobile-apk"
+          mkdir -p "$output"
+          apk="$(find build/app/outputs -type f -name '*.apk' -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)"
+          test -n "$apk" && test -f "$apk"
+          cp "$apk" "$output/GoAnime-Mobile-functional-arm64.apk"
+          unzip -t "$output/GoAnime-Mobile-functional-arm64.apk" >/dev/null
+
+          entries="$(unzip -Z1 "$output/GoAnime-Mobile-functional-arm64.apk" 'lib/*/libapp.so' || true)"
+          test "$entries" = 'lib/arm64-v8a/libapp.so'
+
+          sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          apksigner="$(find "$sdk_root/build-tools" -type f -name apksigner | sort -V | tail -n1)"
+          test -x "$apksigner"
+          "$apksigner" verify --verbose --print-certs \
+            "$output/GoAnime-Mobile-functional-arm64.apk" \
+            > "$output/apk-signature-report.txt"
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          presence = json.loads(Path('/tmp/goanime-config-presence.json').read_text())
+          manifest = {
+              'artifact': 'GoAnime-Mobile-functional-arm64.apk',
+              'sourceCommit': os.environ['SOURCE_SHA'],
+              'flutterVersion': os.environ['FLUTTER_VERSION'],
+              'abi': 'arm64-v8a',
+              'buildMode': 'release',
+              'applicationId': 'com.example.goanime_mobile',
+              'signing': os.environ['APK_SIGNING'],
+              'googleServicesJson': os.environ['GOOGLE_SERVICES_PRESENT'] == 'true',
+              'clientConfigurationPresent': presence,
+              'intentionallyExcludedFromApk': [
+                  'PRIVATE_REPOSITORIES_TOKEN',
+                  'CLOUDFLARE_ACCOUNT_ID',
+                  'R2_ACCESS_KEY_ID',
+                  'R2_SECRET_ACCESS_KEY',
+                  'SHOREBIRD_TOKEN',
+                  'GitHub tokens',
+                  'private signing key material',
+              ],
+          }
+          output = Path(os.environ['RUNNER_TEMP']) / 'goanime-mobile-apk'
+          (output / 'build-manifest.json').write_text(
+              json.dumps(manifest, indent=2, ensure_ascii=False) + '\n'
+          )
+          PY
+          sha256sum "$output/GoAnime-Mobile-functional-arm64.apk" \
+            > "$output/GoAnime-Mobile-functional-arm64.apk.sha256"
+
+      - name: Upload APK handoff
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-mobile-functional-apk-v2
+          path: ${{ runner.temp }}/goanime-mobile-apk/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Remove private checkout and restored credentials
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
