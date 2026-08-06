@@ -1,0 +1,385 @@
+name: Verify CodexGemini sources
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Verification suite
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - core-local-tools
+          - core-external-agents
+          - core-native-equivalence
+          - wrapper-integration
+          - wrapper-release-diagnostic
+      core_repository:
+        description: Core repository
+        required: true
+        default: Semogtw/codex-gemini-agents
+        type: string
+      core_ref:
+        description: Core branch, tag, or commit
+        required: true
+        default: feature/native-harness-local-tools-mcp
+        type: string
+      wrapper_repository:
+        description: Wrapper repository
+        required: true
+        default: Semogtw/codex-desktop-linux-gemini-
+        type: string
+      wrapper_ref:
+        description: Wrapper branch, tag, or commit
+        required: true
+        default: feature/linux-packaging
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codex-gemini-${{ inputs.suite }}-${{ inputs.core_ref }}-${{ inputs.wrapper_ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  PYTHONUTF8: "1"
+  RUST_BACKTRACE: "1"
+  RUST_MIN_STACK: "8388608"
+
+jobs:
+  core-local-tools:
+    name: Core local-tools native gate
+    if: ${{ inputs.suite == 'all' || inputs.suite == 'core-local-tools' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout exact core source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.core_repository }}
+          ref: ${{ inputs.core_ref }}
+          path: core-source
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install native dependencies and Rust 1.95
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            bubblewrap build-essential clang cmake libcap-dev libseccomp-dev \
+            libsqlite3-dev libssl-dev pkg-config protobuf-compiler zstd
+          rustup toolchain install 1.95.0 --profile minimal --component clippy --component rustfmt
+          rustup default 1.95.0
+      - name: Run package and installer contracts
+        working-directory: core-source
+        run: |
+          python3 -m unittest scripts/test_package_local_tools_mcp.py -v
+          python3 -m unittest scripts/install/test_local_tools_mcp.py -v
+          python3 -m unittest scripts/test_smoke_local_tools_mcp.py -v
+      - name: Prepare native sandbox
+        shell: bash
+        run: |
+          set -euo pipefail
+          bwrap --help | grep --quiet -- --perms
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          if sysctl -n kernel.unprivileged_userns_clone >/dev/null 2>&1; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          bwrap --unshare-user --unshare-pid --unshare-net --ro-bind / / --proc /proc -- true
+      - name: Run focused native runtime gates
+        working-directory: core-source/codex-rs
+        run: |
+          set -euo pipefail
+          cargo test --quiet --locked -p codex-sandboxing bwrap
+          cargo test --quiet --locked -p codex-local-tools-mcp --test fs_helper_dispatch -- --nocapture
+          cargo test --quiet --locked -p codex-exec-server-protocol --test read_directory_symlink
+          cargo test --quiet --locked -p codex-exec-server-protocol --test read_file_range
+          cargo test --quiet --locked -p codex-local-tools-mcp --test native_file_read_contract
+          cargo build --quiet --locked -p codex-linux-sandbox
+          cargo_target_dir="${CARGO_TARGET_DIR:-target}"
+          mkdir -p "$cargo_target_dir/debug/deps"
+          cp "$cargo_target_dir/debug/codex-linux-sandbox" "$cargo_target_dir/debug/deps/codex-linux-sandbox"
+          cargo test --quiet --locked -p codex-file-search --test symlink_traversal
+          cargo test --quiet --locked -p codex-local-tools-mcp -- --nocapture
+          cargo clippy --quiet --locked \
+            -p codex-local-tools-mcp \
+            -p codex-exec-server-protocol \
+            -p codex-sandboxing \
+            -p codex-linux-sandbox \
+            --all-targets --no-deps -- -D warnings
+          cargo fmt \
+            --package codex-local-tools-mcp \
+            --package codex-exec-server-protocol \
+            --package codex-file-system \
+            --package codex-exec-server \
+            --package codex-file-search \
+            --package codex-sandboxing \
+            --package codex-linux-sandbox \
+            -- --check
+      - name: Verify source checkout stayed clean
+        if: always() && !cancelled()
+        working-directory: core-source
+        run: git diff --exit-code && git status --porcelain=v1 | tee /dev/stderr | test ! -s /dev/stdin
+
+  core-external-agents:
+    name: Core external-agent contract
+    if: ${{ inputs.suite == 'all' || inputs.suite == 'core-external-agents' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout exact core source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.core_repository }}
+          ref: ${{ inputs.core_ref }}
+          path: core-source
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install native dependencies and Rust 1.95
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential clang cmake libcap-dev libseccomp-dev \
+            libsqlite3-dev libssl-dev pkg-config protobuf-compiler zstd
+          rustup toolchain install 1.95.0 --profile minimal --component clippy --component rustfmt
+          rustup default 1.95.0
+      - name: Run deterministic Python contract
+        working-directory: core-source
+        run: |
+          mkdir -p target
+          python3 scripts/verify_external_agent_integration.py \
+            --python-only \
+            --command-timeout-seconds 900 \
+            --report target/external-agent-python-verification.json
+      - name: Run mandatory Python and Rust contract
+        working-directory: core-source
+        run: |
+          mkdir -p target
+          python3 scripts/verify_external_agent_integration.py \
+            --require-rust \
+            --command-timeout-seconds 7200 \
+            --report target/external-agent-verification.json
+      - name: Build native Codex CLI
+        working-directory: core-source/codex-rs
+        run: cargo build --locked --release -p codex-cli --bin codex
+      - name: Upload redacted verification reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: codex-gemini-external-agent-reports-${{ github.run_id }}
+          path: |
+            core-source/target/external-agent-python-verification.json
+            core-source/target/external-agent-verification.json
+          if-no-files-found: ignore
+          compression-level: 0
+          retention-days: 7
+      - name: Verify source checkout stayed clean
+        if: always() && !cancelled()
+        working-directory: core-source
+        run: git diff --exit-code
+
+  native-equivalence-linux:
+    name: Luna/native equivalence (Linux)
+    if: ${{ inputs.suite == 'all' || inputs.suite == 'core-native-equivalence' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout exact core source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.core_repository }}
+          ref: ${{ inputs.core_ref }}
+          path: core-source
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Install Rust 1.95
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component clippy --component rustfmt
+          rustup default 1.95.0
+      - name: Run native fast-path and backend equivalence gates
+        working-directory: core-source/codex-rs
+        run: |
+          set -euo pipefail
+          cargo fmt --package codex-core -- --check
+          cargo test --locked -p codex-core agent::backend_session_registry::tests --lib -- --nocapture
+          cargo test --locked -p codex-core agent::backend_config::tests --lib -- --nocapture
+          cargo test --locked -p codex-core tools::handlers::multi_agents::external_persistence::tests --lib -- --nocapture
+          cargo test --locked -p codex-core agent::backend::tests --lib -- --nocapture
+          cargo test --locked -p codex-core agent::backend::fake::tests --lib -- --nocapture
+          cargo test --locked -p codex-core agent::backend::runtime::tests --lib -- --nocapture
+          cargo test --locked -p codex-core agent::backend_control::tests --lib -- --nocapture
+          cargo test --locked -p codex-core agent::native_backend::tests --lib -- --nocapture
+          cargo test --locked -p codex-core tools::handlers::multi_agents_external_tests --lib -- --nocapture
+          cargo check --locked -p codex-core --lib
+          cargo clippy --locked -p codex-core --lib -- -D warnings
+
+  native-equivalence-windows:
+    name: Luna/native equivalence (Windows)
+    if: ${{ inputs.suite == 'all' || inputs.suite == 'core-native-equivalence' }}
+    runs-on: windows-2025
+    timeout-minutes: 150
+    steps:
+      - name: Checkout exact core source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.core_repository }}
+          ref: ${{ inputs.core_ref }}
+          path: core-source
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Install Rust 1.95
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component clippy
+          rustup default 1.95.0
+      - name: Run native fast-path and backend equivalence gates
+        working-directory: core-source/codex-rs
+        shell: pwsh
+        run: |
+          cargo test --locked -p codex-core agent::backend_session_registry::tests --lib -- --nocapture
+          cargo test --locked -p codex-core agent::backend_config::tests --lib -- --nocapture
+          cargo test --locked -p codex-core tools::handlers::multi_agents::external_persistence::tests --lib -- --nocapture
+          cargo test --locked -p codex-core agent::backend::tests --lib -- --nocapture
+          cargo test --locked -p codex-core agent::backend::fake::tests --lib -- --nocapture
+          cargo test --locked -p codex-core agent::backend::runtime::tests --lib -- --nocapture
+          cargo test --locked -p codex-core agent::backend_control::tests --lib -- --nocapture
+          cargo test --locked -p codex-core agent::native_backend::tests --lib -- --nocapture
+          cargo test --locked -p codex-core tools::handlers::multi_agents_external_tests --lib -- --nocapture
+          cargo check --locked -p codex-core --lib
+          cargo clippy --locked -p codex-core --lib -- -D warnings
+
+  wrapper-release:
+    name: Wrapper integration and release diagnostic
+    if: ${{ inputs.suite == 'all' || inputs.suite == 'wrapper-integration' || inputs.suite == 'wrapper-release-diagnostic' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    steps:
+      - name: Checkout exact wrapper source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.wrapper_repository }}
+          ref: ${{ inputs.wrapper_ref }}
+          path: wrapper-source
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Checkout exact core source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.core_repository }}
+          ref: ${{ inputs.core_ref }}
+          path: core-source
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Set up Python and Node
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Install native dependencies and Rust 1.95
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential clang cmake cpio libcap-dev libseccomp-dev \
+            libsqlite3-dev libssl-dev pkg-config protobuf-compiler rpm zstd
+          rustup toolchain install 1.95.0 --profile minimal --component clippy --component rustfmt
+          rustup default 1.95.0
+      - name: Run focused wrapper contracts
+        if: ${{ inputs.suite != 'wrapper-release-diagnostic' }}
+        working-directory: wrapper-source
+        run: |
+          set -euo pipefail
+          bash -n linux-features/external-agents/doctor.sh
+          bash -n linux-features/external-agents/launcher.sh
+          bash -n linux-features/external-agents/stage.sh
+          python3 -m compileall -q linux-features/external-agents
+          for test_file in \
+            test_probe.py \
+            test_binary_identity.py \
+            test_stage_transaction.py \
+            test_stage_security.py \
+            test_verify_installation.py \
+            test_package_artifact.py \
+            test_package_process_supervision.py \
+            test_package_trust_boundary.py \
+            test_package_permissions.py; do
+            python3 "linux-features/external-agents/$test_file" -v
+          done
+          node --test linux-features/external-agents/test.js
+          node --test linux-features/*/test.js
+      - name: Build exact core release with retained log
+        id: core_build
+        working-directory: core-source/codex-rs
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          cargo build --locked --release -p codex-cli --bin codex 2>&1 | tee "$RUNNER_TEMP/codex-gemini-release-build.log"
+          status=${PIPESTATUS[0]}
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Upload release build diagnostic
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: codex-gemini-release-build-${{ github.run_id }}
+          path: ${{ runner.temp }}/codex-gemini-release-build.log
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Enforce release build result
+        if: steps.core_build.outputs.status != '0'
+        run: exit 1
+      - name: Stage and verify exact core/wrapper pair
+        if: ${{ inputs.suite != 'wrapper-release-diagnostic' }}
+        working-directory: wrapper-source
+        env:
+          CODEX_GEMINI_AGENTS_CLI_SOURCE: ${{ github.workspace }}/core-source/codex-rs/target/release/codex
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/codex-app"
+          export INSTALL_DIR="$app"
+          export ARCH=x86_64
+          export CODEX_GEMINI_AGENTS_CODEX_COMMIT="$(git -C ../core-source rev-parse HEAD)"
+          export CODEX_GEMINI_AGENTS_WRAPPER_COMMIT="$(git rev-parse HEAD)"
+          bash linux-features/external-agents/stage.sh
+          python3 -I -S \
+            "$app/.codex-linux/features/external-agents/verify_installation.py" \
+            --app-dir "$app"
+          "$app/.codex-linux/features/external-agents/bin/codex" --version
+      - name: Record exact source identities
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "core_repository=${{ inputs.core_repository }}"
+            echo "core_ref=${{ inputs.core_ref }}"
+            git -C core-source rev-parse HEAD | sed 's/^/core_commit=/'
+            echo "wrapper_repository=${{ inputs.wrapper_repository }}"
+            echo "wrapper_ref=${{ inputs.wrapper_ref }}"
+            git -C wrapper-source rev-parse HEAD | sed 's/^/wrapper_commit=/'
+          } > "$RUNNER_TEMP/codex-gemini-source-identities.txt"
+      - name: Upload exact source identities
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: codex-gemini-source-identities-${{ github.run_id }}
+          path: ${{ runner.temp }}/codex-gemini-source-identities.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
