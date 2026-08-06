@@ -51,8 +51,6 @@ unexpected = [
 ]
 if unexpected:
     raise SystemExit(f'Unexpected source changes: {unexpected}')
-if not changed:
-    raise SystemExit('Expected the checkpoint migration to change source files.')
 PY
 
 SOURCE_BASE_SHA="$(git rev-parse HEAD)"
@@ -67,7 +65,9 @@ git add \
   lib/services/download/hls/saf_hls_package_store.dart \
   lib/services/download/hls/hls_download_engine_support.dart \
   test
-git commit -m 'fix(downloads): preserve opaque HLS checkpoint references [skip ci]'
+if ! git diff --cached --quiet; then
+  git commit -m 'fix(downloads): preserve opaque HLS checkpoint references [skip ci]'
+fi
 SOURCE_SHA="$(git rev-parse HEAD)"
 export SOURCE_SHA
 
@@ -174,11 +174,13 @@ import os
 from pathlib import Path
 
 presence = json.loads(Path('/tmp/goanime-config-presence.json').read_text())
+source_base = os.environ['SOURCE_BASE_SHA']
+verified_workspace = os.environ['SOURCE_SHA']
 manifest = {
     'artifact': 'GoAnime-Mobile-functional-arm64.apk',
-    'sourceBaseCommit': os.environ['SOURCE_BASE_SHA'],
-    'verifiedWorkspaceCommit': os.environ['SOURCE_SHA'],
-    'workspaceCommitPublished': False,
+    'sourceBaseCommit': source_base,
+    'verifiedWorkspaceCommit': verified_workspace,
+    'workspaceCommitPublished': source_base == verified_workspace,
     'flutterVersion': os.environ.get('FLUTTER_VERSION', '3.44.1'),
     'abi': 'arm64-v8a',
     'buildMode': 'release',
