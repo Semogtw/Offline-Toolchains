@@ -1,0 +1,1065 @@
+hydra_ref=a253b2408e5f56b8118c4946b59f2a0885c40c78
+exit_status=1
+test_count=358
+
+=== failure markers ===
+981:✔ supports timeout and cancellation (45.770565ms)
+1374:✔ uses a finite timeout and disables automatic redirects (17.11095ms)
+1666:✔ rejects and removes the listener after the timeout (4.912597ms)
+1667:✔ rejects invalid timeout values (0.29167ms)
+1743:✔ treats a timeout comparison as terminal diagnostics (6.435562ms)
+2322:ℹ cancelled 0
+2331:  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+2344:    code: 'ERR_ASSERTION',
+2353:  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /private static listDriveFilesAcrossPages/. Input:
+2600:    '              timeout: 120_000,\n' +
+2637:    '              originalError: error,\n' +
+2675:    code: 'ERR_ASSERTION',
+2676:    actual: 'import type { Readable } from "node:stream";\n\nimport axios, { type AxiosRequestConfig } from "axios";\n\nimport type { GoogleDriveBackup } from "../../../../types/google-drive-cloud-save.types";\nimport {\n  MAX_CLOUD_SAVE_ARCHIVE_BYTES,\n  writeBoundedCloudSaveStream,\n} from "../cloud-save-download-stream";\nimport { googleDriveLogger } from "../../logger";\nimport {\n  createBackupFileName,\n  createGoogleDriveSingleFlight,\n  escapeDriveQueryValue,\n  getGoogleDriveResumableUploadOffset,\n  GOOGLE_DRIVE_UPLOAD_CHUNK_SIZE,\n  selectCanonicalDriveFolder,\n  selectGoogleDriveFolderSet,\n  sortGoogleDriveBackupsNewestFirst,\n  type GoogleDriveFolderSet,\n} from "./google-drive-cloud-save-core";\nimport {\n  collectGoogleDriveItemsAcrossPages,\n  findGoogleDriveItemAcrossPages,\n  parseGoogleDriveBackupFile,\n  parseGoogleDriveFileSize,\n  validateGoogleDriveResumableUploadUrl,\n} from "./google-drive-client-core";\nimport { resolveGoogleDriveRemoteGameKey } from "./google-drive-game-identity";\nimport { getGoogleDriveErrorDetails } from "./google-drive-oauth-error";\nimport { GoogleDriveOAuth } from "./google-drive-oauth";\nimport { openVerifiedGoogleDriveUploadSource } from "./google-drive-upload-source";\n\nconst DRIVE_API_URL = "https://www.googleapis.com/drive/v3";\nconst DRIVE_UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3";\nconst FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";\nconst ROOT_FOLDER_NAME = "Hydra Saves";\nconst FILE_ID_PATTERN = /^[A-Za-z0-9_-]{10,200}$/;\nconst FILE_FIELDS = "id,name,size,createdTime,modifiedTime,appProperties";\nconst MAX_RESUMABLE_RECOVERY_ATTEMPTS = 3;\n\ninterface DriveFile {\n  id: string;\n  name: string;\n  size?: string;\n  createdTime?: string;\n  modifiedTime?: string;\n  appProperties?: Record<string, string>;\n}\n\ninterface UploadBackupInput {\n  archivePath: string;\n  gameKey: string;\n  gameFolderName: string;\n  createdAt: Date;\n  hostname: string;\n  deviceId: string;\n  contentHash: string;\n  archiveHash: string;\n  parentHash: string | null;\n  conflict: boolean;\n  downloadOptionTitle?: string | null;\n  label?: string | null;\n}\n\ntype ResumableUploadStatus =\n  | { completed: true; file: DriveFile }\n  | { completed: false; offset: number };\n\nexport class GoogleDriveClient {\n  private static readonly rootFolderSingleFlight =\n    createGoogleDriveSingleFlight();\n  private static readonly gameFolderSingleFlights = new Map<\n    string,\n    ReturnType<typeof createGoogleDriveSingleFlight>\n  >();\n\n  public static validateFileId(fileId: string) {\n    if (!FILE_ID_PATTERN.test(fileId)) {\n      throw new Error("Invalid Google Drive file identifier");\n    }\n    return fileId;\n  }\n\n  public static async listBackups(\n    gameKey: string,\n    gameFolderName: string\n  ): Promise<GoogleDriveBackup[]> {\n    const remoteGameKey = await resolveGoogleDriveRemoteGameKey(gameKey);\n    const folderSet = await this.ensureGameFolders(\n      remoteGameKey,\n      gameFolderName\n    );\n    const filesById = new Map<string, DriveFile>();\n\n    for (const folderId of folderSet.folderIds) {\n      const query = `\'${escapeDriveQueryValue(folderId)}\' in parents and trashed = false and mimeType != \'${FOLDER_MIME_TYPE}\'`;\n      const files = await this.listDriveFilesAcrossPages({\n        query,\n        orderBy: "createdTime desc",\n        fields: FILE_FIELDS,\n      });\n\n      for (const file of files) {\n        if (file.id) filesById.set(file.id, file);\n      }\n    }\n\n    const backups: GoogleDriveBackup[] = [];\n    for (const file of filesById.values()) {\n      const backup = this.toBackup(file, remoteGameKey);\n      if (backup) {\n        backups.push(backup);\n      } else {\n        googleDriveLogger.warn(\n          "Ignored malformed Google Drive backup metadata",\n          {\n            gameKey,\n            remoteGameKey,\n            fileId: file.id || null,\n            fileName: file.name || null,\n          }\n        );\n      }\n    }\n    return sortGoogleDriveBackupsNewestFirst(backups);\n  }\n\n  public static async uploadBackup(\n    input: UploadBackupInput\n  ): Promise<GoogleDriveBackup> {\n    const remoteGameKey = await resolveGoogleDriveRemoteGameKey(input.gameKey);\n    const remoteInput = { ...input, gameKey: remoteGameKey };\n    const source = await openVerifiedGoogleDriveUploadSource({\n      archivePath: input.archivePath,\n      expectedArchiveHash: input.archiveHash,\n      maxBytes: MAX_CLOUD_SAVE_ARCHIVE_BYTES,\n    });\n\n    try {\n      const folderSet = await this.ensureGameFolders(\n        remoteGameKey,\n        input.gameFolderName\n      );\n      const gameFolderId = folderSet.canonicalId;\n      const name = createBackupFileName({\n        createdAt: input.createdAt,\n        deviceName: input.hostname,\n        contentHash: input.contentHash,\n        conflict: input.conflict,\n      });\n      const appProperties: Record<string, string> = {\n        hydraSave: "true",\n        hydraGameKey: remoteGameKey,\n        hydraContentHash: input.contentHash,\n        hydraArchiveHash: input.archiveHash,\n        hydraDeviceId: input.deviceId,\n        hydraHostname: input.hostname,\n        hydraCreatedAt: input.createdAt.toISOString(),\n        hydraConflict: input.conflict ? "true" : "false",\n        hydraArchiveVersion: "1",\n      };\n      if (input.parentHash) appProperties.hydraParentHash = input.parentHash;\n      if (input.downloadOptionTitle) {\n        appProperties.hydraDownloadOptionTitle = input.downloadOptionTitle.slice(\n          0,\n          120\n        );\n      }\n      if (input.label) appProperties.hydraLabel = input.label.slice(0, 120);\n\n      let existing: GoogleDriveBackup | null = null;\n      for (const folderId of folderSet.folderIds) {\n        existing = await this.findMatchingBackup(folderId, name, remoteInput);\n        if (existing) break;\n      }\n      if (existing) {\n        googleDriveLogger.info("Reused an existing Google Drive backup", {\n          gameKey: input.gameKey,\n          remoteGameKey,\n          fileId: existing.id,\n          conflict: input.conflict,\n        });\n        return existing;\n      }\n\n      const session = await this.request<void>({\n        method: "POST",\n        url: `${DRIVE_UPLOAD_URL}/files`,\n        params: {\n          uploadType: "resumable",\n          fields: FILE_FIELDS,\n        },\n        data: {\n          name,\n          parents: [gameFolderId],\n          mimeType: "application/x-tar",\n          appProperties,\n        },\n        headers: {\n          "Content-Type": "application/json; charset=UTF-8",\n          "X-Upload-Content-Type": "application/x-tar",\n          "X-Upload-Content-Length": String(source.size),\n        },\n      });\n      const uploadUrl = validateGoogleDriveResumableUploadUrl(\n        session.headers.location\n      );\n      if (!uploadUrl) {\n        throw new Error("Google Drive did not return a safe resumable upload URL");\n      }\n\n      let data: DriveFile | null = null;\n      let offset = 0;\n      let recoveryAttempts = 0;\n\n      try {\n        while (!data) {\n          if (offset >= source.size) {\n            const status = await this.queryResumableUploadStatus(\n              uploadUrl,\n              source.size\n            );\n            if (status.completed) {\n              data = status.file;\n              break;\n            }\n            if (status.offset >= source.size) {\n              throw new Error(\n                "Google Drive accepted all upload bytes without final metadata"\n              );\n            }\n            offset = status.offset;\n          }\n\n          const length = Math.min(\n            GOOGLE_DRIVE_UPLOAD_CHUNK_SIZE,\n            source.size - offset\n          );\n          const end = offset + length - 1;\n          const buffer = await source.readChunk(offset, length);\n          const contentRange = `bytes ${offset}-${end}/${source.size}`;\n\n          try {\n            const response = await axios.put<DriveFile>(uploadUrl, buffer, {\n              timeout: 120_000,\n              maxRedirects: 0,\n              maxBodyLength: Infinity,\n              maxContentLength: Infinity,\n              validateStatus: (status) =>\n                (status >= 200 && status < 300) || status === 308,\n              headers: {\n                "Content-Type": "application/x-tar",\n                "Content-Length": String(length),\n                "Content-Range": contentRange,\n              },\n            });\n\n            recoveryAttempts = 0;\n            if (response.status !== 308) {\n              data = response.data;\n              break;\n            }\n\n            const nextOffset = getGoogleDriveResumableUploadOffset(\n              response.headers.range,\n              source.size\n            );\n            if (nextOffset === null || nextOffset <= offset) {\n              throw new Error(\n                "Google Drive returned an invalid resumable upload offset"\n              );\n            }\n            offset = nextOffset;\n          } catch (error) {\n            recoveryAttempts += 1;\n            if (recoveryAttempts > MAX_RESUMABLE_RECOVERY_ATTEMPTS) throw error;\n\n            const status = await this.recoverResumableUploadStatus({\n              uploadUrl,\n              totalSize: source.size,\n              gameKey: remoteGameKey,\n              originalError: error,\n            });\n\n            if (status.completed) {\n              data = status.file;\n              break;\n            }\n            offset = status.offset;\n          }\n        }\n      } catch (error) {\n        googleDriveLogger.error("Resumable backup upload failed", {\n          gameKey: input.gameKey,\n          remoteGameKey,\n          archiveSize: source.size,\n          conflict: input.conflict,\n          offset,\n          recoveryAttempts,\n          error: getGoogleDriveErrorDetails(error),\n        });\n        throw error;\n      }\n\n      if (!data) {\n        throw new Error("Google Drive resumable upload did not complete");\n      }\n\n      const backup = this.toBackup(data, remoteGameKey);\n      if (!backup) {\n        googleDriveLogger.error(\n          "Google Drive returned invalid'... 10977 more characters,
+2684:  'test failed'
+2688:  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /await cancelPreparedGoogleDriveLaunch/. Input:
+2781:    code: 'ERR_ASSERTION',
+2790:  'test failed'
+2794:  'test failed'
+2798:  'test failed'
+2802:  AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+2812:    code: 'ERR_ASSERTION',
+2821:  'test failed'
+2825:  AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+2835:    code: 'ERR_ASSERTION',
+2844:  'test failed'
+2848:  'test failed'
+2852:  'test failed'
+2856:  'test failed'
+2860:  'test failed'
+2864:  'test failed'
+2868:  'test failed'
+2872:  'test failed'
+2876:  'test failed'
+2880:  'test failed'
+2884:  AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+2896:    code: 'ERR_ASSERTION',
+2905:  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /timeout:\s*10_000/. Input:
+2927:    '      timeout: this.AVAILABILITY_TIMEOUT_MS,\n' +
+2947:    '        timeout: this.BYPASS_TIMEOUT_MS,\n' +
+3001:    code: 'ERR_ASSERTION',
+3002:    actual: 'import axios from "axios";\nimport { logger } from "@main/services";\nimport {\n  buildPixelDrainApiUrl,\n  buildPixelDrainBypassUrl,\n  parsePixelDrainShareUrl,\n} from "./pixeldrain-policy";\n\nexport class PixelDrainApi {\n  private static readonly BYPASS_TIMEOUT_MS = 5_000;\n  private static readonly AVAILABILITY_TIMEOUT_MS = 10_000;\n\n  public static canHandle(url: string): boolean {\n    return parsePixelDrainShareUrl(url) !== null;\n  }\n\n  private static async checkAvailability(\n    canonicalUrl: string\n  ): Promise<void> {\n    const response = await axios.head(canonicalUrl, {\n      timeout: this.AVAILABILITY_TIMEOUT_MS,\n      maxRedirects: 0,\n      validateStatus: () => true,\n    });\n\n    if (response.status === 404) {\n      throw new Error("File not found");\n    }\n    if (response.status < 200 || response.status >= 300) {\n      throw new Error(\n        `PixelDrain availability check failed: ${response.status}`\n      );\n    }\n  }\n\n  private static async tryBypass(id: string): Promise<string | null> {\n    const bypassUrl = buildPixelDrainBypassUrl(id);\n\n    try {\n      const response = await axios.head(bypassUrl, {\n        timeout: this.BYPASS_TIMEOUT_MS,\n        maxRedirects: 0,\n        validateStatus: () => true,\n      });\n\n      if (response.status >= 200 && response.status < 300) {\n        return bypassUrl;\n      }\n\n      logger.log(\n        `[PixelDrain] Bypass HEAD returned status ${response.status}, falling back to API resolver.`\n      );\n      return null;\n    } catch {\n      logger.log(\n        `[PixelDrain] Bypass HEAD failed, falling back to API resolver.`\n      );\n      return null;\n    }\n  }\n\n  public static async unlock(url: string): Promise<string> {\n    try {\n      const parsed = parsePixelDrainShareUrl(url);\n      if (!parsed) {\n        throw new Error(`Invalid pixeldrain URL: ${url}`);\n      }\n\n      const { id, canonicalUrl } = parsed;\n      const bypassUrl = await this.tryBypass(id);\n\n      if (bypassUrl) {\n        return bypassUrl;\n      }\n\n      await this.checkAvailability(canonicalUrl);\n      return buildPixelDrainApiUrl(id);\n    } catch (error) {\n      logger.error("Error fetching PixelDrain URL:", error);\n      throw error;\n    }\n  }\n\n  public static async getDownloadUrl(url: string): Promise<string> {\n    return this.unlock(url);\n  }\n}\n',
+3003:    expected: /timeout:\s*10_000/,
+3010:  'test failed'
+3014:  'test failed'
+3018:  'test failed'
+3022:  'test failed'
+3026:  'test failed'
+3030:  'test failed'
+3034:  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /cleanupPreparedRuntime\(\{ paths, sessions: preparedSessions \}, false\)/. Input:
+3330:    code: 'ERR_ASSERTION',
+3339:  'test failed'
+3351:  'test failed'
+3355:  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /await\s+gameRuntimeModeManager\.closeSessionByGameKey\(gameKey\)/. Input:
+3719:    code: 'ERR_ASSERTION',
+3728:  AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+3740:    code: 'ERR_ASSERTION',
+3749:  AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+3761:    code: 'ERR_ASSERTION',
+
+=== final output ===
+    '    cancelPreparedLaunch: cancelPreparedGoogleDriveLaunch,\n' +
+    '    runLaunch: (gameKey, operation) =>\n' +
+    '      libraryGameLaunchGate.runUntilDetected(gameKey, operation),\n' +
+    '    launch: (appName) => LegendaryIntegration.launch(appName),\n' +
+    '  });\n'
+  
+      at TestContext.<anonymous> (file:///home/runner/work/Offline-Toolchains/Offline-Toolchains/hydra/src/main/services/cloud-save/google-drive/google-drive-launch-route-contract.test.ts:25:16)
+      at Test.runInAsyncScope (node:async_hooks:214:14)
+      at Test.run (node:internal/test_runner/test:1047:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+      at Test.postRun (node:internal/test_runner/test:1173:19)
+      at Test.run (node:internal/test_runner/test:1101:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:744:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'import { gamesSublevel, levelKeys } from "@main/level";\nimport type { Game } from "@types";\n\nimport type { GoogleDriveLaunchPreparation } from "../cloud-save/google-drive/google-drive-launch-preparation";\nimport {\n  cancelPreparedGoogleDriveLaunch,\n  prepareGoogleDriveLaunch,\n} from "../cloud-save/google-drive/google-drive-preflight-launch";\nimport { libraryGameLaunchGate } from "../game-runtime/library-game-launch-gate";\nimport { LegendaryIntegration } from "./legendary-integration";\n\nexport interface LegendaryPreflightLaunchDependencies {\n  listGames(): Promise<Game[]>;\n  prepareLaunch(game: Game): Promise<GoogleDriveLaunchPreparation | null>;\n  cancelPreparedLaunch(game: Game, token: string): Promise<boolean>;\n  runLaunch<T>(gameKey: string, operation: () => Promise<T>): Promise<T>;\n  launch(appName: string): Promise<unknown>;\n}\n\nconst matchesLegendaryIdentity = (game: Game, appName: string) =>\n  game.epicAppName?.trim() === appName ||\n  (game.shop === "epic" && game.objectId === appName);\n\nexport const createLegendaryPreflightLaunch = (\n  dependencies: LegendaryPreflightLaunchDependencies\n) => {\n  return async (rawAppName: string) => {\n    const appName = rawAppName.trim();\n    if (!appName) throw new Error("Legendary App Name is missing");\n\n    const matches = (await dependencies.listGames()).filter(\n      (game) => !game.isDeleted && matchesLegendaryIdentity(game, appName)\n    );\n\n    if (matches.length === 0) {\n      throw new Error(\n        `Legendary game is not available in the local library: ${appName}`\n      );\n    }\n    if (matches.length > 1) {\n      throw new Error(\n        `Legendary game identity is ambiguous in the local library: ${appName}`\n      );\n    }\n\n    const resolvedGame = matches[0];\n    const gameKey = levelKeys.game(resolvedGame.shop, resolvedGame.objectId);\n    return dependencies.runLaunch(gameKey, async () => {\n      const game = (await dependencies.listGames()).find(\n        (candidate) =>\n          !candidate.isDeleted &&\n          levelKeys.game(candidate.shop, candidate.objectId) === gameKey &&\n          matchesLegendaryIdentity(candidate, appName)\n      );\n      if (!game) {\n        throw new Error(\n          `Legendary game is not available in the local library: ${appName}`\n        );\n      }\n\n      const preparation = await dependencies.prepareLaunch(game);\n      try {\n        return await dependencies.launch(appName);\n      } catch (error) {\n        if (preparation) {\n          await dependencies.cancelPreparedLaunch(game, preparation.token);\n        }\n        throw error;\n      }\n    });\n  };\n};\n\nexport const launchLegendaryGameWithPreflight =\n  createLegendaryPreflightLaunch({\n    listGames: () => gamesSublevel.values().all(),\n    prepareLaunch: prepareGoogleDriveLaunch,\n    cancelPreparedLaunch: cancelPreparedGoogleDriveLaunch,\n    runLaunch: (gameKey, operation) =>\n      libraryGameLaunchGate.runUntilDetected(gameKey, operation),\n    launch: (appName) => LegendaryIntegration.launch(appName),\n  });\n',
+    expected: /await cancelPreparedGoogleDriveLaunch/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at src/main/services/cloud-save/google-drive/google-drive-post-session-consumer.test.ts:1:1
+✖ src/main/services/cloud-save/google-drive/google-drive-post-session-consumer.test.ts (12013.156551ms)
+  'test failed'
+
+test at src/main/services/cloud-save/google-drive/google-drive-post-session-phase.test.ts:1:1
+✖ src/main/services/cloud-save/google-drive/google-drive-post-session-phase.test.ts (6209.698519ms)
+  'test failed'
+
+test at src/main/services/cloud-save/google-drive/google-drive-preflight-launch.test.ts:1:1
+✖ src/main/services/cloud-save/google-drive/google-drive-preflight-launch.test.ts (11561.060057ms)
+  'test failed'
+
+test at src/main/services/cloud-save/google-drive/google-drive-upload-size-contract.test.ts:5:1
+✖ Drive uploads verify a stable archive before touching remote folders (4.626148ms)
+  AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+  
+    assert.ok(folderIndex > sourceIndex)
+  
+      at TestContext.<anonymous> (file:///home/runner/work/Offline-Toolchains/Offline-Toolchains/hydra/src/main/services/cloud-save/google-drive/google-drive-upload-size-contract.test.ts:11:12)
+      at Test.runInAsyncScope (node:async_hooks:214:14)
+      at Test.run (node:internal/test_runner/test:1047:25)
+      at Test.start (node:internal/test_runner/test:944:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:296:17) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at src/main/services/cloud-save/google-drive/google-drive-upload-source-contract.test.ts:1:1
+✖ src/main/services/cloud-save/google-drive/google-drive-upload-source-contract.test.ts (5637.517553ms)
+  'test failed'
+
+test at src/main/services/custom-games/custom-game-native-agent-migration-contract.test.ts:5:1
+✖ all custom to Steam migrations require native recovery readiness (20.672543ms)
+  AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+  
+    assert.ok((source.match(/await migrateCustomGameAfterNativeRecovery\(/g) ?? [])
+  
+      at TestContext.<anonymous> (file:///home/runner/work/Offline-Toolchains/Offline-Toolchains/hydra/src/main/services/custom-games/custom-game-native-agent-migration-contract.test.ts:12:12)
+      at Test.runInAsyncScope (node:async_hooks:214:14)
+      at Test.run (node:internal/test_runner/test:1047:25)
+      at Test.start (node:internal/test_runner/test:944:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:296:17) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at src/main/services/custom-games/custom-game-steam-selection.test.ts:1:1
+✖ src/main/services/custom-games/custom-game-steam-selection.test.ts (6004.116131ms)
+  'test failed'
+
+test at src/main/services/custom-games/migrate-custom-game-classics.test.ts:1:1
+✖ src/main/services/custom-games/migrate-custom-game-classics.test.ts (10525.032202ms)
+  'test failed'
+
+test at src/main/services/custom-games/migrate-custom-game-executable-timestamp.test.ts:1:1
+✖ src/main/services/custom-games/migrate-custom-game-executable-timestamp.test.ts (10730.204244ms)
+  'test failed'
+
+test at src/main/services/custom-games/migrate-custom-game-onlinefix.test.ts:1:1
+✖ src/main/services/custom-games/migrate-custom-game-onlinefix.test.ts (10814.964082ms)
+  'test failed'
+
+test at src/main/services/custom-games/migrate-custom-game-pin.test.ts:1:1
+✖ src/main/services/custom-games/migrate-custom-game-pin.test.ts (10670.955058ms)
+  'test failed'
+
+test at src/main/services/custom-games/migrate-custom-game-shortcut.test.ts:1:1
+✖ src/main/services/custom-games/migrate-custom-game-shortcut.test.ts (10317.944028ms)
+  'test failed'
+
+test at src/main/services/custom-games/migrate-custom-game-to-steam.test.ts:1:1
+✖ src/main/services/custom-games/migrate-custom-game-to-steam.test.ts (11063.161825ms)
+  'test failed'
+
+test at src/main/services/custom-games/steam-game-matcher.test.ts:1:1
+✖ src/main/services/custom-games/steam-game-matcher.test.ts (5672.141735ms)
+  'test failed'
+
+test at src/main/services/download/archive-deletion-policy.test.ts:1:1
+✖ src/main/services/download/archive-deletion-policy.test.ts (5775.247038ms)
+  'test failed'
+
+test at src/main/services/game-runtime/deferred-library-mutation-queue.test.ts:1:1
+✖ src/main/services/game-runtime/deferred-library-mutation-queue.test.ts (5935.861005ms)
+  'test failed'
+
+test at src/main/services/game-runtime/library-game-launch-route-contract.test.ts:33:1
+✖ library removal acquires exclusive mutation hold before its first database read (7.438045ms)
+  AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+  
+    assert.ok(mutationHold >= 0 && mutationHold < removalRead)
+  
+      at TestContext.<anonymous> (file:///home/runner/work/Offline-Toolchains/Offline-Toolchains/hydra/src/main/services/game-runtime/library-game-launch-route-contract.test.ts:39:12)
+      at Test.runInAsyncScope (node:async_hooks:214:14)
+      at Test.run (node:internal/test_runner/test:1047:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+      at Test.postRun (node:internal/test_runner/test:1173:19)
+      at Test.run (node:internal/test_runner/test:1101:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:744:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at src/main/services/hosters/pixeldrain.integration.test.ts:8:1
+✖ PixelDrain validates share URLs and disables HEAD redirects (2.231224ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /timeout:\s*10_000/. Input:
+  
+  'import axios from "axios";\n' +
+    'import { logger } from "@main/services";\n' +
+    'import {\n' +
+    '  buildPixelDrainApiUrl,\n' +
+    '  buildPixelDrainBypassUrl,\n' +
+    '  parsePixelDrainShareUrl,\n' +
+    '} from "./pixeldrain-policy";\n' +
+    '\n' +
+    'export class PixelDrainApi {\n' +
+    '  private static readonly BYPASS_TIMEOUT_MS = 5_000;\n' +
+    '  private static readonly AVAILABILITY_TIMEOUT_MS = 10_000;\n' +
+    '\n' +
+    '  public static canHandle(url: string): boolean {\n' +
+    '    return parsePixelDrainShareUrl(url) !== null;\n' +
+    '  }\n' +
+    '\n' +
+    '  private static async checkAvailability(\n' +
+    '    canonicalUrl: string\n' +
+    '  ): Promise<void> {\n' +
+    '    const response = await axios.head(canonicalUrl, {\n' +
+    '      timeout: this.AVAILABILITY_TIMEOUT_MS,\n' +
+    '      maxRedirects: 0,\n' +
+    '      validateStatus: () => true,\n' +
+    '    });\n' +
+    '\n' +
+    '    if (response.status === 404) {\n' +
+    '      throw new Error("File not found");\n' +
+    '    }\n' +
+    '    if (response.status < 200 || response.status >= 300) {\n' +
+    '      throw new Error(\n' +
+    '        `PixelDrain availability check failed: ${response.status}`\n' +
+    '      );\n' +
+    '    }\n' +
+    '  }\n' +
+    '\n' +
+    '  private static async tryBypass(id: string): Promise<string | null> {\n' +
+    '    const bypassUrl = buildPixelDrainBypassUrl(id);\n' +
+    '\n' +
+    '    try {\n' +
+    '      const response = await axios.head(bypassUrl, {\n' +
+    '        timeout: this.BYPASS_TIMEOUT_MS,\n' +
+    '        maxRedirects: 0,\n' +
+    '        validateStatus: () => true,\n' +
+    '      });\n' +
+    '\n' +
+    '      if (response.status >= 200 && response.status < 300) {\n' +
+    '        return bypassUrl;\n' +
+    '      }\n' +
+    '\n' +
+    '      logger.log(\n' +
+    '        `[PixelDrain] Bypass HEAD returned status ${response.status}, falling back to API resolver.`\n' +
+    '      );\n' +
+    '      return null;\n' +
+    '    } catch {\n' +
+    '      logger.log(\n' +
+    '        `[PixelDrain] Bypass HEAD failed, falling back to API resolver.`\n' +
+    '      );\n' +
+    '      return null;\n' +
+    '    }\n' +
+    '  }\n' +
+    '\n' +
+    '  public static async unlock(url: string): Promise<string> {\n' +
+    '    try {\n' +
+    '      const parsed = parsePixelDrainShareUrl(url);\n' +
+    '      if (!parsed) {\n' +
+    '        throw new Error(`Invalid pixeldrain URL: ${url}`);\n' +
+    '      }\n' +
+    '\n' +
+    '      const { id, canonicalUrl } = parsed;\n' +
+    '      const bypassUrl = await this.tryBypass(id);\n' +
+    '\n' +
+    '      if (bypassUrl) {\n' +
+    '        return bypassUrl;\n' +
+    '      }\n' +
+    '\n' +
+    '      await this.checkAvailability(canonicalUrl);\n' +
+    '      return buildPixelDrainApiUrl(id);\n' +
+    '    } catch (error) {\n' +
+    '      logger.error("Error fetching PixelDrain URL:", error);\n' +
+    '      throw error;\n' +
+    '    }\n' +
+    '  }\n' +
+    '\n' +
+    '  public static async getDownloadUrl(url: string): Promise<string> {\n' +
+    '    return this.unlock(url);\n' +
+    '  }\n' +
+    '}\n'
+  
+      at TestContext.<anonymous> (file:///home/runner/work/Offline-Toolchains/Offline-Toolchains/hydra/src/main/services/hosters/pixeldrain.integration.test.ts:13:12)
+      at Test.runInAsyncScope (node:async_hooks:214:14)
+      at Test.run (node:internal/test_runner/test:1047:25)
+      at Test.start (node:internal/test_runner/test:944:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:296:17) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'import axios from "axios";\nimport { logger } from "@main/services";\nimport {\n  buildPixelDrainApiUrl,\n  buildPixelDrainBypassUrl,\n  parsePixelDrainShareUrl,\n} from "./pixeldrain-policy";\n\nexport class PixelDrainApi {\n  private static readonly BYPASS_TIMEOUT_MS = 5_000;\n  private static readonly AVAILABILITY_TIMEOUT_MS = 10_000;\n\n  public static canHandle(url: string): boolean {\n    return parsePixelDrainShareUrl(url) !== null;\n  }\n\n  private static async checkAvailability(\n    canonicalUrl: string\n  ): Promise<void> {\n    const response = await axios.head(canonicalUrl, {\n      timeout: this.AVAILABILITY_TIMEOUT_MS,\n      maxRedirects: 0,\n      validateStatus: () => true,\n    });\n\n    if (response.status === 404) {\n      throw new Error("File not found");\n    }\n    if (response.status < 200 || response.status >= 300) {\n      throw new Error(\n        `PixelDrain availability check failed: ${response.status}`\n      );\n    }\n  }\n\n  private static async tryBypass(id: string): Promise<string | null> {\n    const bypassUrl = buildPixelDrainBypassUrl(id);\n\n    try {\n      const response = await axios.head(bypassUrl, {\n        timeout: this.BYPASS_TIMEOUT_MS,\n        maxRedirects: 0,\n        validateStatus: () => true,\n      });\n\n      if (response.status >= 200 && response.status < 300) {\n        return bypassUrl;\n      }\n\n      logger.log(\n        `[PixelDrain] Bypass HEAD returned status ${response.status}, falling back to API resolver.`\n      );\n      return null;\n    } catch {\n      logger.log(\n        `[PixelDrain] Bypass HEAD failed, falling back to API resolver.`\n      );\n      return null;\n    }\n  }\n\n  public static async unlock(url: string): Promise<string> {\n    try {\n      const parsed = parsePixelDrainShareUrl(url);\n      if (!parsed) {\n        throw new Error(`Invalid pixeldrain URL: ${url}`);\n      }\n\n      const { id, canonicalUrl } = parsed;\n      const bypassUrl = await this.tryBypass(id);\n\n      if (bypassUrl) {\n        return bypassUrl;\n      }\n\n      await this.checkAvailability(canonicalUrl);\n      return buildPixelDrainApiUrl(id);\n    } catch (error) {\n      logger.error("Error fetching PixelDrain URL:", error);\n      throw error;\n    }\n  }\n\n  public static async getDownloadUrl(url: string): Promise<string> {\n    return this.unlock(url);\n  }\n}\n',
+    expected: /timeout:\s*10_000/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at src/main/services/legendary/legendary-library-reconciler.test.ts:1:1
+✖ src/main/services/legendary/legendary-library-reconciler.test.ts (6919.609692ms)
+  'test failed'
+
+test at src/main/services/legendary/legendary-metadata-enrichment.test.ts:1:1
+✖ src/main/services/legendary/legendary-metadata-enrichment.test.ts (10646.876617ms)
+  'test failed'
+
+test at src/main/services/legendary/legendary-preflight-launch.test.ts:1:1
+✖ src/main/services/legendary/legendary-preflight-launch.test.ts (10564.562804ms)
+  'test failed'
+
+test at src/main/services/library-sync/synchronize-tracked-game-playtime.test.ts:1:1
+✖ src/main/services/library-sync/synchronize-tracked-game-playtime.test.ts (6033.922031ms)
+  'test failed'
+
+test at src/main/services/library-sync/update-game-playtime.test.ts:1:1
+✖ src/main/services/library-sync/update-game-playtime.test.ts (9996.212706ms)
+  'test failed'
+
+test at src/main/services/ludusavi-core.test.ts:1:1
+✖ src/main/services/ludusavi-core.test.ts (101513.274542ms)
+  'test failed'
+
+test at src/main/services/native-game-agent/native-game-agent-full-shutdown-cleanup-contract.test.ts:11:1
+✖ uses permissive cleanup before spawn and strict cleanup afterward (1.575916ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /cleanupPreparedRuntime\(\{ paths, sessions: preparedSessions \}, false\)/. Input:
+  
+  'import { app } from "electron";\n' +
+    'import { randomBytes, randomUUID } from "node:crypto";\n' +
+    'import { constants } from "node:fs";\n' +
+    'import { access, rm } from "node:fs/promises";\n' +
+    '\n' +
+    'import { INTERVALS } from "@main/constants";\n' +
+    'import { gamesSublevel } from "@main/level";\n' +
+    'import type { Game } from "@types";\n' +
+    '\n' +
+    'import { launchedGamePids } from "../launched-game-pids";\n' +
+    'import { logger } from "../logger";\n' +
+    'import { MainLoopController } from "../main-loop";\n' +
+    'import { PowerSaveBlockerManager } from "../power-save-blocker";\n' +
+    'import { gamesPlaytime } from "../process-watcher";\n' +
+    'import { SystemPath } from "../system-path";\n' +
+    'import { nativeGameAgentAuthority } from "./native-game-agent-authority.instance";\n' +
+    'import { selectNativeAgentHandoffExitMode } from "./native-game-agent-exit-mode";\n' +
+    'import { cleanupNativeAgentFullShutdownRuntime } from "./native-game-agent-full-shutdown-cleanup";\n' +
+    'import { NativeGameAgentFullShutdownCoordinator } from "./native-game-agent-full-shutdown-coordinator";\n' +
+    'import {\n' +
+    '  hashNativeAgentResumeToken,\n' +
+    '  type NativeAgentRuntimeManifest,\n' +
+    '} from "./native-game-agent-full-shutdown-protocol";\n' +
+    'import { spawnNativeGameAgentFullShutdownProcess } from "./native-game-agent-full-shutdown-process";\n' +
+    'import {\n' +
+    '  transitionNativeAgentRuntimeManifest,\n' +
+    '  writeNativeAgentRuntimeManifest,\n' +
+    '} from "./native-game-agent-full-shutdown-storage";\n' +
+    'import { evaluateProductionNativeAgentShutdownSafety } from "./native-game-agent-shutdown-safety.production";\n' +
+    'import { buildOwnerManifest } from "./native-game-agent-owner-manifest";\n' +
+    'import {\n' +
+    '  commitOwnerManifestFile,\n' +
+    '  fenceOwnerManifestFile,\n' +
+    '  writeOwnerStartingManifest,\n' +
+    '} from "./native-game-agent-owner-storage";\n' +
+    'import {\n' +
+    '  buildNativeAgentRuntimePaths,\n' +
+    '  buildNativeAgentSessionPaths,\n' +
+    '  resolveNativeGameAgentExecutable,\n' +
+    '  type NativeAgentRuntimePaths,\n' +
+    '} from "./native-game-agent-paths";\n' +
+    'import { NativeGameAgentPlaytimeSession } from "./native-game-agent-playtime-session";\n' +
+    'import { NativeGameAgentProcessWatcherGate } from "./native-game-agent-process-watcher-gate";\n' +
+    'import { buildNativeAgentRelaunchDescriptor } from "./native-game-agent-relaunch";\n' +
+    'import type { NativeAgentLifecycleSession } from "./native-game-agent.types";\n' +
+    '\n' +
+    'interface PreparedFullShutdownSession {\n' +
+    '  session: NativeAgentLifecycleSession;\n' +
+    '  manifestPath: string;\n' +
+    '  sessionDirectory: string;\n' +
+    '  frozen: boolean;\n' +
+    '}\n' +
+    '\n' +
+    'interface PreparedFullShutdownRuntime {\n' +
+    '  paths: NativeAgentRuntimePaths;\n' +
+    '  manifest: NativeAgentRuntimeManifest;\n' +
+    '  token: string;\n' +
+    '  sessions: PreparedFullShutdownSession[];\n' +
+    '}\n' +
+    '\n' +
+    'type PreparedRuntimeCleanup = Pick<\n' +
+    '  PreparedFullShutdownRuntime,\n' +
+    '  "paths" | "sessions"\n' +
+    '>;\n' +
+    '\n' +
+    'const phase3WatcherGate = new NativeGameAgentProcessWatcherGate({\n' +
+    '  suspend: () => MainLoopController.suspendProcesses(),\n' +
+    '  resume: () => MainLoopController.resumeProcesses(),\n' +
+    '});\n' +
+    '\n' +
+    'const phase3PlaytimeSession = new NativeGameAgentPlaytimeSession<Game>({\n' +
+    '  gate: phase3WatcherGate,\n' +
+    '  loadGame: (gameKey) =>\n' +
+    '    gamesSublevel.get(gameKey).then((game) => game ?? null),\n' +
+    '  saveGame: (gameKey, game) => gamesSublevel.put(gameKey, game),\n' +
+    '  getClock: (gameKey) => gamesPlaytime.get(gameKey) ?? null,\n' +
+    '  setClock: (gameKey, clock) => gamesPlaytime.set(gameKey, clock),\n' +
+    '  deleteClock: (gameKey) => {\n' +
+    '    gamesPlaytime.delete(gameKey);\n' +
+    '    launchedGamePids.delete(gameKey);\n' +
+    '    PowerSaveBlockerManager.markGameClosed(gameKey);\n' +
+    '  },\n' +
+    '  nowPerformanceMs: () => performance.now(),\n' +
+    '  nowDate: () => new Date(),\n' +
+    '  finalizeSession: async () => undefined,\n' +
+    '});\n' +
+    '\n' +
+    'const resolveAgentExecutable = async () => {\n' +
+    '  const executable = resolveNativeGameAgentExecutable({\n' +
+    '    platform: process.platform,\n' +
+    '    isPackaged: app.isPackaged,\n' +
+    '    resourcesPath: process.resourcesPath,\n' +
+    '    appPath: app.getAppPath(),\n' +
+    '  });\n' +
+    '  if (!executable) throw new Error("Native game agent is unavailable");\n' +
+    '  await access(executable, constants.X_OK).catch(() => {\n' +
+    '    throw new Error(`Native game agent is not executable: ${executable}`);\n' +
+    '  });\n' +
+    '  return executable;\n' +
+    '};\n' +
+    '\n' +
+    'const loadGameMetadata = async (gameKey: string) => {\n' +
+    '  const game = await gamesSublevel.get(gameKey);\n' +
+    '  if (!game) return { winePrefixPath: null, steamAppId: null };\n' +
+    '  const parsedSteamAppId =\n' +
+    '    game.shop === "steam" && /^\\d+$/.test(game.objectId)\n' +
+    '      ? Number(game.objectId)\n' +
+    '      : null;\n' +
+    '  return {\n' +
+    '    winePrefixPath: game.winePrefixPath ?? null,\n' +
+    '    steamAppId: game.steamAppId ?? parsedSteamAppId,\n' +
+    '  };\n' +
+    '};\n' +
+    '\n' +
+    'const cleanupPreparedRuntime = async (\n' +
+    '  prepared: PreparedRuntimeCleanup,\n' +
+    '  agentMayBeRunning: boolean\n' +
+    ') =>\n' +
+    '  cleanupNativeAgentFullShutdownRuntime({\n' +
+    '    runtimeDirectory: prepared.paths.runtimeDirectory,\n' +
+    '    sessions: prepared.sessions.map((item) => ({\n' +
+    '      sessionId: item.session.sessionId,\n' +
+    '      gameKey: item.session.gameKey,\n' +
+    '      sessionDirectory: item.sessionDirectory,\n' +
+    '      frozen: item.frozen,\n' +
+    '    })),\n' +
+    '    agentMayBeRunning,\n' +
+    '    fenceSession: async (sessionId) => {\n' +
+    '      const paths = buildNativeAgentSessionPaths(\n' +
+    '        SystemPath.getPath("userData"),\n' +
+    '        sessionId\n' +
+    '      );\n' +
+    '      await fenceOwnerManifestFile(paths);\n' +
+    '    },\n' +
+    '    resumeGame: (gameKey) => phase3PlaytimeSession.resume(gameKey),\n' +
+    '    removeAuthority: (sessionId) => {\n' +
+    '      nativeGameAgentAuthority.remove(sessionId);\n' +
+    '    },\n' +
+    '    removeDirectory: (directory) =>\n' +
+    '      rm(directory, { recursive: true, force: true }),\n' +
+    '  });\n' +
+    '\n' +
+    'const prepareRuntime = async (\n' +
+    '  sessions: NativeAgentLifecycleSession[]\n' +
+    '): Promise<PreparedFullShutdownRuntime> => {\n' +
+    '  const runtimeId = randomUUID();\n' +
+    '  const token = randomBytes(32).toString("hex");\n' +
+    '  const tokenHash = hashNativeAgentResumeToken(token);\n' +
+    '  const paths = buildNativeAgentRuntimePaths(\n' +
+    '    SystemPath.getPath("userData"),\n' +
+    '    runtimeId\n' +
+    '  );\n' +
+    '  const preparedSessions: PreparedFullShutdownSession[] = [];\n' +
+    '\n' +
+    '  try {\n' +
+    '    for (const session of sessions) {\n' +
+    '      nativeGameAgentAuthority.beginStarting(\n' +
+    '        session.sessionId,\n' +
+    '        session.gameKey,\n' +
+    '        Date.now()\n' +
+    '      );\n' +
+    '      const item: PreparedFullShutdownSession = {\n' +
+    '        session,\n' +
+    '        manifestPath: "",\n' +
+    '        sessionDirectory: "",\n' +
+    '        frozen: false,\n' +
+    '      };\n' +
+    '      preparedSessions.push(item);\n' +
+    '\n' +
+    '      await phase3PlaytimeSession.freeze(session.gameKey);\n' +
+    '      item.frozen = true;\n' +
+    '\n' +
+    '      const sessionPaths = buildNativeAgentSessionPaths(\n' +
+    '        SystemPath.getPath("userData"),\n' +
+    '        session.sessionId\n' +
+    '      );\n' +
+    '      const metadata = await loadGameMetadata(session.gameKey);\n' +
+    '      const manifest = buildOwnerManifest(session, metadata, {\n' +
+    '        paths: sessionPaths,\n' +
+    '        tokenHash,\n' +
+    '        nowUnixMs: Date.now(),\n' +
+    '        sampleIntervalMs: Math.max(INTERVALS.processWatcher, 500),\n' +
+    '      });\n' +
+    '      await writeOwnerStartingManifest(sessionPaths, manifest);\n' +
+    '      item.manifestPath = sessionPaths.manifestPath;\n' +
+    '      item.sessionDirectory = sessionPaths.sessionDirectory;\n' +
+    '    }\n' +
+    '\n' +
+    '    const manifest: NativeAgentRuntimeManifest = {\n' +
+    '      schemaVersion: 1,\n' +
+    '      runtimeId,\n' +
+    '      state: "prepared",\n' +
+    '      createdAtUnixMs: Date.now(),\n' +
+    '      electronPid: process.pid,\n' +
+    '      resumeTokenHash: tokenHash,\n' +
+    '      resumeAcknowledgementPath: paths.resumeAcknowledgementPath,\n' +
+    '      relaunch: buildNativeAgentRelaunchDescriptor({\n' +
+    '        runtimeId,\n' +
+    '        isPackaged: app.isPackaged,\n' +
+    '        execPath: process.execPath,\n' +
+    '        argv: process.argv,\n' +
+    '        cwd: process.cwd(),\n' +
+    '        environment: process.env,\n' +
+    '      }),\n' +
+    '      sessions: preparedSessions.map((item) => ({\n' +
+    '        sessionId: item.session.sessionId,\n' +
+    '        manifestPath: item.manifestPath,\n' +
+    '      })),\n' +
+    '    };\n' +
+    '    await writeNativeAgentRuntimeManifest(paths, manifest);\n' +
+    '    return { paths, manifest, token, sessions: preparedSessions };\n' +
+    '  } catch (error) {\n' +
+    '    await cleanupPreparedRuntime(\n' +
+    '      { paths, sessions: preparedSessions },\n' +
+    '      false\n' +
+    '    );\n' +
+    '    throw error;\n' +
+    '  }\n' +
+    '};\n' +
+    '\n' +
+    'let fullShutdownInFlight: Promise<unknown> | null = null;\n' +
+    '\n' +
+    'export const requestNativeGameAgentFullShutdown = (\n' +
+    '  sessions: NativeAgentLifecycleSession[],\n' +
+    '  startPhase2Fallback: (\n' +
+    '    sessions: NativeAgentLifecycleSession[],\n' +
+    '    reason: string\n' +
+    '  ) => Promise<void>\n' +
+    ') => {\n' +
+    '  if (fullShutdownInFlight) return fullShutdownInFlight;\n' +
+    '\n' +
+    '  const uniqueSessions = Array.from(\n' +
+    '    new Map(sessions.map((session) => [session.sessionId, session])).values()\n' +
+    '  );\n' +
+    '  let preparedRuntime: PreparedFullShutdownRuntime | null = null;\n' +
+    '\n' +
+    '  const coordinator = new NativeGameAgentFullShutdownCoordinator({\n' +
+    '    platform: process.platform,\n' +
+    '    evaluateSafety: evaluateProductionNativeAgentShutdownSafety,\n' +
+    '    prepareRuntime: async () => {\n' +
+    '      preparedRuntime = await prepareRuntime(uniqueSessions);\n' +
+    '      return preparedRuntime;\n' +
+    '    },\n' +
+    '    spawn: async (prepared) =>\n' +
+    '      spawnNativeGameAgentFullShutdownProcess(\n' +
+    '        await resolveAgentExecutable(),\n' +
+    '        prepared.paths.manifestPath\n' +
+    '      ),\n' +
+    '    commitSessionOwnership: async () => {\n' +
+    '      if (!preparedRuntime) throw new Error("Full-shutdown runtime is missing");\n' +
+    '      const committedAtUnixMs = Date.now();\n' +
+    '      for (const item of preparedRuntime.sessions) {\n' +
+    '        const paths = buildNativeAgentSessionPaths(\n' +
+    '          SystemPath.getPath("userData"),\n' +
+    '          item.session.sessionId\n' +
+    '        );\n' +
+    '        await commitOwnerManifestFile(paths, committedAtUnixMs);\n' +
+    '        nativeGameAgentAuthority.commitAgent(\n' +
+    '          item.session.sessionId,\n' +
+    '          committedAtUnixMs\n' +
+    '        );\n' +
+    '        phase3PlaytimeSession.completeHandoff(item.session.gameKey);\n' +
+    '        item.frozen = false;\n' +
+    '      }\n' +
+    '    },\n' +
+    '    transitionRuntime: async (_ignoredPaths, expected, next) => {\n' +
+    '      if (!preparedRuntime) throw new Error("Full-shutdown runtime is missing");\n' +
+    '      return transitionNativeAgentRuntimeManifest(\n' +
+    '        preparedRuntime.paths,\n' +
+    '        expected,\n' +
+    '        next\n' +
+    '      );\n' +
+    '    },\n' +
+    '    selectExitMode: selectNativeAgentHandoffExitMode,\n' +
+    '    requestQuit: () => app.quit(),\n' +
+    '    cleanupRuntime: async () => {\n' +
+    '      if (preparedRuntime) {\n' +
+    '        await cleanupPreparedRuntime(preparedRuntime, true);\n' +
+    '      }\n' +
+    '    },\n' +
+    '    startPhase2Fallback: async (_sessions, reason) => {\n' +
+    '      await startPhase2Fallback(uniqueSessions, reason);\n' +
+    '    },\n' +
+    '    logInfo: (event, payload) => logger.info(event, payload),\n' +
+    '    logWarn: (ev'... 422 more characters
+  
+      at TestContext.<anonymous> (file:///home/runner/work/Offline-Toolchains/Offline-Toolchains/hydra/src/main/services/native-game-agent/native-game-agent-full-shutdown-cleanup-contract.test.ts:12:12)
+      at Test.runInAsyncScope (node:async_hooks:214:14)
+      at Test.run (node:internal/test_runner/test:1047:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+      at Test.postRun (node:internal/test_runner/test:1173:19)
+      at Test.run (node:internal/test_runner/test:1101:12)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'import { app } from "electron";\nimport { randomBytes, randomUUID } from "node:crypto";\nimport { constants } from "node:fs";\nimport { access, rm } from "node:fs/promises";\n\nimport { INTERVALS } from "@main/constants";\nimport { gamesSublevel } from "@main/level";\nimport type { Game } from "@types";\n\nimport { launchedGamePids } from "../launched-game-pids";\nimport { logger } from "../logger";\nimport { MainLoopController } from "../main-loop";\nimport { PowerSaveBlockerManager } from "../power-save-blocker";\nimport { gamesPlaytime } from "../process-watcher";\nimport { SystemPath } from "../system-path";\nimport { nativeGameAgentAuthority } from "./native-game-agent-authority.instance";\nimport { selectNativeAgentHandoffExitMode } from "./native-game-agent-exit-mode";\nimport { cleanupNativeAgentFullShutdownRuntime } from "./native-game-agent-full-shutdown-cleanup";\nimport { NativeGameAgentFullShutdownCoordinator } from "./native-game-agent-full-shutdown-coordinator";\nimport {\n  hashNativeAgentResumeToken,\n  type NativeAgentRuntimeManifest,\n} from "./native-game-agent-full-shutdown-protocol";\nimport { spawnNativeGameAgentFullShutdownProcess } from "./native-game-agent-full-shutdown-process";\nimport {\n  transitionNativeAgentRuntimeManifest,\n  writeNativeAgentRuntimeManifest,\n} from "./native-game-agent-full-shutdown-storage";\nimport { evaluateProductionNativeAgentShutdownSafety } from "./native-game-agent-shutdown-safety.production";\nimport { buildOwnerManifest } from "./native-game-agent-owner-manifest";\nimport {\n  commitOwnerManifestFile,\n  fenceOwnerManifestFile,\n  writeOwnerStartingManifest,\n} from "./native-game-agent-owner-storage";\nimport {\n  buildNativeAgentRuntimePaths,\n  buildNativeAgentSessionPaths,\n  resolveNativeGameAgentExecutable,\n  type NativeAgentRuntimePaths,\n} from "./native-game-agent-paths";\nimport { NativeGameAgentPlaytimeSession } from "./native-game-agent-playtime-session";\nimport { NativeGameAgentProcessWatcherGate } from "./native-game-agent-process-watcher-gate";\nimport { buildNativeAgentRelaunchDescriptor } from "./native-game-agent-relaunch";\nimport type { NativeAgentLifecycleSession } from "./native-game-agent.types";\n\ninterface PreparedFullShutdownSession {\n  session: NativeAgentLifecycleSession;\n  manifestPath: string;\n  sessionDirectory: string;\n  frozen: boolean;\n}\n\ninterface PreparedFullShutdownRuntime {\n  paths: NativeAgentRuntimePaths;\n  manifest: NativeAgentRuntimeManifest;\n  token: string;\n  sessions: PreparedFullShutdownSession[];\n}\n\ntype PreparedRuntimeCleanup = Pick<\n  PreparedFullShutdownRuntime,\n  "paths" | "sessions"\n>;\n\nconst phase3WatcherGate = new NativeGameAgentProcessWatcherGate({\n  suspend: () => MainLoopController.suspendProcesses(),\n  resume: () => MainLoopController.resumeProcesses(),\n});\n\nconst phase3PlaytimeSession = new NativeGameAgentPlaytimeSession<Game>({\n  gate: phase3WatcherGate,\n  loadGame: (gameKey) =>\n    gamesSublevel.get(gameKey).then((game) => game ?? null),\n  saveGame: (gameKey, game) => gamesSublevel.put(gameKey, game),\n  getClock: (gameKey) => gamesPlaytime.get(gameKey) ?? null,\n  setClock: (gameKey, clock) => gamesPlaytime.set(gameKey, clock),\n  deleteClock: (gameKey) => {\n    gamesPlaytime.delete(gameKey);\n    launchedGamePids.delete(gameKey);\n    PowerSaveBlockerManager.markGameClosed(gameKey);\n  },\n  nowPerformanceMs: () => performance.now(),\n  nowDate: () => new Date(),\n  finalizeSession: async () => undefined,\n});\n\nconst resolveAgentExecutable = async () => {\n  const executable = resolveNativeGameAgentExecutable({\n    platform: process.platform,\n    isPackaged: app.isPackaged,\n    resourcesPath: process.resourcesPath,\n    appPath: app.getAppPath(),\n  });\n  if (!executable) throw new Error("Native game agent is unavailable");\n  await access(executable, constants.X_OK).catch(() => {\n    throw new Error(`Native game agent is not executable: ${executable}`);\n  });\n  return executable;\n};\n\nconst loadGameMetadata = async (gameKey: string) => {\n  const game = await gamesSublevel.get(gameKey);\n  if (!game) return { winePrefixPath: null, steamAppId: null };\n  const parsedSteamAppId =\n    game.shop === "steam" && /^\\d+$/.test(game.objectId)\n      ? Number(game.objectId)\n      : null;\n  return {\n    winePrefixPath: game.winePrefixPath ?? null,\n    steamAppId: game.steamAppId ?? parsedSteamAppId,\n  };\n};\n\nconst cleanupPreparedRuntime = async (\n  prepared: PreparedRuntimeCleanup,\n  agentMayBeRunning: boolean\n) =>\n  cleanupNativeAgentFullShutdownRuntime({\n    runtimeDirectory: prepared.paths.runtimeDirectory,\n    sessions: prepared.sessions.map((item) => ({\n      sessionId: item.session.sessionId,\n      gameKey: item.session.gameKey,\n      sessionDirectory: item.sessionDirectory,\n      frozen: item.frozen,\n    })),\n    agentMayBeRunning,\n    fenceSession: async (sessionId) => {\n      const paths = buildNativeAgentSessionPaths(\n        SystemPath.getPath("userData"),\n        sessionId\n      );\n      await fenceOwnerManifestFile(paths);\n    },\n    resumeGame: (gameKey) => phase3PlaytimeSession.resume(gameKey),\n    removeAuthority: (sessionId) => {\n      nativeGameAgentAuthority.remove(sessionId);\n    },\n    removeDirectory: (directory) =>\n      rm(directory, { recursive: true, force: true }),\n  });\n\nconst prepareRuntime = async (\n  sessions: NativeAgentLifecycleSession[]\n): Promise<PreparedFullShutdownRuntime> => {\n  const runtimeId = randomUUID();\n  const token = randomBytes(32).toString("hex");\n  const tokenHash = hashNativeAgentResumeToken(token);\n  const paths = buildNativeAgentRuntimePaths(\n    SystemPath.getPath("userData"),\n    runtimeId\n  );\n  const preparedSessions: PreparedFullShutdownSession[] = [];\n\n  try {\n    for (const session of sessions) {\n      nativeGameAgentAuthority.beginStarting(\n        session.sessionId,\n        session.gameKey,\n        Date.now()\n      );\n      const item: PreparedFullShutdownSession = {\n        session,\n        manifestPath: "",\n        sessionDirectory: "",\n        frozen: false,\n      };\n      preparedSessions.push(item);\n\n      await phase3PlaytimeSession.freeze(session.gameKey);\n      item.frozen = true;\n\n      const sessionPaths = buildNativeAgentSessionPaths(\n        SystemPath.getPath("userData"),\n        session.sessionId\n      );\n      const metadata = await loadGameMetadata(session.gameKey);\n      const manifest = buildOwnerManifest(session, metadata, {\n        paths: sessionPaths,\n        tokenHash,\n        nowUnixMs: Date.now(),\n        sampleIntervalMs: Math.max(INTERVALS.processWatcher, 500),\n      });\n      await writeOwnerStartingManifest(sessionPaths, manifest);\n      item.manifestPath = sessionPaths.manifestPath;\n      item.sessionDirectory = sessionPaths.sessionDirectory;\n    }\n\n    const manifest: NativeAgentRuntimeManifest = {\n      schemaVersion: 1,\n      runtimeId,\n      state: "prepared",\n      createdAtUnixMs: Date.now(),\n      electronPid: process.pid,\n      resumeTokenHash: tokenHash,\n      resumeAcknowledgementPath: paths.resumeAcknowledgementPath,\n      relaunch: buildNativeAgentRelaunchDescriptor({\n        runtimeId,\n        isPackaged: app.isPackaged,\n        execPath: process.execPath,\n        argv: process.argv,\n        cwd: process.cwd(),\n        environment: process.env,\n      }),\n      sessions: preparedSessions.map((item) => ({\n        sessionId: item.session.sessionId,\n        manifestPath: item.manifestPath,\n      })),\n    };\n    await writeNativeAgentRuntimeManifest(paths, manifest);\n    return { paths, manifest, token, sessions: preparedSessions };\n  } catch (error) {\n    await cleanupPreparedRuntime(\n      { paths, sessions: preparedSessions },\n      false\n    );\n    throw error;\n  }\n};\n\nlet fullShutdownInFlight: Promise<unknown> | null = null;\n\nexport const requestNativeGameAgentFullShutdown = (\n  sessions: NativeAgentLifecycleSession[],\n  startPhase2Fallback: (\n    sessions: NativeAgentLifecycleSession[],\n    reason: string\n  ) => Promise<void>\n) => {\n  if (fullShutdownInFlight) return fullShutdownInFlight;\n\n  const uniqueSessions = Array.from(\n    new Map(sessions.map((session) => [session.sessionId, session])).values()\n  );\n  let preparedRuntime: PreparedFullShutdownRuntime | null = null;\n\n  const coordinator = new NativeGameAgentFullShutdownCoordinator({\n    platform: process.platform,\n    evaluateSafety: evaluateProductionNativeAgentShutdownSafety,\n    prepareRuntime: async () => {\n      preparedRuntime = await prepareRuntime(uniqueSessions);\n      return preparedRuntime;\n    },\n    spawn: async (prepared) =>\n      spawnNativeGameAgentFullShutdownProcess(\n        await resolveAgentExecutable(),\n        prepared.paths.manifestPath\n      ),\n    commitSessionOwnership: async () => {\n      if (!preparedRuntime) throw new Error("Full-shutdown runtime is missing");\n      const committedAtUnixMs = Date.now();\n      for (const item of preparedRuntime.sessions) {\n        const paths = buildNativeAgentSessionPaths(\n          SystemPath.getPath("userData"),\n          item.session.sessionId\n        );\n        await commitOwnerManifestFile(paths, committedAtUnixMs);\n        nativeGameAgentAuthority.commitAgent(\n          item.session.sessionId,\n          committedAtUnixMs\n        );\n        phase3PlaytimeSession.completeHandoff(item.session.gameKey);\n        item.frozen = false;\n      }\n    },\n    transitionRuntime: async (_ignoredPaths, expected, next) => {\n      if (!preparedRuntime) throw new Error("Full-shutdown runtime is missing");\n      return transitionNativeAgentRuntimeManifest(\n        preparedRuntime.paths,\n        expected,\n        next\n      );\n    },\n    selectExitMode: selectNativeAgentHandoffExitMode,\n    requestQuit: () => app.quit(),\n    cleanupRuntime: async () => {\n      if (preparedRuntime) {\n        await cleanupPreparedRuntime(preparedRuntime, true);\n      }\n    },\n    startPhase2Fallback: async (_sessions, reason) => {\n      await startPhase2Fallback(uniqueSessions, reason);\n    },\n    logInfo: (event, payload) => logger.info(event, payload),\n    logWarn: (ev'... 422 more characters,
+    expected: /cleanupPreparedRuntime\(\{ paths, sessions: preparedSessions \}, false\)/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at src/main/services/native-game-agent/native-game-agent-owner-manifest.test.ts:1:1
+✖ src/main/services/native-game-agent/native-game-agent-owner-manifest.test.ts (5592.890399ms)
+  'test failed'
+
+test at src/main/services/native-game-agent/native-game-agent-owner-storage.test.ts:10:1
+✖ persists the starting and committed owner states atomically (267.89597ms)
+  src/main/services/custom-games/steam-game-matcher-core.ts(4,8): error TS2307: Cannot find module '@app-types/custom-game.types' or its corresponding type declarations.
+  src/main/services/custom-games/steam-game-matcher-core.ts(6,44): error TS2307: Cannot find module '@app-types/custom-game.types' or its corresponding type declarations.
+  src/main/services/custom-games/steam-game-matcher-core.ts(174,35): error TS2339: Property 'source' does not exist on type '{ confidence: number; }'.
+  src/main/services/custom-games/steam-game-matcher-core.ts(174,65): error TS2339: Property 'source' does not exist on type '{ confidence: number; }'.
+  
+
+test at src/main/services/native-game-agent/native-game-agent-owner-supervisor-unavailable.test.ts:1:1
+✖ src/main/services/native-game-agent/native-game-agent-owner-supervisor-unavailable.test.ts (5975.15721ms)
+  'test failed'
+
+test at src/main/services/process-watcher-cloud-save-contract.test.ts:13:1
+✖ process watcher closes by game key through the runtime transition queue (3.776873ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /await\s+gameRuntimeModeManager\.closeSessionByGameKey\(gameKey\)/. Input:
+  
+  'import { INTERVALS } from "@main/constants";\n' +
+    'import { isWindowsBatchFile } from "@main/helpers/windows-batch-command";\n' +
+    'import { updateGameExecutablePath } from "@main/helpers/update-executable-path";\n' +
+    'import { gamesSublevel, levelKeys } from "@main/level";\n' +
+    'import type { Game, GameRunning } from "@types";\n' +
+    'import axios from "axios";\n' +
+    'import path from "node:path";\n' +
+    '\n' +
+    'import { AchievementWatcherManager } from "./achievements/achievement-watcher-manager";\n' +
+    'import { observeBackgroundOperation } from "./background-operation";\n' +
+    'import { emulatorSessions } from "./emulators/emulator-session-tracker";\n' +
+    'import {\n' +
+    '  gameRuntimeModeManager,\n' +
+    '  MINIMAL_BROAD_DISCOVERY_INTERVAL_MS,\n' +
+    '  selectGamesForProcessWatch,\n' +
+    '  shouldRunBroadDiscovery,\n' +
+    '} from "./game-runtime";\n' +
+    'import { gameSessionOpenRegistry } from "./game-runtime/game-session-open-registry";\n' +
+    'import { libraryGameLaunchGate } from "./game-runtime/library-game-launch-gate";\n' +
+    'import { launchedGamePids } from "./launched-game-pids";\n' +
+    'import {\n' +
+    '  advanceGamePlaytimeSyncWindow,\n' +
+    '  calculateGamePlaytimeSyncDelta,\n' +
+    '  createGame,\n' +
+    '  gamePlaytimeSyncCoordinator,\n' +
+    '  persistLocalPlaytimeDelta,\n' +
+    '  persistPlaytimeSyncState,\n' +
+    '  synchronizeTrackedGamePlaytime,\n' +
+    '  TrackedPlaytimeRemoteError,\n' +
+    '} from "./library-sync";\n' +
+    'import {\n' +
+    '  hasLaunchedPidMatch,\n' +
+    '  hasLinuxNativeOrAppImageMatch,\n' +
+    '  type LinuxProcessInfo,\n' +
+    '} from "./linux-process-match";\n' +
+    'import { logger, networkLogger } from "./logger";\n' +
+    'import { NativeAddon } from "./native-addon";\n' +
+    'import { PowerSaveBlockerManager } from "./power-save-blocker";\n' +
+    'import { WindowManager } from "./window-manager";\n' +
+    'import { Wine } from "./wine";\n' +
+    '\n' +
+    'interface GamePlaytimeClock {\n' +
+    '  lastTick: number;\n' +
+    '  firstTick: number;\n' +
+    '  lastSyncTick: number;\n' +
+    '}\n' +
+    '\n' +
+    'export const gamesPlaytime = new Map<string, GamePlaytimeClock>();\n' +
+    '\n' +
+    'export const getGamesRunning = () => {\n' +
+    '  const now = performance.now();\n' +
+    '  const gamesRunning = Array.from(gamesPlaytime.entries()).map((entry) => {\n' +
+    '    return {\n' +
+    '      id: entry[0],\n' +
+    '      sessionDurationInMillis: now - entry[1].firstTick,\n' +
+    '    } as Pick<GameRunning, "id" | "sessionDurationInMillis">;\n' +
+    '  });\n' +
+    '\n' +
+    '  for (const [gameKey, session] of emulatorSessions) {\n' +
+    '    gamesRunning.push({\n' +
+    '      id: gameKey,\n' +
+    '      sessionDurationInMillis: now - session.startedAt,\n' +
+    '    });\n' +
+    '  }\n' +
+    '\n' +
+    '  return gamesRunning;\n' +
+    '};\n' +
+    '\n' +
+    'interface ExecutableInfo {\n' +
+    '  name: string;\n' +
+    '  os: string;\n' +
+    '  exe: string;\n' +
+    '}\n' +
+    '\n' +
+    'interface GameExecutables {\n' +
+    '  [key: string]: ExecutableInfo[];\n' +
+    '}\n' +
+    '\n' +
+    'const TICKS_TO_UPDATE_API = (3 * 60 * 1000) / INTERVALS.processWatcher;\n' +
+    'let currentTick = 1;\n' +
+    'let lastBroadDiscoveryAt = 0;\n' +
+    '\n' +
+    'const platform = process.platform;\n' +
+    '\n' +
+    'const logPlaytimeTrace = (\n' +
+    '  event: string,\n' +
+    '  game: Game,\n' +
+    '  payload?: Record<string, unknown>\n' +
+    ') => {\n' +
+    '  networkLogger.info("[playtime-trace]", event, {\n' +
+    '    gameKey: levelKeys.game(game.shop, game.objectId),\n' +
+    '    shop: game.shop,\n' +
+    '    objectId: game.objectId,\n' +
+    '    remoteId: game.remoteId,\n' +
+    '    localPlayTimeInMilliseconds: Math.trunc(game.playTimeInMilliseconds ?? 0),\n' +
+    '    unsyncedDeltaPlayTimeInMilliseconds:\n' +
+    '      game.unsyncedDeltaPlayTimeInMilliseconds ?? 0,\n' +
+    '    lastTimePlayed:\n' +
+    '      game.lastTimePlayed instanceof Date\n' +
+    '        ? game.lastTimePlayed.toISOString()\n' +
+    '        : game.lastTimePlayed,\n' +
+    '    ...payload,\n' +
+    '  });\n' +
+    '};\n' +
+    '\n' +
+    'const observeGameOperation = (\n' +
+    '  event: string,\n' +
+    '  game: Game,\n' +
+    '  operation: Promise<unknown>\n' +
+    ') => {\n' +
+    '  observeBackgroundOperation(operation, {\n' +
+    '    reportFailure: (error) => {\n' +
+    '      logger.error(event, {\n' +
+    '        gameKey: levelKeys.game(game.shop, game.objectId),\n' +
+    '        error: error instanceof Error ? error.message : String(error),\n' +
+    '      });\n' +
+    '    },\n' +
+    '  });\n' +
+    '};\n' +
+    '\n' +
+    'type PlaytimeSyncPhase = "open" | "periodic" | "close";\n' +
+    '\n' +
+    'const synchronizePlaytimeWindow = async (\n' +
+    '  gameKey: string,\n' +
+    '  clock: GamePlaytimeClock,\n' +
+    '  syncAt: number,\n' +
+    '  syncDate: Date,\n' +
+    '  phase: PlaytimeSyncPhase\n' +
+    ') => {\n' +
+    '  const currentGame = await gamesSublevel.get(gameKey);\n' +
+    '  if (!currentGame || currentGame.isDeleted || currentGame.shop === "custom") {\n' +
+    '    clock.lastSyncTick = advanceGamePlaytimeSyncWindow(\n' +
+    '      clock.lastSyncTick,\n' +
+    '      syncAt\n' +
+    '    );\n' +
+    '    return;\n' +
+    '  }\n' +
+    '\n' +
+    '  const deltaToSync = calculateGamePlaytimeSyncDelta({\n' +
+    '    syncAt,\n' +
+    '    lastSyncTick: clock.lastSyncTick,\n' +
+    '    unsyncedDeltaMs:\n' +
+    '      currentGame.unsyncedDeltaPlayTimeInMilliseconds ?? 0,\n' +
+    '  });\n' +
+    '  const method = currentGame.remoteId ? "track" : "create";\n' +
+    '  const eventPrefix =\n' +
+    '    phase === "periodic" ? "periodic-sync" : `${phase}-sync-${method}`;\n' +
+    '\n' +
+    '  logPlaytimeTrace(`${eventPrefix}-request`, currentGame, {\n' +
+    '    method,\n' +
+    '    deltaToSync,\n' +
+    '    performanceNow: syncAt,\n' +
+    '    lastSyncTick: clock.lastSyncTick,\n' +
+    '  });\n' +
+    '\n' +
+    '  if (currentGame.remoteId) {\n' +
+    '    try {\n' +
+    '      const split = await synchronizeTrackedGamePlaytime(\n' +
+    '        gameKey,\n' +
+    '        currentGame,\n' +
+    '        deltaToSync,\n' +
+    '        currentGame.lastTimePlayed ?? syncDate\n' +
+    '      );\n' +
+    '      clock.lastSyncTick = advanceGamePlaytimeSyncWindow(\n' +
+    '        clock.lastSyncTick,\n' +
+    '        syncAt\n' +
+    '      );\n' +
+    '      logPlaytimeTrace(`${eventPrefix}-success`, currentGame, {\n' +
+    '        method,\n' +
+    '        deltaToSync,\n' +
+    '        transmittedDeltaMs: split.transmittedDeltaMs,\n' +
+    '        remainderMs: split.remainderMs,\n' +
+    '      });\n' +
+    '      return;\n' +
+    '    } catch (error) {\n' +
+    '      logPlaytimeTrace(`${eventPrefix}-failed`, currentGame, {\n' +
+    '        method,\n' +
+    '        deltaToSync,\n' +
+    '        error: error instanceof Error ? error.message : String(error),\n' +
+    '      });\n' +
+    '      if (error instanceof TrackedPlaytimeRemoteError) {\n' +
+    '        clock.lastSyncTick = advanceGamePlaytimeSyncWindow(\n' +
+    '          clock.lastSyncTick,\n' +
+    '          syncAt\n' +
+    '        );\n' +
+    '        return;\n' +
+    '      }\n' +
+    '      throw error;\n' +
+    '    }\n' +
+    '  }\n' +
+    '\n' +
+    '  try {\n' +
+    '    await createGame({\n' +
+    '      ...currentGame,\n' +
+    '      lastTimePlayed: currentGame.lastTimePlayed ?? syncDate,\n' +
+    '    });\n' +
+    '  } catch (error) {\n' +
+    '    logPlaytimeTrace(`${eventPrefix}-failed`, currentGame, {\n' +
+    '      method,\n' +
+    '      deltaToSync,\n' +
+    '      error: error instanceof Error ? error.message : String(error),\n' +
+    '    });\n' +
+    '    await persistPlaytimeSyncState(gameKey, deltaToSync);\n' +
+    '    clock.lastSyncTick = advanceGamePlaytimeSyncWindow(\n' +
+    '      clock.lastSyncTick,\n' +
+    '      syncAt\n' +
+    '    );\n' +
+    '    return;\n' +
+    '  }\n' +
+    '\n' +
+    '  clock.lastSyncTick = advanceGamePlaytimeSyncWindow(\n' +
+    '    clock.lastSyncTick,\n' +
+    '    syncAt\n' +
+    '  );\n' +
+    '  logPlaytimeTrace(`${eventPrefix}-success`, currentGame, {\n' +
+    '    method,\n' +
+    '    deltaToSync,\n' +
+    '  });\n' +
+    '};\n' +
+    '\n' +
+    'const getGameExecutables = async () => {\n' +
+    '  const gameExecutables = (\n' +
+    '    await axios\n' +
+    '      .get(\n' +
+    '        (import.meta.env?.MAIN_VITE_EXTERNAL_RESOURCES_URL ?? "") +\n' +
+    '          "/game-executables.json"\n' +
+    '      )\n' +
+    '      .catch(() => {\n' +
+    '        return { data: {} };\n' +
+    '      })\n' +
+    '  ).data as GameExecutables;\n' +
+    '\n' +
+    '  Object.keys(gameExecutables).forEach((key) => {\n' +
+    '    gameExecutables[key] = gameExecutables[key]\n' +
+    '      .filter((executable) => {\n' +
+    '        if (platform === "win32") {\n' +
+    '          return executable.os === "win32";\n' +
+    '        } else if (platform === "linux") {\n' +
+    '          return executable.os === "linux" || executable.os === "win32";\n' +
+    '        }\n' +
+    '\n' +
+    '        return false;\n' +
+    '      })\n' +
+    '      .map((executable) => {\n' +
+    '        return {\n' +
+    '          name:\n' +
+    '            platform === "win32"\n' +
+    '              ? executable.name.replace(/\\//g, "\\\\")\n' +
+    '              : executable.name,\n' +
+    '          os: executable.os,\n' +
+    '          exe: executable.name.slice(executable.name.lastIndexOf("/") + 1),\n' +
+    '        };\n' +
+    '      });\n' +
+    '  });\n' +
+    '\n' +
+    '  return gameExecutables;\n' +
+    '};\n' +
+    '\n' +
+    'export const gameExecutables = await getGameExecutables();\n' +
+    '\n' +
+    'const findGamePathByProcess = async (\n' +
+    '  processMap: Map<string, Set<string>>,\n' +
+    '  winePrefixMap: Map<string, string>,\n' +
+    '  gameId: string\n' +
+    ') => {\n' +
+    '  const executables = gameExecutables[gameId];\n' +
+    '\n' +
+    '  for (const executable of executables) {\n' +
+    '    const executablewithoutExtension = executable.exe.replace(/\\.exe$/i, "");\n' +
+    '\n' +
+    '    const pathSet =\n' +
+    '      processMap.get(executable.exe) ??\n' +
+    '      processMap.get(executablewithoutExtension);\n' +
+    '\n' +
+    '    if (pathSet) {\n' +
+    '      for (const processPath of pathSet) {\n' +
+    '        if (\n' +
+    '          processPath.toLowerCase().endsWith(executable.name) ||\n' +
+    '          processPath.toLowerCase().endsWith(executablewithoutExtension)\n' +
+    '        ) {\n' +
+    '          const gameKey = levelKeys.game("steam", gameId);\n' +
+    '          const releaseDetection =\n' +
+    '            libraryGameLaunchGate.tryHoldDetection(gameKey);\n' +
+    '          if (!releaseDetection) continue;\n' +
+    '\n' +
+    '          try {\n' +
+    '            const game = await gamesSublevel.get(gameKey);\n' +
+    '            if (!game || game.isDeleted) continue;\n' +
+    '\n' +
+    '            const updatedGame: Game = {\n' +
+    '              ...updateGameExecutablePath(game, processPath),\n' +
+    '            };\n' +
+    '\n' +
+    '            if (\n' +
+    '              process.platform === "linux" &&\n' +
+    '              winePrefixMap.has(processPath)\n' +
+    '            ) {\n' +
+    '              updatedGame.winePrefixPath = winePrefixMap.get(processPath)!;\n' +
+    '            }\n' +
+    '\n' +
+    '            await gamesSublevel.put(gameKey, updatedGame);\n' +
+    '            logger.info("Set game path", gameKey, processPath);\n' +
+    '          } finally {\n' +
+    '            releaseDetection();\n' +
+    '          }\n' +
+    '        }\n' +
+    '      }\n' +
+    '    }\n' +
+    '  }\n' +
+    '};\n' +
+    '\n' +
+    'const getSystemProcessMap = async () => {\n' +
+    '  const {\n' +
+    '    processMap: rawMap,\n' +
+    '    winePrefixMap: rawWineMap,\n' +
+    '    linuxProcesses,\n' +
+    '  } = await NativeAddon.getSystemProcessMap();\n' +
+    '\n' +
+    '  const processMap = new Map<string, Set<string>>(\n' +
+    '    Object.entries(rawMap).map(([key, value]) => [key, new Set(value)])\n' +
+    '  );\n' +
+    '\n' +
+    '  const winePrefixMap = new Map<string, string>(Object.entries(rawWineMap));\n' +
+    '\n' +
+    '  return { processMap, winePrefixMap, linuxProcesses };\n' +
+    '};\n' +
+    '\n' +
+    'const hasLinuxCompatibilityProcessMatch = (\n' +
+    '  game: Game,\n' +
+    '  executablePath: string,\n' +
+    '  linuxProcesses: LinuxProcessInfo[]\n' +
+    ') => {\n' +
+    '  if (path.extname(executablePath).toLowerCase() !== ".exe") {\n' +
+    '    return false;\n' +
+    '  }\n' +
+    '\n' +
+    '  const executableName = path.basename(executablePath).toLowerCase();\n' +
+    '  const executableNameWithoutExtension = executableName.replace(/\\.exe$/i, "");\n' +
+    '  const executableDirectory = path.dirname(executablePath).toLowerCase();\n' +
+    '  const expectedWinePrefix = Wine.getEffectivePrefixPath(\n' +
+    '    game.winePrefixPath,\n' +
+    '    game.objectId\n' +
+    '  )?.toLowerCase();\n' +
+    '\n' +
+    '  return linuxProcesses.some((systemProcess) => {\n' +
+    '    if (systemProcess.cwd !== executableDirectory) {\n' +
+    '      return false;\n' +
+    '    }\n' +
+    '\n' +
+    '    if (\n' +
+    '      expectedWinePrefix &&\n' +
+    '      systemProcess.steamCompatDataPath &&\n' +
+    '      '... 9220 more characters
+  
+      at TestContext.<anonymous> (file:///home/runner/work/Offline-Toolchains/Offline-Toolchains/hydra/src/main/services/process-watcher-cloud-save-contract.test.ts:14:12)
+      at Test.runInAsyncScope (node:async_hooks:214:14)
+      at Test.run (node:internal/test_runner/test:1047:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+      at Test.postRun (node:internal/test_runner/test:1173:19)
+      at Test.run (node:internal/test_runner/test:1101:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:744:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'import { INTERVALS } from "@main/constants";\nimport { isWindowsBatchFile } from "@main/helpers/windows-batch-command";\nimport { updateGameExecutablePath } from "@main/helpers/update-executable-path";\nimport { gamesSublevel, levelKeys } from "@main/level";\nimport type { Game, GameRunning } from "@types";\nimport axios from "axios";\nimport path from "node:path";\n\nimport { AchievementWatcherManager } from "./achievements/achievement-watcher-manager";\nimport { observeBackgroundOperation } from "./background-operation";\nimport { emulatorSessions } from "./emulators/emulator-session-tracker";\nimport {\n  gameRuntimeModeManager,\n  MINIMAL_BROAD_DISCOVERY_INTERVAL_MS,\n  selectGamesForProcessWatch,\n  shouldRunBroadDiscovery,\n} from "./game-runtime";\nimport { gameSessionOpenRegistry } from "./game-runtime/game-session-open-registry";\nimport { libraryGameLaunchGate } from "./game-runtime/library-game-launch-gate";\nimport { launchedGamePids } from "./launched-game-pids";\nimport {\n  advanceGamePlaytimeSyncWindow,\n  calculateGamePlaytimeSyncDelta,\n  createGame,\n  gamePlaytimeSyncCoordinator,\n  persistLocalPlaytimeDelta,\n  persistPlaytimeSyncState,\n  synchronizeTrackedGamePlaytime,\n  TrackedPlaytimeRemoteError,\n} from "./library-sync";\nimport {\n  hasLaunchedPidMatch,\n  hasLinuxNativeOrAppImageMatch,\n  type LinuxProcessInfo,\n} from "./linux-process-match";\nimport { logger, networkLogger } from "./logger";\nimport { NativeAddon } from "./native-addon";\nimport { PowerSaveBlockerManager } from "./power-save-blocker";\nimport { WindowManager } from "./window-manager";\nimport { Wine } from "./wine";\n\ninterface GamePlaytimeClock {\n  lastTick: number;\n  firstTick: number;\n  lastSyncTick: number;\n}\n\nexport const gamesPlaytime = new Map<string, GamePlaytimeClock>();\n\nexport const getGamesRunning = () => {\n  const now = performance.now();\n  const gamesRunning = Array.from(gamesPlaytime.entries()).map((entry) => {\n    return {\n      id: entry[0],\n      sessionDurationInMillis: now - entry[1].firstTick,\n    } as Pick<GameRunning, "id" | "sessionDurationInMillis">;\n  });\n\n  for (const [gameKey, session] of emulatorSessions) {\n    gamesRunning.push({\n      id: gameKey,\n      sessionDurationInMillis: now - session.startedAt,\n    });\n  }\n\n  return gamesRunning;\n};\n\ninterface ExecutableInfo {\n  name: string;\n  os: string;\n  exe: string;\n}\n\ninterface GameExecutables {\n  [key: string]: ExecutableInfo[];\n}\n\nconst TICKS_TO_UPDATE_API = (3 * 60 * 1000) / INTERVALS.processWatcher;\nlet currentTick = 1;\nlet lastBroadDiscoveryAt = 0;\n\nconst platform = process.platform;\n\nconst logPlaytimeTrace = (\n  event: string,\n  game: Game,\n  payload?: Record<string, unknown>\n) => {\n  networkLogger.info("[playtime-trace]", event, {\n    gameKey: levelKeys.game(game.shop, game.objectId),\n    shop: game.shop,\n    objectId: game.objectId,\n    remoteId: game.remoteId,\n    localPlayTimeInMilliseconds: Math.trunc(game.playTimeInMilliseconds ?? 0),\n    unsyncedDeltaPlayTimeInMilliseconds:\n      game.unsyncedDeltaPlayTimeInMilliseconds ?? 0,\n    lastTimePlayed:\n      game.lastTimePlayed instanceof Date\n        ? game.lastTimePlayed.toISOString()\n        : game.lastTimePlayed,\n    ...payload,\n  });\n};\n\nconst observeGameOperation = (\n  event: string,\n  game: Game,\n  operation: Promise<unknown>\n) => {\n  observeBackgroundOperation(operation, {\n    reportFailure: (error) => {\n      logger.error(event, {\n        gameKey: levelKeys.game(game.shop, game.objectId),\n        error: error instanceof Error ? error.message : String(error),\n      });\n    },\n  });\n};\n\ntype PlaytimeSyncPhase = "open" | "periodic" | "close";\n\nconst synchronizePlaytimeWindow = async (\n  gameKey: string,\n  clock: GamePlaytimeClock,\n  syncAt: number,\n  syncDate: Date,\n  phase: PlaytimeSyncPhase\n) => {\n  const currentGame = await gamesSublevel.get(gameKey);\n  if (!currentGame || currentGame.isDeleted || currentGame.shop === "custom") {\n    clock.lastSyncTick = advanceGamePlaytimeSyncWindow(\n      clock.lastSyncTick,\n      syncAt\n    );\n    return;\n  }\n\n  const deltaToSync = calculateGamePlaytimeSyncDelta({\n    syncAt,\n    lastSyncTick: clock.lastSyncTick,\n    unsyncedDeltaMs:\n      currentGame.unsyncedDeltaPlayTimeInMilliseconds ?? 0,\n  });\n  const method = currentGame.remoteId ? "track" : "create";\n  const eventPrefix =\n    phase === "periodic" ? "periodic-sync" : `${phase}-sync-${method}`;\n\n  logPlaytimeTrace(`${eventPrefix}-request`, currentGame, {\n    method,\n    deltaToSync,\n    performanceNow: syncAt,\n    lastSyncTick: clock.lastSyncTick,\n  });\n\n  if (currentGame.remoteId) {\n    try {\n      const split = await synchronizeTrackedGamePlaytime(\n        gameKey,\n        currentGame,\n        deltaToSync,\n        currentGame.lastTimePlayed ?? syncDate\n      );\n      clock.lastSyncTick = advanceGamePlaytimeSyncWindow(\n        clock.lastSyncTick,\n        syncAt\n      );\n      logPlaytimeTrace(`${eventPrefix}-success`, currentGame, {\n        method,\n        deltaToSync,\n        transmittedDeltaMs: split.transmittedDeltaMs,\n        remainderMs: split.remainderMs,\n      });\n      return;\n    } catch (error) {\n      logPlaytimeTrace(`${eventPrefix}-failed`, currentGame, {\n        method,\n        deltaToSync,\n        error: error instanceof Error ? error.message : String(error),\n      });\n      if (error instanceof TrackedPlaytimeRemoteError) {\n        clock.lastSyncTick = advanceGamePlaytimeSyncWindow(\n          clock.lastSyncTick,\n          syncAt\n        );\n        return;\n      }\n      throw error;\n    }\n  }\n\n  try {\n    await createGame({\n      ...currentGame,\n      lastTimePlayed: currentGame.lastTimePlayed ?? syncDate,\n    });\n  } catch (error) {\n    logPlaytimeTrace(`${eventPrefix}-failed`, currentGame, {\n      method,\n      deltaToSync,\n      error: error instanceof Error ? error.message : String(error),\n    });\n    await persistPlaytimeSyncState(gameKey, deltaToSync);\n    clock.lastSyncTick = advanceGamePlaytimeSyncWindow(\n      clock.lastSyncTick,\n      syncAt\n    );\n    return;\n  }\n\n  clock.lastSyncTick = advanceGamePlaytimeSyncWindow(\n    clock.lastSyncTick,\n    syncAt\n  );\n  logPlaytimeTrace(`${eventPrefix}-success`, currentGame, {\n    method,\n    deltaToSync,\n  });\n};\n\nconst getGameExecutables = async () => {\n  const gameExecutables = (\n    await axios\n      .get(\n        (import.meta.env?.MAIN_VITE_EXTERNAL_RESOURCES_URL ?? "") +\n          "/game-executables.json"\n      )\n      .catch(() => {\n        return { data: {} };\n      })\n  ).data as GameExecutables;\n\n  Object.keys(gameExecutables).forEach((key) => {\n    gameExecutables[key] = gameExecutables[key]\n      .filter((executable) => {\n        if (platform === "win32") {\n          return executable.os === "win32";\n        } else if (platform === "linux") {\n          return executable.os === "linux" || executable.os === "win32";\n        }\n\n        return false;\n      })\n      .map((executable) => {\n        return {\n          name:\n            platform === "win32"\n              ? executable.name.replace(/\\//g, "\\\\")\n              : executable.name,\n          os: executable.os,\n          exe: executable.name.slice(executable.name.lastIndexOf("/") + 1),\n        };\n      });\n  });\n\n  return gameExecutables;\n};\n\nexport const gameExecutables = await getGameExecutables();\n\nconst findGamePathByProcess = async (\n  processMap: Map<string, Set<string>>,\n  winePrefixMap: Map<string, string>,\n  gameId: string\n) => {\n  const executables = gameExecutables[gameId];\n\n  for (const executable of executables) {\n    const executablewithoutExtension = executable.exe.replace(/\\.exe$/i, "");\n\n    const pathSet =\n      processMap.get(executable.exe) ??\n      processMap.get(executablewithoutExtension);\n\n    if (pathSet) {\n      for (const processPath of pathSet) {\n        if (\n          processPath.toLowerCase().endsWith(executable.name) ||\n          processPath.toLowerCase().endsWith(executablewithoutExtension)\n        ) {\n          const gameKey = levelKeys.game("steam", gameId);\n          const releaseDetection =\n            libraryGameLaunchGate.tryHoldDetection(gameKey);\n          if (!releaseDetection) continue;\n\n          try {\n            const game = await gamesSublevel.get(gameKey);\n            if (!game || game.isDeleted) continue;\n\n            const updatedGame: Game = {\n              ...updateGameExecutablePath(game, processPath),\n            };\n\n            if (\n              process.platform === "linux" &&\n              winePrefixMap.has(processPath)\n            ) {\n              updatedGame.winePrefixPath = winePrefixMap.get(processPath)!;\n            }\n\n            await gamesSublevel.put(gameKey, updatedGame);\n            logger.info("Set game path", gameKey, processPath);\n          } finally {\n            releaseDetection();\n          }\n        }\n      }\n    }\n  }\n};\n\nconst getSystemProcessMap = async () => {\n  const {\n    processMap: rawMap,\n    winePrefixMap: rawWineMap,\n    linuxProcesses,\n  } = await NativeAddon.getSystemProcessMap();\n\n  const processMap = new Map<string, Set<string>>(\n    Object.entries(rawMap).map(([key, value]) => [key, new Set(value)])\n  );\n\n  const winePrefixMap = new Map<string, string>(Object.entries(rawWineMap));\n\n  return { processMap, winePrefixMap, linuxProcesses };\n};\n\nconst hasLinuxCompatibilityProcessMatch = (\n  game: Game,\n  executablePath: string,\n  linuxProcesses: LinuxProcessInfo[]\n) => {\n  if (path.extname(executablePath).toLowerCase() !== ".exe") {\n    return false;\n  }\n\n  const executableName = path.basename(executablePath).toLowerCase();\n  const executableNameWithoutExtension = executableName.replace(/\\.exe$/i, "");\n  const executableDirectory = path.dirname(executablePath).toLowerCase();\n  const expectedWinePrefix = Wine.getEffectivePrefixPath(\n    game.winePrefixPath,\n    game.objectId\n  )?.toLowerCase();\n\n  return linuxProcesses.some((systemProcess) => {\n    if (systemProcess.cwd !== executableDirectory) {\n      return false;\n    }\n\n    if (\n      expectedWinePrefix &&\n      systemProcess.steamCompatDataPath &&\n      '... 9220 more characters,
+    expected: /await\s+gameRuntimeModeManager\.closeSessionByGameKey\(gameKey\)/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at src/main/services/process-watcher-playtime-order-contract.test.ts:34:1
+✖ opening, periodic and closing syncs share the same per-game coordinator (6.276632ms)
+  AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+  
+    assert.ok(close.includes("gamePlaytimeSyncCoordinator.run("))
+  
+      at TestContext.<anonymous> (file:///home/runner/work/Offline-Toolchains/Offline-Toolchains/hydra/src/main/services/process-watcher-playtime-order-contract.test.ts:37:12)
+      at Test.runInAsyncScope (node:async_hooks:214:14)
+      at Test.run (node:internal/test_runner/test:1047:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+      at Test.postRun (node:internal/test_runner/test:1173:19)
+      at Test.run (node:internal/test_runner/test:1101:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:744:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at src/main/services/process-watcher-playtime-order-contract.test.ts:54:1
+✖ reserves the closing sync slot before final persistence or session close (0.474475ms)
+  AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+  
+    assert.ok(coordinator > reservation)
+  
+      at TestContext.<anonymous> (file:///home/runner/work/Offline-Toolchains/Offline-Toolchains/hydra/src/main/services/process-watcher-playtime-order-contract.test.ts:61:12)
+      at Test.runInAsyncScope (node:async_hooks:214:14)
+      at Test.run (node:internal/test_runner/test:1047:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+      at Test.postRun (node:internal/test_runner/test:1173:19)
+      at Test.run (node:internal/test_runner/test:1101:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:744:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
