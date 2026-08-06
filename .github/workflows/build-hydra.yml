@@ -29,6 +29,7 @@ env:
   NODE_VERSION: "22.23.1"
   YARN_VERSION: "1.22.22"
   RUST_TOOLCHAIN: stable
+  GTK4_LAYER_SHELL_COMMIT: "1c963c51514581c41b9bdae08cdf69171265cdda"
 
 jobs:
   build:
@@ -123,8 +124,11 @@ jobs:
             ca-certificates \
             git \
             libgtk-4-dev \
+            meson \
+            ninja-build \
             pkg-config \
             python3 \
+            wayland-protocols \
             zstd
 
       - name: Build and prove portable Hydra toolchain
@@ -132,6 +136,7 @@ jobs:
         shell: bash
         env:
           HYDRA_REF: ${{ steps.request.outputs.ref }}
+          GTK4_LAYER_SHELL_COMMIT: ${{ env.GTK4_LAYER_SHELL_COMMIT }}
         run: |
           set -euo pipefail
           bash scripts/build-hydra-toolchain.sh \
