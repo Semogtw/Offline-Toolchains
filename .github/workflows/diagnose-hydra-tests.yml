@@ -31,7 +31,7 @@ jobs:
           - name: main-services
             roots: src/main/services
           - name: main-events-and-runtime
-            roots: src/main/events src/main/helpers src/main/startup src/main
+            roots: src/main/events src/main/helpers src/main/startup src/main/migrations src/main/level src/main
           - name: renderer-preload-shared
             roots: src/renderer src/preload src/shared
 
@@ -138,7 +138,15 @@ jobs:
           set -euo pipefail
           tests=()
           for root in $TEST_ROOTS; do
-            if [[ -d "$root" ]]; then
+            if [[ ! -d "$root" ]]; then
+              continue
+            fi
+
+            if [[ "$root" == "src/main" ]]; then
+              while IFS= read -r test_file; do
+                tests+=("$test_file")
+              done < <(find "$root" -maxdepth 1 -type f -name '*.test.ts' -print | sort)
+            else
               while IFS= read -r test_file; do
                 tests+=("$test_file")
               done < <(find "$root" -type f -name '*.test.ts' -print | sort)
