@@ -1,0 +1,119 @@
+name: Patch Hydra portable GTK dependency
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/patch-hydra-portable-gtk.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: patch-hydra-portable-gtk
+  cancel-in-progress: true
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Toolchains
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Add the pinned native prefix to the portable bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/build-hydra-toolchain.sh")
+          source = path.read_text(encoding="utf-8")
+
+          replacements = [
+              (
+                  '  "$bundle_root/rustup-home" \\\n  "$bundle_root/reference-inputs"',
+                  '  "$bundle_root/rustup-home" \\\n  "$bundle_root/native-prefix" \\\n  "$bundle_root/reference-inputs"',
+              ),
+              (
+                  'export XDG_CACHE_HOME="$bundle_root/xdg-cache"\nexport npm_config_audit=false',
+                  'export XDG_CACHE_HOME="$bundle_root/xdg-cache"\nexport PKG_CONFIG_PATH="$bundle_root/native-prefix/lib/pkgconfig:${PKG_CONFIG_PATH:-}"\nexport LD_LIBRARY_PATH="$bundle_root/native-prefix/lib:${LD_LIBRARY_PATH:-}"\nexport npm_config_audit=false',
+              ),
+              (
+                  '[[ "$actual_yarn_version" == "$yarn_version" ]] || {\n  echo "Expected Yarn $yarn_version, found $actual_yarn_version" >&2\n  exit 1\n}\n\ncd "$source_dir"',
+                  '''[[ "$actual_yarn_version" == "$yarn_version" ]] || {
+  echo "Expected Yarn $yarn_version, found $actual_yarn_version" >&2
+  exit 1
+}
+
+gtk_commit="${GTK4_LAYER_SHELL_COMMIT:?missing GTK4_LAYER_SHELL_COMMIT}"
+gtk_source="$(mktemp -d "${RUNNER_TEMP:-/tmp}/gtk4-layer-shell.XXXXXX")"
+git init "$gtk_source"
+git -C "$gtk_source" remote add origin \\
+  https://github.com/wmww/gtk4-layer-shell.git
+git -C "$gtk_source" fetch --depth=1 origin "$gtk_commit"
+git -C "$gtk_source" checkout --detach FETCH_HEAD
+test "$(git -C "$gtk_source" rev-parse HEAD)" = "$gtk_commit"
+meson setup "$gtk_source/build" "$gtk_source" \\
+  --prefix="$bundle_root/native-prefix" \\
+  --libdir=lib \\
+  -Dexamples=false \\
+  -Ddocs=false \\
+  -Dtests=false \\
+  -Dsmoke-tests=false \\
+  -Dintrospection=false \\
+  -Dvapi=false
+meson compile -C "$gtk_source/build"
+meson install -C "$gtk_source/build"
+gtk_version="$(pkg-config --modversion gtk4-layer-shell-0)"
+rm -rf "$gtk_source"
+
+cd "$source_dir"''',
+              ),
+              (
+                  'export XDG_CACHE_HOME="$toolchain_root/xdg-cache"\nexport npm_config_audit=false',
+                  'export XDG_CACHE_HOME="$toolchain_root/xdg-cache"\nexport PKG_CONFIG_PATH="$toolchain_root/native-prefix/lib/pkgconfig:${PKG_CONFIG_PATH:-}"\nexport LD_LIBRARY_PATH="$toolchain_root/native-prefix/lib:${LD_LIBRARY_PATH:-}"\nexport npm_config_audit=false',
+              ),
+              (
+                  'pkg-config --modversion gtk4\nfor required_dir in \\\n',
+                  'pkg-config --modversion gtk4\npkg-config --modversion gtk4-layer-shell-0\nfor required_dir in \\\n',
+              ),
+              (
+                  '  "$XDG_CACHE_HOME"; do',
+                  '  "$XDG_CACHE_HOME" \\\n  "$toolchain_root/native-prefix/lib/pkgconfig"; do',
+              ),
+              (
+                  '  echo "cargo_version=$(cargo --version)"\n  echo "package_sha256=$package_sha256"',
+                  '  echo "cargo_version=$(cargo --version)"\n  echo "gtk4_layer_shell_commit=$gtk_commit"\n  echo "gtk4_layer_shell_version=$gtk_version"\n  echo "native_prefix=native-prefix"\n  echo "package_sha256=$package_sha256"',
+              ),
+          ]
+
+          for old, new in replacements:
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected one replacement anchor, found {count}: {old[:80]!r}")
+              source = source.replace(old, new, 1)
+
+          path.write_text(source, encoding="utf-8")
+          PY
+
+          bash -n scripts/build-hydra-toolchain.sh
+          git diff --check
+          git diff -- scripts/build-hydra-toolchain.sh
+
+      - name: Commit portable GTK support
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Hydra Toolchains"
+          git config user.email "actions@users.noreply.github.com"
+          git add scripts/build-hydra-toolchain.sh
+          git commit -m "fix(hydra): bundle pinned GTK4 layer shell"
+          git push origin HEAD:main
