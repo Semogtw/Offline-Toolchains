@@ -30,6 +30,7 @@ mkdir -p \
   "$bundle_root/xdg-cache" \
   "$bundle_root/cargo-home/bin" \
   "$bundle_root/rustup-home" \
+  "$bundle_root/native-prefix" \
   "$bundle_root/reference-inputs" \
   "$bundle_root/scripts" \
   "$parts_dir"
@@ -45,6 +46,8 @@ export ELECTRON_CACHE="$bundle_root/electron-cache"
 export ELECTRON_BUILDER_CACHE="$bundle_root/electron-builder-cache"
 export npm_config_devdir="$bundle_root/node-gyp-cache"
 export XDG_CACHE_HOME="$bundle_root/xdg-cache"
+export PKG_CONFIG_PATH="$bundle_root/native-prefix/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+export LD_LIBRARY_PATH="$bundle_root/native-prefix/lib:${LD_LIBRARY_PATH:-}"
 export npm_config_audit=false
 export npm_config_fund=false
 export npm_config_update_notifier=false
@@ -74,6 +77,50 @@ actual_yarn_version="$(yarn --version)"
   echo "Expected Yarn $yarn_version, found $actual_yarn_version" >&2
   exit 1
 }
+
+gtk_commit="${GTK4_LAYER_SHELL_COMMIT:?missing GTK4_LAYER_SHELL_COMMIT}"
+gtk_source="$(mktemp -d "${RUNNER_TEMP:-/tmp}/gtk4-layer-shell.XXXXXX")"
+git init "$gtk_source"
+git -C "$gtk_source" remote add origin \
+  https://github.com/wmww/gtk4-layer-shell.git
+git -C "$gtk_source" fetch --depth=1 origin "$gtk_commit"
+git -C "$gtk_source" checkout --detach FETCH_HEAD
+test "$(git -C "$gtk_source" rev-parse HEAD)" = "$gtk_commit"
+meson setup "$gtk_source/build" "$gtk_source" \
+  --prefix="$bundle_root/native-prefix" \
+  --libdir=lib \
+  -Dexamples=false \
+  -Ddocs=false \
+  -Dtests=false \
+  -Dsmoke-tests=false \
+  -Dintrospection=false \
+  -Dvapi=false
+meson compile -C "$gtk_source/build"
+meson install -C "$gtk_source/build"
+
+pc_file="$bundle_root/native-prefix/lib/pkgconfig/gtk4-layer-shell-0.pc"
+test -f "$pc_file"
+python3 - "$pc_file" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+lines = path.read_text(encoding="utf-8").splitlines()
+rewritten = []
+replaced = False
+for line in lines:
+    if line.startswith("prefix="):
+        rewritten.append("prefix=${pcfiledir}/../..")
+        replaced = True
+    else:
+        rewritten.append(line)
+if not replaced:
+    raise SystemExit("gtk4-layer-shell pkg-config file has no prefix")
+path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+PY
+
+gtk_version="$(pkg-config --modversion gtk4-layer-shell-0)"
+rm -rf "$gtk_source"
 
 cd "$source_dir"
 yarn install --frozen-lockfile --non-interactive
@@ -108,6 +155,8 @@ export ELECTRON_CACHE="$toolchain_root/electron-cache"
 export ELECTRON_BUILDER_CACHE="$toolchain_root/electron-builder-cache"
 export npm_config_devdir="$toolchain_root/node-gyp-cache"
 export XDG_CACHE_HOME="$toolchain_root/xdg-cache"
+export PKG_CONFIG_PATH="$toolchain_root/native-prefix/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+export LD_LIBRARY_PATH="$toolchain_root/native-prefix/lib:${LD_LIBRARY_PATH:-}"
 export npm_config_audit=false
 export npm_config_fund=false
 export npm_config_update_notifier=false
@@ -199,13 +248,15 @@ rustc --version
 cargo --version
 python3 --version
 pkg-config --modversion gtk4
+pkg-config --modversion gtk4-layer-shell-0
 for required_dir in \
   "$YARN_CACHE_FOLDER" \
   "$CARGO_HOME/registry" \
   "$ELECTRON_CACHE" \
   "$ELECTRON_BUILDER_CACHE" \
   "$npm_config_devdir" \
-  "$XDG_CACHE_HOME"; do
+  "$XDG_CACHE_HOME" \
+  "$toolchain_root/native-prefix/lib/pkgconfig"; do
   test -d "$required_dir" || {
     echo "Missing Hydra toolchain cache: $required_dir" >&2
     exit 1
@@ -232,6 +283,9 @@ agent_lock_sha256="$(sha256sum native/game-agent/Cargo.lock | cut -d' ' -f1)"
   echo "yarn_version=$(yarn --version)"
   echo "rustc_version=$(rustc --version)"
   echo "cargo_version=$(cargo --version)"
+  echo "gtk4_layer_shell_commit=$gtk_commit"
+  echo "gtk4_layer_shell_version=$gtk_version"
+  echo "native_prefix=native-prefix"
   echo "package_sha256=$package_sha256"
   echo "yarn_lock_sha256=$yarn_lock_sha256"
   echo "hydra_native_cargo_lock_sha256=$native_lock_sha256"
