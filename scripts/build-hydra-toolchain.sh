@@ -199,7 +199,6 @@ rustc --version
 cargo --version
 python3 --version
 pkg-config --modversion gtk4
-pkg-config --modversion gtk4-layer-shell-0
 for required_dir in \
   "$YARN_CACHE_FOLDER" \
   "$CARGO_HOME/registry" \
