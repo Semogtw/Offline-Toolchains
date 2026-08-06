@@ -10,6 +10,7 @@ on:
         type: choice
         options:
           - all
+          - ownership-policy
           - core-local-tools
           - core-external-agents
           - core-native-equivalence
@@ -50,8 +51,76 @@ env:
   RUST_MIN_STACK: "8388608"
 
 jobs:
+  ownership-policy:
+    name: Toolchain-only project CI policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact core source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.core_repository }}
+          ref: ${{ inputs.core_ref }}
+          path: core-source
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Checkout exact wrapper source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.wrapper_repository }}
+          ref: ${{ inputs.wrapper_ref }}
+          path: wrapper-source
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Reject CodexGemini CI in product repositories
+        shell: bash
+        run: |
+          set -euo pipefail
+          violations="$RUNNER_TEMP/codex-gemini-ci-ownership-violations.txt"
+          : > "$violations"
+
+          for root in core-source wrapper-source; do
+            if [[ -d "$root/.github/workflows" ]]; then
+              find "$root/.github/workflows" -maxdepth 1 -type f -printf '%p\n' \
+                | grep -E '/[^/]*(gemini|external-agent|local-tools-mcp)[^/]*\.ya?ml$' \
+                >> "$violations" || true
+            fi
+            if [[ -d "$root/.github/actions" ]]; then
+              find "$root/.github/actions" -mindepth 1 -maxdepth 1 -printf '%p\n' \
+                | grep -E '/[^/]*(gemini|external-agent|local-tools-mcp)[^/]*$' \
+                >> "$violations" || true
+            fi
+          done
+
+          if [[ -s "$violations" ]]; then
+            echo "CodexGemini-specific Actions infrastructure must live in Semogtw/Offline-Toolchains:" >&2
+            cat "$violations" >&2
+            exit 1
+          fi
+      - name: Record checked source identities
+        shell: bash
+        run: |
+          {
+            echo "core_repository=${{ inputs.core_repository }}"
+            echo "core_ref=${{ inputs.core_ref }}"
+            git -C core-source rev-parse HEAD | sed 's/^/core_commit=/'
+            echo "wrapper_repository=${{ inputs.wrapper_repository }}"
+            echo "wrapper_ref=${{ inputs.wrapper_ref }}"
+            git -C wrapper-source rev-parse HEAD | sed 's/^/wrapper_commit=/'
+            echo "policy=codexgemini_ci_toolchain_only"
+          } > "$RUNNER_TEMP/codex-gemini-ownership-receipt.txt"
+      - name: Upload ownership receipt
+        uses: actions/upload-artifact@v7
+        with:
+          name: codex-gemini-ownership-${{ github.run_id }}
+          path: ${{ runner.temp }}/codex-gemini-ownership-receipt.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
   core-local-tools:
     name: Core local-tools native gate
+    needs: ownership-policy
     if: ${{ inputs.suite == 'all' || inputs.suite == 'core-local-tools' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -129,10 +198,14 @@ jobs:
       - name: Verify source checkout stayed clean
         if: always() && !cancelled()
         working-directory: core-source
-        run: git diff --exit-code && git status --porcelain=v1 | tee /dev/stderr | test ! -s /dev/stdin
+        shell: bash
+        run: |
+          git diff --exit-code
+          test -z "$(git status --porcelain=v1)"
 
   core-external-agents:
     name: Core external-agent contract
+    needs: ownership-policy
     if: ${{ inputs.suite == 'all' || inputs.suite == 'core-external-agents' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
@@ -157,6 +230,9 @@ jobs:
             libsqlite3-dev libssl-dev pkg-config protobuf-compiler zstd
           rustup toolchain install 1.95.0 --profile minimal --component clippy --component rustfmt
           rustup default 1.95.0
+      - name: Check committed Rust formatting
+        working-directory: core-source/codex-rs
+        run: cargo fmt --all -- --check
       - name: Run deterministic Python contract
         working-directory: core-source
         run: |
@@ -190,10 +266,14 @@ jobs:
       - name: Verify source checkout stayed clean
         if: always() && !cancelled()
         working-directory: core-source
-        run: git diff --exit-code
+        shell: bash
+        run: |
+          git diff --exit-code
+          test -z "$(git status --porcelain=v1)"
 
   native-equivalence-linux:
     name: Luna/native equivalence (Linux)
+    needs: ownership-policy
     if: ${{ inputs.suite == 'all' || inputs.suite == 'core-native-equivalence' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -206,8 +286,12 @@ jobs:
           path: core-source
           fetch-depth: 1
           persist-credentials: false
-      - name: Install Rust 1.95
+      - name: Install native dependencies and Rust 1.95
         run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential clang cmake libcap-dev libseccomp-dev \
+            libsqlite3-dev libssl-dev pkg-config protobuf-compiler zstd
           rustup toolchain install 1.95.0 --profile minimal --component clippy --component rustfmt
           rustup default 1.95.0
       - name: Run native fast-path and backend equivalence gates
@@ -229,6 +313,7 @@ jobs:
 
   native-equivalence-windows:
     name: Luna/native equivalence (Windows)
+    needs: ownership-policy
     if: ${{ inputs.suite == 'all' || inputs.suite == 'core-native-equivalence' }}
     runs-on: windows-2025
     timeout-minutes: 150
@@ -241,6 +326,9 @@ jobs:
           path: core-source
           fetch-depth: 1
           persist-credentials: false
+      - name: Install native dependencies
+        shell: pwsh
+        run: choco install protoc --yes --no-progress
       - name: Install Rust 1.95
         shell: pwsh
         run: |
@@ -264,6 +352,7 @@ jobs:
 
   wrapper-release:
     name: Wrapper integration and release diagnostic
+    needs: ownership-policy
     if: ${{ inputs.suite == 'all' || inputs.suite == 'wrapper-integration' || inputs.suite == 'wrapper-release-diagnostic' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 210
@@ -284,11 +373,12 @@ jobs:
           path: core-source
           fetch-depth: 1
           persist-credentials: false
-      - name: Set up Python and Node
+      - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v6
+      - name: Set up Node
+        uses: actions/setup-node@v6
         with:
           node-version: "24"
       - name: Install native dependencies and Rust 1.95
@@ -329,7 +419,8 @@ jobs:
         run: |
           set +e
           set -o pipefail
-          cargo build --locked --release -p codex-cli --bin codex 2>&1 | tee "$RUNNER_TEMP/codex-gemini-release-build.log"
+          cargo build --locked --release -p codex-cli --bin codex 2>&1 \
+            | tee "$RUNNER_TEMP/codex-gemini-release-build.log"
           status=${PIPESTATUS[0]}
           echo "status=$status" >> "$GITHUB_OUTPUT"
           exit 0
