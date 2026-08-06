@@ -1,0 +1,76 @@
+name: Fix Hydra unused path imports
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/fix-hydra-unused-path-imports.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fix-hydra-unused-path-imports
+  cancel-in-progress: true
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout fixed Hydra repository
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/HydraPersonalizado
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          ref: main
+          path: hydra
+          fetch-depth: 1
+          persist-credentials: true
+          lfs: false
+          submodules: false
+
+      - name: Remove only the two verified unused imports
+        working-directory: hydra
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          files=(
+            src/main/services/cloud-save/google-drive/google-drive-client.ts
+            src/main/services/download/download-manager.ts
+          )
+
+          for file in "${files[@]}"; do
+            test "$(grep -Fxc 'import path from "node:path";' "$file")" -eq 1
+            sed -i '/^import path from "node:path";$/d' "$file"
+            test "$(grep -Fxc 'import path from "node:path";' "$file" || true)" -eq 0
+          done
+
+          git diff --check
+          test "$(git diff --name-only | wc -l)" -eq 2
+          test "$(git diff --numstat | awk '{ added += $1; removed += $2 } END { print added ":" removed }')" = "0:2"
+
+      - name: Commit and push the fixed checkout
+        working-directory: hydra
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Hydra Toolchains"
+          git config user.email "actions@users.noreply.github.com"
+          git add \
+            src/main/services/cloud-save/google-drive/google-drive-client.ts \
+            src/main/services/download/download-manager.ts
+          git commit -m "fix: remove unused Node path imports"
+          git push origin HEAD:main
