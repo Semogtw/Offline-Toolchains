@@ -1,0 +1,198 @@
+name: Validate Hydra checkout
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Hydra branch, tag or commit
+        required: false
+        default: main
+        type: string
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/validate-hydra.yml
+      - triggers/hydra-validation.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-hydra-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22.23.1"
+  GTK4_LAYER_SHELL_COMMIT: "1c963c51514581c41b9bdae08cdf69171265cdda"
+
+jobs:
+  validate:
+    name: Checkout, install and run repository gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout trusted validation workflow
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Resolve Hydra ref
+        id: request
+        shell: bash
+        env:
+          DISPATCH_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${DISPATCH_REF:-}" ]]; then
+            ref="$DISPATCH_REF"
+          elif [[ -f triggers/hydra-validation.json ]]; then
+            ref="$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          request = json.loads(
+              Path("triggers/hydra-validation.json").read_text(encoding="utf-8")
+          )
+          if request.get("project") != "hydra":
+              raise SystemExit("Hydra validation trigger must use project=hydra")
+          ref = request.get("ref")
+          if not isinstance(ref, str) or not ref:
+              raise SystemExit("Hydra validation trigger requires a non-empty ref")
+          print(ref)
+          PY
+          )"
+          else
+            ref=main
+          fi
+
+          python3 - "$ref" "$GITHUB_OUTPUT" <<'PY'
+          import re
+          import sys
+
+          ref = sys.argv[1]
+          if not re.fullmatch(r"[A-Za-z0-9._/-]{1,200}", ref):
+              raise SystemExit("Invalid Hydra ref")
+          if ref.startswith("-") or ".." in ref or "//" in ref:
+              raise SystemExit("Invalid Hydra ref")
+          with open(sys.argv[2], "a", encoding="utf-8") as stream:
+              stream.write(f"ref={ref}\n")
+          PY
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPOSITORIES_TOKEN" || {
+            echo "Missing Actions secret PRIVATE_REPOSITORIES_TOKEN." >&2
+            exit 1
+          }
+
+      - name: Checkout fixed Hydra repository
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/HydraPersonalizado
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          ref: ${{ steps.request.outputs.ref }}
+          path: hydra
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+
+      - name: Set up pinned Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          check-latest: false
+          cache: yarn
+          cache-dependency-path: hydra/yarn.lock
+
+      - name: Install native build prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            git \
+            libgtk-4-dev \
+            meson \
+            ninja-build \
+            pkg-config \
+            python3 \
+            wayland-protocols
+
+      - name: Install pinned GTK4 Layer Shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_dir="$RUNNER_TEMP/gtk4-layer-shell"
+          git init "$source_dir"
+          git -C "$source_dir" remote add origin \
+            https://github.com/wmww/gtk4-layer-shell.git
+          git -C "$source_dir" fetch --depth=1 origin \
+            "$GTK4_LAYER_SHELL_COMMIT"
+          git -C "$source_dir" checkout --detach FETCH_HEAD
+          test "$(git -C "$source_dir" rev-parse HEAD)" = \
+            "$GTK4_LAYER_SHELL_COMMIT"
+
+          meson setup "$source_dir/build" "$source_dir" \
+            --prefix=/usr/local \
+            --libdir=lib \
+            -Dexamples=false \
+            -Ddocs=false \
+            -Dtests=false \
+            -Dsmoke-tests=false \
+            -Dintrospection=false \
+            -Dvapi=false
+          meson compile -C "$source_dir/build"
+          sudo meson install -C "$source_dir/build"
+          sudo ldconfig
+          pkg-config --modversion gtk4-layer-shell-0
+
+      - name: Set up Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - name: Install exact dependencies
+        working-directory: hydra
+        shell: bash
+        env:
+          CI: "true"
+        run: yarn install --frozen-lockfile --non-interactive
+
+      - name: Typecheck Node
+        working-directory: hydra
+        run: yarn typecheck:node
+
+      - name: Typecheck renderer
+        working-directory: hydra
+        run: yarn typecheck:web
+
+      - name: Run tests
+        working-directory: hydra
+        run: yarn test
+
+      - name: Check formatting
+        working-directory: hydra
+        run: yarn format-check
+
+      - name: Run ESLint without modifying the checkout
+        working-directory: hydra
+        run: >-
+          yarn eslint .
+          --ext .js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts
+
+      - name: Build application
+        working-directory: hydra
+        run: yarn build
