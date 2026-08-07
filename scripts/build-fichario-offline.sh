@@ -150,7 +150,16 @@ chmod +x \
   "$root/bin/check-edge-offline" \
   "$root/bin/doctor"
 
-cp -a "$root/workspace" "$smoke"
+# Validate from a clean copy of the real checkout so source-aware gates that use
+# git ls-files still see repository metadata. The distributable workspace above
+# intentionally stays gitless.
+cp -a "$source_dir/." "$smoke/"
+rm -rf \
+  "$smoke/node_modules" \
+  "$smoke/.svelte-kit" \
+  "$smoke/build" \
+  "$smoke/playwright-report" \
+  "$smoke/test-results"
 "$root/bin/install-offline" "$smoke"
 # shellcheck source=/dev/null
 source "$root/bin/activate"
