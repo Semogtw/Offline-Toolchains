@@ -30,6 +30,29 @@ Para uma prova reproduzível, prefira um SHA integralmente validado no lugar de 
 
 Um push desse arquivo ou execução manual do workflow inicia a fabricação. O resultado é registrado na issue `[CI] Fichário offline workspace`.
 
+## Validação não bloqueia o empacotamento
+
+A montagem do toolchain e a validação do código-fonte são tratadas separadamente. Quando Node, pnpm, store, Chromium e as demais ferramentas conseguem ser montados, o workflow empacota o workspace mesmo se um gate do snapshot falhar.
+
+O `MANIFEST.txt` e `PARTS.txt` registram explicitamente:
+
+```text
+validation_status=passed|failed
+validation_failures=none|gate:exit_code,...
+```
+
+Os gates de código são executados individualmente para maximizar o diagnóstico: lint, `svelte-check`, unitários, build, gates de fonte offline, E2E, Edge offline e doctor. Uma falha não impede os gates seguintes nem a criação dos artifacts.
+
+Quando `validation_status=failed`:
+
+1. manifest, diagnóstico e partes disponíveis ainda são enviados;
+2. um snapshot de reparo do Prettier é produzido em melhor esforço;
+3. somente depois dos uploads o workflow encerra em vermelho, preservando a indicação de que o snapshot não está validado.
+
+Isso permite usar o bundle para continuar desenvolvimento e correção em ambientes sem rede sem transformar um gate pontual em bloqueio de checkout. O estado vermelho nunca deve ser interpretado como aprovação: consulte `validation_failures` antes de reutilizar o snapshot como base validada.
+
+Falhas na própria montagem do toolchain — por exemplo, impossibilidade de instalar as dependências enquanto a fabricação ainda possui rede — continuam sendo erros fatais, pois nesse caso o artifact não seria confiavelmente utilizável offline.
+
 ## Baixar e remontar
 
 Baixe o artifact de manifest e todas as partes `fichario-offline-linux-x64-part-*`. Extraia os ZIPs dos artifacts na mesma pasta e execute:
@@ -75,7 +98,7 @@ Durante a fabricação, o workflow:
 1. popula o cache Deno com o registry npm canônico;
 2. bloqueia `HTTP_PROXY`, `HTTPS_PROXY` e `ALL_PROXY` em um endpoint loopback indisponível;
 3. verifica os cinco módulos Edge com `deno check --no-config`;
-4. falha se qualquer dependência não estiver no cache.
+4. registra qualquer dependência ausente ou gate falho no manifest em vez de descartar um workspace já montado.
 
 O bloqueio por proxy mantém a identidade canônica dos pacotes. Alterar o registry para um endereço inválido mudaria a chave de resolução e produziria um falso negativo mesmo com os bytes corretos armazenados.
 
@@ -103,7 +126,7 @@ O repositório possui `.gitignore` específico e o workflow `Toolchain security 
 
 A primeira fabricação bem-sucedida ocorreu no run `30769889858`, commit de toolchain `2e86407f16930ba38e5c48f1f918f11bea6eac67`, produzindo manifest e duas partes.
 
-A geração v2 está fixada no commit validado do Fichário `f961461cf27df2fe6e860e2ac50236ec2eb70a23` e adiciona:
+A geração v2 foi fixada no commit validado do Fichário `f961461cf27df2fe6e860e2ac50236ec2eb70a23` e adicionou:
 
 - 134 testes unitários;
 - cinco gates de fonte;
@@ -112,5 +135,7 @@ A geração v2 está fixada no commit validado do Fichário `f961461cf27df2fe6e8
 - checksum portátil;
 - diagnóstico publicado mesmo em caso de falha;
 - proteção contra material privado no repositório de toolchains.
+
+A geração v3 separa fabricação de validação. Ela mantém os artifacts quando os gates do snapshot falham, grava o estado de validação no manifest e deixa o workflow vermelho somente depois dos uploads. O run `31203776099` comprovou esse contrato: builder, diagnóstico, manifest e duas partes foram concluídos antes do passo final reportar a validação falha.
 
 O recibo mais recente na issue de CI e o `MANIFEST.txt` do artifact são as fontes de verdade para a versão vigente do bundle.
