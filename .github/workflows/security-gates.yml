@@ -24,6 +24,10 @@ jobs:
         run: |
           bash -n scripts/check-no-private-material.sh
           bash -n scripts/build-fichario-offline.sh
+          bash -n tests/fichario-builder-contract.sh
+
+      - name: Validate Fichário builder contract
+        run: bash tests/fichario-builder-contract.sh
 
       - name: Reject tracked private material
         run: bash scripts/check-no-private-material.sh
