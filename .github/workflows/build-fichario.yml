@@ -108,7 +108,7 @@ jobs:
           retention-days: 1
 
       - name: Prepare Prettier repair snapshot
-        if: failure()
+        if: steps.bundle.outputs.validation_status == 'failed'
         shell: bash
         run: |
           set -euo pipefail
@@ -127,10 +127,9 @@ jobs:
             cp "$path" "$repair/$path"
           done < <(git diff --name-only --diff-filter=ACMRT -z)
           git diff --name-only > "$repair/FILES.txt"
-          test -s "$repair/FILES.txt"
 
       - name: Upload Prettier repair snapshot
-        if: failure()
+        if: always() && steps.bundle.outputs.validation_status == 'failed'
         uses: actions/upload-artifact@v7
         with:
           name: fichario-prettier-repair
@@ -140,6 +139,7 @@ jobs:
           retention-days: 1
 
       - name: Upload manifest
+        if: always() && steps.bundle.outputs.parts != ''
         uses: actions/upload-artifact@v7
         with:
           name: fichario-offline-linux-x64-manifest
@@ -154,7 +154,7 @@ jobs:
           retention-days: 1
 
       - name: Upload part 00
-        if: steps.bundle.outputs.part_00 == 'true'
+        if: always() && steps.bundle.outputs.part_00 == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: fichario-offline-linux-x64-part-00
@@ -163,7 +163,7 @@ jobs:
           retention-days: 1
 
       - name: Upload part 01
-        if: steps.bundle.outputs.part_01 == 'true'
+        if: always() && steps.bundle.outputs.part_01 == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: fichario-offline-linux-x64-part-01
@@ -172,7 +172,7 @@ jobs:
           retention-days: 1
 
       - name: Upload part 02
-        if: steps.bundle.outputs.part_02 == 'true'
+        if: always() && steps.bundle.outputs.part_02 == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: fichario-offline-linux-x64-part-02
@@ -181,7 +181,7 @@ jobs:
           retention-days: 1
 
       - name: Upload part 03
-        if: steps.bundle.outputs.part_03 == 'true'
+        if: always() && steps.bundle.outputs.part_03 == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: fichario-offline-linux-x64-part-03
@@ -190,7 +190,7 @@ jobs:
           retention-days: 1
 
       - name: Upload part 04
-        if: steps.bundle.outputs.part_04 == 'true'
+        if: always() && steps.bundle.outputs.part_04 == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: fichario-offline-linux-x64-part-04
@@ -199,10 +199,17 @@ jobs:
           retention-days: 1
 
       - name: Upload part 05
-        if: steps.bundle.outputs.part_05 == 'true'
+        if: always() && steps.bundle.outputs.part_05 == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: fichario-offline-linux-x64-part-05
           path: ${{ steps.bundle.outputs.parts }}/fichario-offline-linux-x64.part-05
           compression-level: 0
           retention-days: 1
+
+      - name: Report validation failure after uploads
+        if: always() && steps.bundle.outputs.validation_status == 'failed'
+        shell: bash
+        run: |
+          echo "::error::Portable workspace was packaged, but validation failed: ${{ steps.bundle.outputs.validation_failures }}"
+          exit 1
