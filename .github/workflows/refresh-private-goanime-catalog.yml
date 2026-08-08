@@ -221,12 +221,26 @@ jobs:
           dart run tools/.toolchain_current_availability_targets.dart
           rm tools/.toolchain_current_availability_targets.dart
 
-      - name: Fully audit provider availability
+      - name: Refresh provider availability with guarded network fallback
+        id: provider
         working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
-          dart run tools/cache_builder.dart
+          code="$(curl -L --max-time 20 --silent --show-error -o "$RUNNER_TEMP/animefire-preflight.html" -w '%{http_code}' \
+            -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36' \
+            -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' \
+            https://animefire.io/animes-atualizados || true)"
+          if [ "$code" = '200' ]; then
+            echo 'Provider catalog is directly reachable; running full audit.'
+            dart run tools/cache_builder.dart
+            echo 'status=full-provider-audit' >> "$GITHUB_OUTPUT"
+          else
+            echo "AnimeFire is blocked from this hosted runner (HTTP $code). Preserving the complete baseline and running only bounded incremental probes."
+            dart run tools/cache_builder.dart --seed-only
+            echo 'status=provider-blocked-baseline-plus-runtime-discovery' >> "$GITHUB_OUTPUT"
+          fi
+          rm -f "$RUNNER_TEMP/animefire-preflight.html"
 
       - name: Map newly discovered provider titles to MAL
         working-directory: private-source
@@ -375,6 +389,7 @@ jobs:
         shell: bash
         env:
           EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+          PROVIDER_AUDIT_STATUS: ${{ steps.provider.outputs.status }}
         run: |
           set -euo pipefail
           apk="$GITHUB_WORKSPACE/private-source/build/app/outputs/flutter-apk/app-debug.apk"
@@ -428,7 +443,7 @@ jobs:
           data={
               'schema_version':2,
               'project':'goanime',
-              'refresh_mode':'full-provider-audit',
+              'refresh_mode':__import__('os').environ.get('PROVIDER_AUDIT_STATUS') or 'unknown',
               'build_type':'debug',
               'apk_sha256':apk_sha256,
               'apk_size_bytes':int(apk_size),
@@ -506,7 +521,10 @@ jobs:
           echo '## GoAnime full catalog refresh' >> "$GITHUB_STEP_SUMMARY"
           echo "- APK SHA-256: \`${{ steps.package.outputs.apk_sha256 }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Catalog archive SHA-256: \`${{ steps.package.outputs.catalog_sha256 }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo '- Provider availability used a full cache_builder audit, not --seed-only.' >> "$GITHUB_STEP_SUMMARY"
+          echo "- Provider refresh status: \`${{ steps.provider.outputs.status }}\`." >> "$GITHUB_STEP_SUMMARY"
+          if [ '${{ steps.provider.outputs.status }}' != 'full-provider-audit' ]; then
+            echo '- Hosted Azure egress was blocked by the provider; the validated complete baseline was preserved and current titles remain eligible for on-device runtime verification.' >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo '- Baseline cache counts were not allowed to regress.' >> "$GITHUB_STEP_SUMMARY"
           echo '- APK and refreshed cache handoff were encrypted before upload.' >> "$GITHUB_STEP_SUMMARY"
           echo '- Only OpenPGP ciphertext was uploaded by the public Toolchains repository.' >> "$GITHUB_STEP_SUMMARY"
