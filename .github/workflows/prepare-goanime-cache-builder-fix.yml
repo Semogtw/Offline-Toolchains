@@ -1,0 +1,110 @@
+name: Prepare verified GoAnime cache-builder fix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/prepare-goanime-cache-builder-fix.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: trusted-source
+          persist-credentials: false
+
+      - name: Checkout exact private GoAnime source read-only
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: fee1802eb247fc4cb05a979e5c29a58f7549c5dc
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Apply minimal sitemap-independent catalog patch
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tools/cache_builder.dart')
+          text = path.read_text(encoding='utf-8')
+
+          old = """        await _mergeAnimeFireCatalogPages(\n          availableAnimes,\n          audioModes,\n          deadline,\n        );\n        stdout.writeln(\n          'AnimeFire done. Current count: ${availableAnimes.length}',\n        );\n      } else {\n        stdout.writeln('AnimeFire sitemap returned HTTP ${afRes.statusCode}.');\n      }\n    } catch (e) {\n      stdout.writeln('Error scraping AnimeFire: $e');\n    }\n  }\n\n  await _mergeSeedSearchResults("""
+          new = """      } else {\n        stdout.writeln('AnimeFire sitemap returned HTTP ${afRes.statusCode}.');\n      }\n    } catch (e) {\n      stdout.writeln('Error scraping AnimeFire sitemap: $e');\n    }\n\n    // The sitemap is useful acceleration, not a prerequisite. Some networks\n    // block sitemap.xml while still allowing normal catalog pages.\n    try {\n      await _mergeAnimeFireCatalogPages(\n        availableAnimes,\n        audioModes,\n        deadline,\n      );\n      stdout.writeln(\n        'AnimeFire catalog crawl done. Current count: ${availableAnimes.length}',\n      );\n    } catch (e) {\n      stdout.writeln('Error scraping AnimeFire catalog pages: $e');\n    }\n  }\n\n  await _mergeSeedSearchResults("""
+          if old not in text:
+              raise SystemExit('expected AnimeFire sitemap block not found; refusing blind patch')
+          text = text.replace(old, new, 1)
+
+          old = """    final isAnimeListPage =\n        segments.isNotEmpty &&\n        segments.length <= 2 &&\n        (segments[0] == 'lista-de-animes-legendados' ||\n            segments[0] == 'lista-de-animes-dublados');\n    if (!isGenrePage && !isAnimeListPage) continue;\n\n    final uri = Uri(\n      scheme: resolvedUri.scheme,\n      host: resolvedUri.host,\n      path: resolvedUri.path,\n      query: isAnimeListPage ? resolvedUri.query : null,\n    );\n"""
+          new = """    final isAnimeListPage =\n        segments.isNotEmpty &&\n        segments.length <= 2 &&\n        (segments[0] == 'lista-de-animes-legendados' ||\n            segments[0] == 'lista-de-animes-dublados');\n    final isUpdatedPage =\n        segments.isNotEmpty &&\n        segments.length <= 2 &&\n        segments[0] == 'animes-atualizados' &&\n        (segments.length == 1 || int.tryParse(segments[1]) != null);\n    if (!isGenrePage && !isAnimeListPage && !isUpdatedPage) continue;\n\n    final uri = Uri(\n      scheme: resolvedUri.scheme,\n      host: resolvedUri.host,\n      path: resolvedUri.path,\n      query: isAnimeListPage ? resolvedUri.query : null,\n    );\n"""
+          if old not in text:
+              raise SystemExit('expected catalog parser block not found; refusing blind patch')
+          text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+          git diff --check
+          git diff -- tools/cache_builder.dart
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get
+
+      - name: Run cache-builder regression tests
+        working-directory: private-source
+        run: flutter test test/tools/cache_builder_pagination_test.dart test/tools/cache_builder_test.dart
+
+      - name: Encrypt verified patched source file
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/goanime-cache-builder-fix"
+          mkdir -p "$work/gpg" "$work/out"
+          chmod 700 "$work/gpg"
+          export GNUPGHOME="$work/gpg"
+          gpg --batch --import "$GITHUB_WORKSPACE/trusted-source/keys/source-bundles-public.asc"
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1=="fpr"{print $10;exit}')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          gpg --batch --yes --trust-model always \
+            --recipient "$EXPECTED_FINGERPRINT" \
+            --output "$work/out/cache_builder.dart.gpg" \
+            --encrypt "$GITHUB_WORKSPACE/private-source/tools/cache_builder.dart"
+          sha256sum "$GITHUB_WORKSPACE/private-source/tools/cache_builder.dart" > "$work/out/cache_builder.dart.sha256"
+          printf '%s\n' 'fee1802eb247fc4cb05a979e5c29a58f7549c5dc' > "$work/out/source-ref.txt"
+
+      - name: Upload encrypted verified patch handoff
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-cache-builder-fix-encrypted
+          path: ${{ runner.temp }}/goanime-cache-builder-fix/out
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Cleanup private source
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source"
+          rm -rf "$GITHUB_WORKSPACE/trusted-source"
+          rm -rf "$RUNNER_TEMP/goanime-cache-builder-fix"
