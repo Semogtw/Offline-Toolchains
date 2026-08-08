@@ -15,7 +15,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from private_ci_request import PROJECTS, RequestValidationError, normalize_request
 
 
+EXPECTED_PROJECTS = {
+    "goanime": ("Semogtw/goanime-mobile", "main"),
+    "zapzap": ("Semogtw/Zapzap", "development/android-build-recovery"),
+    "semogsite": ("Semogtw/SemogSite", "main"),
+    "hydra": ("Semogtw/HydraPersonalizado", "main"),
+    "receitas": ("Semogtw/Receitas", "main"),
+    "fichario": ("Semogtw/FicharioVirtual", "main"),
+}
+
+
 class NormalizeRequestTests(unittest.TestCase):
+    def test_active_project_allowlist_is_exact(self) -> None:
+        self.assertEqual(set(PROJECTS), set(EXPECTED_PROJECTS))
+        for project, (repository, default_ref) in EXPECTED_PROJECTS.items():
+            with self.subTest(project=project):
+                self.assertEqual(PROJECTS[project]["repository"], repository)
+                self.assertEqual(PROJECTS[project]["default_ref"], default_ref)
+
     def test_default_mappings_are_fixed(self) -> None:
         for project, config in PROJECTS.items():
             with self.subTest(project=project):
@@ -34,6 +51,16 @@ class NormalizeRequestTests(unittest.TestCase):
                 "ref": "main",
                 "default_ref": "main",
             },
+        )
+
+    def test_hydra_and_receitas_mappings_are_fixed(self) -> None:
+        self.assertEqual(
+            normalize_request({"project": "hydra"})["repository"],
+            "Semogtw/HydraPersonalizado",
+        )
+        self.assertEqual(
+            normalize_request({"project": "receitas"})["repository"],
+            "Semogtw/Receitas",
         )
 
     def test_accepts_safe_branch_tag_and_sha_refs(self) -> None:
