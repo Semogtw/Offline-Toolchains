@@ -46,7 +46,9 @@ jobs:
             const projectJobs = jobs.filter((job) => [
               'GoAnime real CI and Android debug build',
               'ZapZap real Android CI and debug build',
-              'SemogSite real checks and production build',
+              'SemogSite full checks and production build',
+              'Hydra real repository gates',
+              'Receitas repository and documentation guards',
               'Fichário Virtual complete verification',
               'Fichário lockfile bootstrap',
             ].includes(job.name));

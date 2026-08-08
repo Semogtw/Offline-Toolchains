@@ -39,7 +39,7 @@
       "repository": "Semogtw/HydraPersonalizado",
       "visibility": "private",
       "default_ref": "main",
-      "central_ci": "validate-hydra",
+      "central_ci": "run-private-project-ci",
       "source_export": "encrypted",
       "artifact_policy": "discard",
       "status": "active"
@@ -48,7 +48,7 @@
       "repository": "Semogtw/Receitas",
       "visibility": "private",
       "default_ref": "main",
-      "central_ci": "planned-private-hub",
+      "central_ci": "run-private-project-ci",
       "source_export": "encrypted",
       "artifact_policy": "discard",
       "status": "active-planning"

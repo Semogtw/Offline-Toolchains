@@ -21,7 +21,15 @@ PROJECTS: dict[str, dict[str, str]] = {
     },
     "semogsite": {
         "repository": "Semogtw/SemogSite",
-        "default_ref": "develop/foundation-bootstrap",
+        "default_ref": "main",
+    },
+    "hydra": {
+        "repository": "Semogtw/HydraPersonalizado",
+        "default_ref": "main",
+    },
+    "receitas": {
+        "repository": "Semogtw/Receitas",
+        "default_ref": "main",
     },
     "fichario": {
         "repository": "Semogtw/FicharioVirtual",

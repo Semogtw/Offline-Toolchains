@@ -1,171 +1,88 @@
 # Public runner CI hub
 
-The workflows in this repository execute real project verification on public GitHub-hosted runners. Private repositories use a tightly scoped read-only checkout token. The public Fichário Virtual repository uses a separate token-free workflow.
+`Offline-Toolchains` is the canonical public-runner home for expensive verification and build work that can safely be moved out of the actively developed repositories. Private repositories are checked out with a fine-grained read-only token; project outputs are discarded unless a dedicated encrypted-transfer workflow explicitly packages them.
+
+The security invariants are defined in `docs/WORKFLOW_HUB_SECURITY.md` and machine-checked by `scripts/validate-workflow-hub-security.py`.
 
 ## Supported projects
 
-| Project input | Repository | Default ref | Commands executed |
+| Project input | Repository | Default ref | Central gate |
 | --- | --- | --- | --- |
-| `goanime` | `Semogtw/goanime-mobile` | `main` | Flutter health, formatting, analysis, tests, release-workflow validation, debug APK build |
-| `zapzap` | `Semogtw/Zapzap` | `development/android-build-recovery` | pure tests, source audit, Android baseline, unit tests, lint, debug APK build |
-| `semogsite` | `Semogtw/SemogSite` | `develop/foundation-bootstrap` | pnpm install using frozen mode when a lockfile exists or documented bootstrap mode when absent, guardrails/typechecks/tests, production build |
-| `fichario` | `Semogtw/FicharioVirtual` | `main` | frozen pnpm install, Chromium setup, Deno and Supabase CLI setup, then `pnpm verify:full` |
+| `goanime` | `Semogtw/goanime-mobile` | `main` | Flutter health, format, analysis, tests, release-workflow validation, debug APK build-and-discard |
+| `zapzap` | `Semogtw/Zapzap` | `development/android-build-recovery` | source/pure checks, Android baseline, unit tests, lint, debug APK build-and-discard |
+| `semogsite` | `Semogtw/SemogSite` | `main` | frozen pnpm install, confidentiality/boundary gates, focused orchestration tests, full monorepo check, build and isolated Playwright gate |
+| `hydra` | `Semogtw/HydraPersonalizado` | `main` | pinned Node/Yarn, native GTK dependency, Rust, typechecks, tests, format/ESLint, build-and-discard |
+| `receitas` | `Semogtw/Receitas` | `main` | planning/documentation repository guards; intentionally fails when an executable stack appears until the profile is promoted |
+| `fichario` | `Semogtw/FicharioVirtual` | `main` | token-free public checkout and `pnpm verify:full` in the dedicated Fichário workflow |
 
-Repository identities and commands are fixed in versioned code. Requests can select only an allowlisted project key and a validated Git ref.
+Repository identity and commands are fixed in trusted code. Request payloads select only an allowlisted key and a validated Git ref; they cannot supply a repository, runner, command, script, secret, or output destination.
 
-## Private repository secret
+## Private repository token
 
-The private-project workflow requires this Actions repository secret:
+`PRIVATE_REPOSITORIES_TOKEN` must be a fine-grained PAT with only `Contents: Read-only` for:
 
-```text
-Name: PRIVATE_REPOSITORIES_TOKEN
-Type: fine-grained personal access token
-Owner: Semogtw
-Repository access:
-  - goanime-mobile
-  - Zapzap
-  - SemogSite
-Repository permission:
-  Contents: Read-only
-```
+- `goanime-mobile`
+- `Zapzap`
+- `SemogSite`
+- `HydraPersonalizado`
+- `Receitas`
 
-Do not grant write permissions, Actions administration, secrets access, packages access, or access to unrelated repositories. Set an expiration date and rotate the token before it expires.
+Do not grant write access, Actions administration, secrets, packages, or unrelated repositories. Rotate the token and keep an expiration date.
 
-The token is supplied only to `actions/checkout`. Every private checkout uses:
+Every private checkout uses shallow fetches, `persist-credentials: false`, no LFS/submodules, and `show-progress: false`. Each private job removes its checkout in an `always()` cleanup step. Persistent Actions dependency caches are intentionally disabled for private checkouts.
 
-```yaml
-fetch-depth: 1
-persist-credentials: false
-lfs: false
-submodules: false
-show-progress: false
-```
+## Running the hub
 
-The checked-out source is removed in an `always()` cleanup step.
+For private projects use `Actions → Run private project CI`; select a project and optional exact branch/tag/SHA. An empty ref uses the table default. Fichário remains a separate token-free `Run Fichario CI` workflow.
 
-The Fichário workflow never receives this token or any repository secret. It checks out the fixed public repository `Semogtw/FicharioVirtual` with credential persistence, LFS, and submodules disabled.
+A `repository_dispatch` event of type `private-project-ci` is also supported for the private profiles, but direct dispatches are accepted only when GitHub reports the actor as the repository owner.
 
-## Manual runs
+The connector-friendly branch remains `build/private-ci`: update only `triggers/private-ci.json`. `Request private project CI` validates the owner-authored request without secrets, then the trusted workflows normalize the same allowlist and execute only the matching project job.
 
-For private projects, open:
+## Public visibility and confidentiality
 
-```text
-Actions → Run private project CI → Run workflow
-```
+The runner repository is public, therefore workflow names, step names, timing, exit status and command output are public. Private source is not uploaded, and summaries/receipts deliberately omit private repository/ref details and resolved private commit hashes where practical.
 
-For Fichário, open:
+Do not add shell xtrace (`set -x`) to private-token workflows, dump environments, print source files, or upload raw diagnostic logs. Tests that naturally print filenames/test names should be reviewed before being added to the public hub.
 
-```text
-Actions → Run Fichario CI → Run workflow
-```
+## Artifacts, APKs and retention
 
-Select the project where applicable and optionally provide an exact branch, tag, or commit SHA. An empty ref uses the default from the table above.
+Normal CI jobs do not use `actions/upload-artifact`; APKs, installers, reports, production bundles and build directories are verified and discarded with the runner.
 
-## API dispatch for private projects
+When a private artifact must be downloadable, it must use a dedicated transfer workflow following the GoAnime pattern: build from a fixed private repository/ref, validate locally, encrypt with the committed OpenPGP public key, remove plaintext/private checkout, and upload only ciphertext plus sanitized metadata. The private decryption key never enters Actions.
 
-Send a `repository_dispatch` event of type `private-project-ci` to `Semogtw/Offline-Toolchains` using credentials that can dispatch events to this repository:
+All uploaded artifacts in this repository have a maximum configured retention of **1 day**. This short retention is defense in depth; sensitive artifacts must still be encrypted before upload.
 
-```json
-{
-  "event_type": "private-project-ci",
-  "client_payload": {
-    "project": "goanime",
-    "ref": "main"
-  }
-}
-```
+## SemogSite
 
-Direct dispatches are rejected unless GitHub reports the actor as the repository owner. Payload fields cannot override the repository, runner, command, script, secret, or output destination.
+SemogSite now follows integrated `main`, not the old bootstrap branch. The public hub mirrors the stronger workflow-control gate: exact pnpm install, native SQLite verification, package/confidentiality checks, focused orchestration/database/web tests, full monorepo check, production build and isolated Playwright privacy/mobile navigation test. No project-derived Actions cache is retained.
 
-The Fichário workflow intentionally does not expose `repository_dispatch`; use its manual input or the connector request branch.
+## Hydra
 
-## Connector request branch
+Hydra remains compatible with its dedicated validation/toolchain workflows, but the general private-project hub can now execute the same repository-level class of gates. It installs Node 22.23.1, Yarn 1.22.22, pinned GTK4 Layer Shell prerequisites and Rust before running typechecks, tests, formatting/ESLint and a build. Source and outputs are removed afterward.
 
-The connector-friendly path does not require `workflow_dispatch` support:
+## Receitas
 
-1. update `triggers/private-ci.json` on the permanent `build/private-ci` branch;
-2. `Request private project CI` validates that request without project secrets;
-3. a successful owner-authored request run triggers the trusted execution workflows;
-4. only the job whose normalized project matches the allowlisted key performs a checkout and runs commands.
-
-Example Fichário request:
-
-```json
-{
-  "project": "fichario",
-  "ref": "0123456789abcdef0123456789abcdef01234567"
-}
-```
-
-Only the trigger JSON should normally change on `build/private-ci`. Do not develop workflow code on that branch.
-
-## Fichário verification
-
-`Run Fichario CI` is isolated from the private-project token and executes the repository's canonical aggregate gate:
-
-```bash
-pnpm install --frozen-lockfile
-pnpm exec playwright install --with-deps chromium
-pnpm verify:full
-```
-
-The runner also installs Node.js 22.16, pnpm 10, Deno 2.8.1, and the Supabase CLI. `verify:full` covers frontend lint/typecheck/unit tests/build, Playwright, dependency-free source checks, Edge Function Deno checks, and local Supabase database gates. Docker is provided by the GitHub-hosted Ubuntu runner.
-
-The job summary records the requested ref, resolved public commit, and result. The checkout is deleted in `always()` cleanup and no project artifact is uploaded.
-
-## SemogSite dependency modes
-
-The SemogSite job follows the project's offline-toolchain contract:
-
-- when `pnpm-lock.yaml` exists, CI runs `pnpm install --frozen-lockfile` and rejects manifest drift;
-- when the lockfile is absent, CI emits a warning and runs `pnpm install --no-frozen-lockfile` only for the intentional bootstrap state;
-- the selected mode is written to the job summary;
-- generated files remain inside the ephemeral private checkout and are discarded after checks and build.
-
-Bootstrap mode is not a permanent substitute for reproducibility. After dependency selection stabilizes, generate, review, and commit `pnpm-lock.yaml`; subsequent public CI runs automatically return to frozen mode.
-
-## Public visibility
-
-Workflow runs, step names, exit status, requested ref, resolved commit SHA, and command output are public because the jobs belong to a public repository. Private project source is not uploaded automatically, but build tools and tests may print package names, file paths, test names, diagnostics, or stack traces. Fichário source is already public.
-
-Do not run private refs that contain secrets in tracked files or tests that print credentials. Do not enable Actions debug logging unless the output has been reviewed for confidentiality.
-
-## Artifacts and caches
-
-The project workflows intentionally do not use `actions/upload-artifact` or `actions/cache`. APKs, reports, build directories, source archives, deployment packages, and project-derived caches are verified during the run and then discarded.
-
-Toolchain-building workflows in this repository remain separate and may publish artifacts that contain only public tools and public dependency caches.
+Receitas currently contains planning/documentation rather than an executable application. Its guard verifies the expected planning structure, tracked JSON, merge-conflict absence and suspicious secret-like filenames. If a runtime manifest such as `package.json`, `pubspec.yaml`, `Cargo.toml`, Gradle files, `go.mod` or `pyproject.toml` appears, the guard fails with an instruction to promote the CI profile instead of silently reporting incomplete coverage.
 
 ## Sanitized run receipts
 
-`Report private project CI runs` records each completed `Run private project CI` or `Run Fichario CI` execution as a comment in the open **Public private CI run receipts** issue #15. This makes connector-triggered executions observable without requiring a general workflow-run listing API.
-
-A receipt contains only:
-
-- public workflow run ID and link;
-- overall conclusion and trigger event;
-- public branch and public workflow head SHA;
-- public actor;
-- selected project job name and conclusion.
-
-It explicitly omits private source, private resolved commits, logs, artifacts, secrets, and build outputs. The reporter has only `actions: read` and `issues: write`; it receives no project token.
+`Report private project CI runs` writes completed hub results to the open **Public private CI run receipts** issue #15. Receipts include public run metadata and the selected project job/result only. Private source, private commit/ref details, logs, artifacts, secrets and build outputs are intentionally omitted. The reporter has `actions: read` and `issues: write` only.
 
 ## Validation
 
-Run before modifying the CI hub:
+Run after changing the hub:
 
 ```bash
 python3 scripts/test_private_ci_request.py
 python3 scripts/test-private-ci-toolchain-policy.py
 python3 scripts/test-semogsite-install-policy.py
 python3 scripts/validate-private-ci-workflows.py
+python3 scripts/validate-workflow-hub-security.py
 ```
 
-The public `Validate private CI hub` workflow also parses the YAML and runs these validators for relevant pushes and pull requests.
+The repository workflows run these gates on relevant changes.
 
-## Current limitations
+## Deliberate boundary
 
-- Project pushes do not automatically trigger this hub without a tiny dispatcher, a GitHub App, or an external webhook service.
-- Results are not written back as commit statuses to project repositories.
-- Build outputs are not published.
-- Signing, Firebase secrets, TURN credentials, deployment, linked production databases, and production releases are outside these workflows.
+Signing keys, Firebase/production credentials, TURN credentials, deployment credentials, production databases and release publication are not moved into a broad public CI job merely to save minutes. A public runner may build a private artifact for encrypted handoff, but privileged signing/deployment needs a separately reviewed threat model and least-privilege credential path.
