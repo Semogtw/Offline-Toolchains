@@ -16,6 +16,7 @@
       "central_ci": "run-private-project-ci",
       "source_export": "encrypted",
       "artifact_policy": "encrypted-ephemeral",
+      "token_access": "verified",
       "status": "active"
     },
     "zapzap": {
@@ -25,6 +26,7 @@
       "central_ci": "run-private-project-ci",
       "source_export": "encrypted",
       "artifact_policy": "encrypted-ephemeral",
+      "token_access": "verified",
       "status": "active"
     },
     "semogsite": {
@@ -34,6 +36,7 @@
       "central_ci": "run-private-project-ci",
       "source_export": "encrypted",
       "artifact_policy": "discard",
+      "token_access": "verified",
       "status": "active"
     },
     "hydra": {
@@ -43,6 +46,7 @@
       "central_ci": "run-private-project-ci",
       "source_export": "encrypted",
       "artifact_policy": "discard",
+      "token_access": "verified",
       "status": "active"
     },
     "receitas": {
@@ -52,6 +56,7 @@
       "central_ci": "run-private-project-ci",
       "source_export": "encrypted",
       "artifact_policy": "discard",
+      "token_access": "pending-secret-scope",
       "status": "active-planning"
     },
     "fichario": {
