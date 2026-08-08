@@ -105,9 +105,20 @@ jobs:
           dart pub get
 
       - name: Check goanime_core formatting
+        id: core_format
         if: steps.request.outputs.project == 'goanime'
+        continue-on-error: true
         working-directory: private-source/packages/goanime_core
         run: dart format --output=none --set-exit-if-changed lib test
+
+      - name: Show goanime_core formatting diff
+        if: steps.request.outputs.project == 'goanime' && steps.core_format.outcome == 'failure'
+        working-directory: private-source
+        run: git diff -- packages/goanime_core/lib packages/goanime_core/test
+
+      - name: Fail on goanime_core formatting drift
+        if: steps.request.outputs.project == 'goanime' && steps.core_format.outcome == 'failure'
+        run: exit 1
 
       - name: Analyze goanime_core
         if: steps.request.outputs.project == 'goanime'
