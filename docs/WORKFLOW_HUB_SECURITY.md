@@ -22,10 +22,10 @@ The versioned inventory is `config/workflow-hub-projects.json`.
 Current central coverage:
 
 - GoAnime: private CI, Android debug verification, encrypted APK transfer and encrypted source export.
-- ZapZap: private Android CI and encrypted source export. Encrypted APK transfer is the next artifact profile to consolidate beside GoAnime.
-- SemogSite: private checks/builds, public offline toolchain and encrypted source export. The CI default should follow integrated `main`, not an old bootstrap branch.
+- ZapZap: private Android CI, encrypted debug APK transfer and encrypted source export.
+- SemogSite: private checks/builds, public offline toolchain and encrypted source export. The CI default follows integrated `main`, not an old bootstrap branch.
 - Hydra: private validation, public offline toolchain and encrypted source export.
-- Receitas: repository is currently planning/documentation-first. It is registered now so source/export and CI policy are ready before executable code lands; its runtime gate should be promoted when the stack is committed.
+- Receitas: repository is currently planning/documentation-first. It is registered now so source/export and CI policy are ready before executable code lands; its runtime gate must be promoted when the stack is committed.
 - Fichário Virtual: public source, so its full verification remains token-free in this repository.
 - Codex desktop/Gemini helper repositories: public toolchain workflows remain here and do not need the private token.
 
@@ -41,20 +41,20 @@ A separate credential is required if a private consumer repository is ever made 
 
 A private build job may create an APK/installer only inside the disposable checkout to verify the build. It must not feed that plaintext path to `actions/upload-artifact`.
 
-For downloadable private binaries, follow the GoAnime pattern:
+For downloadable private binaries, follow the shared encrypted-transfer pattern now used by GoAnime and ZapZap:
 
-- resolve an exact source ref/SHA;
+- resolve and validate the source ref using a fixed repository mapping;
 - build in the private checkout;
 - validate the binary before packaging;
-- calculate a plaintext SHA-256 and size for the encrypted manifest;
+- calculate a plaintext SHA-256 and size for sanitized transfer metadata;
 - import only the public OpenPGP key and verify its pinned fingerprint;
 - encrypt into a separate transfer directory;
-- remove the private checkout, plaintext binary/archive and temporary keyring;
+- remove the private checkout, plaintext binary/archive and temporary keyring **before** upload;
 - upload only `.gpg` ciphertext and sanitized metadata;
 - set `retention-days: 1`;
 - perform an `always()` cleanup as a fallback if an earlier step fails.
 
-The private decryption key must never enter GitHub Actions.
+The private decryption key must never enter GitHub Actions. Production signing/deployment credentials are not introduced into the public runner merely to create a downloadable build; ZapZap's centralized handoff intentionally produces its ordinary debug-signed APK and then encrypts it.
 
 ## Validation
 

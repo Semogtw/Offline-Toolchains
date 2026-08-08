@@ -1,0 +1,215 @@
+name: Build private ZapZap APK encrypted
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Exact ZapZap branch, tag, or commit; empty uses the current default
+        required: false
+        default: development/android-build-recovery
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-zapzap-apk-${{ github.run_id }}
+  cancel-in-progress: false
+
+env:
+  EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+
+jobs:
+  build:
+    name: Verify, encrypt and hand off ZapZap debug APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Require owner-authored dispatch
+        shell: bash
+        env:
+          ACTOR: ${{ github.actor }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          test "$ACTOR" = "$OWNER"
+
+      - name: Checkout trusted transfer implementation
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: toolchains
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/private_ci_request.py
+            keys/source-bundles-public.asc
+          sparse-checkout-cone-mode: false
+
+      - name: Normalize fixed ZapZap request
+        id: request
+        shell: bash
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          request="$RUNNER_TEMP/zapzap-apk-request.json"
+          python3 - "$request" "$INPUT_REF" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], "w", encoding="utf-8") as stream:
+              json.dump({"project": "zapzap", "ref": sys.argv[2]}, stream)
+          PY
+
+          normalized="$(python3 toolchains/scripts/private_ci_request.py "$request")"
+          python3 - "$normalized" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          request = json.loads(sys.argv[1])
+          if request["project"] != "zapzap" or request["repository"] != "Semogtw/Zapzap":
+              raise SystemExit("unexpected ZapZap repository mapping")
+          ref = request["ref"]
+          if "\n" in ref or "\r" in ref:
+              raise SystemExit("unsafe newline in normalized ref")
+          with open(sys.argv[2], "a", encoding="utf-8") as stream:
+              stream.write(f"ref={ref}\n")
+          PY
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout private ZapZap source read-only
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/Zapzap
+          ref: ${{ steps.request.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Temurin JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Expose Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35 components
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Configure Gradle without persistent project cache
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-disabled: true
+
+      - name: Run canonical Android baseline and assemble debug APK
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew ./tools/checks/*.sh
+          bash ./tools/checks/verify_android_baseline.sh
+
+      - name: Validate and encrypt APK before leaving private workspace
+        id: transfer
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="$GITHUB_WORKSPACE/private-source/app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$apk"
+          unzip -t "$apk" >/dev/null
+
+          sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          apksigner="$(find "$sdk_root/build-tools" -type f -name apksigner | sort -V | tail -n1)"
+          test -x "$apksigner"
+          "$apksigner" verify "$apk"
+
+          work_dir="$RUNNER_TEMP/zapzap-apk-transfer"
+          transfer_dir="$work_dir/transfer"
+          gpg_home="$work_dir/gpg"
+          rm -rf "$work_dir"
+          mkdir -p "$transfer_dir" "$gpg_home"
+          chmod 700 "$gpg_home"
+
+          plaintext_sha256="$(sha256sum "$apk" | awk '{print $1}')"
+          plaintext_bytes="$(stat -c '%s' "$apk")"
+
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import toolchains/keys/source-bundles-public.asc
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          test -z "$(gpg --batch --with-colons --list-secret-keys 2>/dev/null | awk -F: '$1 == "sec" { print $1 }')"
+
+          encrypted="$transfer_dir/ZapZap-debug.apk.gpg"
+          gpg --batch --yes --trust-model always \
+            --recipient "$EXPECTED_FINGERPRINT" \
+            --output "$encrypted" \
+            --encrypt "$apk"
+          test -s "$encrypted"
+
+          python3 - "$transfer_dir/TRANSFER.json" "$plaintext_sha256" "$plaintext_bytes" \
+            "$EXPECTED_FINGERPRINT" "$GITHUB_RUN_ID" <<'PY'
+          import datetime
+          import json
+          import sys
+
+          path, sha256, size_bytes, fingerprint, run_id = sys.argv[1:]
+          payload = {
+              "schema_version": 1,
+              "project": "zapzap",
+              "artifact": "ZapZap-debug.apk",
+              "plaintext_sha256": sha256,
+              "plaintext_size_bytes": int(size_bytes),
+              "encryption": "OpenPGP",
+              "recipient_fingerprint": fingerprint,
+              "workflow_run_id": run_id,
+              "created_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              "retention_days": 1,
+          }
+          with open(path, "w", encoding="utf-8") as stream:
+              json.dump(payload, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          PY
+
+          # Plaintext source/APK and the temporary keyring are gone before upload.
+          rm -rf "$GITHUB_WORKSPACE/private-source" "$gpg_home"
+          test ! -e "$GITHUB_WORKSPACE/private-source"
+          test -s "$encrypted"
+          test -f "$transfer_dir/TRANSFER.json"
+          test "$(find "$transfer_dir" -maxdepth 1 -type f | wc -l | tr -d ' ')" = "2"
+
+          echo "transfer_dir=$transfer_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Upload encrypted ZapZap APK transfer
+        uses: actions/upload-artifact@v7
+        with:
+          name: zapzap-debug-apk-encrypted
+          path: ${{ steps.transfer.outputs.transfer_dir }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Remove all private and transient data
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source"
+          rm -rf "$GITHUB_WORKSPACE/toolchains"
+          rm -rf "$RUNNER_TEMP/zapzap-apk-transfer"
+          rm -f "$RUNNER_TEMP/zapzap-apk-request.json"
