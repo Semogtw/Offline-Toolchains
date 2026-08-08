@@ -63,16 +63,21 @@ def load_config() -> dict[str, Any]:
     return payload
 
 
-def normalized_project(project: str, data: Any) -> tuple[str, str, dict[str, dict[str, str]]]:
+def normalized_project(
+    project: str, data: Any
+) -> tuple[str, str, str, dict[str, dict[str, str]]]:
     if not isinstance(data, dict):
         raise AuditError(f"invalid project entry: {project}")
     repository = data.get("repository")
     ref = data.get("ref")
+    token_access = data.get("token_access", "required")
     allowed = data.get("allowed_source_local_workflows")
     if not isinstance(repository, str) or not REPOSITORY_PATTERN.fullmatch(repository):
         raise AuditError(f"invalid fixed repository mapping for {project}")
     if not isinstance(ref, str) or not ref or any(char.isspace() for char in ref):
         raise AuditError(f"invalid ref for {project}")
+    if token_access not in {"required", "pending"}:
+        raise AuditError(f"invalid token_access for {project}")
     if not isinstance(allowed, dict):
         raise AuditError(f"invalid workflow allowlist for {project}")
 
@@ -89,17 +94,17 @@ def normalized_project(project: str, data: Any) -> tuple[str, str, dict[str, dic
         if not isinstance(reason, str) or not reason.strip():
             raise AuditError(f"missing workflow reason for {project}/{filename}")
         normalized[filename] = {"kind": kind, "reason": reason.strip()}
-    return repository, ref, normalized
+    return repository, ref, token_access, normalized
+
+
+def repository_accessible(repository: str, token: str) -> bool:
+    owner, repo = repository.split("/", 1)
+    return api_json(f"/repos/{owner}/{repo}", token, allow_404=True) is not None
 
 
 def workflow_names(repository: str, ref: str, token: str) -> set[str]:
     owner, repo = repository.split("/", 1)
     encoded_ref = urllib.parse.quote(ref, safe="")
-
-    # First prove repository access. A missing workflows directory is valid for
-    # projects expected to have zero source-local workflows; lack of repository
-    # access is not.
-    api_json(f"/repos/{owner}/{repo}", token)
     listing = api_json(
         f"/repos/{owner}/{repo}/contents/.github/workflows?ref={encoded_ref}",
         token,
@@ -148,8 +153,22 @@ def audit() -> None:
         raise AuditError(f"missing {TOKEN_ENV}")
 
     payload = load_config()
+    pending_access: list[str] = []
+
     for project, raw in payload["projects"].items():
-        repository, ref, allowed = normalized_project(project, raw)
+        repository, ref, token_access, allowed = normalized_project(project, raw)
+        accessible = repository_accessible(repository, token)
+        if not accessible:
+            if token_access == "pending":
+                pending_access.append(project)
+                print(f"{project}: PENDING TOKEN SCOPE (workflow locality not yet auditable)")
+                continue
+            raise AuditError(f"{project}: read-only token cannot access reviewed repository")
+        if token_access == "pending":
+            raise AuditError(
+                f"{project}: token access now works; change token_access from pending to required"
+            )
+
         actual = workflow_names(repository, ref, token)
         expected = set(allowed)
         unexpected = actual - expected
@@ -177,6 +196,14 @@ def audit() -> None:
 
         print(f"{project}: PASS ({len(actual)} reviewed source-local workflow(s))")
 
+    if pending_access:
+        print(
+            "private workflow locality audit: PASS WITH PENDING TOKEN SCOPE: "
+            + ", ".join(sorted(pending_access))
+        )
+    else:
+        print("private workflow locality audit: PASS")
+
 
 def main() -> int:
     try:
@@ -184,7 +211,6 @@ def main() -> int:
     except AuditError as exc:
         print(f"private workflow locality audit: FAIL: {exc}", file=sys.stderr)
         return 1
-    print("private workflow locality audit: PASS")
     return 0
 
 
