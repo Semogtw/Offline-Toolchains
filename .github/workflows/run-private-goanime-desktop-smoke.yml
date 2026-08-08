@@ -1,0 +1,214 @@
+name: Run private GoAnime desktop smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Exact GoAnime branch, tag, or commit; empty uses main
+        required: false
+        default: main
+        type: string
+  schedule:
+    - cron: '0 9 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-goanime-desktop-smoke
+  cancel-in-progress: true
+
+env:
+  FLUTTER_CHANNEL: stable
+  FLUTTER_VERSION: 3.44.1
+
+jobs:
+  normalize:
+    name: Normalize fixed GoAnime request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      ref: ${{ steps.request.outputs.ref }}
+
+    steps:
+      - name: Checkout trusted request validator
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+          sparse-checkout: scripts/private_ci_request.py
+          sparse-checkout-cone-mode: false
+
+      - name: Normalize fixed repository and ref
+        id: request
+        shell: bash
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          request="$RUNNER_TEMP/goanime-desktop-request.json"
+          python3 - "$request" "$INPUT_REF" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], "w", encoding="utf-8") as stream:
+              json.dump({"project": "goanime", "ref": sys.argv[2]}, stream)
+          PY
+          normalized="$(python3 scripts/private_ci_request.py "$request")"
+          python3 - "$normalized" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          request = json.loads(sys.argv[1])
+          if request["repository"] != "Semogtw/goanime-mobile":
+              raise SystemExit("unexpected GoAnime repository mapping")
+          ref = request["ref"]
+          if "\n" in ref or "\r" in ref:
+              raise SystemExit("unsafe newline in normalized ref")
+          with open(sys.argv[2], "a", encoding="utf-8") as stream:
+              stream.write(f"ref={ref}\n")
+          PY
+
+  windows-debug:
+    name: GoAnime Windows desktop smoke
+    needs: normalize
+    runs-on: windows-2025
+    timeout-minutes: 90
+
+    steps:
+      - name: Require private repository token
+        shell: pwsh
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:PRIVATE_REPOSITORIES_TOKEN)) {
+            throw 'Missing PRIVATE_REPOSITORIES_TOKEN.'
+          }
+
+      - name: Checkout private GoAnime source read-only
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ needs.normalize.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Install Windows playback dependencies
+        shell: pwsh
+        run: |
+          choco install ffmpeg mpvio.install --yes --no-progress
+          $mpv = Get-ChildItem `
+            -Path 'C:\ProgramData\chocolatey\lib\mpvio.install\tools' `
+            -Filter mpv.exe `
+            -Recurse | Select-Object -First 1
+          if ($null -eq $mpv) {
+            throw 'Chocolatey installed mpvio.install without an mpv.exe payload.'
+          }
+          $mpv.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Validate local HLS playback
+        working-directory: private-source
+        run: python .\tools\validate_hls_windows_playback.py
+
+      - name: Set up pinned Flutter without persistent cache
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: false
+
+      - name: Install exact app dependencies
+        working-directory: private-source
+        run: flutter pub get
+
+      - name: Build Windows debug without publishing output
+        working-directory: private-source
+        run: flutter build windows --debug
+
+      - name: Remove private checkout
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path "$env:GITHUB_WORKSPACE\private-source") {
+            Remove-Item -LiteralPath "$env:GITHUB_WORKSPACE\private-source" -Recurse -Force
+          }
+
+  linux-debug:
+    name: GoAnime Linux desktop smoke
+    needs: normalize
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout private GoAnime source read-only
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ needs.normalize.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up pinned Flutter without persistent cache
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: false
+
+      - name: Install Linux desktop dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            clang \
+            cmake \
+            ffmpeg \
+            libayatana-appindicator3-dev \
+            libgtk-3-dev \
+            libjsoncpp-dev \
+            libmpv-dev \
+            libsecret-1-0 \
+            libsecret-1-dev \
+            libsoup-3.0-dev \
+            libwebkit2gtk-4.1-dev \
+            mpv \
+            ninja-build \
+            pkg-config
+
+      - name: Validate local HLS playback
+        working-directory: private-source
+        run: bash ./tools/validate_hls_linux_playback.sh
+
+      - name: Enable Linux desktop
+        working-directory: private-source
+        run: flutter config --enable-linux-desktop
+
+      - name: Install exact app dependencies
+        working-directory: private-source
+        run: flutter pub get
+
+      - name: Build Linux debug without publishing output
+        working-directory: private-source
+        run: flutter build linux --debug
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
