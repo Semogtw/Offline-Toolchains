@@ -1,6 +1,12 @@
 name: Run private GoAnime full CI
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/run-private-goanime-ci.yml
+      - scripts/private_ci_request.py
   workflow_dispatch:
     inputs:
       ref:
