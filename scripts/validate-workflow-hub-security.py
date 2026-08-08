@@ -92,11 +92,19 @@ def _validate_uploads(path: Path, text: str) -> None:
 
         if PRIVATE_TOKEN in text:
             lowered = step.lower()
-            if any(ext in lowered for ext in SENSITIVE_EXTENSIONS):
-                if ".gpg" not in lowered and "transfer" not in lowered:
-                    raise PolicyError(
-                        f"{path.name}: private-token workflow appears to upload a raw sensitive file"
-                    )
+            encrypted_transfer = ".gpg" in lowered or "encrypted" in lowered or "transfer" in lowered
+            if any(ext in lowered for ext in SENSITIVE_EXTENSIONS) and not encrypted_transfer:
+                raise PolicyError(
+                    f"{path.name}: private-token workflow appears to upload a raw sensitive file"
+                )
+            if "apk" in lowered and not encrypted_transfer:
+                raise PolicyError(
+                    f"{path.name}: private APK artifact must be encrypted before upload"
+                )
+            if ("diagnostic" in lowered or "gate-log" in lowered or ".log" in lowered) and not encrypted_transfer:
+                raise PolicyError(
+                    f"{path.name}: private-source diagnostic logs must not be uploaded in plaintext"
+                )
 
 
 def _validate_private_token_workflow(path: Path, text: str) -> None:
@@ -108,6 +116,7 @@ def _validate_private_token_workflow(path: Path, text: str) -> None:
         "persist-credentials: true": "must not persist checkout credentials",
         "secrets: inherit": "must not inherit arbitrary secrets",
         "permissions: write-all": "must not request write-all permissions",
+        "set -x": "must not enable shell xtrace in a private-token workflow",
     }
     for needle, reason in forbidden.items():
         if needle in text:

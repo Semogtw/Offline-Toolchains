@@ -1,108 +1,19 @@
-name: Build GoAnime Mobile functional APK v3
+name: Deprecated GoAnime plaintext APK v3
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - .github/workflows/build-goanime-mobile-functional-apk-v3.yml
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: goanime-mobile-functional-apk-v3
-  cancel-in-progress: true
-
-env:
-  FLUTTER_VERSION: 3.44.1
-  FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID || vars.FIREBASE_PROJECT_ID }}
-  FIREBASE_WEB_API_KEY: ${{ secrets.FIREBASE_WEB_API_KEY || vars.FIREBASE_WEB_API_KEY }}
-  UPDATE_MANIFEST_URL: ${{ secrets.UPDATE_MANIFEST_URL || vars.UPDATE_MANIFEST_URL }}
-  UPDATE_APPCAST_URL: ${{ secrets.UPDATE_APPCAST_URL || vars.UPDATE_APPCAST_URL }}
-  ANIME_METADATA_SEED_MANIFEST_URL: ${{ secrets.ANIME_METADATA_SEED_MANIFEST_URL || vars.ANIME_METADATA_SEED_MANIFEST_URL }}
-  RUNTIME_DATABASE_MANIFEST_URL: ${{ secrets.RUNTIME_DATABASE_MANIFEST_URL || vars.RUNTIME_DATABASE_MANIFEST_URL }}
-  GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
-  ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-  ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-  ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-  ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-
 jobs:
-  build:
-    name: Validate and build read-only source
+  retired:
+    name: Use encrypted GoAnime APK workflow
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
-
+    timeout-minutes: 5
     steps:
-      - name: Require private repository token
-        shell: bash
-        env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-        run: |
-          set -euo pipefail
-          test -n "$PRIVATE_REPOSITORIES_TOKEN" || {
-            echo 'Missing PRIVATE_REPOSITORIES_TOKEN.' >&2
-            exit 1
-          }
-
-      - name: Checkout trusted Toolchains scripts
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.sha }}
-          path: toolchains
-          persist-credentials: false
-          sparse-checkout: |
-            scripts/patch_goanime_hls_checkpoint.py
-            scripts/build_goanime_mobile_functional_apk.sh
-          sparse-checkout-cone-mode: false
-
-      - name: Checkout private GoAnime Mobile source read-only
-        uses: actions/checkout@v6
-        with:
-          repository: Semogtw/goanime-mobile
-          ref: main
-          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-          path: private-source
-          fetch-depth: 0
-          persist-credentials: false
-          lfs: false
-          submodules: false
-          show-progress: false
-
-      - name: Set up Temurin JDK 17
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Expose Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Set up Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
-
-      - name: Validate and build local verified workspace
+      - name: Explain replacement
         shell: bash
         run: |
-          bash "$GITHUB_WORKSPACE/toolchains/scripts/build_goanime_mobile_functional_apk.sh" \
-            "$GITHUB_WORKSPACE/private-source" \
-            "$GITHUB_WORKSPACE/toolchains/scripts/patch_goanime_hls_checkpoint.py"
-
-      - name: Upload APK handoff
-        uses: actions/upload-artifact@v7
-        with:
-          name: goanime-mobile-functional-apk-v3
-          path: ${{ runner.temp }}/goanime-mobile-apk/
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Remove private checkout and restored credentials
-        if: always()
-        shell: bash
-        run: rm -rf "$GITHUB_WORKSPACE/private-source"
+          echo 'The v3 plaintext APK handoff is permanently retired.'
+          echo 'Use Build private GoAnime APK encrypted instead.'

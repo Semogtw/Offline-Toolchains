@@ -1,115 +1,19 @@
-name: Diagnose GoAnime Mobile APK v3
+name: Deprecated GoAnime public diagnostic log
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - .github/workflows/diagnose-goanime-mobile-apk-v3.yml
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: diagnose-goanime-mobile-apk-v3
-  cancel-in-progress: true
-
-env:
-  FLUTTER_VERSION: 3.44.1
-
 jobs:
-  diagnose:
+  retired:
+    name: Do not publish private-source logs
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 5
     steps:
-      - name: Require private repository token
-        shell: bash
-        env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
-
-      - name: Checkout trusted Toolchains scripts
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.sha }}
-          path: toolchains
-          persist-credentials: false
-          sparse-checkout: scripts/patch_goanime_hls_checkpoint.py
-          sparse-checkout-cone-mode: false
-
-      - name: Checkout private GoAnime Mobile source read-only
-        uses: actions/checkout@v6
-        with:
-          repository: Semogtw/goanime-mobile
-          ref: main
-          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-          path: private-source
-          persist-credentials: false
-          lfs: false
-          submodules: false
-          show-progress: false
-
-      - name: Set up Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
-
-      - name: Run pre-publish gates with full log
-        id: gates
-        continue-on-error: true
+      - name: Explain replacement
         shell: bash
         run: |
-          set +e
-          {
-            set -x
-            cd "$GITHUB_WORKSPACE/private-source"
-            flutter config --no-analytics
-            flutter pub get
-            (cd packages/goanime_core && dart pub get)
-            python3 "$GITHUB_WORKSPACE/toolchains/scripts/patch_goanime_hls_checkpoint.py"
-            dart format \
-              lib/services/download/download_queue_manager_hls.dart \
-              lib/services/download/hls/hls_package_store.dart \
-              lib/services/download/hls/hls_transfer_models.dart \
-              lib/services/download/hls/filesystem_hls_package_store.dart \
-              lib/services/download/hls/saf_hls_package_store.dart \
-              lib/services/download/hls/hls_download_engine_support.dart \
-              test
-            git diff --check
-            flutter test --no-pub test/services/download/hls/hls_checkpoint_reference_test.dart
-            flutter test --no-pub test/services/download/hls
-            python3 -m unittest discover -s tools/tests -p 'test_*.py'
-            python3 tools/validate_repository_guards.py
-            flutter analyze --no-pub
-            flutter test --no-pub
-            (cd packages/goanime_core && dart test)
-            bash ./tools/validate_release_workflows.sh
-            dart format --output=none --set-exit-if-changed lib test packages tools
-            git status --short
-          } > /tmp/goanime-mobile-gates.log 2>&1
-          status=$?
-          echo "status=$status" >> "$GITHUB_OUTPUT"
-          cat /tmp/goanime-mobile-gates.log
-          exit 0
-
-      - name: Upload complete diagnostic log
-        uses: actions/upload-artifact@v7
-        with:
-          name: goanime-mobile-apk-v3-gate-log
-          path: /tmp/goanime-mobile-gates.log
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Fail after preserving diagnostics
-        if: steps.gates.outputs.status != '0'
-        shell: bash
-        run: |
-          tail -n 250 /tmp/goanime-mobile-gates.log
-          exit 1
-
-      - name: Remove private checkout
-        if: always()
-        shell: bash
-        run: rm -rf "$GITHUB_WORKSPACE/private-source"
+          echo 'This diagnostic workflow is retired because public full logs can expose private-source details.'
+          echo 'Run focused diagnostics without artifacting raw private-source logs.'
