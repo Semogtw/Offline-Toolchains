@@ -1,23 +1,23 @@
-# Hydra offline toolchain and encrypted checkout
+# Hydra offline toolchain and encrypted source export
 
-The Hydra integration provides two independent GitHub Actions in this public repository:
+Hydra uses two separate public-runner paths in `Offline-Toolchains`:
 
-- `Build Hydra offline toolchain` creates a Linux x64 bundle with portable Node.js, Yarn Classic, Rust, Cargo registries and the exact dependency caches required by `Semogtw/HydraPersonalizado`.
-- `Build encrypted Hydra source bundle` exports one exact Git ref from the private repository, encrypts it with the committed OpenPGP public key and uploads only ciphertext.
+- `Build Hydra offline toolchain` creates a Linux x64 cache of **public third-party runtimes/dependencies** needed by the private project, while sanitizing private project metadata before upload.
+- `Build encrypted private source bundle` exports Hydra source only as OpenPGP ciphertext through the shared private-source pipeline.
 
-The source checkout is never included in the public toolchain archive.
+Private source is never intentionally published as a normal Actions artifact.
 
 ## Required secret
 
-Both workflows need the existing Actions secret:
+Both paths use:
 
 ```text
 PRIVATE_REPOSITORIES_TOKEN
 ```
 
-Use a fine-grained token with `Contents: Read-only` and access limited to `Semogtw/HydraPersonalizado` plus the other private repositories already served by this hub. Do not grant write access.
+Use a fine-grained token with `Contents: Read-only` and repository access limited to the private projects served by this hub. Do not grant write access.
 
-## Toolchain workflow
+## Offline toolchain
 
 Workflow:
 
@@ -25,40 +25,39 @@ Workflow:
 .github/workflows/build-hydra.yml
 ```
 
-It can be started manually with a branch, tag or commit, or by updating:
+The job:
+
+1. validates an allowlisted Hydra ref;
+2. checks out only `Semogtw/HydraPersonalizado`, with `persist-credentials: false`, no LFS and no submodules;
+3. installs pinned Node `22.23.1`, Yarn `1.22.22`, Rust and GTK4 Layer Shell prerequisites;
+4. hydrates Yarn/Cargo/Electron/electron-builder/node-gyp caches from the exact private dependency inputs;
+5. runs Hydra typechecks/tests online;
+6. proves a second install with registries, mirrors, proxies and Cargo networking forced offline;
+7. removes the private checkout;
+8. replaces copied `package.json`, `yarn.lock` and both `Cargo.lock` files with SHA-256 fingerprints only;
+9. redacts the selected private ref from the public manifest;
+10. rebuilds the archive **after** sanitization and uploads the sanitized split transfer only.
+
+The uploaded artifact is:
 
 ```text
-triggers/hydra-toolchain.json
+hydra-toolchain-linux-x64-sanitized
 ```
 
-The build performs these gates before publishing:
+It expires after one day and contains:
 
-1. validates the requested Git ref;
-2. checks out the fixed private repository without persisted credentials, LFS or submodules;
-3. installs the pinned Node `22.23.1` and Yarn `1.22.22`;
-4. installs a portable Rust toolchain;
-5. hydrates Yarn, Cargo, Electron, electron-builder and node-gyp caches from the exact Hydra lockfiles;
-6. runs Hydra type checking and tests online;
-7. removes generated dependencies and proves a second install from a fresh `HOME`, with package registries, Electron mirrors, proxies and Cargo networking forced offline;
-8. reruns type checking and tests;
-9. deletes the private checkout before creating the archive.
+- `hydra-toolchain-linux-x64.part-*` — split sanitized archive;
+- `SHA256SUMS.parts` — per-part integrity;
+- `ARCHIVE.sha256` — reassembled archive hash;
+- `PARTS.txt` — restore commands and compatibility fingerprints;
+- `MANIFEST.txt` — runtime/toolchain versions with the private ref redacted;
+- `INPUT-SHA256.txt` — fingerprints of the exact private dependency inputs, not their contents.
 
-The isolated second installation is important: Electron binaries and native headers normally live outside Yarn's cache. Keeping those directories inside the archive and changing `HOME` prevents the proof from passing accidentally because of files already present on the GitHub runner.
-
-Artifacts expire after one day:
-
-```text
-hydra-toolchain-linux-x64-manifest
-hydra-toolchain-linux-x64-part-00
-hydra-toolchain-linux-x64-part-01
-...
-```
-
-Parts are limited to 400 MiB so they can be downloaded through the connector.
+The exact private lockfiles/package manifest are **not** included in the public transfer anymore.
 
 ### Restore
 
-Extract every artifact ZIP into one directory, then:
+Download/extract the single Actions artifact and run:
 
 ```bash
 sha256sum -c SHA256SUMS.parts
@@ -71,91 +70,42 @@ source ./hydra-toolchain/scripts/activate.sh
 ./hydra-toolchain/scripts/install-offline.sh /path/to/HydraPersonalizado
 ```
 
-The portable bundle supplies Node, Yarn, Rust and dependency caches. The host still needs the Linux system libraries checked by `doctor.sh`, notably Python 3, `pkg-config`, GTK 4 and GTK4 Layer Shell development metadata. Those packages are distribution-specific and are intentionally not copied from Ubuntu into the portable archive.
+`install-offline.sh` hashes the target project's `package.json`, `yarn.lock` and Cargo lockfiles locally and compares them to `INPUT-SHA256.txt`. A mismatch fails closed without needing the original private input files inside the toolchain.
 
-## Encrypted checkout workflow
+The host still needs distribution-specific system libraries checked by `doctor.sh`, notably Python 3, `pkg-config`, GTK 4 and GTK4 Layer Shell development metadata.
 
-Trusted workflow:
+## Encrypted private source
 
-```text
-.github/workflows/build-private-hydra-source-bundle.yml
-```
-
-Connector request branch:
+Use the canonical workflow:
 
 ```text
-build/hydra-source-bundles
+.github/workflows/build-private-source-bundle.yml
 ```
 
-Request file:
+Select:
 
 ```text
-triggers/hydra-source-bundle.json
+project=hydra
+mode=full | ref | snapshot
+ref=<optional validated branch/tag/SHA>
 ```
 
-The request is intentionally restricted to:
+The workflow packages private Git/source data in temporary storage, encrypts it to the committed OpenPGP public key, deletes the plaintext archive/private checkout/keyring before upload and publishes only ciphertext plus sanitized transport metadata with one-day retention.
 
-```json
-{
-  "project": "hydra",
-  "mode": "ref",
-  "ref": "main"
-}
-```
-
-Only a non-empty exact branch, tag or commit is accepted. The privileged job runs from the workflow implementation on `main`, accepts only successful requests pushed by the repository owner to the fixed request branch and checks out only `Semogtw/HydraPersonalizado`.
-
-The output artifact is:
-
-```text
-private-source-hydra-ref
-```
-
-It contains:
-
-```text
-private-source.gpg
-ENCRYPTED.sha256
-TRANSFER.json
-```
-
-The decrypted package contains `repository.bundle`, `REFS.txt` and `PRIVATE-MANIFEST.json`. It excludes Git LFS objects, submodule repositories, untracked files, stashes and commits that were never pushed.
-
-### Decrypt and restore
-
-Use the private key corresponding to fingerprint:
+Recipient fingerprint:
 
 ```text
 2DE29DC31427CF0A911AB96175679291435059B0
 ```
 
-Then:
-
-```bash
-sha256sum -c ENCRYPTED.sha256
-
-export GNUPGHOME="$(mktemp -d)"
-chmod 700 "$GNUPGHOME"
-gpg --import /secure/path/offline-toolchains-source-bundles-private.asc
-gpg --output private-source-package.tar.zst --decrypt private-source.gpg
-
-mkdir private-source-package
-tar --zstd -xf private-source-package.tar.zst -C private-source-package
-
-git bundle verify private-source-package/repository.bundle
-git init HydraPersonalizado
-git -C HydraPersonalizado fetch \
-  ../private-source-package/repository.bundle \
-  refs/heads/offline-export:refs/remotes/origin/offline-export
-git -C HydraPersonalizado switch -c offline-export --track origin/offline-export
-```
+The private OpenPGP key never enters GitHub Actions.
 
 ## Security invariants
 
-- No private key is stored in GitHub.
-- The private token is read-only and repository-scoped.
-- Request-branch code never executes with the private token.
-- Checkouts do not persist credentials.
-- The public toolchain artifact contains runtimes, caches, lockfiles and hashes, but no Hydra source tree.
-- The encrypted checkout artifact has one-day retention and is useless without the external private key.
-- Logs and transfer manifests omit the resolved private commit wherever practical; the commit remains inside the encrypted private manifest.
+- Private checkout token is read-only and repository-scoped.
+- Checkout credentials are never persisted.
+- Private source is removed in cleanup paths.
+- Toolchain artifacts contain public runtime/dependency caches plus one-way compatibility fingerprints, not raw private package/lock inputs.
+- Exact private ref/commit details are omitted from public toolchain transfer metadata wherever they are not required.
+- Source export is ciphertext-only and expires after one day.
+- Any future write/deploy capability must use a separate narrowly scoped credential rather than expanding `PRIVATE_REPOSITORIES_TOKEN`.
