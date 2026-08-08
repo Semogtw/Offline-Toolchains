@@ -1,0 +1,368 @@
+name: Build encrypted private GoAnime APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/private-goanime-apk.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-goanime-apk
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout trusted toolchain source
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: trusted-source
+          persist-credentials: false
+
+      - name: Read and validate request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$GITHUB_WORKSPACE/trusted-source/triggers/private-goanime-apk.json"
+          sha="$(python3 - "$request" <<'PY'
+          import json
+          import re
+          import sys
+          payload = json.load(open(sys.argv[1], encoding='utf-8'))
+          sha = str(payload.get('ref') or '').strip().lower()
+          if not re.fullmatch(r'[0-9a-f]{40}', sha):
+              raise SystemExit('ref must be an exact 40-character commit SHA')
+          print(sha)
+          PY
+          )"
+          echo "ref=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPOSITORIES_TOKEN" || {
+            echo 'Missing PRIVATE_REPOSITORIES_TOKEN.' >&2
+            exit 1
+          }
+
+      - name: Checkout private GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify exact private commit
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          resolved="$(git -C private-source rev-parse HEAD)"
+          test "$resolved" = '${{ steps.request.outputs.ref }}'
+          echo "sha=$resolved" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Expose Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+
+      - name: Disable Flutter analytics
+        working-directory: private-source
+        run: flutter config --no-analytics
+
+      - name: Resolve app and core dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd private-source && flutter pub get)
+          (cd private-source/packages/goanime_core && dart pub get)
+
+      - name: Discover Summer 2026 MAL IDs via AniList
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import time
+          import urllib.request
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          path = Path('tools/anime_metadata_seed_targets.json')
+          payload = json.loads(path.read_text(encoding='utf-8'))
+          targets = payload.setdefault('targets', [])
+          existing = {
+              target.get('malId')
+              for target in targets
+              if isinstance(target, dict) and isinstance(target.get('malId'), int)
+          }
+
+          now = datetime.now(timezone.utc)
+          season = (
+              'WINTER' if now.month <= 3 else
+              'SPRING' if now.month <= 6 else
+              'SUMMER' if now.month <= 9 else
+              'FALL'
+          )
+          query = '''
+          query ($page: Int!, $year: Int!, $season: MediaSeason!) {
+            Page(page: $page, perPage: 50) {
+              pageInfo { hasNextPage }
+              media(
+                type: ANIME
+                seasonYear: $year
+                season: $season
+                isAdult: false
+                sort: POPULARITY_DESC
+              ) {
+                idMal
+                title { english romaji }
+              }
+            }
+          }
+          '''
+
+          discovered = set()
+          for page_number in range(1, 5):
+              body = json.dumps({
+                  'query': query,
+                  'variables': {
+                      'page': page_number,
+                      'year': now.year,
+                      'season': season,
+                  },
+              }).encode('utf-8')
+              document = None
+              last_error = None
+              for attempt in range(1, 4):
+                  try:
+                      request = urllib.request.Request(
+                          'https://graphql.anilist.co',
+                          data=body,
+                          headers={
+                              'Content-Type': 'application/json',
+                              'Accept': 'application/json',
+                              'User-Agent': 'GoAnime-Mobile-toolchain/1.0',
+                          },
+                          method='POST',
+                      )
+                      with urllib.request.urlopen(request, timeout=30) as response:
+                          document = json.loads(response.read().decode('utf-8'))
+                      break
+                  except Exception as error:
+                      last_error = error
+                      if attempt < 3:
+                          time.sleep(attempt * 2)
+              if document is None:
+                  raise RuntimeError(f'AniList page {page_number} failed: {last_error}')
+              if document.get('errors'):
+                  raise RuntimeError(f"AniList GraphQL errors: {document['errors']}")
+
+              page = document['data']['Page']
+              for media in page.get('media') or []:
+                  mal_id = media.get('idMal')
+                  if not isinstance(mal_id, int) or mal_id <= 0:
+                      continue
+                  discovered.add(mal_id)
+                  title_data = media.get('title') or {}
+                  title = title_data.get('english') or title_data.get('romaji') or f'MAL {mal_id}'
+                  if mal_id not in existing:
+                      targets.append({'malId': mal_id, 'title': str(title).strip()})
+                      existing.add(mal_id)
+              if not page.get('pageInfo', {}).get('hasNextPage'):
+                  break
+
+          if len(discovered) < 20:
+              raise RuntimeError(f'AniList returned only {len(discovered)} current-season MAL IDs')
+
+          # Jikan list endpoints are currently returning 504 from GitHub runners.
+          # Discovery is handled by AniList here; the existing generator still
+          # enriches every MAL ID through Jikan's per-title endpoint.
+          payload['queries'] = []
+          path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+          print(f'AniList discovery: {season.lower()} {now.year}, MAL IDs={len(discovered)}, total targets={len(targets)}')
+          PY
+
+      - name: Build fresh bundled metadata and broadcast snapshot
+        working-directory: private-source
+        run: dart run tools/build_anime_metadata_seed.dart
+
+      - name: Validate and install refreshed catalog assets
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          root = Path('dist/anime_metadata_cache')
+          payload = json.loads((root / 'anime_metadata_seed.json').read_text(encoding='utf-8'))
+          broadcast = json.loads((root / 'broadcast_schedule.json').read_text(encoding='utf-8'))
+          entries = payload.get('entries') or []
+          now = datetime.now(timezone.utc)
+          season = (
+              'winter' if now.month <= 3 else
+              'spring' if now.month <= 6 else
+              'summer' if now.month <= 9 else
+              'fall'
+          )
+          current = [
+              entry for entry in entries
+              if entry.get('year') == now.year
+              and str(entry.get('season') or '').strip().lower() == season
+              and str(entry.get('imageUrl') or '').strip()
+          ]
+          broadcasts = broadcast.get('entries') or {}
+          if len(entries) < 40:
+              raise SystemExit(f'seed too small: {len(entries)}')
+          if len(current) < 10:
+              raise SystemExit(f'current season too small: {len(current)} {season} {now.year} entries')
+          if len(broadcasts) < 5:
+              raise SystemExit(f'broadcast snapshot too small: {len(broadcasts)}')
+          print(f'validated seed={len(entries)} current={len(current)} broadcasts={len(broadcasts)} season={season} {now.year}')
+          PY
+          cp dist/anime_metadata_cache/anime_metadata_seed.json assets/data/anime_metadata_seed.json
+          cp dist/anime_metadata_cache/broadcast_schedule.json assets/data/broadcast_schedule.json
+
+      - name: Validate project health
+        working-directory: private-source
+        shell: pwsh
+        run: ./tools/validate_project_health.ps1
+
+      - name: Check formatting
+        working-directory: private-source
+        shell: bash
+        run: dart format --output=none --set-exit-if-changed lib test packages tools
+
+      - name: Analyze
+        working-directory: private-source
+        run: flutter analyze --no-pub
+
+      - name: Run app tests
+        working-directory: private-source
+        run: flutter test --no-pub --concurrency=2
+
+      - name: Run core tests
+        working-directory: private-source/packages/goanime_core
+        run: dart test
+
+      - name: Validate release workflow invariants
+        working-directory: private-source
+        shell: pwsh
+        run: ./tools/validate_release_workflows.ps1
+
+      - name: Build Android debug APK
+        working-directory: private-source
+        run: flutter build apk --debug --no-pub
+
+      - name: Validate and encrypt APK
+        id: package
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          apk="$GITHUB_WORKSPACE/private-source/build/app/outputs/flutter-apk/app-debug.apk"
+          test -s "$apk"
+          unzip -t "$apk" >/dev/null
+
+          work="$RUNNER_TEMP/goanime-apk"
+          gpg_home="$work/gpg"
+          mkdir -p "$gpg_home" "$work/transfer"
+          chmod 700 "$gpg_home"
+          export GNUPGHOME="$gpg_home"
+
+          sha256="$(sha256sum "$apk" | awk '{print $1}')"
+          size="$(stat -c '%s' "$apk")"
+          gpg --batch --import "$GITHUB_WORKSPACE/trusted-source/keys/source-bundles-public.asc"
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1 == "fpr" {print $10; exit}')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+
+          encrypted="$work/transfer/GoAnime-${SOURCE_SHA:0:12}-debug.apk.gpg"
+          gpg --batch --yes --trust-model always \
+            --recipient "$EXPECTED_FINGERPRINT" \
+            --output "$encrypted" \
+            --encrypt "$apk"
+          test -s "$encrypted"
+
+          python3 - "$work/transfer/manifest.json" "$SOURCE_SHA" "$sha256" "$size" <<'PY'
+          import datetime
+          import json
+          import sys
+          path, source_sha, sha256, size = sys.argv[1:]
+          data = {
+              'schema_version': 1,
+              'source_sha': source_sha,
+              'build_type': 'debug',
+              'apk_sha256': sha256,
+              'apk_size_bytes': int(size),
+              'encryption': 'OpenPGP',
+              'recipient_fingerprint': '2DE29DC31427CF0A911AB96175679291435059B0',
+              'created_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+          }
+          with open(path, 'w', encoding='utf-8') as stream:
+              json.dump(data, stream, indent=2, sort_keys=True)
+              stream.write('\n')
+          PY
+
+          rm -rf "$GITHUB_WORKSPACE/private-source" "$gpg_home"
+          echo "transfer_dir=$work/transfer" >> "$GITHUB_OUTPUT"
+          echo "apk_sha256=$sha256" >> "$GITHUB_OUTPUT"
+          echo "apk_size=$size" >> "$GITHUB_OUTPUT"
+
+      - name: Upload encrypted APK transfer
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-private-debug-apk-encrypted
+          path: ${{ steps.package.outputs.transfer_dir }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Summary
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          APK_SHA256: ${{ steps.package.outputs.apk_sha256 }}
+          APK_SIZE: ${{ steps.package.outputs.apk_size }}
+        run: |
+          {
+            echo '## Encrypted GoAnime APK build'
+            echo
+            echo "- Source: \`$SOURCE_SHA\`"
+            echo "- APK SHA-256: \`$APK_SHA256\`"
+            echo "- APK bytes: \`$APK_SIZE\`"
+            echo '- Only OpenPGP ciphertext was uploaded from the public repository.'
+          } >> "$GITHUB_STEP_SUMMARY"
