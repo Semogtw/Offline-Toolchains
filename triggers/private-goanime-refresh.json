@@ -1,7 +1,7 @@
 {
   "project": "goanime",
-  "ref": "04c12bf63f37686ff3c0de161ede7ffbd01fc2cf",
-  "mode": "incremental-catalog-refresh",
+  "ref": "e334b51dd6f17e58235a72cd1a2f5d532ba36dd8",
+  "mode": "full-provider-audit",
   "requested_by": "chatgpt",
-  "requested_at": "2026-08-08T10:34:00Z"
+  "requested_at": "2026-08-08T16:08:00Z"
 }
