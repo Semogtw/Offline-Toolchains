@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "core_repository": "Semogtw/codex-gemini-agents",
+  "core_ref": "e88d8ef2dcb0a3c4bbed9425930f253494ababfd",
+  "wrapper_repository": "Semogtw/codex-desktop-linux-gemini-",
+  "wrapper_ref": "0574e3a710aa58c2cb443bf7d7e7c47ff34a8d71"
+}
