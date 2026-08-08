@@ -1,7 +1,8 @@
 {
   "schema_version": 1,
+  "request_id": 3,
   "suite": "core-external-agents",
   "core_repository": "Semogtw/codex-gemini-agents",
   "core_ref": "3d0d3fda420869f80227296459f4d4a34b5e6712",
-  "reason": "Validate durable lifecycle cleanup, bounded tombstones, single restore authority, restored App Server identity projection, and fail-closed write capability"
+  "reason": "Export rustfmt-normalized files for the latest lifecycle and restored App Server projection checkpoint"
 }
