@@ -1,6 +1,27 @@
 # Codex offline toolchain
 
-Este pacote permite compilar e testar `Semogtw/codex-gemini-agents` em ambientes Linux x64 sem acesso direto à internet.
+Este pacote permite compilar e testar `Semogtw/codex-gemini-agents` em ambientes Linux x64 sem depender de uma instalação prévia do toolchain no consumidor.
+
+## Fonte imutável
+
+O bundle principal e o artifact `rusty_v8` não usam mais uma branch Codex hardcoded. Cada workflow lê um trigger versionado com:
+
+```json
+{
+  "schema_version": 1,
+  "repository": "Semogtw/codex-gemini-agents",
+  "ref": "<branch-segura-ou-SHA-completo>"
+}
+```
+
+O resolver `scripts/resolve_codex_toolchain_trigger.py` é testado antes do checkout, aceita somente o fork allowlisted e rejeita refs inseguras/fields desconhecidos. Quando `ref` é um SHA completo de 40 caracteres, o workflow exige que `git rev-parse HEAD` seja exatamente esse SHA.
+
+Para checkpoints de integração CodexGemini, prefira sempre SHA completo. Branches continuam permitidas apenas para hidratação manual/exploratória do toolchain.
+
+Triggers atuais:
+
+- `triggers/codex-toolchain.json` — bundle principal;
+- `triggers/codex-rusty-v8.json` — arquivo `rusty_v8` correspondente ao mesmo `Cargo.lock`.
 
 ## Conteúdo
 
@@ -8,62 +29,47 @@ O workflow `Build Codex offline toolchain` publica:
 
 - Rust e Cargo 1.95.0;
 - `rustfmt` e Clippy do mesmo toolchain;
-- cache Cargo hidratado pelo `Cargo.lock` da branch `feature/antigravity-capabilities`;
-- Ruff 0.15.13 e uv 0.11.3;
-- just 1.51.0;
+- cache Cargo hidratado pelo `Cargo.lock` do ref Codex solicitado;
+- Ruff e uv;
+- just;
 - `protoc` e bibliotecas/headers nativos necessários ao Codex;
 - script portátil `activate.sh`.
 
-O workflow `Build Codex rusty_v8 offline archive` publica separadamente o arquivo pré-compilado de `rusty_v8` correspondente à versão `v8` encontrada no `Cargo.lock` ativo. Separar o V8 evita reconstruir o bundle principal quando apenas esse artifact precisa ser renovado.
+O `MANIFEST.txt` schema 2 registra `codex_repository`, `codex_ref` e `codex_commit` realmente usados. `PARTS.txt` repete a identidade do core junto ao checksum do archive.
 
-## Obter os IDs pelo conector
+O workflow `Build Codex rusty_v8 offline archive` publica separadamente o arquivo pré-compilado de `rusty_v8` correspondente à versão `v8` encontrada no `Cargo.lock` do ref solicitado. Seu manifest schema 2 registra a mesma tríade `codex_repository/codex_ref/codex_commit`.
 
-Cada run concluído comenta o issue permanente `Codex offline toolchain run receipts` com:
+Separar o V8 evita reconstruir o bundle principal quando apenas esse artifact precisa ser renovado, sem permitir que os dois sejam silenciosamente gerados de branches diferentes.
 
-- run ID e commit;
-- conclusão;
-- IDs, tamanhos e expiração dos artifacts.
+## Build imutável do par CodexGemini
 
-Use apenas recibos com conclusão `success` e commits confiáveis.
+`triggers/codex-gemini-pair.json` é mais estrito: exige SHAs completos tanto do core quanto do wrapper. O workflow `Build immutable CodexGemini pair` faz checkout de ambos, verifica as identidades exatas, executa o contrato determinístico de fonte e compila o binário release `codex`.
+
+Por segurança, esse gate de build não executa nem stageia o binário recém-compilado no CI. Ele produz evidência estática (`SHA-256`, tamanho, `file`, header ELF) e associa o artefato aos dois commits exatos. O `external-agents/stage.sh` do wrapper continua sendo a autoridade para executar `--version`, validar identidade/checksum e produzir `compatibility.json` em um ambiente de staging confiável.
 
 ## Remontar o bundle principal
 
-Baixe:
-
-```text
-codex-toolchain-linux-x64-manifest
-codex-toolchain-linux-x64-part-00
-codex-toolchain-linux-x64-part-01
-...
-```
-
-Extraia todos os ZIPs na mesma pasta e execute:
+Baixe os artifacts `codex-toolchain-linux-x64-manifest` e `codex-toolchain-linux-x64-part-*`, extraia os ZIPs na mesma pasta e valide:
 
 ```bash
 sha256sum --check SHA256SUMS.parts
 cat codex-toolchain-linux-x64.part-* > codex-toolchain-linux-x64.tar.zst
+sha256sum codex-toolchain-linux-x64.tar.zst
 ```
 
 Compare o SHA-256 do arquivo remontado com `archive_sha256` em `PARTS.txt` antes de extrair:
 
 ```bash
-sha256sum codex-toolchain-linux-x64.tar.zst
 mkdir -p /tmp/codex-offline
 tar --zstd -xf codex-toolchain-linux-x64.tar.zst -C /tmp/codex-offline
 source /tmp/codex-offline/codex-toolchain/activate.sh
 ```
 
-A ativação define `CARGO_NET_OFFLINE=true`, configura os caches e adiciona ferramentas e dependências nativas ao shell atual. Ela não modifica configuração Git global.
+A ativação define `CARGO_NET_OFFLINE=true`, configura caches e adiciona ferramentas/dependências nativas ao shell atual. Ela não modifica configuração Git global.
 
 ## Ativar o V8 offline
 
-Baixe e extraia o artifact:
-
-```text
-codex-rusty-v8-linux-x64
-```
-
-Valide o checksum relativo dentro da pasta extraída:
+Baixe e extraia `codex-rusty-v8-linux-x64`, valide:
 
 ```bash
 sha256sum --check SHA256SUMS
@@ -75,7 +81,7 @@ Depois defina:
 export RUSTY_V8_ARCHIVE="$PWD/librusty_v8_release_x86_64-unknown-linux-gnu.a.gz"
 ```
 
-O `MANIFEST.txt` informa a versão da crate V8, target, commit do Codex e URL pública de origem.
+O `MANIFEST.txt` informa versão da crate V8, target, ref/commit Codex e URL pública de origem.
 
 ## Verificação mínima
 
@@ -125,20 +131,16 @@ cargo clippy --offline -p codex-core --lib --tests -- -D warnings
 
 ## Quando regenerar
 
-Regenere o bundle principal quando houver mudança relevante em:
+Regenere o bundle principal quando houver mudança relevante em `Cargo.lock`, versão Rust, ferramentas, dependências nativas, arquitetura ou no ref Codex aceito para o checkpoint.
 
-- `codex-rs/Cargo.lock`;
-- versão Rust fixada;
-- Ruff/uv/just;
-- dependências nativas;
-- arquitetura ou imagem Linux do consumidor.
-
-Regenere o artifact V8 quando a versão da crate `v8` no lockfile mudar. O workflow resolve essa versão automaticamente e falha se o lockfile não contiver exatamente uma entrada `v8`.
+Regenere `rusty_v8` quando a versão da crate `v8` no lockfile mudar ou quando o core pinado mudar. O workflow resolve a versão automaticamente e falha se o lockfile não contiver exatamente uma entrada `v8`.
 
 ## Segurança
 
 - O pacote contém executáveis; use somente artifacts de runs confiáveis.
 - Verifique hashes antes de extrair ou executar.
-- Os workflows do toolchain usam somente dependências públicas e não precisam da chave privada OpenPGP.
-- A chave privada de source bundles nunca deve ser copiada para este repositório, para artifacts ou para o checkout Codex.
-- Importe a chave privada apenas em `GNUPGHOME` temporário quando for realmente necessário descriptografar um source bundle; remova o diretório depois.
+- Checkpoints de integração devem usar SHAs completos, não branches móveis.
+- O resolver rejeita repositórios não allowlisted, refs inseguras e campos extras.
+- Os workflows usam somente dependências públicas e não precisam da chave privada OpenPGP.
+- A chave privada de source bundles nunca deve ser copiada para este repositório, artifacts ou checkout Codex.
+- Importe material secreto apenas em armazenamento temporário explicitamente necessário e remova-o depois.
