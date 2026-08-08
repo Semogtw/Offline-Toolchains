@@ -26,7 +26,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
-          ref: 86791504fa68fe29917646a5601e5b472d3dd36e
+          ref: fc2ab86c7501d7823fac4c3fe1eb3ce6a3a52567
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
           persist-credentials: false
@@ -42,20 +42,19 @@ jobs:
         working-directory: private-source
         run: flutter pub get
 
-      - name: Format only diagnosed files and verify full format gate
+      - name: Format cache builder and verify full format gate
         working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
-          dart format tools/cache_builder.dart test/architecture/manga_core_boundary_test.dart
+          dart format tools/cache_builder.dart
           git diff --check
           changed="$(git diff --name-only)"
-          expected="$(printf '%s\n' 'test/architecture/manga_core_boundary_test.dart' 'tools/cache_builder.dart')"
-          test "$changed" = "$expected" || { echo "Unexpected formatted files:"; printf '%s\n' "$changed"; exit 1; }
+          test "$changed" = 'tools/cache_builder.dart' || { echo "Unexpected formatted files:"; printf '%s\n' "$changed"; exit 1; }
           dart format --output=none --set-exit-if-changed lib test packages tools
           flutter test test/tools/cache_builder_pagination_test.dart test/tools/cache_builder_test.dart
 
-      - name: Encrypt formatted files
+      - name: Encrypt formatted file
         shell: bash
         env:
           EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
@@ -65,21 +64,19 @@ jobs:
           mkdir -p "$work/gpg" "$work/out"
           chmod 700 "$work/gpg"
           export GNUPGHOME="$work/gpg"
-          tar -C "$GITHUB_WORKSPACE/private-source" -czf "$work/formatted-files.tar.gz" \
-            tools/cache_builder.dart \
-            test/architecture/manga_core_boundary_test.dart
+          cp "$GITHUB_WORKSPACE/private-source/tools/cache_builder.dart" "$work/cache_builder.dart"
           gpg --batch --import "$GITHUB_WORKSPACE/trusted-source/keys/source-bundles-public.asc"
           fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1=="fpr"{print $10;exit}')"
           test "$fingerprint" = "$EXPECTED_FINGERPRINT"
           gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" \
-            --output "$work/out/formatted-files.tar.gz.gpg" --encrypt "$work/formatted-files.tar.gz"
-          sha256sum "$work/formatted-files.tar.gz" > "$work/out/formatted-files.tar.gz.sha256"
-          printf '%s\n' '86791504fa68fe29917646a5601e5b472d3dd36e' > "$work/out/source-ref.txt"
+            --output "$work/out/cache_builder.dart.gpg" --encrypt "$work/cache_builder.dart"
+          sha256sum "$work/cache_builder.dart" > "$work/out/cache_builder.dart.sha256"
+          printf '%s\n' 'fc2ab86c7501d7823fac4c3fe1eb3ce6a3a52567' > "$work/out/source-ref.txt"
 
       - name: Upload encrypted verified formatting handoff
         uses: actions/upload-artifact@v7
         with:
-          name: goanime-format-fix-encrypted
+          name: goanime-format-fix-encrypted-v2
           path: ${{ runner.temp }}/goanime-format-fix/out
           if-no-files-found: error
           retention-days: 1
