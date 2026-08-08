@@ -1,0 +1,175 @@
+name: Build immutable CodexGemini pair
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - triggers/codex-gemini-pair.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codex-gemini-pair-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  PYTHONUTF8: "1"
+  RUST_BACKTRACE: "1"
+  RUST_MIN_STACK: "8388608"
+
+jobs:
+  build:
+    name: Build exact core binary and pair receipt
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout toolchain control plane
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Test and resolve exact pair
+        id: pair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest scripts.tests.test_resolve_codex_pair_trigger
+          python3 scripts/resolve_codex_pair_trigger.py \
+            triggers/codex-gemini-pair.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Checkout exact core
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ steps.pair.outputs.core_repository }}
+          ref: ${{ steps.pair.outputs.core_ref }}
+          path: core-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout exact wrapper
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ steps.pair.outputs.wrapper_repository }}
+          ref: ${{ steps.pair.outputs.wrapper_ref }}
+          path: wrapper-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify immutable checkout identities
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          core_commit="$(git -C core-source rev-parse HEAD)"
+          wrapper_commit="$(git -C wrapper-source rev-parse HEAD)"
+          test "${core_commit,,}" = '${{ steps.pair.outputs.core_ref }}'
+          test "${wrapper_commit,,}" = '${{ steps.pair.outputs.wrapper_ref }}'
+          printf 'core_commit=%s\n' "$core_commit" >> "$GITHUB_OUTPUT"
+          printf 'wrapper_commit=%s\n' "$wrapper_commit" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust 1.95 and native build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential clang cmake file libcap-dev libseccomp-dev \
+            libsqlite3-dev libssl-dev pkg-config protobuf-compiler
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+          rustc --version
+          cargo --version
+
+      - name: Verify deterministic core source contract
+        working-directory: core-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_external_agent_integration.py \
+            --python-only \
+            --report "$RUNNER_TEMP/pair-core-source-verification.json"
+
+      - name: Build real Codex CLI release binary
+        id: binary
+        working-directory: core-source/codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p codex-cli --bin codex
+          binary="$PWD/target/release/codex"
+          test -f "$binary"
+          test -x "$binary"
+          sha256="$(sha256sum "$binary" | cut -d' ' -f1)"
+          size_bytes="$(stat -c '%s' "$binary")"
+          file_description="$(file -b "$binary")"
+          readelf -h "$binary" > "$RUNNER_TEMP/codex-elf-header.txt"
+          printf 'path=%s\n' "$binary" >> "$GITHUB_OUTPUT"
+          printf 'sha256=%s\n' "$sha256" >> "$GITHUB_OUTPUT"
+          printf 'size_bytes=%s\n' "$size_bytes" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$file_description" > "$RUNNER_TEMP/codex-file-description.txt"
+
+      - name: Write immutable pair receipt
+        id: receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/codex-gemini-pair-receipt.json"
+          python3 - \
+            "$receipt" \
+            '${{ steps.identity.outputs.core_commit }}' \
+            '${{ steps.identity.outputs.wrapper_commit }}' \
+            '${{ steps.binary.outputs.sha256 }}' \
+            '${{ steps.binary.outputs.size_bytes }}' \
+            "$RUNNER_TEMP/codex-file-description.txt" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          file_description = pathlib.Path(sys.argv[6]).read_text(encoding="utf-8").strip()
+          receipt = {
+              "schema_version": 1,
+              "core_repository": "Semogtw/codex-gemini-agents",
+              "core_commit": sys.argv[2].lower(),
+              "wrapper_repository": "Semogtw/codex-desktop-linux-gemini-",
+              "wrapper_commit": sys.argv[3].lower(),
+              "binary_relative_name": "codex",
+              "binary_sha256": sys.argv[4].lower(),
+              "binary_size_bytes": int(sys.argv[5]),
+              "file_description": file_description,
+              "staging_status": "not-executed-in-ci",
+          }
+          pathlib.Path(sys.argv[1]).write_text(
+              json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          printf 'path=%s\n' "$receipt" >> "$GITHUB_OUTPUT"
+
+      - name: Verify product checkouts stayed clean
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C core-source diff --exit-code
+          git -C wrapper-source diff --exit-code
+          test -z "$(git -C core-source status --porcelain=v1)"
+          test -z "$(git -C wrapper-source status --porcelain=v1)"
+
+      - name: Upload immutable pair build evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: codex-gemini-pair-${{ steps.identity.outputs.core_commit }}-${{ steps.identity.outputs.wrapper_commit }}
+          path: |
+            ${{ steps.binary.outputs.path }}
+            ${{ steps.receipt.outputs.path }}
+            ${{ runner.temp }}/codex-elf-header.txt
+            ${{ runner.temp }}/codex-file-description.txt
+            ${{ runner.temp }}/pair-core-source-verification.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
