@@ -1,0 +1,118 @@
+name: Verify Codex Linux Gemini wrapper trigger
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - triggers/codex-linux-gemini-verification.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codex-linux-gemini-trigger-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wrapper:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout toolchain control plane
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Resolve and validate wrapper source
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import re
+          from pathlib import Path
+
+          request = json.loads(Path("triggers/codex-linux-gemini-verification.json").read_text())
+          repository = request.get("repository")
+          ref = request.get("ref")
+          if repository != "Semogtw/codex-desktop-linux-gemini-":
+              raise SystemExit("wrapper repository is not allowlisted")
+          if not isinstance(ref, str) or not re.fullmatch(r"[A-Za-z0-9._/-]{1,160}", ref):
+              raise SystemExit("wrapper ref contains unsupported characters")
+          if ".." in ref or ref.startswith("/") or ref.endswith("/"):
+              raise SystemExit("wrapper ref is not a safe Git ref")
+          print(f"repository={repository}")
+          print(f"ref={ref}")
+          PY
+
+      - name: Checkout exact wrapper source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ steps.target.outputs.repository }}
+          ref: ${{ steps.target.outputs.ref }}
+          path: wrapper-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Run Sol V1 worker bridge tests
+        id: bridge_tests
+        working-directory: wrapper-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test \
+            linux-features/sol-v1-worker-bridge/test.js \
+            linux-features/sol-v1-worker-bridge/update-builder.test.js
+
+      - name: Run generic packaging smoke suite
+        id: packaging_smoke
+        continue-on-error: true
+        working-directory: wrapper-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tests/scripts_smoke.sh
+
+      - name: Verify wrapper checkout stayed clean
+        working-directory: wrapper-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git status --short
+          git diff --exit-code
+          test -z "$(git status --porcelain=v1)"
+
+      - name: Record verification receipt
+        if: always() && !cancelled()
+        working-directory: wrapper-source
+        shell: bash
+        run: |
+          {
+            echo "repository=${{ steps.target.outputs.repository }}"
+            echo "ref=${{ steps.target.outputs.ref }}"
+            git rev-parse HEAD | sed 's/^/commit=/'
+            echo "bridge_tests=${{ steps.bridge_tests.outcome }}"
+            echo "packaging_smoke=${{ steps.packaging_smoke.outcome }}"
+            echo "trigger_commit=${{ github.sha }}"
+          } > "$RUNNER_TEMP/codex-linux-gemini-wrapper-receipt.txt"
+
+      - name: Upload verification receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: codex-linux-gemini-wrapper-${{ github.run_id }}
+          path: ${{ runner.temp }}/codex-linux-gemini-wrapper-receipt.txt
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Report optional smoke failure without blocking focused bridge gate
+        if: always() && steps.packaging_smoke.outcome == 'failure'
+        shell: bash
+        run: echo "Generic packaging smoke failed; focused bridge gate result remains authoritative for this checkpoint."
