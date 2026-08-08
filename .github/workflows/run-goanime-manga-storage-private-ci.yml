@@ -100,7 +100,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          paths=(test/services/manga/storage/manga_database_test.dart)
+          paths=()
+          if [[ -d test/services/manga/storage ]]; then
+            paths+=(test/services/manga/storage)
+          fi
           if [[ -d lib/services/manga/storage ]]; then
             paths+=(lib/services/manga/storage)
           fi
@@ -112,12 +115,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          paths=(test/services/manga/storage/manga_database_test.dart)
+          paths=()
+          if [[ -d test/services/manga/storage ]]; then
+            paths+=(test/services/manga/storage)
+          fi
           if [[ -d lib/services/manga/storage ]]; then
             paths+=(lib/services/manga/storage)
           fi
           dart format "${paths[@]}"
-          git diff -- test/services/manga/storage/manga_database_test.dart lib/services/manga/storage
+          git diff -- test/services/manga/storage lib/services/manga/storage
 
       - name: Fail on storage formatting drift
         if: steps.request.outputs.project == 'goanime' && steps.storage_format.outcome == 'failure'
@@ -129,6 +135,7 @@ jobs:
         with:
           channel: stable
           flutter-version: 3.44.1
+          cache: true
 
       - name: Resolve root dependencies
         if: steps.request.outputs.project == 'goanime'
@@ -139,12 +146,10 @@ jobs:
           flutter config --no-analytics
           flutter pub get
 
-      - name: Run manga database test
+      - name: Run manga storage suite
         if: steps.request.outputs.project == 'goanime'
         working-directory: private-source
-        run: >-
-          flutter test --no-pub
-          test/services/manga/storage/manga_database_test.dart
+        run: flutter test --no-pub test/services/manga/storage
 
       - name: Remove private checkout
         if: always()
