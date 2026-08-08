@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "request_id": 5,
+  "request_id": 6,
   "suite": "core-external-agents",
   "core_repository": "Semogtw/codex-gemini-agents",
-  "core_ref": "cbda63cfd644c71fb4f23462d1e1163e324c3149",
-  "reason": "Confirm completion restore fixture and diagnose any checkout artifact after otherwise green lifecycle/App Server gates"
+  "core_ref": "c64501ad14fd20f1923a38a1c5dd939b9c22c5b1",
+  "reason": "Verify fixed retained-session contract syntax plus lifecycle, completion restore, App Server projection and checkout hygiene"
 }
