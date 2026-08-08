@@ -1,5 +1,6 @@
 name: Run private GoAnime full CI
 
+# The private repository keeps only manual compatibility markers for migrated CI.
 on:
   push:
     branches:
