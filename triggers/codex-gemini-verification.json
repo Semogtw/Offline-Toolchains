@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "suite": "core-external-agents",
+  "core_repository": "Semogtw/codex-gemini-agents",
+  "core_ref": "1538a4b93ac116eae8e5fba19983b1f56f3d253d",
+  "reason": "Validate durable lifecycle cleanup, bounded tombstones, single restore authority, and fail-closed App Server projection"
+}
