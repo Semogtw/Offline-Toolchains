@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any, TextIO
 
-ALLOWED_PROJECTS = {"goanime", "zapzap", "semogsite", "hydra"}
+ALLOWED_PROJECTS = {"goanime", "zapzap", "semogsite", "hydra", "receitas"}
 ALLOWED_MODES = {"full", "ref", "snapshot"}
 EXPECTED_KEYS = {"project", "mode", "ref"}
 HEX_COMMIT = re.compile(r"^[0-9a-fA-F]{7,40}$")

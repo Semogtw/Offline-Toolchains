@@ -10,6 +10,9 @@ on:
         options:
           - goanime
           - zapzap
+          - semogsite
+          - hydra
+          - receitas
       mode:
         description: Export all refs, one exact ref, or a source snapshot
         required: true
@@ -46,7 +49,8 @@ jobs:
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.head_branch == 'build/source-bundles' &&
        github.event.workflow_run.event == 'push' &&
-       github.event.workflow_run.actor.login == github.repository_owner)
+       github.event.workflow_run.actor.login == github.repository_owner &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-24.04
     timeout-minutes: 90
 
@@ -77,7 +81,6 @@ jobs:
           INPUT_REF: ${{ inputs.ref }}
         run: |
           set -euo pipefail
-
           if [[ "$EVENT_NAME" == "workflow_run" ]]; then
             request_file="request-source/triggers/private-source-bundle.json"
           else
@@ -85,7 +88,6 @@ jobs:
             python3 - "$request_file" "$INPUT_PROJECT" "$INPUT_MODE" "$INPUT_REF" <<'PY'
           import json
           import sys
-
           output, project, mode, ref = sys.argv[1:]
           with open(output, "w", encoding="utf-8") as stream:
               json.dump({"project": project, "mode": mode, "ref": ref}, stream)
@@ -96,17 +98,20 @@ jobs:
           python3 - "$normalized" "$GITHUB_OUTPUT" <<'PY'
           import json
           import sys
-
           request = json.loads(sys.argv[1])
-          output_path = sys.argv[2]
           repositories = {
               "goanime": "Semogtw/goanime-mobile",
               "zapzap": "Semogtw/Zapzap",
+              "semogsite": "Semogtw/SemogSite",
+              "hydra": "Semogtw/HydraPersonalizado",
+              "receitas": "Semogtw/Receitas",
           }
-          with open(output_path, "a", encoding="utf-8") as stream:
-              stream.write(f"project={request['project']}\n")
-              stream.write(f"mode={request['mode']}\n")
-              stream.write(f"ref={request['ref']}\n")
+          with open(sys.argv[2], "a", encoding="utf-8") as stream:
+              for key in ("project", "mode", "ref"):
+                  value = request[key]
+                  if "\n" in value or "\r" in value:
+                      raise SystemExit(f"unsafe newline in {key}")
+                  stream.write(f"{key}={value}\n")
               stream.write(f"repository={repositories[request['project']]}\n")
           PY
 
@@ -114,12 +119,7 @@ jobs:
         shell: bash
         env:
           PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-        run: |
-          set -euo pipefail
-          test -n "$PRIVATE_REPOSITORIES_TOKEN" || {
-            echo "Missing Actions secret PRIVATE_REPOSITORIES_TOKEN." >&2
-            exit 1
-          }
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
 
       - name: Checkout selected private repository
         uses: actions/checkout@v6
@@ -131,8 +131,9 @@ jobs:
           persist-credentials: false
           lfs: false
           submodules: false
+          show-progress: false
 
-      - name: Build, encrypt and segment export
+      - name: Build and encrypt export
         id: bundle
         shell: bash
         env:
@@ -143,41 +144,29 @@ jobs:
           EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
         run: |
           set -euo pipefail
-
           source_dir="$GITHUB_WORKSPACE/private-source"
           work_dir="$RUNNER_TEMP/private-source-bundle"
           package_dir="$work_dir/package"
-          parts_dir="$work_dir/parts"
           transfer_dir="$work_dir/transfer"
           plaintext_archive="$work_dir/private-source-package.tar.zst"
           encrypted_file="$work_dir/private-source.gpg"
           gpg_home="$work_dir/gpg"
 
           rm -rf "$work_dir"
-          mkdir -p "$package_dir" "$parts_dir" "$transfer_dir" "$gpg_home"
+          mkdir -p "$package_dir" "$transfer_dir" "$gpg_home"
           chmod 700 "$gpg_home"
-
-          cleanup() {
-            rm -rf "$package_dir" "$plaintext_archive" "$gpg_home"
-          }
-          trap cleanup EXIT
-
-          git -C "$source_dir" rev-parse --is-inside-work-tree >/dev/null
 
           resolve_exact_ref() {
             local requested="$1"
             local candidate
-
             if [[ -z "$requested" ]]; then
               git -C "$source_dir" rev-parse HEAD
               return
             fi
-
             if [[ "$requested" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
               git -C "$source_dir" rev-parse --verify "${requested}^{commit}"
               return
             fi
-
             for candidate in \
               "refs/heads/$requested" \
               "refs/remotes/origin/$requested" \
@@ -187,60 +176,39 @@ jobs:
                 return
               fi
             done
-
-            echo "Exact branch, tag or commit was not found: $requested" >&2
+            echo "Exact branch, tag or commit was not found." >&2
             return 1
           }
 
-          export_format="bundle"
           resolved_commit="$(resolve_exact_ref "$REQUESTED_REF")"
+          export_format=bundle
 
           if [[ "$MODE" == "full" ]]; then
             while IFS=$'\t' read -r remote_ref object_id; do
               [[ "$remote_ref" == "refs/remotes/origin/HEAD" ]] && continue
               branch_name="${remote_ref#refs/remotes/origin/}"
               git -C "$source_dir" update-ref "refs/heads/$branch_name" "$object_id"
-            done < <(
-              git -C "$source_dir" for-each-ref \
-                --format='%(refname)%09%(objectname)' refs/remotes/origin
-            )
-
-            git -C "$source_dir" bundle create \
-              "$package_dir/repository.bundle" --all
-            git -C "$source_dir" bundle verify \
-              "$package_dir/repository.bundle"
+            done < <(git -C "$source_dir" for-each-ref --format='%(refname)%09%(objectname)' refs/remotes/origin)
+            git -C "$source_dir" bundle create "$package_dir/repository.bundle" --all
+            git -C "$source_dir" bundle verify "$package_dir/repository.bundle"
           elif [[ "$MODE" == "ref" ]]; then
-            git -C "$source_dir" update-ref \
-              refs/heads/offline-export "$resolved_commit"
-            git -C "$source_dir" bundle create \
-              "$package_dir/repository.bundle" refs/heads/offline-export
-            git -C "$source_dir" bundle verify \
-              "$package_dir/repository.bundle"
+            git -C "$source_dir" update-ref refs/heads/offline-export "$resolved_commit"
+            git -C "$source_dir" bundle create "$package_dir/repository.bundle" refs/heads/offline-export
+            git -C "$source_dir" bundle verify "$package_dir/repository.bundle"
           else
-            export_format="snapshot"
-            git -C "$source_dir" archive \
-              --format=tar \
-              --prefix="$PROJECT/" \
-              "$resolved_commit" |
+            export_format=snapshot
+            git -C "$source_dir" archive --format=tar --prefix="$PROJECT/" "$resolved_commit" |
               zstd -T0 -6 -o "$package_dir/snapshot.tar.zst"
           fi
 
-          git -C "$source_dir" for-each-ref \
-            --format='%(refname)%09%(objectname)' \
+          git -C "$source_dir" for-each-ref --format='%(refname)%09%(objectname)' \
             refs/heads refs/tags > "$package_dir/REFS.txt"
 
-          python3 - \
-            "$package_dir/PRIVATE-MANIFEST.json" \
-            "$PROJECT" \
-            "$PRIVATE_REPOSITORY" \
-            "$MODE" \
-            "$REQUESTED_REF" \
-            "$resolved_commit" \
-            "$export_format" <<'PY'
+          python3 - "$package_dir/PRIVATE-MANIFEST.json" "$PROJECT" "$PRIVATE_REPOSITORY" \
+            "$MODE" "$REQUESTED_REF" "$resolved_commit" "$export_format" <<'PY'
           import datetime
           import json
           import sys
-
           path, project, repository, mode, requested_ref, commit, export_format = sys.argv[1:]
           manifest = {
               "schema_version": 1,
@@ -251,67 +219,43 @@ jobs:
               "resolved_commit": commit,
               "format": export_format,
               "created_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-              "excludes": [
-                  "git-lfs objects",
-                  "submodule repositories",
-                  "untracked files",
-                  "stashes",
-                  "local-only commits",
-              ],
+              "excludes": ["git-lfs objects", "submodule repositories", "untracked files", "stashes", "local-only commits"],
           }
           with open(path, "w", encoding="utf-8") as stream:
               json.dump(manifest, stream, indent=2, sort_keys=True)
               stream.write("\n")
           PY
 
-          tar -C "$package_dir" -I 'zstd -T0 -6' \
-            -cf "$plaintext_archive" .
+          tar -C "$package_dir" -I 'zstd -T0 -6' -cf "$plaintext_archive" .
 
           export GNUPGHOME="$gpg_home"
           gpg --batch --import keys/source-bundles-public.asc
-          fingerprint="$({
-            gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT"
-          } | awk -F: '$1 == "fpr" { print $10; exit }')"
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1 == "fpr" { print $10; exit }')"
           test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          test -z "$(gpg --batch --with-colons --list-secret-keys 2>/dev/null | awk -F: '$1 == "sec" { print $1 }')"
 
-          gpg --batch --yes --trust-model always \
-            --recipient "$EXPECTED_FINGERPRINT" \
-            --output "$encrypted_file" \
-            --encrypt "$plaintext_archive"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" \
+            --output "$encrypted_file" --encrypt "$plaintext_archive"
           test -s "$encrypted_file"
 
-          rm -rf "$package_dir" "$plaintext_archive" "$source_dir"
+          rm -rf "$package_dir" "$plaintext_archive" "$source_dir" "$gpg_home"
 
           split --bytes=400M --numeric-suffixes=0 --suffix-length=3 \
-            "$encrypted_file" "$parts_dir/private-source.gpg.part-"
+            "$encrypted_file" "$transfer_dir/private-source.gpg.part-"
+          rm -f "$encrypted_file"
 
-          part_count="$(find "$parts_dir" -maxdepth 1 -type f \
-            -name 'private-source.gpg.part-*' | wc -l | tr -d ' ')"
+          part_count="$(find "$transfer_dir" -maxdepth 1 -type f -name 'private-source.gpg.part-*' | wc -l | tr -d ' ')"
           if (( part_count < 1 || part_count > 16 )); then
             echo "Encrypted transfer requires $part_count parts; supported range is 1-16." >&2
             exit 1
           fi
 
-          (
-            cd "$parts_dir"
-            sha256sum private-source.gpg.part-* > "$transfer_dir/SHA256SUMS.parts"
-          )
-          (
-            cd "$work_dir"
-            sha256sum private-source.gpg > "$transfer_dir/ENCRYPTED.sha256"
-          )
-
-          python3 - \
-            "$transfer_dir/TRANSFER.json" \
-            "$PROJECT" \
-            "$MODE" \
-            "$part_count" \
-            "$EXPECTED_FINGERPRINT" \
-            "$GITHUB_RUN_ID" <<'PY'
+          (cd "$transfer_dir" && sha256sum private-source.gpg.part-* > SHA256SUMS.parts)
+          python3 - "$transfer_dir/TRANSFER.json" "$PROJECT" "$MODE" "$part_count" \
+            "$EXPECTED_FINGERPRINT" "$GITHUB_RUN_ID" <<'PY'
           import datetime
           import json
           import sys
-
           path, project, mode, part_count, fingerprint, run_id = sys.argv[1:]
           transfer = {
               "schema_version": 1,
@@ -329,178 +273,23 @@ jobs:
               stream.write("\n")
           PY
 
-          rm -f "$encrypted_file"
-
-          echo "parts_dir=$parts_dir" >> "$GITHUB_OUTPUT"
           echo "transfer_dir=$transfer_dir" >> "$GITHUB_OUTPUT"
-          echo "part_count=$part_count" >> "$GITHUB_OUTPUT"
-          echo "artifact_prefix=private-source-$PROJECT-$MODE" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=private-source-$PROJECT-$MODE-encrypted" >> "$GITHUB_OUTPUT"
 
-      - name: Upload encrypted transfer manifest
+      - name: Upload ciphertext-only source transfer
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ steps.bundle.outputs.artifact_prefix }}-manifest
+          name: ${{ steps.bundle.outputs.artifact_name }}
           path: ${{ steps.bundle.outputs.transfer_dir }}
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
 
-      - name: Upload encrypted part 000
-        if: fromJSON(steps.bundle.outputs.part_count) > 0
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.bundle.outputs.artifact_prefix }}-part-000
-          path: ${{ steps.bundle.outputs.parts_dir }}/private-source.gpg.part-000
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload encrypted part 001
-        if: fromJSON(steps.bundle.outputs.part_count) > 1
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.bundle.outputs.artifact_prefix }}-part-001
-          path: ${{ steps.bundle.outputs.parts_dir }}/private-source.gpg.part-001
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload encrypted part 002
-        if: fromJSON(steps.bundle.outputs.part_count) > 2
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.bundle.outputs.artifact_prefix }}-part-002
-          path: ${{ steps.bundle.outputs.parts_dir }}/private-source.gpg.part-002
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload encrypted part 003
-        if: fromJSON(steps.bundle.outputs.part_count) > 3
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.bundle.outputs.artifact_prefix }}-part-003
-          path: ${{ steps.bundle.outputs.parts_dir }}/private-source.gpg.part-003
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload encrypted part 004
-        if: fromJSON(steps.bundle.outputs.part_count) > 4
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.bundle.outputs.artifact_prefix }}-part-004
-          path: ${{ steps.bundle.outputs.parts_dir }}/private-source.gpg.part-004
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload encrypted part 005
-        if: fromJSON(steps.bundle.outputs.part_count) > 5
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.bundle.outputs.artifact_prefix }}-part-005
-          path: ${{ steps.bundle.outputs.parts_dir }}/private-source.gpg.part-005
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload encrypted part 006
-        if: fromJSON(steps.bundle.outputs.part_count) > 6
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.bundle.outputs.artifact_prefix }}-part-006
-          path: ${{ steps.bundle.outputs.parts_dir }}/private-source.gpg.part-006
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload encrypted part 007
-        if: fromJSON(steps.bundle.outputs.part_count) > 7
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.bundle.outputs.artifact_prefix }}-part-007
-          path: ${{ steps.bundle.outputs.parts_dir }}/private-source.gpg.part-007
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload encrypted part 008
-        if: fromJSON(steps.bundle.outputs.part_count) > 8
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.bundle.outputs.artifact_prefix }}-part-008
-          path: ${{ steps.bundle.outputs.parts_dir }}/private-source.gpg.part-008
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload encrypted part 009
-        if: fromJSON(steps.bundle.outputs.part_count) > 9
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.bundle.outputs.artifact_prefix }}-part-009
-          path: ${{ steps.bundle.outputs.parts_dir }}/private-source.gpg.part-009
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload encrypted part 010
-        if: fromJSON(steps.bundle.outputs.part_count) > 10
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.bundle.outputs.artifact_prefix }}-part-010
-          path: ${{ steps.bundle.outputs.parts_dir }}/private-source.gpg.part-010
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload encrypted part 011
-        if: fromJSON(steps.bundle.outputs.part_count) > 11
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.bundle.outputs.artifact_prefix }}-part-011
-          path: ${{ steps.bundle.outputs.parts_dir }}/private-source.gpg.part-011
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload encrypted part 012
-        if: fromJSON(steps.bundle.outputs.part_count) > 12
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.bundle.outputs.artifact_prefix }}-part-012
-          path: ${{ steps.bundle.outputs.parts_dir }}/private-source.gpg.part-012
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload encrypted part 013
-        if: fromJSON(steps.bundle.outputs.part_count) > 13
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.bundle.outputs.artifact_prefix }}-part-013
-          path: ${{ steps.bundle.outputs.parts_dir }}/private-source.gpg.part-013
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload encrypted part 014
-        if: fromJSON(steps.bundle.outputs.part_count) > 14
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.bundle.outputs.artifact_prefix }}-part-014
-          path: ${{ steps.bundle.outputs.parts_dir }}/private-source.gpg.part-014
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload encrypted part 015
-        if: fromJSON(steps.bundle.outputs.part_count) > 15
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.bundle.outputs.artifact_prefix }}-part-015
-          path: ${{ steps.bundle.outputs.parts_dir }}/private-source.gpg.part-015
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
+      - name: Remove private and transient data
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source"
+          rm -rf "$GITHUB_WORKSPACE/request-source"
+          rm -rf "$RUNNER_TEMP/private-source-bundle"
+          rm -f "$RUNNER_TEMP/manual-private-source-request.json"

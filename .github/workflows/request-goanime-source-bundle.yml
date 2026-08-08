@@ -18,27 +18,27 @@ permissions:
   contents: read
 
 concurrency:
-  group: request-goanime-source-${{ github.ref }}
+  group: request-private-source-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   validate:
-    name: Validate GoAnime request and encryption key
+    name: Validate private source request and encryption key
     runs-on: ubuntu-24.04
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout request revision
+        uses: actions/checkout@v6
         with:
           persist-credentials: false
 
-      - name: Validate GoAnime request
+      - name: Validate allowlisted request
         shell: bash
         run: |
           set -euo pipefail
           python3 scripts/validate-source-bundle-request.py \
             triggers/private-source-bundle.json
-          test "$(jq -r ' .project' triggers/private-source-bundle.json)" = "goanime"
 
       - name: Verify committed encryption key
         shell: bash
@@ -54,3 +54,8 @@ jobs:
           } | awk -F: '$1 == "fpr" { print $10; exit }')"
           test "$fingerprint" = "$EXPECTED_FINGERPRINT"
           test -z "$(gpg --batch --with-colons --list-secret-keys 2>/dev/null | awk -F: '$1 == "sec" { print $1 }')"
+
+      - name: Remove temporary keyring
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/request-keyring"
