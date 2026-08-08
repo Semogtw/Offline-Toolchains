@@ -1,0 +1,92 @@
+name: Prepare verified GoAnime formatting fix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/prepare-goanime-format-fix.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: trusted-source
+          persist-credentials: false
+
+      - name: Checkout exact private GoAnime source read-only
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: 86791504fa68fe29917646a5601e5b472d3dd36e
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get
+
+      - name: Format only diagnosed files and verify full format gate
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format tools/cache_builder.dart test/architecture/manga_core_boundary_test.dart
+          git diff --check
+          changed="$(git diff --name-only)"
+          expected="$(printf '%s\n' 'test/architecture/manga_core_boundary_test.dart' 'tools/cache_builder.dart')"
+          test "$changed" = "$expected" || { echo "Unexpected formatted files:"; printf '%s\n' "$changed"; exit 1; }
+          dart format --output=none --set-exit-if-changed lib test packages tools
+          flutter test test/tools/cache_builder_pagination_test.dart test/tools/cache_builder_test.dart
+
+      - name: Encrypt formatted files
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/goanime-format-fix"
+          mkdir -p "$work/gpg" "$work/out"
+          chmod 700 "$work/gpg"
+          export GNUPGHOME="$work/gpg"
+          tar -C "$GITHUB_WORKSPACE/private-source" -czf "$work/formatted-files.tar.gz" \
+            tools/cache_builder.dart \
+            test/architecture/manga_core_boundary_test.dart
+          gpg --batch --import "$GITHUB_WORKSPACE/trusted-source/keys/source-bundles-public.asc"
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1=="fpr"{print $10;exit}')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" \
+            --output "$work/out/formatted-files.tar.gz.gpg" --encrypt "$work/formatted-files.tar.gz"
+          sha256sum "$work/formatted-files.tar.gz" > "$work/out/formatted-files.tar.gz.sha256"
+          printf '%s\n' '86791504fa68fe29917646a5601e5b472d3dd36e' > "$work/out/source-ref.txt"
+
+      - name: Upload encrypted verified formatting handoff
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-format-fix-encrypted
+          path: ${{ runner.temp }}/goanime-format-fix/out
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Cleanup private source
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source" "$RUNNER_TEMP/goanime-format-fix"
