@@ -1,0 +1,53 @@
+name: Audit private workflow locality
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '15 10 * * 1'
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/audit-private-workflow-locality.yml
+      - config/private-workflow-locality.json
+      - scripts/audit-private-workflow-locality.py
+      - docs/WORKFLOW_MIGRATION_STATUS.md
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-private-workflow-locality
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Reject unreviewed private-repository workflow drift
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout trusted audit policy
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            config/private-workflow-locality.json
+            scripts/audit-private-workflow-locality.py
+          sparse-checkout-cone-mode: false
+
+      - name: Require read-only private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Audit reviewed source-local workflows through GitHub API
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/audit-private-workflow-locality.py
