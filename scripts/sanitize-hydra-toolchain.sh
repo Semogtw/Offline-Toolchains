@@ -35,6 +35,22 @@ native/hydra-native/Cargo.lock=$native_lock_sha256
 native/game-agent/Cargo.lock=$agent_lock_sha256
 EOF
 
+# The selected private branch/tag/SHA is not needed to restore the public
+# dependency cache. Keep it out of the public manifest as well.
+python3 - "$manifest" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+lines = []
+for line in path.read_text(encoding="utf-8").splitlines():
+    if line.startswith("hydra_ref="):
+        lines.append("hydra_ref=redacted")
+    else:
+        lines.append(line)
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+
 cat > "$bundle_root/scripts/install-offline.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
