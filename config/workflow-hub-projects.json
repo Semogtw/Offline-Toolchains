@@ -1,7 +1,8 @@
 {
   "schema_version": 1,
   "policy": {
-    "artifact_retention_days": 1,
+    "sensitive_artifact_retention_days": 1,
+    "public_artifact_max_retention_days": 7,
     "private_checkout_cache": false,
     "private_checkout_persist_credentials": false,
     "private_outputs_default": "discard",

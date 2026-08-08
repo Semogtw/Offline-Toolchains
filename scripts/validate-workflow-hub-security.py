@@ -43,8 +43,12 @@ def _load_inventory() -> dict:
 
     if payload.get("schema_version") != 1:
         raise PolicyError("workflow inventory schema_version must be 1")
-    if payload.get("policy", {}).get("artifact_retention_days") != 1:
-        raise PolicyError("workflow inventory must pin one-day artifact retention")
+    policy = payload.get("policy", {})
+    if policy.get("sensitive_artifact_retention_days") != 1:
+        raise PolicyError("workflow inventory must pin sensitive artifact retention to one day")
+    public_max = policy.get("public_artifact_max_retention_days")
+    if not isinstance(public_max, int) or not 1 <= public_max <= 7:
+        raise PolicyError("public artifact maximum retention must be between one and seven days")
 
     projects = payload.get("projects")
     if not isinstance(projects, dict):
@@ -83,16 +87,34 @@ def _step_blocks(text: str) -> list[str]:
     return [text[starts[i] : starts[i + 1]] for i in range(len(starts) - 1)]
 
 
-def _validate_uploads(path: Path, text: str) -> None:
+def _validate_uploads(path: Path, text: str, public_max_days: int) -> None:
     for step in _step_blocks(text):
         if UPLOAD not in step:
             continue
-        if not re.search(r"(?m)^\s+retention-days:\s*1\s*$", step):
-            raise PolicyError(f"{path.name}: every uploaded artifact must use retention-days: 1")
+
+        retention = re.search(r"(?m)^\s+retention-days:\s*(\d+)\s*$", step)
+        if retention is None:
+            raise PolicyError(f"{path.name}: uploaded artifacts must declare retention-days")
+        retention_days = int(retention.group(1))
+        if not 1 <= retention_days <= public_max_days:
+            raise PolicyError(
+                f"{path.name}: artifact retention must be 1-{public_max_days} days"
+            )
+
+        lowered = step.lower()
+        encrypted_transfer = ".gpg" in lowered or "encrypted" in lowered or "transfer" in lowered
+        sensitive_upload = PRIVATE_TOKEN in text and (
+            encrypted_transfer
+            or "apk" in lowered
+            or "private-source" in lowered
+            or any(ext in lowered for ext in SENSITIVE_EXTENSIONS)
+        )
+        if sensitive_upload and retention_days != 1:
+            raise PolicyError(
+                f"{path.name}: sensitive/private artifact transfer must use retention-days: 1"
+            )
 
         if PRIVATE_TOKEN in text:
-            lowered = step.lower()
-            encrypted_transfer = ".gpg" in lowered or "encrypted" in lowered or "transfer" in lowered
             if any(ext in lowered for ext in SENSITIVE_EXTENSIONS) and not encrypted_transfer:
                 raise PolicyError(
                     f"{path.name}: private-token workflow appears to upload a raw sensitive file"
@@ -133,7 +155,7 @@ def _validate_private_token_workflow(path: Path, text: str) -> None:
 
 
 def validate() -> None:
-    _load_inventory()
+    inventory = _load_inventory()
     if not POLICY_DOC.is_file():
         raise PolicyError("missing workflow hub security policy document")
     if not WORKFLOWS.is_dir():
@@ -143,9 +165,10 @@ def validate() -> None:
     if not workflow_paths:
         raise PolicyError("no workflow files found")
 
+    public_max_days = inventory["policy"]["public_artifact_max_retention_days"]
     for path in workflow_paths:
         text = path.read_text(encoding="utf-8")
-        _validate_uploads(path, text)
+        _validate_uploads(path, text, public_max_days)
         _validate_private_token_workflow(path, text)
 
 

@@ -10,7 +10,7 @@ The goal is to keep GitHub-hosted compute in this public repository whenever the
 2. **No persistent Actions cache for private checkouts.** Package-manager caches derived from private repositories can leak dependency names, paths or build metadata and outlive a runner. Private CI jobs therefore hydrate dependencies inside the disposable runner instead of using `actions/cache` or setup-action cache integration.
 3. **Private build outputs are discarded by default.** Tests may build an APK, installer or production bundle to prove that the build works, but the output is deleted with the checkout unless a transfer workflow explicitly packages it.
 4. **Sensitive transfer is ciphertext-only.** APKs, source bundles, diagnostics, databases, backups, signing material and similar data must never be uploaded in plaintext from this public repository. Transfer workflows encrypt first with the committed OpenPGP public key and upload only ciphertext plus sanitized hashes/metadata.
-5. **One-day artifact retention.** Every `actions/upload-artifact` step in this repository must set `retention-days: 1`. Short retention is defense in depth, not a substitute for encryption.
+5. **Retention follows sensitivity.** Sensitive/private transfers use `retention-days: 1`. Explicitly public toolchains and redacted public reports may use up to 7 days so they can be reused instead of rebuilt constantly. Every `upload-artifact` must declare its retention explicitly.
 6. **Secrets stay out of untrusted code paths.** Workflows that receive `PRIVATE_REPOSITORIES_TOKEN` must not use `pull_request_target`, `secrets: inherit`, persisted checkout credentials, arbitrary repository/command inputs, or code from request branches as privileged implementation.
 7. **Least privilege by workflow.** Workflows declare explicit permissions. Private checkout/build jobs use `contents: read`; reporter workflows may add only the narrow write capability they require.
 8. **Public logs are treated as public.** Private jobs must avoid debug logging and should not print secret values, environment dumps, private source contents, user data, or sensitive manifests.
@@ -21,7 +21,7 @@ The versioned inventory is `config/workflow-hub-projects.json`.
 
 Current central coverage:
 
-- GoAnime: private CI, Android debug verification, encrypted APK transfer and encrypted source export.
+- GoAnime: private CI, Android debug verification, encrypted APK transfer, encrypted source export and incremental catalog refresh.
 - ZapZap: private Android CI, encrypted debug APK transfer and encrypted source export.
 - SemogSite: private checks/builds, public offline toolchain and encrypted source export. The CI default follows integrated `main`, not an old bootstrap branch.
 - Hydra: private validation, public offline toolchain and encrypted source export.
@@ -35,7 +35,9 @@ Historical or one-shot workflows may remain temporarily for compatibility, but n
 
 `PRIVATE_REPOSITORIES_TOKEN` must be a fine-grained token with only `Contents: Read-only` for private repositories actually served by the hub. As private projects are added, expand only the repository allowlist; do not add Actions administration, secrets, packages or write access.
 
-A separate credential is required if a private consumer repository is ever made to dispatch automatically into this public repository. Do not reuse the read-only checkout token for cross-repository writes.
+The GoAnime catalog refresh is the only current central workflow that needs to publish generated source data back to a private repository. It uses a separate secret named `GOANIME_CATALOG_WRITE_TOKEN`, which should be a fine-grained token scoped **only** to `Semogtw/goanime-mobile` with `Contents: Read and write`. The token is injected only into the publish step, used through a one-shot HTTP authorization header, and never persisted by `actions/checkout`.
+
+Any future private consumer that needs cross-repository writes must get its own narrowly scoped credential. Do not reuse the read-only checkout token for writes and do not create one organization-wide write token for convenience.
 
 ## APK and binary outputs
 
@@ -58,6 +60,6 @@ The private decryption key must never enter GitHub Actions. Production signing/d
 
 ## Validation
 
-`Validate workflow hub security` runs the static policy checker. The checker intentionally focuses on invariants that are safe to enforce repository-wide: one-day upload retention and critical rules for workflows that receive private credentials.
+`Validate workflow hub security` runs the static policy checker. It enforces explicit bounded artifact retention, one-day retention for sensitive/private transfers, ciphertext-only private APK/data uploads, non-persisted private checkout credentials and selected cache/permission invariants.
 
 When a legitimate workflow needs an exception, document the exact threat model and scope it narrowly instead of weakening the global rule.
