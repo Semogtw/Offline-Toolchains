@@ -86,6 +86,43 @@ jobs:
           submodules: false
           show-progress: false
 
+      - name: Set up Dart 3.12.1
+        if: steps.request.outputs.project == 'goanime'
+        uses: dart-lang/setup-dart@v1
+        with:
+          sdk: 3.12.1
+
+      - name: Check storage formatting
+        id: storage_format
+        if: steps.request.outputs.project == 'goanime'
+        continue-on-error: true
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          paths=(test/services/manga/storage/manga_database_test.dart)
+          if [[ -d lib/services/manga/storage ]]; then
+            paths+=(lib/services/manga/storage)
+          fi
+          dart format --output=none --set-exit-if-changed "${paths[@]}"
+
+      - name: Show storage formatting diff
+        if: steps.request.outputs.project == 'goanime' && steps.storage_format.outcome == 'failure'
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          paths=(test/services/manga/storage/manga_database_test.dart)
+          if [[ -d lib/services/manga/storage ]]; then
+            paths+=(lib/services/manga/storage)
+          fi
+          dart format "${paths[@]}"
+          git diff -- test/services/manga/storage/manga_database_test.dart lib/services/manga/storage
+
+      - name: Fail on storage formatting drift
+        if: steps.request.outputs.project == 'goanime' && steps.storage_format.outcome == 'failure'
+        run: exit 1
+
       - name: Set up Flutter 3.44.1
         if: steps.request.outputs.project == 'goanime'
         uses: subosito/flutter-action@v2
@@ -101,28 +138,6 @@ jobs:
           set -euo pipefail
           flutter config --no-analytics
           flutter pub get
-
-      - name: Check storage test formatting
-        id: storage_format
-        if: steps.request.outputs.project == 'goanime'
-        continue-on-error: true
-        working-directory: private-source
-        run: >-
-          dart format --output=none --set-exit-if-changed
-          test/services/manga/storage/manga_database_test.dart
-          lib/services/manga/storage
-
-      - name: Show storage formatting diff
-        if: steps.request.outputs.project == 'goanime' && steps.storage_format.outcome == 'failure'
-        working-directory: private-source
-        shell: bash
-        run: |
-          dart format test/services/manga/storage/manga_database_test.dart lib/services/manga/storage || true
-          git diff -- test/services/manga/storage/manga_database_test.dart lib/services/manga/storage
-
-      - name: Fail on storage formatting drift
-        if: steps.request.outputs.project == 'goanime' && steps.storage_format.outcome == 'failure'
-        run: exit 1
 
       - name: Run manga database test
         if: steps.request.outputs.project == 'goanime'
