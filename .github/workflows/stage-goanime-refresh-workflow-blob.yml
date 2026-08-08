@@ -1,0 +1,50 @@
+name: Stage validated GoAnime refresh workflow blob
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/stage-goanime-refresh-workflow-blob.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  stage:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Download validated workflow artifact
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: '9024621366'
+          path: handoff
+
+      - name: Verify and stage as a normal repository blob
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="$(find handoff -type f -name refresh-private-goanime-catalog.yml -print -quit)"
+          checksum="$(find handoff -type f -name refresh-private-goanime-catalog.yml.sha256 -print -quit)"
+          test -n "$file" -a -n "$checksum"
+          expected="$(awk '{print $1}' "$checksum")"
+          actual="$(sha256sum "$file" | awk '{print $1}')"
+          test "$actual" = "$expected"
+          test "$actual" = 'ee04a40d019f31cb453608f713382ccfbbd40ee54ed2938da1efdf60b53833f7'
+          mkdir -p generated
+          cp "$file" generated/refresh-private-goanime-catalog.yml
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add generated/refresh-private-goanime-catalog.yml
+          git diff --cached --quiet && exit 0
+          git commit -m 'chore(goanime): stage validated refresh workflow blob'
+          git pull --rebase origin main
+          git push origin HEAD:main
