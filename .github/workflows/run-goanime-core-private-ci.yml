@@ -114,7 +114,11 @@ jobs:
       - name: Show goanime_core formatting diff
         if: steps.request.outputs.project == 'goanime' && steps.core_format.outcome == 'failure'
         working-directory: private-source
-        run: git diff -- packages/goanime_core/lib packages/goanime_core/test
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd packages/goanime_core && dart format lib test)
+          git diff -- packages/goanime_core/lib packages/goanime_core/test
 
       - name: Fail on goanime_core formatting drift
         if: steps.request.outputs.project == 'goanime' && steps.core_format.outcome == 'failure'
