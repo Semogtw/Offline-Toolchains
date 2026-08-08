@@ -1,0 +1,153 @@
+name: Verify CodexGemini trigger
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - triggers/codex-gemini-verification.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codex-gemini-trigger-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  PYTHONUTF8: "1"
+  RUST_BACKTRACE: "1"
+  RUST_MIN_STACK: "8388608"
+
+jobs:
+  core-external-agents:
+    name: Core external-agent triggered verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout toolchain control plane
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Resolve and validate requested source
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import re
+          from pathlib import Path
+
+          request = json.loads(Path("triggers/codex-gemini-verification.json").read_text())
+          repository = request.get("core_repository")
+          ref = request.get("core_ref")
+          suite = request.get("suite")
+          if repository != "Semogtw/codex-gemini-agents":
+              raise SystemExit("core_repository is not allowlisted")
+          if suite != "core-external-agents":
+              raise SystemExit("only core-external-agents is allowed by this trigger")
+          if not isinstance(ref, str) or not re.fullmatch(r"[A-Za-z0-9._/-]{1,160}", ref):
+              raise SystemExit("core_ref contains unsupported characters")
+          if ".." in ref or ref.startswith("/") or ref.endswith("/"):
+              raise SystemExit("core_ref is not a safe Git ref")
+          print(f"repository={repository}")
+          print(f"ref={ref}")
+          print(f"suite={suite}")
+          PY
+
+      - name: Checkout exact CodexGemini core source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ steps.target.outputs.repository }}
+          ref: ${{ steps.target.outputs.ref }}
+          path: core-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install native dependencies and Rust 1.95
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential clang cmake libcap-dev libseccomp-dev \
+            libsqlite3-dev libssl-dev pkg-config protobuf-compiler zstd
+          rustup toolchain install 1.95.0 --profile minimal --component clippy --component rustfmt
+          rustup default 1.95.0
+          rustc --version
+          cargo --version
+
+      - name: Check committed Rust formatting
+        working-directory: core-source/codex-rs
+        run: cargo fmt --all -- --check
+
+      - name: Run deterministic Python source contract
+        working-directory: core-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target
+          python3 scripts/verify_external_agent_integration.py \
+            --python-only \
+            --command-timeout-seconds 900 \
+            --report target/external-agent-python-verification.json
+
+      - name: Run mandatory Python and Rust contract
+        working-directory: core-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_external_agent_integration.py \
+            --require-rust \
+            --command-timeout-seconds 7200 \
+            --report target/external-agent-verification.json
+
+      - name: Run App Server external projection unit tests
+        working-directory: core-source/codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p codex-app-server external_agent_projection --lib -- --nocapture
+          cargo check --locked -p codex-app-server --lib
+
+      - name: Record exact checked identity
+        if: always() && !cancelled()
+        working-directory: core-source
+        shell: bash
+        run: |
+          {
+            echo "repository=${{ steps.target.outputs.repository }}"
+            echo "ref=${{ steps.target.outputs.ref }}"
+            git rev-parse HEAD | sed 's/^/commit=/'
+            echo "suite=${{ steps.target.outputs.suite }}"
+            echo "trigger_commit=${{ github.sha }}"
+          } > "$RUNNER_TEMP/codex-gemini-trigger-receipt.txt"
+
+      - name: Upload verification receipts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: codex-gemini-trigger-${{ github.run_id }}
+          path: |
+            core-source/target/external-agent-python-verification.json
+            core-source/target/external-agent-verification.json
+            ${{ runner.temp }}/codex-gemini-trigger-receipt.txt
+          if-no-files-found: ignore
+          compression-level: 0
+          retention-days: 7
+
+      - name: Verify source checkout stayed clean
+        if: always() && !cancelled()
+        working-directory: core-source
+        shell: bash
+        run: |
+          git diff --exit-code
+          test -z "$(git status --porcelain=v1)"
