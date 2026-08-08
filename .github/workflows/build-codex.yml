@@ -6,7 +6,6 @@ on:
     branches:
       - main
     paths:
-      - .github/workflows/build-codex.yml
       - triggers/codex-toolchain.json
 
 permissions:
@@ -33,14 +32,36 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Checkout active Codex fork
+      - name: Test and resolve requested Codex source
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest scripts.tests.test_resolve_codex_toolchain_trigger
+          python3 scripts/resolve_codex_toolchain_trigger.py \
+            triggers/codex-toolchain.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Checkout requested Codex fork ref
         uses: actions/checkout@v6
         with:
-          repository: Semogtw/codex-gemini-agents
-          ref: feature/antigravity-capabilities
+          repository: ${{ steps.target.outputs.repository }}
+          ref: ${{ steps.target.outputs.ref }}
           path: codex-source
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Record exact checked source
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit="$(git -C codex-source rev-parse HEAD)"
+          printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
+          printf 'requested_ref=%s\n' '${{ steps.target.outputs.ref }}' >> "$GITHUB_OUTPUT"
+          if [[ '${{ steps.target.outputs.ref }}' =~ ^[0-9a-fA-F]{40}$ ]]; then
+            test "${commit,,}" = "${{ steps.target.outputs.ref }}"
+          fi
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v6
@@ -105,6 +126,8 @@ jobs:
           native_arch_include="$native_include/x86_64-linux-gnu"
           native_lib="$native_root/usr/lib/x86_64-linux-gnu"
           codex_commit="$(git -C codex-source rev-parse HEAD)"
+          codex_ref='${{ steps.target.outputs.ref }}'
+          codex_repository='${{ steps.target.outputs.repository }}'
 
           rm -rf "$bundle_root" "$archive" "$archive.sha256" "$parts_dir"
           mkdir -p \
@@ -135,9 +158,7 @@ jobs:
             cp -a /usr/include/openssl "$native_include/openssl"
           fi
           if [[ -d /usr/include/x86_64-linux-gnu/openssl ]]; then
-            cp -a \
-              /usr/include/x86_64-linux-gnu/openssl \
-              "$native_arch_include/openssl"
+            cp -a /usr/include/x86_64-linux-gnu/openssl "$native_arch_include/openssl"
           fi
 
           shopt -s nullglob
@@ -208,11 +229,11 @@ jobs:
           "$RUNNER_TEMP/openssl-smoke"
 
           {
-            echo "schema_version=1"
+            echo "schema_version=2"
             echo "repository=$GITHUB_REPOSITORY"
             echo "workflow_commit=$GITHUB_SHA"
-            echo "codex_repository=Semogtw/codex-gemini-agents"
-            echo "codex_branch=feature/antigravity-capabilities"
+            echo "codex_repository=$codex_repository"
+            echo "codex_ref=$codex_ref"
             echo "codex_commit=$codex_commit"
             echo "runner=$RUNNER_OS-$RUNNER_ARCH"
             echo "created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -256,6 +277,8 @@ jobs:
           {
             echo "archive=$(basename "$archive")"
             echo "archive_sha256=$(cut -d' ' -f1 "$archive.sha256")"
+            echo "codex_repository=$codex_repository"
+            echo "codex_ref=$codex_ref"
             echo "codex_commit=$codex_commit"
             echo "part_count=$part_count"
             echo "part_size=400M"
