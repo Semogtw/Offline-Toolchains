@@ -17,9 +17,9 @@ jobs:
   refresh:
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 180
     env:
-      CACHE_BUILDER_MAX_RUNTIME_MINUTES: '45'
+      CACHE_BUILDER_MAX_RUNTIME_MINUTES: '90'
 
     steps:
       - name: Checkout trusted Toolchains source
@@ -221,14 +221,14 @@ jobs:
           dart run tools/.toolchain_current_availability_targets.dart
           rm tools/.toolchain_current_availability_targets.dart
 
-      - name: Incrementally audit provider availability
+      - name: Fully audit provider availability
         working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
-          dart run tools/cache_builder.dart --seed-only
+          dart run tools/cache_builder.dart
 
-      - name: Incrementally map only newly available titles to MAL
+      - name: Map newly discovered provider titles to MAL
         working-directory: private-source
         shell: bash
         env:
@@ -366,24 +366,109 @@ jobs:
           (cd packages/goanime_core && dart test)
           pwsh ./tools/validate_release_workflows.ps1
 
-      - name: Require dedicated GoAnime catalog write token
+      - name: Build Android debug APK from refreshed caches
+        working-directory: private-source
+        run: flutter build apk --debug --no-pub
+
+      - name: Encrypt APK and refreshed cache handoff
+        id: package
         shell: bash
         env:
-          GOANIME_CATALOG_WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
         run: |
           set -euo pipefail
-          test -n "$GOANIME_CATALOG_WRITE_TOKEN" || {
-            echo 'Missing GOANIME_CATALOG_WRITE_TOKEN; use a fine-grained token scoped only to Semogtw/goanime-mobile with Contents read/write.' >&2
-            exit 1
-          }
+          apk="$GITHUB_WORKSPACE/private-source/build/app/outputs/flutter-apk/app-debug.apk"
+          test -s "$apk"
+          unzip -t "$apk" >/dev/null
 
-      - name: Commit refreshed caches back to private main
+          work="$RUNNER_TEMP/goanime-handoff"
+          gpg_home="$work/gpg"
+          transfer="$work/transfer"
+          rm -rf "$work"
+          mkdir -p "$gpg_home" "$transfer"
+          chmod 700 "$gpg_home"
+          export GNUPGHOME="$gpg_home"
+
+          cache_archive="$work/goanime-catalog-refresh.tar.gz"
+          tar -C "$GITHUB_WORKSPACE/private-source" -czf "$cache_archive" \
+            tools/anime_metadata_seed_targets.json \
+            tools/anime_availability_seed_targets.json \
+            assets/data/anime_metadata_seed.json \
+            assets/data/broadcast_schedule.json \
+            assets/data/available_animes.json \
+            assets/data/available_anime_modes.json \
+            assets/data/mal_availability_map.json \
+            assets/data/mal_availability_unmatched.json \
+            assets/data/title_availability.db \
+            assets/data/franchise_availability_map.json \
+            assets/data/franchise_index.json \
+            assets/data/franchise_availability.db
+          tar -tzf "$cache_archive" >/dev/null
+
+          apk_sha256="$(sha256sum "$apk" | awk '{print $1}')"
+          apk_size="$(stat -c '%s' "$apk")"
+          cache_sha256="$(sha256sum "$cache_archive" | awk '{print $1}')"
+          cache_size="$(stat -c '%s' "$cache_archive")"
+
+          gpg --batch --import "$GITHUB_WORKSPACE/trusted-source/keys/source-bundles-public.asc"
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1=="fpr"{print $10;exit}')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          test -z "$(gpg --batch --with-colons --list-secret-keys 2>/dev/null | awk -F: '$1 == "sec" { print $1 }')"
+
+          encrypted_apk="$transfer/GoAnime-refreshed-debug.apk.gpg"
+          encrypted_cache="$transfer/GoAnime-refreshed-catalog.tar.gz.gpg"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" --output "$encrypted_apk" --encrypt "$apk"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" --output "$encrypted_cache" --encrypt "$cache_archive"
+          test -s "$encrypted_apk"
+          test -s "$encrypted_cache"
+
+          python3 - "$transfer/manifest.json" "$apk_sha256" "$apk_size" "$cache_sha256" "$cache_size" "$GITHUB_RUN_ID" <<'PY'
+          import datetime,json,sys
+          path,apk_sha256,apk_size,cache_sha256,cache_size,run_id=sys.argv[1:]
+          data={
+              'schema_version':2,
+              'project':'goanime',
+              'refresh_mode':'full-provider-audit',
+              'build_type':'debug',
+              'apk_sha256':apk_sha256,
+              'apk_size_bytes':int(apk_size),
+              'catalog_archive_sha256':cache_sha256,
+              'catalog_archive_size_bytes':int(cache_size),
+              'encryption':'OpenPGP',
+              'recipient_fingerprint':'2DE29DC31427CF0A911AB96175679291435059B0',
+              'workflow_run_id':run_id,
+              'retention_days':1,
+              'created_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),
+          }
+          open(path,'w',encoding='utf-8').write(json.dumps(data,indent=2,sort_keys=True)+'\n')
+          PY
+
+          rm -rf "$gpg_home" "$cache_archive"
+          echo "transfer_dir=$transfer" >> "$GITHUB_OUTPUT"
+          echo "apk_sha256=$apk_sha256" >> "$GITHUB_OUTPUT"
+          echo "catalog_sha256=$cache_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload encrypted recoverable handoff
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-private-full-refresh-encrypted
+          path: ${{ steps.package.outputs.transfer_dir }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Optionally commit refreshed caches back to private main
         working-directory: private-source
         shell: bash
         env:
           WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
         run: |
           set -euo pipefail
+          if [ -z "$WRITE_TOKEN" ]; then
+            echo 'GOANIME_CATALOG_WRITE_TOKEN is not configured; encrypted cache handoff was uploaded for trusted external persistence.'
+            exit 0
+          fi
+
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add \
@@ -401,9 +486,9 @@ jobs:
             assets/data/franchise_availability.db
           if git diff --cached --quiet; then
             echo 'No cache changes to commit.'
-          else
-            git commit -m 'chore(catalog): refresh current anime caches'
+            exit 0
           fi
+          git commit -m 'chore(catalog): refresh current anime caches'
 
           auth="$(printf 'x-access-token:%s' "$WRITE_TOKEN" | base64 -w0)"
           extraheader="AUTHORIZATION: basic $auth"
@@ -411,82 +496,19 @@ jobs:
           if [ "$(git rev-parse origin/main)" != '${{ steps.request.outputs.ref }}' ]; then
             git rebase origin/main
           fi
-          if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
-            git -c http.https://github.com/.extraheader="$extraheader" push origin HEAD:main
-          fi
+          git -c http.https://github.com/.extraheader="$extraheader" push origin HEAD:main
           unset auth extraheader WRITE_TOKEN
           echo 'Catalog refresh published to private main without persisting write credentials.'
-
-      - name: Build Android debug APK from refreshed caches
-        working-directory: private-source
-        run: flutter build apk --debug --no-pub
-
-      - name: Validate and encrypt APK
-        id: package
-        shell: bash
-        env:
-          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
-        run: |
-          set -euo pipefail
-          apk="$GITHUB_WORKSPACE/private-source/build/app/outputs/flutter-apk/app-debug.apk"
-          test -s "$apk"
-          unzip -t "$apk" >/dev/null
-          work="$RUNNER_TEMP/goanime-apk"
-          gpg_home="$work/gpg"
-          transfer="$work/transfer"
-          rm -rf "$work"
-          mkdir -p "$gpg_home" "$transfer"
-          chmod 700 "$gpg_home"
-          export GNUPGHOME="$gpg_home"
-          sha256="$(sha256sum "$apk" | awk '{print $1}')"
-          size="$(stat -c '%s' "$apk")"
-          gpg --batch --import "$GITHUB_WORKSPACE/trusted-source/keys/source-bundles-public.asc"
-          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1=="fpr"{print $10;exit}')"
-          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
-          test -z "$(gpg --batch --with-colons --list-secret-keys 2>/dev/null | awk -F: '$1 == "sec" { print $1 }')"
-          encrypted="$transfer/GoAnime-refreshed-debug.apk.gpg"
-          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" --output "$encrypted" --encrypt "$apk"
-          test -s "$encrypted"
-          python3 - "$transfer/manifest.json" "$sha256" "$size" "$GITHUB_RUN_ID" <<'PY'
-          import datetime,json,sys
-          path,sha256,size,run_id=sys.argv[1:]
-          data={
-              'schema_version':1,
-              'project':'goanime',
-              'build_type':'debug',
-              'apk_sha256':sha256,
-              'apk_size_bytes':int(size),
-              'encryption':'OpenPGP',
-              'recipient_fingerprint':'2DE29DC31427CF0A911AB96175679291435059B0',
-              'workflow_run_id':run_id,
-              'retention_days':1,
-              'created_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),
-          }
-          open(path,'w',encoding='utf-8').write(json.dumps(data,indent=2,sort_keys=True)+'\n')
-          PY
-
-          rm -rf "$GITHUB_WORKSPACE/private-source" "$gpg_home"
-          test ! -e "$GITHUB_WORKSPACE/private-source"
-          test -s "$encrypted"
-          echo "transfer_dir=$transfer" >> "$GITHUB_OUTPUT"
-          echo "apk_sha256=$sha256" >> "$GITHUB_OUTPUT"
-
-      - name: Upload encrypted APK
-        uses: actions/upload-artifact@v7
-        with:
-          name: goanime-private-refreshed-debug-apk-encrypted
-          path: ${{ steps.package.outputs.transfer_dir }}
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
 
       - name: Summary
         shell: bash
         run: |
-          echo '## GoAnime incremental catalog refresh' >> "$GITHUB_STEP_SUMMARY"
+          echo '## GoAnime full catalog refresh' >> "$GITHUB_STEP_SUMMARY"
           echo "- APK SHA-256: \`${{ steps.package.outputs.apk_sha256 }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo '- Private source/ref/commit metadata is intentionally omitted.' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Availability refresh was incremental; baseline caches were not allowed to shrink.' >> "$GITHUB_STEP_SUMMARY"
+          echo "- Catalog archive SHA-256: \`${{ steps.package.outputs.catalog_sha256 }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo '- Provider availability used a full cache_builder audit, not --seed-only.' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Baseline cache counts were not allowed to regress.' >> "$GITHUB_STEP_SUMMARY"
+          echo '- APK and refreshed cache handoff were encrypted before upload.' >> "$GITHUB_STEP_SUMMARY"
           echo '- Only OpenPGP ciphertext was uploaded by the public Toolchains repository.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove all private and transient data
@@ -496,4 +518,4 @@ jobs:
           rm -rf "$GITHUB_WORKSPACE/private-source"
           rm -rf "$GITHUB_WORKSPACE/trusted-source"
           rm -rf "$RUNNER_TEMP/goanime-refresh"
-          rm -rf "$RUNNER_TEMP/goanime-apk"
+          rm -rf "$RUNNER_TEMP/goanime-handoff"
