@@ -1,0 +1,50 @@
+name: Diagnose private GoAnime project gates
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/diagnose-private-goanime-gates.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout private GoAnime source read-only
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: 2ea96dacc5a684d9078533b4db381f5aa708c46b
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Diagnose health and format gates
+        shell: bash
+        run: |
+          set -uo pipefail
+          health=0
+          format=0
+          pwsh ./tools/validate_project_health.ps1 > "$RUNNER_TEMP/health.txt" 2>&1 || health=$?
+          dart format --output=none --set-exit-if-changed lib test packages tools > "$RUNNER_TEMP/format.txt" 2>&1 || format=$?
+          changed="$(git status --short | tr '\n' ';' | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')"
+          health_tail="$(tail -n 8 "$RUNNER_TEMP/health.txt" | tr '\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')"
+          format_tail="$(tail -n 8 "$RUNNER_TEMP/format.txt" | tr '\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')"
+          echo "::notice title=GoAnime gate diagnosis::health=$health format=$format changed=$changed"
+          [ "$health" -eq 0 ] || echo "::error title=Project health failed::$health_tail"
+          [ "$format" -eq 0 ] || echo "::error title=Dart format failed::$format_tail changed=$changed"
+          test "$health" -eq 0 -a "$format" -eq 0
