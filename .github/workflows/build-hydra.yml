@@ -14,6 +14,7 @@ on:
     paths:
       - .github/workflows/build-hydra.yml
       - scripts/build-hydra-toolchain.sh
+      - scripts/sanitize-hydra-toolchain.sh
       - scripts/validate-source-bundle-request.py
       - triggers/hydra-toolchain.json
       - docs/HYDRA_TOOLCHAIN.md
@@ -33,7 +34,7 @@ env:
 
 jobs:
   build:
-    name: Node, Yarn, Rust and exact Hydra dependency caches
+    name: Node, Yarn, Rust and sanitized Hydra dependency caches
     runs-on: ubuntu-24.04
     timeout-minutes: 180
 
@@ -107,6 +108,7 @@ jobs:
           persist-credentials: false
           lfs: false
           submodules: false
+          show-progress: false
 
       - name: Set up pinned Node.js
         uses: actions/setup-node@v6
@@ -146,179 +148,44 @@ jobs:
             "$YARN_VERSION" \
             "$RUST_TOOLCHAIN"
 
-      - name: Upload Hydra toolchain manifest
+      - name: Remove private package and lockfile copies from public bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/sanitize-hydra-toolchain.sh \
+            "${{ steps.bundle.outputs.bundle_root }}" \
+            "${{ steps.bundle.outputs.parts_dir }}" \
+            "${{ steps.bundle.outputs.archive_sha }}"
+
+      - name: Prove transfer contains fingerprints only
+        shell: bash
+        run: |
+          set -euo pipefail
+          reference_dir="${{ steps.bundle.outputs.bundle_root }}/reference-inputs"
+          test -f "$reference_dir/SHA256.txt"
+          test ! -f "$reference_dir/package.json"
+          test ! -f "$reference_dir/yarn.lock"
+          test ! -f "$reference_dir/hydra-native.Cargo.lock"
+          test ! -f "$reference_dir/game-agent.Cargo.lock"
+          test -f "${{ steps.bundle.outputs.parts_dir }}/MANIFEST.txt"
+          test -f "${{ steps.bundle.outputs.parts_dir }}/INPUT-SHA256.txt"
+          test -f "${{ steps.bundle.outputs.parts_dir }}/ARCHIVE.sha256"
+
+      - name: Upload sanitized Hydra public toolchain
         uses: actions/upload-artifact@v7
         with:
-          name: hydra-toolchain-linux-x64-manifest
-          path: |
-            ${{ steps.bundle.outputs.parts_dir }}/PARTS.txt
-            ${{ steps.bundle.outputs.parts_dir }}/SHA256SUMS.parts
-            ${{ steps.bundle.outputs.archive_sha }}
-            ${{ steps.bundle.outputs.bundle_root }}/MANIFEST.txt
-            ${{ steps.bundle.outputs.bundle_root }}/reference-inputs/package.json
-            ${{ steps.bundle.outputs.bundle_root }}/reference-inputs/yarn.lock
-            ${{ steps.bundle.outputs.bundle_root }}/reference-inputs/hydra-native.Cargo.lock
-            ${{ steps.bundle.outputs.bundle_root }}/reference-inputs/game-agent.Cargo.lock
+          name: hydra-toolchain-linux-x64-sanitized
+          path: ${{ steps.bundle.outputs.parts_dir }}
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
 
-      - name: Upload Hydra toolchain part 00
-        if: steps.bundle.outputs.part_00 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: hydra-toolchain-linux-x64-part-00
-          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-00
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload Hydra toolchain part 01
-        if: steps.bundle.outputs.part_01 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: hydra-toolchain-linux-x64-part-01
-          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-01
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload Hydra toolchain part 02
-        if: steps.bundle.outputs.part_02 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: hydra-toolchain-linux-x64-part-02
-          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-02
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload Hydra toolchain part 03
-        if: steps.bundle.outputs.part_03 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: hydra-toolchain-linux-x64-part-03
-          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-03
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload Hydra toolchain part 04
-        if: steps.bundle.outputs.part_04 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: hydra-toolchain-linux-x64-part-04
-          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-04
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload Hydra toolchain part 05
-        if: steps.bundle.outputs.part_05 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: hydra-toolchain-linux-x64-part-05
-          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-05
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload Hydra toolchain part 06
-        if: steps.bundle.outputs.part_06 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: hydra-toolchain-linux-x64-part-06
-          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-06
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload Hydra toolchain part 07
-        if: steps.bundle.outputs.part_07 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: hydra-toolchain-linux-x64-part-07
-          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-07
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload Hydra toolchain part 08
-        if: steps.bundle.outputs.part_08 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: hydra-toolchain-linux-x64-part-08
-          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-08
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload Hydra toolchain part 09
-        if: steps.bundle.outputs.part_09 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: hydra-toolchain-linux-x64-part-09
-          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-09
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload Hydra toolchain part 10
-        if: steps.bundle.outputs.part_10 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: hydra-toolchain-linux-x64-part-10
-          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-10
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload Hydra toolchain part 11
-        if: steps.bundle.outputs.part_11 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: hydra-toolchain-linux-x64-part-11
-          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-11
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload Hydra toolchain part 12
-        if: steps.bundle.outputs.part_12 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: hydra-toolchain-linux-x64-part-12
-          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-12
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload Hydra toolchain part 13
-        if: steps.bundle.outputs.part_13 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: hydra-toolchain-linux-x64-part-13
-          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-13
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload Hydra toolchain part 14
-        if: steps.bundle.outputs.part_14 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: hydra-toolchain-linux-x64-part-14
-          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-14
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload Hydra toolchain part 15
-        if: steps.bundle.outputs.part_15 == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: hydra-toolchain-linux-x64-part-15
-          path: ${{ steps.bundle.outputs.parts_dir }}/hydra-toolchain-linux-x64.part-15
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
+      - name: Remove private and transient toolchain data
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source"
+          rm -rf "$RUNNER_TEMP/hydra-toolchain"
+          rm -f "$RUNNER_TEMP/hydra-toolchain-linux-x64.tar.zst"
+          rm -f "$RUNNER_TEMP/hydra-toolchain-linux-x64.tar.zst.sha256"
+          rm -rf "$RUNNER_TEMP/hydra-toolchain-linux-x64-parts"
