@@ -1,0 +1,73 @@
+name: Apply GoAnime provider-block fallback v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-goanime-refresh-degradation-v2.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Patch refresh workflow without weakening regression guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('.github/workflows/refresh-private-goanime-catalog.yml')
+          text = path.read_text(encoding='utf-8')
+          provider_expr = '$' + '{{ steps.provider.outputs.status }}'
+
+          old = """      - name: Fully audit provider availability\n        working-directory: private-source\n        shell: bash\n        run: |\n          set -euo pipefail\n          dart run tools/cache_builder.dart\n"""
+          new = """      - name: Refresh provider availability with guarded network fallback\n        id: provider\n        working-directory: private-source\n        shell: bash\n        run: |\n          set -euo pipefail\n          code=\"$(curl -L --max-time 20 --silent --show-error -o \"$RUNNER_TEMP/animefire-preflight.html\" -w '%{http_code}' \\\n            -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36' \\\n            -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' \\\n            https://animefire.io/animes-atualizados || true)\"\n          if [ \"$code\" = '200' ]; then\n            echo 'Provider catalog is directly reachable; running full audit.'\n            dart run tools/cache_builder.dart\n            echo 'status=full-provider-audit' >> \"$GITHUB_OUTPUT\"\n          else\n            echo \"AnimeFire is blocked from this hosted runner (HTTP $code). Preserving the complete baseline and running only bounded incremental probes.\"\n            dart run tools/cache_builder.dart --seed-only\n            echo 'status=provider-blocked-baseline-plus-runtime-discovery' >> \"$GITHUB_OUTPUT\"\n          fi\n          rm -f \"$RUNNER_TEMP/animefire-preflight.html\"\n"""
+          if old not in text:
+              raise SystemExit('provider audit block not found; refusing blind patch')
+          text = text.replace(old, new, 1)
+
+          old = """        env:\n          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0\n        run: |\n"""
+          new = """        env:\n          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0\n          PROVIDER_AUDIT_STATUS: __PROVIDER_EXPR__\n        run: |\n""".replace('__PROVIDER_EXPR__', provider_expr)
+          if old not in text:
+              raise SystemExit('package env block not found; refusing blind patch')
+          text = text.replace(old, new, 1)
+
+          old = """              'refresh_mode':'full-provider-audit',\n"""
+          new = """              'refresh_mode':__import__('os').environ.get('PROVIDER_AUDIT_STATUS') or 'unknown',\n"""
+          if old not in text:
+              raise SystemExit('manifest refresh mode not found; refusing blind patch')
+          text = text.replace(old, new, 1)
+
+          old = """          echo '- Provider availability used a full cache_builder audit, not --seed-only.' >> \"$GITHUB_STEP_SUMMARY\"\n"""
+          new = """          echo \"- Provider refresh status: \\`__PROVIDER_EXPR__\\`.\" >> \"$GITHUB_STEP_SUMMARY\"\n          if [ '__PROVIDER_EXPR__' != 'full-provider-audit' ]; then\n            echo '- Hosted Azure egress was blocked by the provider; the validated complete baseline was preserved and current titles remain eligible for on-device runtime verification.' >> \"$GITHUB_STEP_SUMMARY\"\n          fi\n""".replace('__PROVIDER_EXPR__', provider_expr)
+          if old not in text:
+              raise SystemExit('summary audit line not found; refusing blind patch')
+          text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+          git diff --check
+          grep -q 'provider-blocked-baseline-plus-runtime-discovery' .github/workflows/refresh-private-goanime-catalog.yml
+          grep -q 'PROVIDER_AUDIT_STATUS:.*steps.provider.outputs.status' .github/workflows/refresh-private-goanime-catalog.yml
+          grep -q 'dart run tools/cache_builder.dart --seed-only' .github/workflows/refresh-private-goanime-catalog.yml
+
+      - name: Commit and push patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/refresh-private-goanime-catalog.yml
+          git diff --cached --quiet && exit 0
+          git commit -m 'fix(goanime): tolerate provider blocks without stale claims'
+          git pull --rebase origin main
+          git push origin HEAD:main
