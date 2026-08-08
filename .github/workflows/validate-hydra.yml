@@ -102,14 +102,13 @@ jobs:
           persist-credentials: false
           lfs: false
           submodules: false
+          show-progress: false
 
       - name: Set up pinned Node.js
         uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           check-latest: false
-          cache: yarn
-          cache-dependency-path: hydra/yarn.lock
 
       - name: Install native build prerequisites
         shell: bash
@@ -164,7 +163,7 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Install exact dependencies
+      - name: Install exact dependencies without persistent Actions cache
         working-directory: hydra
         shell: bash
         env:
@@ -196,3 +195,10 @@ jobs:
       - name: Build application
         working-directory: hydra
         run: yarn build
+
+      - name: Remove private checkout and transient build source
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/hydra"
+          rm -rf "$RUNNER_TEMP/gtk4-layer-shell"

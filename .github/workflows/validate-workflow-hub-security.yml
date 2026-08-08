@@ -1,0 +1,40 @@
+name: Validate workflow hub security
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/**
+      - config/workflow-hub-projects.json
+      - scripts/validate-workflow-hub-security.py
+      - docs/WORKFLOW_HUB_SECURITY.md
+  pull_request:
+    paths:
+      - .github/workflows/**
+      - config/workflow-hub-projects.json
+      - scripts/validate-workflow-hub-security.py
+      - docs/WORKFLOW_HUB_SECURITY.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-workflow-hub-security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    name: Enforce artifact and private-checkout policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout trusted policy
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Run workflow hub security validator
+        run: python3 scripts/validate-workflow-hub-security.py

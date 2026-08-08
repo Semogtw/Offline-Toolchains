@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "artifact_retention_days": 1,
+    "private_checkout_cache": false,
+    "private_checkout_persist_credentials": false,
+    "private_outputs_default": "discard",
+    "sensitive_transfer": "openpgp-ciphertext-only"
+  },
+  "projects": {
+    "goanime": {
+      "repository": "Semogtw/goanime-mobile",
+      "visibility": "private",
+      "default_ref": "main",
+      "central_ci": "run-private-project-ci",
+      "source_export": "encrypted",
+      "artifact_policy": "encrypted-ephemeral",
+      "status": "active"
+    },
+    "zapzap": {
+      "repository": "Semogtw/Zapzap",
+      "visibility": "private",
+      "default_ref": "development/android-build-recovery",
+      "central_ci": "run-private-project-ci",
+      "source_export": "encrypted",
+      "artifact_policy": "encrypted-ephemeral",
+      "status": "active"
+    },
+    "semogsite": {
+      "repository": "Semogtw/SemogSite",
+      "visibility": "private",
+      "default_ref": "main",
+      "central_ci": "run-private-project-ci",
+      "source_export": "encrypted",
+      "artifact_policy": "discard",
+      "status": "active"
+    },
+    "hydra": {
+      "repository": "Semogtw/HydraPersonalizado",
+      "visibility": "private",
+      "default_ref": "main",
+      "central_ci": "validate-hydra",
+      "source_export": "encrypted",
+      "artifact_policy": "discard",
+      "status": "active"
+    },
+    "receitas": {
+      "repository": "Semogtw/Receitas",
+      "visibility": "private",
+      "default_ref": "main",
+      "central_ci": "planned-private-hub",
+      "source_export": "encrypted",
+      "artifact_policy": "discard",
+      "status": "active-planning"
+    },
+    "fichario": {
+      "repository": "Semogtw/FicharioVirtual",
+      "visibility": "public",
+      "default_ref": "main",
+      "central_ci": "run-fichario-ci",
+      "source_export": "not-needed",
+      "artifact_policy": "discard",
+      "status": "active"
+    },
+    "codex-desktop-linux-gemini": {
+      "repository": "Semogtw/codex-desktop-linux-gemini-",
+      "visibility": "public",
+      "default_ref": "main",
+      "central_ci": "public-toolchain-workflows",
+      "source_export": "not-needed",
+      "artifact_policy": "ephemeral-public-toolchain",
+      "status": "active"
+    },
+    "codex-gemini-agents": {
+      "repository": "Semogtw/codex-gemini-agents",
+      "visibility": "public",
+      "default_ref": "main",
+      "central_ci": "public-toolchain-workflows",
+      "source_export": "not-needed",
+      "artifact_policy": "ephemeral-public-toolchain",
+      "status": "active"
+    }
+  }
+}
