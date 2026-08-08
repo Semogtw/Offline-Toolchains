@@ -11,6 +11,8 @@ on:
           - goanime
           - zapzap
           - semogsite
+          - hydra
+          - receitas
       ref:
         description: Exact branch, tag, or commit; empty uses the project default
         required: false
@@ -61,13 +63,15 @@ jobs:
           set -euo pipefail
           test "$ACTOR" = "$OWNER"
 
-      - name: Checkout trusted workflow implementation
+      - name: Checkout trusted request implementation
         uses: actions/checkout@v6
         with:
           ref: main
           path: trusted-source
           persist-credentials: false
-          sparse-checkout: scripts/private_ci_request.py
+          sparse-checkout: |
+            scripts/private_ci_request.py
+            config/workflow-hub-projects.json
           sparse-checkout-cone-mode: false
 
       - name: Checkout connector request revision
@@ -99,26 +103,21 @@ jobs:
           import os
           import sys
 
-          output_path = sys.argv[1]
-          payload = {
-              "project": os.environ.get("INPUT_PROJECT", ""),
-              "ref": os.environ.get("INPUT_REF", ""),
-          }
-          with open(output_path, "w", encoding="utf-8") as stream:
-              json.dump(payload, stream)
+          with open(sys.argv[1], "w", encoding="utf-8") as stream:
+              json.dump({
+                  "project": os.environ.get("INPUT_PROJECT", ""),
+                  "ref": os.environ.get("INPUT_REF", ""),
+              }, stream)
           PY
           fi
 
-          normalized="$(
-            python3 trusted-source/scripts/private_ci_request.py "$request_file"
-          )"
+          normalized="$(python3 trusted-source/scripts/private_ci_request.py "$request_file")"
           python3 - "$normalized" "$GITHUB_OUTPUT" <<'PY'
           import json
           import sys
 
           request = json.loads(sys.argv[1])
-          output_path = sys.argv[2]
-          with open(output_path, "a", encoding="utf-8") as stream:
+          with open(sys.argv[2], "a", encoding="utf-8") as stream:
               for key in ("project", "repository", "ref", "default_ref"):
                   value = request[key]
                   if "\n" in value or "\r" in value:
@@ -126,12 +125,10 @@ jobs:
                   stream.write(f"{key}={value}\n")
           PY
 
-      - name: Summarize request
+      - name: Summarize public request metadata
         shell: bash
         env:
           PROJECT: ${{ steps.request.outputs.project }}
-          REPOSITORY: ${{ steps.request.outputs.repository }}
-          REQUESTED_REF: ${{ steps.request.outputs.ref }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
           {
@@ -139,8 +136,7 @@ jobs:
             echo
             echo "- Event: \`$EVENT_NAME\`"
             echo "- Project: \`$PROJECT\`"
-            echo "- Repository: \`$REPOSITORY\`"
-            echo "- Ref: \`$REQUESTED_REF\`"
+            echo "- Private repository/ref details are intentionally omitted from the public summary."
           } >> "$GITHUB_STEP_SUMMARY"
 
   goanime:
@@ -155,12 +151,7 @@ jobs:
         shell: bash
         env:
           PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-        run: |
-          set -euo pipefail
-          test -n "$PRIVATE_REPOSITORIES_TOKEN" || {
-            echo "Missing Actions secret PRIVATE_REPOSITORIES_TOKEN." >&2
-            exit 1
-          }
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
 
       - name: Checkout private GoAnime source
         uses: actions/checkout@v6
@@ -175,13 +166,8 @@ jobs:
           submodules: false
           show-progress: false
 
-      - name: Record resolved private commit
-        id: source
-        shell: bash
-        run: echo "sha=$(git -C private-source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
       - name: Set up Temurin JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -195,17 +181,13 @@ jobs:
           channel: stable
           flutter-version: 3.44.1
 
-      - name: Disable Flutter analytics
-        working-directory: private-source
-        run: flutter config --no-analytics
-
       - name: Resolve dependencies
         working-directory: private-source
-        run: flutter pub get
-
-      - name: Require PowerShell
         shell: bash
-        run: command -v pwsh >/dev/null
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
 
       - name: Validate project health
         working-directory: private-source
@@ -214,7 +196,6 @@ jobs:
 
       - name: Check formatting
         working-directory: private-source
-        shell: bash
         run: dart format --output=none --set-exit-if-changed lib test packages tools
 
       - name: Analyze
@@ -230,7 +211,7 @@ jobs:
         shell: pwsh
         run: ./tools/validate_release_workflows.ps1
 
-      - name: Build Android debug APK
+      - name: Build Android debug APK without publishing it
         working-directory: private-source
         run: flutter build apk --debug --no-pub
 
@@ -239,19 +220,15 @@ jobs:
         shell: bash
         run: rm -rf "$GITHUB_WORKSPACE/private-source"
 
-      - name: Summarize result
+      - name: Summarize sanitized result
         if: always()
         shell: bash
         env:
-          REQUESTED_REF: ${{ needs.normalize.outputs.ref }}
-          RESOLVED_SHA: ${{ steps.source.outputs.sha }}
           RESULT: ${{ job.status }}
         run: |
           {
             echo "## GoAnime public-runner CI"
             echo
-            echo "- Requested ref: \`$REQUESTED_REF\`"
-            echo "- Resolved commit: \`${RESOLVED_SHA:-unresolved}\`"
             echo "- Result: \`$RESULT\`"
             echo "- Build outputs were verified and discarded; no private artifact was uploaded."
           } >> "$GITHUB_STEP_SUMMARY"
@@ -268,12 +245,7 @@ jobs:
         shell: bash
         env:
           PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-        run: |
-          set -euo pipefail
-          test -n "$PRIVATE_REPOSITORIES_TOKEN" || {
-            echo "Missing Actions secret PRIVATE_REPOSITORIES_TOKEN." >&2
-            exit 1
-          }
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
 
       - name: Checkout private ZapZap source
         uses: actions/checkout@v6
@@ -288,13 +260,8 @@ jobs:
           submodules: false
           show-progress: false
 
-      - name: Record resolved private commit
-        id: source
-        shell: bash
-        run: echo "sha=$(git -C private-source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
       - name: Set up Temurin JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
@@ -308,7 +275,7 @@ jobs:
           set -euo pipefail
           sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Configure Gradle without shared project cache
+      - name: Configure Gradle without persistent project cache
         uses: gradle/actions/setup-gradle@v4
         with:
           cache-disabled: true
@@ -337,7 +304,7 @@ jobs:
         working-directory: private-source
         run: ./gradlew --no-daemon lintDebug
 
-      - name: Build Android debug APK
+      - name: Build Android debug APK without publishing it
         working-directory: private-source
         run: ./gradlew --no-daemon :app:assembleDebug
 
@@ -346,25 +313,21 @@ jobs:
         shell: bash
         run: rm -rf "$GITHUB_WORKSPACE/private-source"
 
-      - name: Summarize result
+      - name: Summarize sanitized result
         if: always()
         shell: bash
         env:
-          REQUESTED_REF: ${{ needs.normalize.outputs.ref }}
-          RESOLVED_SHA: ${{ steps.source.outputs.sha }}
           RESULT: ${{ job.status }}
         run: |
           {
             echo "## ZapZap public-runner CI"
             echo
-            echo "- Requested ref: \`$REQUESTED_REF\`"
-            echo "- Resolved commit: \`${RESOLVED_SHA:-unresolved}\`"
             echo "- Result: \`$RESULT\`"
             echo "- Build outputs were verified and discarded; no private artifact was uploaded."
           } >> "$GITHUB_STEP_SUMMARY"
 
   semogsite:
-    name: SemogSite real checks and production build
+    name: SemogSite full checks and production build
     needs: normalize
     if: needs.normalize.outputs.project == 'semogsite'
     runs-on: ubuntu-24.04
@@ -375,12 +338,7 @@ jobs:
         shell: bash
         env:
           PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-        run: |
-          set -euo pipefail
-          test -n "$PRIVATE_REPOSITORIES_TOKEN" || {
-            echo "Missing Actions secret PRIVATE_REPOSITORIES_TOKEN." >&2
-            exit 1
-          }
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
 
       - name: Checkout private SemogSite source
         uses: actions/checkout@v6
@@ -395,12 +353,7 @@ jobs:
           submodules: false
           show-progress: false
 
-      - name: Record resolved private commit
-        id: source
-        shell: bash
-        run: echo "sha=$(git -C private-source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Node.js 22
+      - name: Set up Node.js 22 without persistent dependency cache
         uses: actions/setup-node@v6
         with:
           node-version: "22"
@@ -411,63 +364,352 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          package_manager="$(
-            node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).packageManager"
-          )"
+          package_manager="$(node -p "JSON.parse(require('node:fs').readFileSync('package.json','utf8')).packageManager")"
           case "$package_manager" in
             pnpm@*) ;;
-            *)
-              echo "package.json must declare packageManager as pnpm@<version>." >&2
-              exit 1
-              ;;
+            *) echo "package.json must pin pnpm via packageManager" >&2; exit 1 ;;
           esac
           corepack enable
           corepack prepare "$package_manager" --activate
           pnpm --version
 
-      - name: Install dependencies
-        id: install
+      - name: Configure reviewed CI-only native build
         working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -f pnpm-lock.yaml ]]; then
-            echo "mode=frozen" >> "$GITHUB_OUTPUT"
-            pnpm install --frozen-lockfile
-          else
-            echo "::warning::pnpm-lock.yaml is absent; using the documented bootstrap mode."
-            echo "mode=bootstrap" >> "$GITHUB_OUTPUT"
-            pnpm install --no-frozen-lockfile
-          fi
+          test -f pnpm-workspace.yaml
+          cat >> pnpm-workspace.yaml <<'YAML'
 
-      - name: Run guardrails, typechecks and tests
+          # Ephemeral runner-only allowlist. The private checkout is discarded.
+          onlyBuiltDependencies:
+            - better-sqlite3
+          YAML
+
+      - name: Install exact dependencies
+        working-directory: private-source
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify native SQLite dependency
+        working-directory: private-source
+        shell: bash
+        run: >-
+          test -f
+          node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3/build/Release/better_sqlite3.node
+
+      - name: Check package boundaries
+        working-directory: private-source
+        run: pnpm check:boundaries
+
+      - name: Check public confidentiality
+        working-directory: private-source
+        run: pnpm check:public-confidentiality
+
+      - name: Test orchestration domain
+        working-directory: private-source
+        run: pnpm --filter @semogtw/domain exec vitest run src/orchestration
+
+      - name: Typecheck domain
+        working-directory: private-source
+        run: pnpm --filter @semogtw/domain typecheck
+
+      - name: Test orchestration persistence
+        working-directory: private-source
+        run: >-
+          pnpm --filter @semogtw/database exec vitest run
+          src/orchestration-migrations.test.ts
+          src/repositories/scope-reservation-repository.test.ts
+          src/repositories/verification-obligation-repository.test.ts
+          src/repositories/recovery-snapshot-read-model.test.ts
+          src/repositories/recovery-snapshot-repository.test.ts
+          src/repositories/recovery-snapshot-source.test.ts
+          src/repositories/safe-work-source.test.ts
+          src/repositories/workflow-orchestration-read-model.test.ts
+          src/adapters/sqlite-migrations.test.ts
+          src/backup/sqlite-backup.test.ts
+
+      - name: Typecheck database
+        working-directory: private-source
+        run: pnpm --filter @semogtw/database typecheck
+
+      - name: Test workflow orchestration controls
+        working-directory: private-source
+        run: >-
+          pnpm --filter @semogtw/web exec vitest run
+          src/routes/-workflow-orchestration-controls.test.ts
+          src/components/devos/safe-work-capability-evaluator.test.ts
+
+      - name: Typecheck UI and web
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm --filter @semogtw/ui typecheck
+          pnpm --filter @semogtw/web typecheck
+
+      - name: Run full monorepo check
         working-directory: private-source
         run: pnpm check
 
-      - name: Build production workspaces
+      - name: Build web application
         working-directory: private-source
-        run: pnpm build
+        run: pnpm --filter @semogtw/web build
+
+      - name: Install Chromium for isolated E2E gate
+        working-directory: private-source
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Prepare isolated E2E database
+        working-directory: private-source
+        run: node scripts/prepare-e2e.mjs
+
+      - name: Test workflow privacy and mobile navigation
+        working-directory: private-source
+        run: pnpm exec playwright test tests/e2e/workflow-orchestration.spec.ts
 
       - name: Remove private checkout
         if: always()
         shell: bash
         run: rm -rf "$GITHUB_WORKSPACE/private-source"
 
-      - name: Summarize result
+      - name: Summarize sanitized result
         if: always()
         shell: bash
         env:
-          REQUESTED_REF: ${{ needs.normalize.outputs.ref }}
-          RESOLVED_SHA: ${{ steps.source.outputs.sha }}
-          INSTALL_MODE: ${{ steps.install.outputs.mode }}
           RESULT: ${{ job.status }}
         run: |
           {
             echo "## SemogSite public-runner CI"
             echo
-            echo "- Requested ref: \`$REQUESTED_REF\`"
-            echo "- Resolved commit: \`${RESOLVED_SHA:-unresolved}\`"
-            echo "- Dependency mode: \`${INSTALL_MODE:-not-started}\`"
             echo "- Result: \`$RESULT\`"
-            echo "- Build outputs were verified and discarded; no private artifact was uploaded."
+            echo "- Tests/build outputs and the private checkout were discarded."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  hydra:
+    name: Hydra real repository gates
+    needs: normalize
+    if: needs.normalize.outputs.project == 'hydra'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      NODE_VERSION: "22.23.1"
+      GTK4_LAYER_SHELL_COMMIT: "1c963c51514581c41b9bdae08cdf69171265cdda"
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout private Hydra source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ needs.normalize.outputs.repository }}
+          ref: ${{ needs.normalize.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up pinned Node.js without persistent dependency cache
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          check-latest: false
+
+      - name: Install pinned Yarn Classic
+        shell: bash
+        run: npm install --global yarn@1.22.22
+
+      - name: Install native build prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential ca-certificates git libgtk-4-dev meson ninja-build \
+            pkg-config python3 wayland-protocols
+
+      - name: Install pinned GTK4 Layer Shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_dir="$RUNNER_TEMP/gtk4-layer-shell"
+          git init "$source_dir"
+          git -C "$source_dir" remote add origin https://github.com/wmww/gtk4-layer-shell.git
+          git -C "$source_dir" fetch --depth=1 origin "$GTK4_LAYER_SHELL_COMMIT"
+          git -C "$source_dir" checkout --detach FETCH_HEAD
+          test "$(git -C "$source_dir" rev-parse HEAD)" = "$GTK4_LAYER_SHELL_COMMIT"
+          meson setup "$source_dir/build" "$source_dir" \
+            --prefix=/usr/local --libdir=lib \
+            -Dexamples=false -Ddocs=false -Dtests=false -Dsmoke-tests=false \
+            -Dintrospection=false -Dvapi=false
+          meson compile -C "$source_dir/build"
+          sudo meson install -C "$source_dir/build"
+          sudo ldconfig
+          pkg-config --modversion gtk4-layer-shell-0
+
+      - name: Set up Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - name: Install exact dependencies
+        working-directory: private-source
+        env:
+          CI: "true"
+        run: yarn install --frozen-lockfile --non-interactive
+
+      - name: Run Hydra typechecks
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          yarn typecheck:node
+          yarn typecheck:web
+
+      - name: Run Hydra tests and formatting gates
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          yarn test
+          yarn format-check
+          yarn eslint . --ext .js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts
+
+      - name: Build Hydra without publishing output
+        working-directory: private-source
+        run: yarn build
+
+      - name: Remove private checkout and transient native source
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source"
+          rm -rf "$RUNNER_TEMP/gtk4-layer-shell"
+
+      - name: Summarize sanitized result
+        if: always()
+        shell: bash
+        env:
+          RESULT: ${{ job.status }}
+        run: |
+          {
+            echo "## Hydra public-runner CI"
+            echo
+            echo "- Result: \`$RESULT\`"
+            echo "- Build outputs and private source were discarded."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  receitas:
+    name: Receitas repository and documentation guards
+    needs: normalize
+    if: needs.normalize.outputs.project == 'receitas'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout private Receitas source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ needs.normalize.outputs.repository }}
+          ref: ${{ needs.normalize.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Validate current planning-stage repository contract
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+
+          required = [Path("README.md"), Path("AGENTS.md"), Path("docs")]
+          missing = [str(path) for path in required if not path.exists()]
+          if missing:
+              raise SystemExit(f"missing planning-stage repository paths: {missing}")
+
+          tracked = subprocess.check_output(
+              ["git", "ls-files", "-z"], text=True
+          ).split("\0")
+          tracked = [Path(item) for item in tracked if item]
+
+          forbidden_names = {
+              ".env", "credentials.json", "service-account.json",
+              "id_rsa", "id_ed25519",
+          }
+          forbidden_suffixes = {
+              ".jks", ".keystore", ".p12", ".pfx", ".pem", ".key",
+          }
+          for path in tracked:
+              lowered = path.name.lower()
+              if lowered in forbidden_names or path.suffix.lower() in forbidden_suffixes:
+                  if lowered.endswith(".example") or lowered.endswith(".sample"):
+                      continue
+                  raise SystemExit(f"tracked sensitive-looking file is not allowed: {path}")
+
+          for path in tracked:
+              if path.suffix.lower() == ".json":
+                  try:
+                      json.loads(path.read_text(encoding="utf-8"))
+                  except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                      raise SystemExit(f"invalid tracked JSON {path}: {exc}") from exc
+              if path.suffix.lower() in {".md", ".txt"}:
+                  text = path.read_text(encoding="utf-8")
+                  if any(marker in text for marker in ("<<<<<<< ", "=======\n", ">>>>>>> ")):
+                      raise SystemExit(f"merge conflict marker found in {path}")
+
+          runtime_markers = [
+              "package.json", "pubspec.yaml", "build.gradle", "build.gradle.kts",
+              "Cargo.toml", "go.mod", "pyproject.toml",
+          ]
+          detected = [name for name in runtime_markers if Path(name).exists()]
+          if detected:
+              raise SystemExit(
+                  "Receitas executable stack detected; promote its public-runner CI profile "
+                  f"before accepting this gate as complete: {detected}"
+              )
+
+          print(f"Receitas planning-stage guard: PASS ({len(tracked)} tracked paths)")
+          PY
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
+
+      - name: Summarize sanitized result
+        if: always()
+        shell: bash
+        env:
+          RESULT: ${{ job.status }}
+        run: |
+          {
+            echo "## Receitas public-runner guard"
+            echo
+            echo "- Result: \`$RESULT\`"
+            echo "- This profile intentionally covers the current planning/documentation stage only."
+            echo "- Private source was discarded and no artifact was uploaded."
           } >> "$GITHUB_STEP_SUMMARY"
