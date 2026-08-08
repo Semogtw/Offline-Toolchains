@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "request_id": 1,
+  "repository": "Semogtw/codex-desktop-linux-gemini-",
+  "ref": "04906c49b099c241e3fabd138addfe621fe8b53e",
+  "reason": "Verify the real Sol V1 bridge feature plus generic update-builder/package smoke coverage"
+}
