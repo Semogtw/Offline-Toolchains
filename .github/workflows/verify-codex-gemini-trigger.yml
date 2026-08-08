@@ -85,7 +85,48 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Check committed Rust formatting
+      - name: Run deterministic Python source contract
+        id: python_contract
+        continue-on-error: true
+        working-directory: core-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target
+          python3 scripts/verify_external_agent_integration.py \
+            --python-only \
+            --command-timeout-seconds 900 \
+            --report target/external-agent-python-verification.json
+
+      - name: Run focused lifecycle and App Server Rust tests
+        id: focused_rust
+        continue-on-error: true
+        working-directory: core-source/codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p codex-core invalidated_control_rejects_new_operations --lib -- --nocapture
+          cargo test --locked -p codex-core invalidation_shutdown_closes_registered_runtime_sessions --lib -- --nocapture
+          cargo test --locked -p codex-core removing_session_invalidates_registry_membership --lib -- --nocapture
+          cargo test --locked -p codex-app-server external_agent_projection --lib -- --nocapture
+          cargo test --locked -p codex-app-server resumed_parent_preserves_external_identity_as_read_only_projection --test all -- --nocapture
+          cargo check --locked -p codex-app-server --lib
+
+      - name: Run canonical Python and Rust contract
+        id: canonical_contract
+        continue-on-error: true
+        working-directory: core-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_external_agent_integration.py \
+            --require-rust \
+            --command-timeout-seconds 7200 \
+            --report target/external-agent-verification.json
+
+      - name: Diagnose committed Rust formatting
+        id: rustfmt
+        continue-on-error: true
         working-directory: core-source
         shell: bash
         run: |
@@ -102,36 +143,8 @@ jobs:
             cp "$path" "$formatted_root/$path"
           done < <(git diff --name-only -- codex-rs)
           cat "$RUNNER_TEMP/codex-gemini-rustfmt.patch"
+          git reset --hard HEAD
           exit 1
-
-      - name: Run deterministic Python source contract
-        working-directory: core-source
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p target
-          python3 scripts/verify_external_agent_integration.py \
-            --python-only \
-            --command-timeout-seconds 900 \
-            --report target/external-agent-python-verification.json
-
-      - name: Run mandatory Python and Rust contract
-        working-directory: core-source
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 scripts/verify_external_agent_integration.py \
-            --require-rust \
-            --command-timeout-seconds 7200 \
-            --report target/external-agent-verification.json
-
-      - name: Run App Server external projection unit tests
-        working-directory: core-source/codex-rs
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo test --locked -p codex-app-server external_agent_projection --lib -- --nocapture
-          cargo check --locked -p codex-app-server --lib
 
       - name: Record exact checked identity
         if: always() && !cancelled()
@@ -143,6 +156,10 @@ jobs:
             echo "ref=${{ steps.target.outputs.ref }}"
             git rev-parse HEAD | sed 's/^/commit=/'
             echo "suite=${{ steps.target.outputs.suite }}"
+            echo "python_contract=${{ steps.python_contract.outcome }}"
+            echo "focused_rust=${{ steps.focused_rust.outcome }}"
+            echo "canonical_contract=${{ steps.canonical_contract.outcome }}"
+            echo "rustfmt=${{ steps.rustfmt.outcome }}"
             echo "trigger_commit=${{ github.sha }}"
           } > "$RUNNER_TEMP/codex-gemini-trigger-receipt.txt"
 
@@ -168,3 +185,13 @@ jobs:
         run: |
           git diff --exit-code
           test -z "$(git status --porcelain=v1)"
+
+      - name: Enforce diagnostic gate outcomes
+        if: always() && !cancelled()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ steps.python_contract.outcome }}" = success
+          test "${{ steps.focused_rust.outcome }}" = success
+          test "${{ steps.canonical_contract.outcome }}" = success
+          test "${{ steps.rustfmt.outcome }}" = success
