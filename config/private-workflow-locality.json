@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "projects": {
+    "goanime": {
+      "repository": "Semogtw/goanime-mobile",
+      "ref": "main",
+      "allowed_source_local_workflows": {
+        "anime_metadata_cache.yml": {"kind": "privileged", "reason": "repository write plus Cloudflare R2 publication"},
+        "build_full_credentialed_apk.yml": {"kind": "privileged", "reason": "credentialed APK construction"},
+        "ci.yml": {"kind": "manual-marker", "reason": "architecture compatibility marker for migrated public-runner CI"},
+        "desktop_smoke.yml": {"kind": "manual-marker", "reason": "architecture compatibility marker for migrated public-runner desktop smoke"},
+        "release.yml": {"kind": "privileged", "reason": "release and signing credentials"},
+        "runtime_database_cache.yml": {"kind": "privileged", "reason": "Cloudflare R2 publication"},
+        "shorebird_patch.yml": {"kind": "privileged", "reason": "Shorebird patch publication credentials"}
+      }
+    },
+    "zapzap": {
+      "repository": "Semogtw/Zapzap",
+      "ref": "development/android-build-recovery",
+      "allowed_source_local_workflows": {}
+    },
+    "semogsite": {
+      "repository": "Semogtw/SemogSite",
+      "ref": "main",
+      "allowed_source_local_workflows": {
+        "workflow-control-core-check.yml": {"kind": "manual-marker", "reason": "migration marker for the centralized workflow-control gate"}
+      }
+    },
+    "hydra": {
+      "repository": "Semogtw/HydraPersonalizado",
+      "ref": "main",
+      "allowed_source_local_workflows": {}
+    },
+    "receitas": {
+      "repository": "Semogtw/Receitas",
+      "ref": "main",
+      "allowed_source_local_workflows": {}
+    }
+  }
+}
