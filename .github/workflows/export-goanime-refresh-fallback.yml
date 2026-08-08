@@ -61,14 +61,15 @@ jobs:
           grep -q 'provider-blocked-baseline-plus-runtime-discovery' .github/workflows/refresh-private-goanime-catalog.yml
           grep -q 'PROVIDER_AUDIT_STATUS:.*steps.provider.outputs.status' .github/workflows/refresh-private-goanime-catalog.yml
           grep -q "refresh_mode.*PROVIDER_AUDIT_STATUS" .github/workflows/refresh-private-goanime-catalog.yml
-          sha256sum .github/workflows/refresh-private-goanime-catalog.yml > /tmp/refresh-private-goanime-catalog.yml.sha256
+          cp .github/workflows/refresh-private-goanime-catalog.yml /tmp/refresh-private-goanime-catalog.yml
+          sha256sum /tmp/refresh-private-goanime-catalog.yml > /tmp/refresh-private-goanime-catalog.yml.sha256
 
       - name: Upload validated workflow
         uses: actions/upload-artifact@v7
         with:
           name: goanime-refresh-fallback-workflow
           path: |
-            .github/workflows/refresh-private-goanime-catalog.yml
+            /tmp/refresh-private-goanime-catalog.yml
             /tmp/refresh-private-goanime-catalog.yml.sha256
           if-no-files-found: error
           retention-days: 1
