@@ -29,6 +29,15 @@ SENSITIVE_EXTENSIONS = (
     ".sqlite",
     ".sqlite3",
 )
+PRIVATE_DEPENDENCY_METADATA = (
+    "reference-inputs/package.json",
+    "reference-inputs/yarn.lock",
+    "reference-inputs/package-lock.json",
+    "reference-inputs/pnpm-lock.yaml",
+    "reference-inputs/cargo.lock",
+    "hydra-native.cargo.lock",
+    "game-agent.cargo.lock",
+)
 
 
 class PolicyError(RuntimeError):
@@ -118,6 +127,10 @@ def _validate_uploads(path: Path, text: str, public_max_days: int) -> None:
             if any(ext in lowered for ext in SENSITIVE_EXTENSIONS) and not encrypted_transfer:
                 raise PolicyError(
                     f"{path.name}: private-token workflow appears to upload a raw sensitive file"
+                )
+            if any(marker in lowered for marker in PRIVATE_DEPENDENCY_METADATA) and not encrypted_transfer:
+                raise PolicyError(
+                    f"{path.name}: raw dependency metadata from a private checkout must not be uploaded"
                 )
             if "apk" in lowered and not encrypted_transfer:
                 raise PolicyError(
