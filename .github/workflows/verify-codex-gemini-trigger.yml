@@ -86,15 +86,21 @@ jobs:
           cargo --version
 
       - name: Check committed Rust formatting
-        working-directory: core-source/codex-rs
+        working-directory: core-source
         shell: bash
         run: |
           set -euo pipefail
-          if cargo fmt --all -- --check; then
+          if (cd codex-rs && cargo fmt --all -- --check); then
             exit 0
           fi
-          cargo fmt --all
-          git -C .. diff -- codex-rs > "$RUNNER_TEMP/codex-gemini-rustfmt.patch"
+          (cd codex-rs && cargo fmt --all)
+          git diff -- codex-rs > "$RUNNER_TEMP/codex-gemini-rustfmt.patch"
+          formatted_root="$RUNNER_TEMP/codex-gemini-rustfmt-files"
+          while IFS= read -r path; do
+            test -n "$path" || continue
+            mkdir -p "$formatted_root/$(dirname "$path")"
+            cp "$path" "$formatted_root/$path"
+          done < <(git diff --name-only -- codex-rs)
           cat "$RUNNER_TEMP/codex-gemini-rustfmt.patch"
           exit 1
 
@@ -150,6 +156,7 @@ jobs:
             core-source/target/external-agent-verification.json
             ${{ runner.temp }}/codex-gemini-trigger-receipt.txt
             ${{ runner.temp }}/codex-gemini-rustfmt.patch
+            ${{ runner.temp }}/codex-gemini-rustfmt-files
           if-no-files-found: ignore
           compression-level: 0
           retention-days: 7
