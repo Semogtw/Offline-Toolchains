@@ -108,6 +108,7 @@ jobs:
           cargo test --locked -p codex-core invalidated_control_rejects_new_operations --lib -- --nocapture
           cargo test --locked -p codex-core invalidation_shutdown_closes_registered_runtime_sessions --lib -- --nocapture
           cargo test --locked -p codex-core removing_session_invalidates_registry_membership --lib -- --nocapture
+          cargo test --locked -p codex-core fixture_direct_gemini_one_shot_read_only_lifecycle --lib -- --nocapture
           cargo test --locked -p codex-app-server external_agent_projection --lib -- --nocapture
           cargo test --locked -p codex-app-server resumed_parent_preserves_external_identity_as_read_only_projection --test all -- --nocapture
           cargo check --locked -p codex-app-server --lib
@@ -183,6 +184,13 @@ jobs:
         working-directory: core-source
         shell: bash
         run: |
+          set -euo pipefail
+          echo '=== git status --short ==='
+          git status --short
+          echo '=== tracked diff ==='
+          git diff --stat
+          echo '=== untracked files ==='
+          git ls-files --others --exclude-standard
           git diff --exit-code
           test -z "$(git status --porcelain=v1)"
 
