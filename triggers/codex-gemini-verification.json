@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "request_id": 4,
+  "request_id": 5,
   "suite": "core-external-agents",
   "core_repository": "Semogtw/codex-gemini-agents",
   "core_ref": "cbda63cfd644c71fb4f23462d1e1163e324c3149",
-  "reason": "Run Python and focused Rust lifecycle/App Server gates before the known global rustfmt debt, including single completion after restore"
+  "reason": "Confirm completion restore fixture and diagnose any checkout artifact after otherwise green lifecycle/App Server gates"
 }
