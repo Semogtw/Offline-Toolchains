@@ -87,7 +87,16 @@ jobs:
 
       - name: Check committed Rust formatting
         working-directory: core-source/codex-rs
-        run: cargo fmt --all -- --check
+        shell: bash
+        run: |
+          set -euo pipefail
+          if cargo fmt --all -- --check; then
+            exit 0
+          fi
+          cargo fmt --all
+          git -C .. diff -- codex-rs > "$RUNNER_TEMP/codex-gemini-rustfmt.patch"
+          cat "$RUNNER_TEMP/codex-gemini-rustfmt.patch"
+          exit 1
 
       - name: Run deterministic Python source contract
         working-directory: core-source
@@ -140,6 +149,7 @@ jobs:
             core-source/target/external-agent-python-verification.json
             core-source/target/external-agent-verification.json
             ${{ runner.temp }}/codex-gemini-trigger-receipt.txt
+            ${{ runner.temp }}/codex-gemini-rustfmt.patch
           if-no-files-found: ignore
           compression-level: 0
           retention-days: 7
