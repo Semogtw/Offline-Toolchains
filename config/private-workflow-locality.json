@@ -4,6 +4,7 @@
     "goanime": {
       "repository": "Semogtw/goanime-mobile",
       "ref": "main",
+      "token_access": "required",
       "allowed_source_local_workflows": {
         "anime_metadata_cache.yml": {"kind": "privileged", "reason": "repository write plus Cloudflare R2 publication"},
         "build_full_credentialed_apk.yml": {"kind": "privileged", "reason": "credentialed APK construction"},
@@ -17,11 +18,13 @@
     "zapzap": {
       "repository": "Semogtw/Zapzap",
       "ref": "development/android-build-recovery",
+      "token_access": "required",
       "allowed_source_local_workflows": {}
     },
     "semogsite": {
       "repository": "Semogtw/SemogSite",
       "ref": "main",
+      "token_access": "required",
       "allowed_source_local_workflows": {
         "workflow-control-core-check.yml": {"kind": "manual-marker", "reason": "migration marker for the centralized workflow-control gate"}
       }
@@ -29,11 +32,13 @@
     "hydra": {
       "repository": "Semogtw/HydraPersonalizado",
       "ref": "main",
+      "token_access": "required",
       "allowed_source_local_workflows": {}
     },
     "receitas": {
       "repository": "Semogtw/Receitas",
       "ref": "main",
+      "token_access": "pending",
       "allowed_source_local_workflows": {}
     }
   }
