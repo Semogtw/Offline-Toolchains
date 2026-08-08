@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "request_id": 2,
+  "request_id": 3,
   "repository": "Semogtw/codex-desktop-linux-gemini-",
-  "ref": "b29d52fcbab4123d8d077398a5d280b7adbd8578",
-  "reason": "Verify corrected real feature-schema update/rollback contract and generic packaging smoke coverage"
+  "ref": "0574e3a710aa58c2cb443bf7d7e7c47ff34a8d71",
+  "reason": "Verify real feature-schema update/rollback contract and refreshed wrapper/core integration documentation"
 }
