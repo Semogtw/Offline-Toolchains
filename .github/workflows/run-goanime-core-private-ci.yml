@@ -1,0 +1,126 @@
+name: Run GoAnime core private CI
+
+on:
+  workflow_run:
+    workflows:
+      - Request private project CI
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-core-private-ci-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  core:
+    name: GoAnime core focused tests
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'build/private-ci' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.actor.login == github.repository_owner &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted request implementation
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: trusted-source
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/private_ci_request.py
+            config/workflow-hub-projects.json
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout connector request revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          path: request-source
+          persist-credentials: false
+          sparse-checkout: triggers/private-ci.json
+          sparse-checkout-cone-mode: false
+
+      - name: Normalize trusted request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          normalized="$(python3 trusted-source/scripts/private_ci_request.py request-source/triggers/private-ci.json)"
+          python3 - "$normalized" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          request = json.loads(sys.argv[1])
+          with open(sys.argv[2], "a", encoding="utf-8") as stream:
+              for key in ("project", "repository", "ref"):
+                  value = request[key]
+                  if "\n" in value or "\r" in value:
+                      raise SystemExit(f"unsafe newline in normalized {key}")
+                  stream.write(f"{key}={value}\n")
+          PY
+
+      - name: Require GoAnime request
+        if: steps.request.outputs.project != 'goanime'
+        run: exit 0
+
+      - name: Checkout private GoAnime source
+        if: steps.request.outputs.project == 'goanime'
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ steps.request.outputs.repository }}
+          ref: ${{ steps.request.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        if: steps.request.outputs.project == 'goanime'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+
+      - name: Resolve goanime_core dependencies
+        if: steps.request.outputs.project == 'goanime'
+        working-directory: private-source/packages/goanime_core
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart pub get
+
+      - name: Check goanime_core formatting
+        if: steps.request.outputs.project == 'goanime'
+        working-directory: private-source/packages/goanime_core
+        run: dart format --output=none --set-exit-if-changed lib test
+
+      - name: Analyze goanime_core
+        if: steps.request.outputs.project == 'goanime'
+        working-directory: private-source/packages/goanime_core
+        run: dart analyze
+
+      - name: Run goanime_core tests
+        if: steps.request.outputs.project == 'goanime'
+        working-directory: private-source/packages/goanime_core
+        run: dart test
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
