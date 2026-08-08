@@ -1,0 +1,180 @@
+name: Run private GoAnime full CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Exact GoAnime branch, tag, or commit; empty uses main
+        required: false
+        default: main
+        type: string
+  schedule:
+    - cron: '30 8 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-goanime-full-ci
+  cancel-in-progress: true
+
+env:
+  FLUTTER_CHANNEL: stable
+  FLUTTER_VERSION: 3.44.1
+
+jobs:
+  normalize:
+    name: Normalize fixed GoAnime CI request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      ref: ${{ steps.request.outputs.ref }}
+
+    steps:
+      - name: Checkout trusted request validator
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: trusted-source
+          persist-credentials: false
+          sparse-checkout: scripts/private_ci_request.py
+          sparse-checkout-cone-mode: false
+
+      - name: Normalize fixed repository and ref
+        id: request
+        shell: bash
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          request="$RUNNER_TEMP/goanime-ci-request.json"
+          python3 - "$request" "$INPUT_REF" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], "w", encoding="utf-8") as stream:
+              json.dump({"project": "goanime", "ref": sys.argv[2]}, stream)
+          PY
+          normalized="$(python3 trusted-source/scripts/private_ci_request.py "$request")"
+          python3 - "$normalized" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          request = json.loads(sys.argv[1])
+          if request["repository"] != "Semogtw/goanime-mobile":
+              raise SystemExit("unexpected GoAnime repository mapping")
+          ref = request["ref"]
+          if "\n" in ref or "\r" in ref:
+              raise SystemExit("unsafe newline in normalized ref")
+          with open(sys.argv[2], "a", encoding="utf-8") as stream:
+              stream.write(f"ref={ref}\n")
+          PY
+
+  verify:
+    name: GoAnime complete public-runner CI
+    needs: normalize
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout private GoAnime source read-only
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ needs.normalize.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Expose Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up pinned Flutter without persistent cache
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: false
+
+      - name: Resolve app and core dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Validate project health
+        working-directory: private-source
+        run: bash ./tools/validate_project_health.sh
+
+      - name: Test Python tooling
+        working-directory: private-source
+        run: python3 -m unittest discover -s tools/tests -p 'test_*.py'
+
+      - name: Validate repository guards
+        working-directory: private-source
+        run: python3 tools/validate_repository_guards.py
+
+      - name: Check formatting
+        working-directory: private-source
+        run: dart format --output=none --set-exit-if-changed lib test packages tools
+
+      - name: Analyze Flutter project
+        working-directory: private-source
+        run: flutter analyze --no-pub
+
+      - name: Test Flutter application
+        working-directory: private-source
+        run: flutter test --no-pub
+
+      - name: Test GoAnime core
+        working-directory: private-source/packages/goanime_core
+        run: dart test
+
+      - name: Validate release workflow invariants
+        working-directory: private-source
+        run: bash ./tools/validate_release_workflows.sh
+
+      - name: Build Android debug APK without publishing it
+        working-directory: private-source
+        run: flutter build apk --debug --no-pub
+
+      - name: Remove private checkout and request material
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source"
+          rm -rf "$GITHUB_WORKSPACE/trusted-source"
+          rm -f "$RUNNER_TEMP/goanime-ci-request.json"
+
+      - name: Summarize sanitized result
+        if: always()
+        shell: bash
+        env:
+          RESULT: ${{ job.status }}
+        run: |
+          {
+            echo '## GoAnime full public-runner CI'
+            echo
+            echo "- Result: \`$RESULT\`"
+            echo '- Private repository/ref/commit details are intentionally omitted.'
+            echo '- Debug APK and private checkout were verification-only and discarded.'
+          } >> "$GITHUB_STEP_SUMMARY"
