@@ -10,6 +10,7 @@ on:
     paths:
       - .github/workflows/audit-private-workflow-locality.yml
       - config/private-workflow-locality.json
+      - config/workflow-hub-projects.json
       - scripts/audit-private-workflow-locality.py
       - docs/WORKFLOW_MIGRATION_STATUS.md
 
@@ -33,6 +34,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             config/private-workflow-locality.json
+            config/workflow-hub-projects.json
             scripts/audit-private-workflow-locality.py
           sparse-checkout-cone-mode: false
 
