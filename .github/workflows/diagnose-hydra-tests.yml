@@ -1,165 +1,18 @@
-name: Diagnose Hydra test groups
+name: Deprecated Hydra test-group diagnostic
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/diagnose-hydra-tests.yml
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: diagnose-hydra-tests-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  NODE_VERSION: "22.23.1"
-  GTK4_LAYER_SHELL_COMMIT: "1c963c51514581c41b9bdae08cdf69171265cdda"
-
 jobs:
-  test-group:
-    name: Tests — ${{ matrix.name }}
+  retired:
+    name: Use sanitized Hydra repository gates
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: main-services
-            roots: src/main/services
-          - name: main-events-and-runtime
-            roots: src/main/events src/main/helpers src/main/startup src/main/migrations src/main/level src/main
-          - name: renderer-preload-shared
-            roots: src/renderer src/preload src/shared
-
+    timeout-minutes: 5
     steps:
-      - name: Checkout Toolchains
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-
-      - name: Require private repository token
-        shell: bash
-        env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
-
-      - name: Checkout Hydra main
-        uses: actions/checkout@v6
-        with:
-          repository: Semogtw/HydraPersonalizado
-          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-          ref: main
-          path: hydra
-          fetch-depth: 1
-          persist-credentials: false
-          lfs: false
-          submodules: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          check-latest: false
-          cache: yarn
-          cache-dependency-path: hydra/yarn.lock
-
-      - name: Restore compiled dependency cache
-        id: dependency-cache
-        uses: actions/cache/restore@v5
-        with:
-          path: |
-            hydra/node_modules
-            hydra/hydra-native
-            hydra/hydra-game-agent
-            ~/.cache/electron
-            ~/.cache/electron-builder
-            ~/.cache/node-gyp
-          key: hydra-dependencies-${{ runner.os }}-${{ env.NODE_VERSION }}-${{ env.GTK4_LAYER_SHELL_COMMIT }}-${{ hashFiles('hydra/yarn.lock') }}
-
-      - name: Install native prerequisites
-        shell: bash
+      - name: Explain retirement
         run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            build-essential ca-certificates git libgtk-4-dev meson \
-            ninja-build pkg-config python3 wayland-protocols
-
-      - name: Install pinned GTK4 Layer Shell
-        shell: bash
-        run: |
-          set -euo pipefail
-          source_dir="$RUNNER_TEMP/gtk4-layer-shell"
-          git init "$source_dir"
-          git -C "$source_dir" remote add origin \
-            https://github.com/wmww/gtk4-layer-shell.git
-          git -C "$source_dir" fetch --depth=1 origin \
-            "$GTK4_LAYER_SHELL_COMMIT"
-          git -C "$source_dir" checkout --detach FETCH_HEAD
-          test "$(git -C "$source_dir" rev-parse HEAD)" = \
-            "$GTK4_LAYER_SHELL_COMMIT"
-          meson setup "$source_dir/build" "$source_dir" \
-            --prefix=/usr/local --libdir=lib \
-            -Dexamples=false -Ddocs=false -Dtests=false \
-            -Dsmoke-tests=false -Dintrospection=false -Dvapi=false
-          meson compile -C "$source_dir/build"
-          sudo meson install -C "$source_dir/build"
-          sudo ldconfig
-
-      - name: Install exact dependencies
-        working-directory: hydra
-        env:
-          CI: "true"
-        run: yarn install --frozen-lockfile --non-interactive
-
-      - name: Save compiled dependency cache
-        if: steps.dependency-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: |
-            hydra/node_modules
-            hydra/hydra-native
-            hydra/hydra-game-agent
-            ~/.cache/electron
-            ~/.cache/electron-builder
-            ~/.cache/node-gyp
-          key: ${{ steps.dependency-cache.outputs.cache-primary-key }}
-
-      - name: Run selected tests with a bounded timeout
-        working-directory: hydra
-        shell: bash
-        env:
-          TEST_ROOTS: ${{ matrix.roots }}
-        run: |
-          set -euo pipefail
-          tests=()
-          for root in $TEST_ROOTS; do
-            if [[ ! -d "$root" ]]; then
-              continue
-            fi
-
-            if [[ "$root" == "src/main" ]]; then
-              while IFS= read -r test_file; do
-                tests+=("$test_file")
-              done < <(find "$root" -maxdepth 1 -type f -name '*.test.ts' -print | sort)
-            else
-              while IFS= read -r test_file; do
-                tests+=("$test_file")
-              done < <(find "$root" -type f -name '*.test.ts' -print | sort)
-            fi
-          done
-
-          mapfile -t tests < <(printf '%s\n' "${tests[@]}" | sort -u)
-          if [[ ${#tests[@]} -eq 0 ]]; then
-            echo "No tests found for $TEST_ROOTS"
-            exit 0
-          fi
-
-          echo "Running ${#tests[@]} tests from: $TEST_ROOTS"
-          timeout --signal=TERM --kill-after=30s 20m \
-            node --import ./scripts/register-ts-node.mjs \
-            --test --test-reporter=spec "${tests[@]}"
+          echo 'Retired: this diagnostic cached private checkout-derived dependencies in the public Actions cache.'
+          echo 'Use Run private project CI with project=hydra or Validate Hydra checkout instead.'
