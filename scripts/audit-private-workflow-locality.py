@@ -17,6 +17,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "config" / "private-workflow-locality.json"
+HUB_CONFIG = ROOT / "config" / "workflow-hub-projects.json"
 API_ROOT = "https://api.github.com"
 TOKEN_ENV = "PRIVATE_REPOSITORIES_TOKEN"
 REPOSITORY_PATTERN = re.compile(r"^Semogtw/[A-Za-z0-9_.-]+$")
@@ -50,17 +51,52 @@ def api_json(path: str, token: str, *, allow_404: bool = False) -> Any | None:
         raise AuditError("GitHub API request failed") from exc
 
 
-def load_config() -> dict[str, Any]:
+def load_json(path: Path, label: str) -> dict[str, Any]:
     try:
-        payload = json.loads(CONFIG.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise AuditError(f"cannot read locality config: {exc}") from exc
+        raise AuditError(f"cannot read {label}: {exc}") from exc
     if payload.get("schema_version") != 1:
-        raise AuditError("locality config schema_version must be 1")
+        raise AuditError(f"{label} schema_version must be 1")
     projects = payload.get("projects")
     if not isinstance(projects, dict) or not projects:
-        raise AuditError("locality config projects must be a non-empty object")
+        raise AuditError(f"{label} projects must be a non-empty object")
     return payload
+
+
+def load_config() -> dict[str, Any]:
+    return load_json(CONFIG, "locality config")
+
+
+def validate_inventory_alignment(locality: dict[str, Any]) -> None:
+    hub = load_json(HUB_CONFIG, "workflow hub inventory")
+    private_hub = {
+        key: value
+        for key, value in hub["projects"].items()
+        if isinstance(value, dict) and value.get("visibility") == "private"
+    }
+    locality_projects = locality["projects"]
+    if set(private_hub) != set(locality_projects):
+        missing = sorted(set(private_hub) - set(locality_projects))
+        extra = sorted(set(locality_projects) - set(private_hub))
+        raise AuditError(
+            f"private project inventory drift; missing locality entries={missing}, extra={extra}"
+        )
+
+    for project, hub_entry in private_hub.items():
+        locality_entry = locality_projects[project]
+        if locality_entry.get("repository") != hub_entry.get("repository"):
+            raise AuditError(f"{project}: repository differs between hub and locality inventories")
+        if locality_entry.get("ref") != hub_entry.get("default_ref"):
+            raise AuditError(f"{project}: ref differs between hub and locality inventories")
+        hub_token = hub_entry.get("token_access")
+        locality_token = locality_entry.get("token_access", "required")
+        if hub_token == "verified" and locality_token != "required":
+            raise AuditError(f"{project}: verified hub token must be required by locality audit")
+        if hub_token == "pending-secret-scope" and locality_token != "pending":
+            raise AuditError(f"{project}: pending hub token scope must be pending in locality audit")
+        if hub_token not in {"verified", "pending-secret-scope"}:
+            raise AuditError(f"{project}: private hub project must declare token_access state")
 
 
 def normalized_project(
@@ -153,6 +189,7 @@ def audit() -> None:
         raise AuditError(f"missing {TOKEN_ENV}")
 
     payload = load_config()
+    validate_inventory_alignment(payload)
     pending_access: list[str] = []
 
     for project, raw in payload["projects"].items():
