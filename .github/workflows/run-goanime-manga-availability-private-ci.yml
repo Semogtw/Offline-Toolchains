@@ -103,29 +103,60 @@ jobs:
           flutter config --no-analytics
           flutter pub get
 
-      - name: Run manga availability focused tests
+      - name: Test manga provider registry and scope
         if: steps.request.outputs.project == 'goanime'
+        working-directory: private-source
+        run: >-
+          flutter test --no-pub
+          test/services/manga/manga_source_registry_test.dart
+          test/services/manga/providers/provider_contract_harness_test.dart
+          test/architecture/manga_ptbr_source_scope_test.dart
+
+      - name: Test manga request scheduler
+        if: steps.request.outputs.project == 'goanime' && hashFiles('private-source/test/services/manga/manga_request_scheduler_test.dart') != ''
+        working-directory: private-source
+        run: flutter test --no-pub test/services/manga/manga_request_scheduler_test.dart
+
+      - name: Test manga HTTP boundary
+        if: steps.request.outputs.project == 'goanime' && hashFiles('private-source/test/services/manga/manga_http_client_test.dart') != ''
+        working-directory: private-source
+        run: flutter test --no-pub test/services/manga/manga_http_client_test.dart
+
+      - name: Test manga readability proof
+        if: steps.request.outputs.project == 'goanime' && hashFiles('private-source/test/services/manga/manga_readability_verifier_test.dart') != ''
+        working-directory: private-source
+        run: flutter test --no-pub test/services/manga/manga_readability_verifier_test.dart
+
+      - name: Test manga canonical aggregation
+        if: >-
+          steps.request.outputs.project == 'goanime' &&
+          hashFiles('private-source/test/services/manga/manga_search_coordinator_test.dart', 'private-source/test/services/manga/manga_chapter_merge_service_test.dart') != ''
         working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
           tests=()
           for candidate in \
-            test/services/manga/manga_source_registry_test.dart \
-            test/services/manga/providers/provider_contract_harness_test.dart \
-            test/architecture/manga_ptbr_source_scope_test.dart \
-            test/services/manga/manga_request_scheduler_test.dart \
-            test/services/manga/manga_http_client_test.dart \
             test/services/manga/manga_search_coordinator_test.dart \
-            test/services/manga/manga_chapter_merge_service_test.dart \
-            test/services/manga/manga_readability_verifier_test.dart \
+            test/services/manga/manga_chapter_merge_service_test.dart; do
+            [[ -f "$candidate" ]] && tests+=("$candidate")
+          done
+          flutter test --no-pub "${tests[@]}"
+
+      - name: Test manga availability persistence
+        if: >-
+          steps.request.outputs.project == 'goanime' &&
+          hashFiles('private-source/test/services/manga/manga_availability_database_service_test.dart', 'private-source/test/services/manga/manga_availability_service_test.dart') != ''
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=()
+          for candidate in \
             test/services/manga/manga_availability_database_service_test.dart \
             test/services/manga/manga_availability_service_test.dart; do
-            if [[ -f "$candidate" ]]; then
-              tests+=("$candidate")
-            fi
+            [[ -f "$candidate" ]] && tests+=("$candidate")
           done
-          test "${#tests[@]}" -gt 0
           flutter test --no-pub "${tests[@]}"
 
       - name: Check manga availability formatting
@@ -141,16 +172,10 @@ jobs:
             test/helpers/fake_manga_source_provider.dart \
             test/helpers/manga_provider_contract_harness.dart \
             test/architecture/manga_ptbr_source_scope_test.dart; do
-            if [[ -f "$candidate" ]]; then
-              paths+=("$candidate")
-            fi
+            [[ -f "$candidate" ]] && paths+=("$candidate")
           done
-          if [[ -d lib/services/manga ]]; then
-            paths+=(lib/services/manga)
-          fi
-          if [[ -d test/services/manga ]]; then
-            paths+=(test/services/manga)
-          fi
+          [[ -d lib/services/manga ]] && paths+=(lib/services/manga)
+          [[ -d test/services/manga ]] && paths+=(test/services/manga)
           test "${#paths[@]}" -gt 0
           dart format --output=none --set-exit-if-changed "${paths[@]}"
 
