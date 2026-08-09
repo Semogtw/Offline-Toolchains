@@ -1,0 +1,115 @@
+name: Run GoAnime anime provider private CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-anime-provider-ci/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-anime-provider-private-ci
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify exact private GoAnime ref
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain request
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact GoAnime revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-anime-provider-ci/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "main"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve root dependencies
+        working-directory: private-source
+        shell: bash
+        run: flutter pub get
+
+      - name: Resolve goanime_core development dependencies
+        working-directory: private-source/packages/goanime_core
+        shell: bash
+        run: dart pub get
+
+      - name: Verify formatting
+        working-directory: private-source
+        shell: bash
+        run: dart format --output=none --set-exit-if-changed lib test packages tools
+
+      - name: Analyze application and core libraries
+        working-directory: private-source
+        shell: bash
+        run: flutter analyze --no-pub lib test packages/goanime_core/lib
+
+      - name: Analyze goanime_core tests in package context
+        working-directory: private-source/packages/goanime_core
+        shell: bash
+        run: dart analyze lib test
+
+      - name: Run Flutter tests
+        working-directory: private-source
+        shell: bash
+        run: flutter test --no-pub
+
+      - name: Run goanime_core tests
+        working-directory: private-source/packages/goanime_core
+        shell: bash
+        run: dart test
+
+      - name: Build Android debug APK
+        working-directory: private-source
+        shell: bash
+        run: flutter build apk --debug --no-pub
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control"
