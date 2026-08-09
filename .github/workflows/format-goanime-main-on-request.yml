@@ -1,0 +1,89 @@
+name: Format GoAnime main on request
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-format-main/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-format-main
+  cancel-in-progress: false
+
+jobs:
+  format:
+    name: Format private GoAnime main
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout GoAnime main
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: main
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          fetch-depth: 1
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Pin starting revision
+        id: pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Formatting GoAnime main at $sha"
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Format tracked Dart sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format lib test packages tools
+          git diff --check
+
+      - name: Commit formatting if needed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "No formatting changes needed."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- lib test packages tools
+          git commit -m "style: apply Dart 3.12.1 formatting"
+
+          # A normal non-force push makes a concurrent update fail safely.
+          git push origin HEAD:main
+
+      - name: Report result
+        if: always()
+        shell: bash
+        run: |
+          echo "Started from GoAnime ref=${{ steps.pin.outputs.sha }}"
+          echo "Finished at GoAnime ref=$(git rev-parse HEAD 2>/dev/null || true)"
