@@ -57,6 +57,15 @@ jobs:
           flutter-version: 3.44.1
           cache: true
 
+      - name: Resolve root dependencies
+        shell: bash
+        run: flutter pub get
+
+      - name: Resolve goanime_core development dependencies
+        working-directory: packages/goanime_core
+        shell: bash
+        run: dart pub get
+
       - name: Format tracked Dart sources
         shell: bash
         run: |
@@ -71,7 +80,6 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import difflib
           import json
           import os
           import pathlib
@@ -90,31 +98,58 @@ jobs:
                   text=True,
               )
               formatted = pathlib.Path(path).read_text()
-              matcher = difflib.SequenceMatcher(
-                  a=original,
-                  b=formatted,
-                  autojunk=False,
-              )
-              edits = []
-              for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-                  if tag == 'equal':
-                      continue
-                  before = original[i1:i2]
-                  after = formatted[j1:j2]
-                  if before.strip() or after.strip():
-                      print(
-                          f'Unsafe non-whitespace formatter delta in {path} '
-                          f'at original[{i1}:{i2}] formatted[{j1}:{j2}]',
-                          file=sys.stderr,
-                      )
-                      sys.exit(2)
-                  edits.append(
-                      {
-                          'start': i1,
-                          'end': i2,
-                          'replacement': after,
-                      }
+
+              original_non_ws = ''.join(ch for ch in original if not ch.isspace())
+              formatted_non_ws = ''.join(ch for ch in formatted if not ch.isspace())
+              if original_non_ws != formatted_non_ws:
+                  print(
+                      f'Unsafe non-whitespace formatter delta in {path}',
+                      file=sys.stderr,
                   )
+                  sys.exit(2)
+
+              original_positions = [
+                  index for index, ch in enumerate(original) if not ch.isspace()
+              ]
+              formatted_positions = [
+                  index for index, ch in enumerate(formatted) if not ch.isspace()
+              ]
+
+              edits = []
+              boundaries = len(original_positions) + 1
+              for gap_index in range(boundaries):
+                  original_start = (
+                      0
+                      if gap_index == 0
+                      else original_positions[gap_index - 1] + 1
+                  )
+                  original_end = (
+                      len(original)
+                      if gap_index == len(original_positions)
+                      else original_positions[gap_index]
+                  )
+                  formatted_start = (
+                      0
+                      if gap_index == 0
+                      else formatted_positions[gap_index - 1] + 1
+                  )
+                  formatted_end = (
+                      len(formatted)
+                      if gap_index == len(formatted_positions)
+                      else formatted_positions[gap_index]
+                  )
+
+                  before = original[original_start:original_end]
+                  after = formatted[formatted_start:formatted_end]
+                  if before != after:
+                      edits.append(
+                          {
+                              'start': original_start,
+                              'end': original_end,
+                              'replacement': after,
+                          }
+                      )
+
               plan['files'].append({'path': path, 'edits': edits})
 
           print('WHITESPACE_EDIT_PLAN=' + json.dumps(plan, separators=(',', ':')))
