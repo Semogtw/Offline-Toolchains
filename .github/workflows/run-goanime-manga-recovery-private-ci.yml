@@ -75,226 +75,69 @@ jobs:
           flutter config --no-analytics >/dev/null
           flutter pub get >/dev/null
 
-      - name: Test bundled readable catalog
-        id: bundled
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/services/manga/manga_bundled_catalog_source_test.dart >/tmp/manga-bundled.log 2>&1
-
-      - name: Test bundled metadata resolver
-        id: metadata
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/services/manga/manga_bundled_metadata_resolver_test.dart >/tmp/manga-metadata.log 2>&1
-
-      - name: Test readiness gate
-        id: readiness
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/services/manga/manga_catalog_readiness_controller_test.dart >/tmp/manga-readiness.log 2>&1
-
-      - name: Test platform runtime composition
-        id: platform
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/services/manga/manga_platform_runtime_test.dart >/tmp/manga-platform.log 2>&1
-
-      - name: Test deferred runtime service
-        id: runtime_service
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/services/manga/manga_platform_runtime_service_test.dart >/tmp/manga-runtime-service.log 2>&1
-
-      - name: Test isolated readable discovery
-        id: discovery
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/services/manga/manga_source_discovery_service_test.dart >/tmp/manga-discovery.log 2>&1
-
-      - name: Test progressive search coordinator
-        id: search_coordinator
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/services/manga/manga_search_coordinator_test.dart >/tmp/manga-search-coordinator.log 2>&1
-
-      - name: Test persisted live-search identity
-        id: persisted_identity
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/services/manga/manga_search_persisted_identity_test.dart >/tmp/manga-persisted-identity.log 2>&1
-
-      - name: Test persisted-aware canonical matcher
-        id: matcher
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/services/manga/manga_work_matcher_service_test.dart >/tmp/manga-matcher.log 2>&1
-
-      - name: Test sanitized reading routing
-        id: reading_route
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/services/manga/manga_reading_route_service_test.dart >/tmp/manga-reading-route.log 2>&1
-
-      - name: Test repository-backed browse owner
-        id: browse_owner
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/services/manga/manga_repository_browse_data_source_test.dart >/tmp/manga-browse-owner.log 2>&1
-
-      - name: Test canonical details data source
-        id: details_source
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/services/manga/manga_details_data_source_test.dart >/tmp/manga-details-source.log 2>&1
-
-      - name: Test browse views
-        id: browse_views
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/widgets/manga/manga_browse_views_test.dart >/tmp/manga-browse-views.log 2>&1
-
-      - name: Test categories ordering and origin filters
-        id: categories_sort
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/widgets/manga/manga_browse_categories_sort_test.dart >/tmp/manga-categories-sort.log 2>&1
-
-      - name: Test readable search view
-        id: search_view
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/widgets/manga/manga_readable_search_view_test.dart >/tmp/manga-search-view.log 2>&1
-
-      - name: Test canonical details view
-        id: details_view
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/widgets/manga/manga_canonical_details_view_test.dart >/tmp/manga-details-view.log 2>&1
-
-      - name: Test catalog screen integration
-        id: screens
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/widgets/manga/manga_catalog_screen_integration_test.dart >/tmp/manga-screens.log 2>&1
-
-      - name: Test runtime-driven default screens
-        id: runtime_screens
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/widgets/manga/manga_runtime_catalog_screen_test.dart >/tmp/manga-runtime-screens.log 2>&1
-
-      - name: Test deferred runtime provider
-        id: runtime_provider
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/widgets/manga/manga_platform_runtime_provider_test.dart >/tmp/manga-runtime-provider.log 2>&1
-
-      - name: Test default details navigation
-        id: default_nav
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/widgets/manga/manga_default_details_navigation_test.dart >/tmp/manga-default-nav.log 2>&1
-
-      - name: Test bootstrap runtime wiring guard
-        id: bootstrap_wiring
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/architecture/manga_bootstrap_runtime_wiring_test.dart >/tmp/manga-bootstrap.log 2>&1
-
-      - name: Check recovery formatting safely
-        id: format
-        continue-on-error: true
+      - name: Run recovered stack gates safely
         working-directory: private-source
         shell: bash
         run: |
-          dart format --output=none --set-exit-if-changed \
+          failures=()
+          run_gate() {
+            local label="$1"
+            shift
+            if "$@" >"/tmp/manga-${label}.log" 2>&1; then
+              echo "${label}=success"
+            else
+              echo "${label}=failure"
+              failures+=("$label")
+            fi
+          }
+
+          run_gate availability_db flutter test --no-pub test/services/manga/manga_availability_database_service_test.dart
+          run_gate bundled flutter test --no-pub test/services/manga/manga_bundled_catalog_source_test.dart
+          run_gate metadata flutter test --no-pub test/services/manga/manga_bundled_metadata_resolver_test.dart
+          run_gate readiness flutter test --no-pub test/services/manga/manga_catalog_readiness_controller_test.dart
+          run_gate platform flutter test --no-pub test/services/manga/manga_platform_runtime_test.dart
+          run_gate runtime_service flutter test --no-pub test/services/manga/manga_platform_runtime_service_test.dart
+          run_gate registry flutter test --no-pub test/services/manga/manga_source_registry_test.dart
+          run_gate scheduler flutter test --no-pub test/services/manga/manga_request_scheduler_test.dart
+          run_gate http flutter test --no-pub test/services/manga/manga_http_client_test.dart
+          run_gate readability flutter test --no-pub test/services/manga/manga_readability_verifier_test.dart
+          run_gate discovery flutter test --no-pub test/services/manga/manga_source_discovery_service_test.dart
+          run_gate search_coordinator flutter test --no-pub test/services/manga/manga_search_coordinator_test.dart
+          run_gate persisted_identity flutter test --no-pub test/services/manga/manga_search_persisted_identity_test.dart
+          run_gate matcher flutter test --no-pub test/services/manga/manga_work_matcher_service_test.dart
+          run_gate chapter_merge flutter test --no-pub test/services/manga/manga_chapter_merge_service_test.dart
+          run_gate source_routing flutter test --no-pub test/integration/manga_source_routing_test.dart
+          run_gate reading_route flutter test --no-pub test/services/manga/manga_reading_route_service_test.dart
+          run_gate browse_owner flutter test --no-pub test/services/manga/manga_repository_browse_data_source_test.dart
+          run_gate details_source flutter test --no-pub test/services/manga/manga_details_data_source_test.dart
+          run_gate browse_views flutter test --no-pub test/widgets/manga/manga_browse_views_test.dart
+          run_gate categories_sort flutter test --no-pub test/widgets/manga/manga_browse_categories_sort_test.dart
+          run_gate search_view flutter test --no-pub test/widgets/manga/manga_readable_search_view_test.dart
+          run_gate details_view flutter test --no-pub test/widgets/manga/manga_canonical_details_view_test.dart
+          run_gate screens flutter test --no-pub test/widgets/manga/manga_catalog_screen_integration_test.dart
+          run_gate runtime_screens flutter test --no-pub test/widgets/manga/manga_runtime_catalog_screen_test.dart
+          run_gate runtime_provider flutter test --no-pub test/widgets/manga/manga_platform_runtime_provider_test.dart
+          run_gate default_nav flutter test --no-pub test/widgets/manga/manga_default_details_navigation_test.dart
+          run_gate bootstrap_wiring flutter test --no-pub test/architecture/manga_bootstrap_runtime_wiring_test.dart
+
+          if dart format --output=none --set-exit-if-changed \
             lib/app/bootstrap.dart \
             lib/services/manga \
             lib/screens/manga \
             lib/widgets/manga \
             test/services/manga \
             test/widgets/manga \
-            test/architecture/manga_bootstrap_runtime_wiring_test.dart >/dev/null 2>&1
+            test/architecture/manga_bootstrap_runtime_wiring_test.dart >/dev/null 2>&1; then
+            echo "format=success"
+          else
+            echo "format=failure"
+          fi
 
-      - name: Report recovered stack status safely
-        if: always()
-        shell: bash
-        env:
-          BUNDLED: ${{ steps.bundled.outcome }}
-          METADATA: ${{ steps.metadata.outcome }}
-          READINESS: ${{ steps.readiness.outcome }}
-          PLATFORM: ${{ steps.platform.outcome }}
-          RUNTIME_SERVICE: ${{ steps.runtime_service.outcome }}
-          DISCOVERY: ${{ steps.discovery.outcome }}
-          SEARCH_COORDINATOR: ${{ steps.search_coordinator.outcome }}
-          PERSISTED_IDENTITY: ${{ steps.persisted_identity.outcome }}
-          MATCHER: ${{ steps.matcher.outcome }}
-          READING_ROUTE: ${{ steps.reading_route.outcome }}
-          BROWSE_OWNER: ${{ steps.browse_owner.outcome }}
-          DETAILS_SOURCE: ${{ steps.details_source.outcome }}
-          BROWSE_VIEWS: ${{ steps.browse_views.outcome }}
-          CATEGORIES_SORT: ${{ steps.categories_sort.outcome }}
-          SEARCH_VIEW: ${{ steps.search_view.outcome }}
-          DETAILS_VIEW: ${{ steps.details_view.outcome }}
-          SCREENS: ${{ steps.screens.outcome }}
-          RUNTIME_SCREENS: ${{ steps.runtime_screens.outcome }}
-          RUNTIME_PROVIDER: ${{ steps.runtime_provider.outcome }}
-          DEFAULT_NAV: ${{ steps.default_nav.outcome }}
-          BOOTSTRAP_WIRING: ${{ steps.bootstrap_wiring.outcome }}
-          FORMAT: ${{ steps.format.outcome }}
-        run: |
-          printf '%s\n' \
-            "bundled=$BUNDLED" \
-            "metadata=$METADATA" \
-            "readiness=$READINESS" \
-            "platform=$PLATFORM" \
-            "runtime_service=$RUNTIME_SERVICE" \
-            "discovery=$DISCOVERY" \
-            "search_coordinator=$SEARCH_COORDINATOR" \
-            "persisted_identity=$PERSISTED_IDENTITY" \
-            "matcher=$MATCHER" \
-            "reading_route=$READING_ROUTE" \
-            "browse_owner=$BROWSE_OWNER" \
-            "details_source=$DETAILS_SOURCE" \
-            "browse_views=$BROWSE_VIEWS" \
-            "categories_sort=$CATEGORIES_SORT" \
-            "search_view=$SEARCH_VIEW" \
-            "details_view=$DETAILS_VIEW" \
-            "screens=$SCREENS" \
-            "runtime_screens=$RUNTIME_SCREENS" \
-            "runtime_provider=$RUNTIME_PROVIDER" \
-            "default_nav=$DEFAULT_NAV" \
-            "bootstrap_wiring=$BOOTSTRAP_WIRING" \
-            "format=$FORMAT"
-
-      - name: Fail if any functional recovery gate failed
-        if: >-
-          steps.bundled.outcome == 'failure' ||
-          steps.metadata.outcome == 'failure' ||
-          steps.readiness.outcome == 'failure' ||
-          steps.platform.outcome == 'failure' ||
-          steps.runtime_service.outcome == 'failure' ||
-          steps.discovery.outcome == 'failure' ||
-          steps.search_coordinator.outcome == 'failure' ||
-          steps.persisted_identity.outcome == 'failure' ||
-          steps.matcher.outcome == 'failure' ||
-          steps.reading_route.outcome == 'failure' ||
-          steps.browse_owner.outcome == 'failure' ||
-          steps.details_source.outcome == 'failure' ||
-          steps.browse_views.outcome == 'failure' ||
-          steps.categories_sort.outcome == 'failure' ||
-          steps.search_view.outcome == 'failure' ||
-          steps.details_view.outcome == 'failure' ||
-          steps.screens.outcome == 'failure' ||
-          steps.runtime_screens.outcome == 'failure' ||
-          steps.runtime_provider.outcome == 'failure' ||
-          steps.default_nav.outcome == 'failure' ||
-          steps.bootstrap_wiring.outcome == 'failure'
-        run: exit 1
-
-      - name: Report formatter drift safely
-        if: steps.format.outcome == 'failure'
-        run: echo "Recovered manga stack has formatter drift; private paths and diffs are omitted."
+          rm -f /tmp/manga-*.log
+          if ((${#failures[@]} > 0)); then
+            printf 'functional_failures=%s\n' "${failures[*]}"
+            exit 1
+          fi
 
       - name: Remove private checkout and transient logs
         if: always()
