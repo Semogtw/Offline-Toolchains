@@ -1,0 +1,100 @@
+name: Run GoAnime manga manifest private CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-recovery/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-manifest-private-ci
+  cancel-in-progress: false
+
+jobs:
+  manifest:
+    name: GoAnime manga provider manifest
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-recovery/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private manga revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null
+
+      - name: Validate provider manifest accounting safely
+        working-directory: private-source
+        shell: bash
+        run: |
+          failures=()
+          run_gate() {
+            local label="$1"
+            shift
+            if "$@" >"/tmp/${label}.log" 2>&1; then
+              echo "${label}=success"
+            else
+              echo "${label}=failure"
+              failures+=("$label")
+            fi
+          }
+          run_gate manifest_cli dart run tools/manga/validate_manga_provider_manifest.dart docs/manga_sources_ptbr.json
+          run_gate manifest_validator flutter test --no-pub test/architecture/manga_provider_manifest_validator_test.dart
+          run_gate registry_manifest flutter test --no-pub test/architecture/manga_provider_registry_manifest_test.dart
+          rm -f /tmp/manifest_*.log /tmp/registry_manifest.log
+          if ((${#failures[@]} > 0)); then
+            printf 'functional_failures=%s\n' "${failures[*]}"
+            exit 1
+          fi
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control" /tmp/manifest_*.log /tmp/registry_manifest.log
