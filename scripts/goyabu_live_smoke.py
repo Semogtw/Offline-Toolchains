@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Small live smoke probe for the public Goyabu source.
 
-The probe intentionally prints only stage/status/host information. It never
-persists page bodies, tokens, cookies, or resolved media URLs.
+The probe prints only stage/status/host information. When ``CAPTURE_DIR`` is
+set and playback discovery fails, the public episode HTML is written only to
+the ephemeral runner directory so the workflow can encrypt it before upload.
 """
 
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 import re
 import sys
 import urllib.parse
@@ -61,6 +64,15 @@ def safe_host(url: str) -> str:
 
 def resolve(base: str, value: str) -> str:
     return urllib.parse.urljoin(base, value.replace(r"\/", "/"))
+
+
+def capture_episode_html(body: str) -> None:
+    capture_dir = os.environ.get("CAPTURE_DIR", "").strip()
+    if not capture_dir:
+        return
+    output = Path(capture_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "episode.html").write_text(body, encoding="utf-8")
 
 
 def first_episode_url(page_url: str, body: str) -> str | None:
@@ -168,6 +180,7 @@ def main() -> int:
 
         candidates = player_candidates(episode.url, episode.body)
         if not candidates:
+            capture_episode_html(episode.body)
             print("player=missing")
             return 10
         print(f"player=present count={len(candidates)} hosts={','.join(sorted({safe_host(c) for c in candidates}))}")
@@ -185,6 +198,7 @@ def main() -> int:
                 except Exception as exc:  # noqa: BLE001 - live probe reports only type.
                     print(f"blogger_probe_error={type(exc).__name__}")
 
+        capture_episode_html(episode.body)
         print("playback_shape=unresolved")
         return 11
     except Exception as exc:  # noqa: BLE001 - sanitized CI diagnostic.
