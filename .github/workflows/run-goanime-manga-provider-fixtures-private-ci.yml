@@ -101,7 +101,7 @@ jobs:
           echo "format=$FORMAT"
 
       - name: Fail on functional provider fixture failure
-        if: steps.astratoons.outcome == 'failure' || steps.readability.outcome == 'failure'
+        if: ${{ steps.astratoons.outcome == 'failure' || steps.readability.outcome == 'failure' }}
         run: exit 1
 
       - name: Remove private checkout and transient logs
