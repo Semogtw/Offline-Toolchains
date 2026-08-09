@@ -1,0 +1,358 @@
+name: Build private production-equivalent GoAnime APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-goanime-production-equivalent-private.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-production-equivalent-private
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      SOURCE_SHA: 9ed70c8fe968ce637c53b8bbb7057ce80a5f0168
+      FIREBASE_PROJECT_ID: goanime-5e605
+      FIREBASE_WEB_API_KEY: AIzaSyDd8lZtWzWd4cSyMFaN-MPAVdEJa58znig
+      EXPECTED_PGP_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+      OFFICIAL_RELEASE_ASSET_ID: '460794541'
+    steps:
+      - name: Checkout trusted toolchain source
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: trusted-source
+          persist-credentials: false
+
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Expose Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Recover Firebase Android client resources from official APK
+        id: firebase
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/firebase-recovery"
+          mkdir -p "$work"
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer $PRIVATE_REPOSITORIES_TOKEN" \
+            -H 'Accept: application/octet-stream' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/Semogtw/goanime-mobile/releases/assets/$OFFICIAL_RELEASE_ASSET_ID" \
+            -o "$work/official.apk"
+          test -s "$work/official.apk"
+          unzip -tq "$work/official.apk" >/dev/null
+
+          aapt2_bin="$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/build-tools" -type f -name aapt2 2>/dev/null | sort -V | tail -n1)"
+          test -x "$aapt2_bin"
+          "$aapt2_bin" dump resources "$work/official.apk" > "$work/resources.txt"
+
+          python3 - "$work/resources.txt" "$work/firebase.json" <<'PY'
+          import json, re, sys
+          text = open(sys.argv[1], encoding='utf-8', errors='replace').read().splitlines()
+          wanted = {
+              'google_app_id', 'gcm_defaultSenderId', 'google_api_key',
+              'google_storage_bucket', 'project_id', 'firebase_database_url',
+              'default_web_client_id'
+          }
+          values = {}
+          current = None
+          for line in text:
+              m = re.search(r'resource .*:string/([^ ]+)', line)
+              if m:
+                  current = m.group(1) if m.group(1) in wanted else None
+                  continue
+              if current:
+                  m = re.search(r'\(string8\) "(.*)"', line)
+                  if not m:
+                      m = re.search(r'\(string16\) "(.*)"', line)
+                  if m:
+                      values[current] = m.group(1)
+                      current = None
+          required = ['google_app_id', 'gcm_defaultSenderId']
+          missing = [name for name in required if not values.get(name)]
+          if missing:
+              raise SystemExit('official APK lacks required Firebase Android resources: ' + ', '.join(missing))
+          # Do not print values: public Actions logs should only disclose presence.
+          print('Recovered Firebase resources: ' + ', '.join(sorted(values)))
+          json.dump(values, open(sys.argv[2], 'w', encoding='utf-8'), indent=2)
+          PY
+          echo "config=$work/firebase.json" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact current GoAnime main
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.SOURCE_SHA }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify exact private commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C private-source rev-parse HEAD)" = "$SOURCE_SHA"
+
+      - name: Reconstruct google-services.json in runner memory
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - '${{ steps.firebase.outputs.config }}' private-source/android/app/google-services.json "$FIREBASE_PROJECT_ID" "$FIREBASE_WEB_API_KEY" <<'PY'
+          import json, sys
+          source, target, project_id, fallback_key = sys.argv[1:]
+          v = json.load(open(source, encoding='utf-8'))
+          app_id = v['google_app_id']
+          sender = v['gcm_defaultSenderId']
+          api_key = v.get('google_api_key') or fallback_key
+          payload = {
+            'project_info': {
+              'project_number': sender,
+              'project_id': project_id,
+            },
+            'client': [{
+              'client_info': {
+                'mobilesdk_app_id': app_id,
+                'android_client_info': {'package_name': 'com.example.goanime_mobile'},
+              },
+              'api_key': [{'current_key': api_key}],
+              'services': {},
+            }],
+            'configuration_version': '1',
+          }
+          if v.get('google_storage_bucket'):
+              payload['project_info']['storage_bucket'] = v['google_storage_bucket']
+          if v.get('firebase_database_url'):
+              payload['project_info']['firebase_url'] = v['firebase_database_url']
+          with open(target, 'w', encoding='utf-8') as f:
+              json.dump(payload, f, separators=(',', ':'))
+          print('google-services.json reconstructed without logging client identifiers')
+          PY
+          chmod 600 private-source/android/app/google-services.json
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+
+      - name: Resolve dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd private-source && flutter config --no-analytics && flutter pub get)
+          (cd private-source/packages/goanime_core && dart pub get)
+
+      - name: Discover current-season MAL IDs via AniList
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, time, urllib.request
+          from datetime import datetime, timezone
+          from pathlib import Path
+          path = Path('tools/anime_metadata_seed_targets.json')
+          payload = json.loads(path.read_text(encoding='utf-8'))
+          targets = payload.setdefault('targets', [])
+          existing = {t.get('malId') for t in targets if isinstance(t, dict) and isinstance(t.get('malId'), int)}
+          now = datetime.now(timezone.utc)
+          season = 'WINTER' if now.month <= 3 else 'SPRING' if now.month <= 6 else 'SUMMER' if now.month <= 9 else 'FALL'
+          query = '''query ($page: Int!, $year: Int!, $season: MediaSeason!) { Page(page: $page, perPage: 50) { pageInfo { hasNextPage } media(type: ANIME, seasonYear: $year, season: $season, isAdult: false, sort: POPULARITY_DESC) { idMal title { english romaji } } } }'''
+          discovered = set()
+          for page_number in range(1, 5):
+              body = json.dumps({'query': query, 'variables': {'page': page_number, 'year': now.year, 'season': season}}).encode()
+              document = None
+              error = None
+              for attempt in range(1, 4):
+                  try:
+                      req = urllib.request.Request('https://graphql.anilist.co', data=body, headers={'Content-Type':'application/json','Accept':'application/json','User-Agent':'GoAnime-Mobile-toolchain/1.0'}, method='POST')
+                      with urllib.request.urlopen(req, timeout=30) as response:
+                          document = json.loads(response.read().decode())
+                      break
+                  except Exception as e:
+                      error = e
+                      if attempt < 3: time.sleep(attempt * 2)
+              if document is None: raise RuntimeError(f'AniList failed: {error}')
+              if document.get('errors'): raise RuntimeError(document['errors'])
+              page = document['data']['Page']
+              for media in page.get('media') or []:
+                  mal_id = media.get('idMal')
+                  if not isinstance(mal_id, int) or mal_id <= 0: continue
+                  discovered.add(mal_id)
+                  title = (media.get('title') or {}).get('english') or (media.get('title') or {}).get('romaji') or f'MAL {mal_id}'
+                  if mal_id not in existing:
+                      targets.append({'malId': mal_id, 'title': str(title).strip()})
+                      existing.add(mal_id)
+              if not page.get('pageInfo', {}).get('hasNextPage'): break
+          if len(discovered) < 20: raise RuntimeError(f'only {len(discovered)} MAL IDs discovered')
+          payload['queries'] = []
+          path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+          print(f'Discovered {len(discovered)} {season.lower()} {now.year} MAL IDs')
+          PY
+
+      - name: Build and install fresh Jikan catalog
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart run tools/build_anime_metadata_seed.dart
+          cp dist/anime_metadata_cache/anime_metadata_seed.json assets/data/anime_metadata_seed.json
+          cp dist/anime_metadata_cache/broadcast_schedule.json assets/data/broadcast_schedule.json
+          python3 - <<'PY'
+          import json
+          from datetime import datetime, timezone
+          p=json.load(open('assets/data/anime_metadata_seed.json',encoding='utf-8'))
+          b=json.load(open('assets/data/broadcast_schedule.json',encoding='utf-8'))
+          now=datetime.now(timezone.utc); season='winter' if now.month<=3 else 'spring' if now.month<=6 else 'summer' if now.month<=9 else 'fall'
+          entries=p.get('entries') or []
+          current=[e for e in entries if e.get('year')==now.year and str(e.get('season') or '').lower()==season]
+          broadcasts=b.get('entries') or {}
+          if len(entries)<40 or len(current)<10 or len(broadcasts)<5: raise SystemExit('fresh Jikan validation failed')
+          print(f'Jikan validated: total={len(entries)} current={len(current)} broadcasts={len(broadcasts)}')
+          PY
+
+      - name: Validate source gates
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format --output=none --set-exit-if-changed lib test packages tools
+          flutter analyze --no-pub
+          flutter test --no-pub --concurrency=2
+          (cd packages/goanime_core && dart test)
+
+      - name: Build production-equivalent private release APK
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter build apk --release --target-platform android-arm64 --no-pub \
+            --dart-define="FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID" \
+            --dart-define="FIREBASE_WEB_API_KEY=$FIREBASE_WEB_API_KEY"
+
+      - name: Validate Firebase, release mode, signing and package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="$GITHUB_WORKSPACE/private-source/build/app/outputs/flutter-apk/app-release.apk"
+          test -s "$apk"
+          unzip -tq "$apk" >/dev/null
+          unzip -l "$apk" | grep -Eq 'lib/arm64-v8a/libapp\.so'
+          ! unzip -l "$apk" | grep -q 'assets/flutter_assets/kernel_blob.bin'
+
+          aapt2_bin="$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/build-tools" -type f -name aapt2 2>/dev/null | sort -V | tail -n1)"
+          "$aapt2_bin" dump resources "$apk" > "$RUNNER_TEMP/final-resources.txt"
+          grep -q ':string/google_app_id' "$RUNNER_TEMP/final-resources.txt"
+          grep -q ':string/gcm_defaultSenderId' "$RUNNER_TEMP/final-resources.txt"
+          grep -q ':string/google_api_key' "$RUNNER_TEMP/final-resources.txt"
+          grep -q ':string/project_id' "$RUNNER_TEMP/final-resources.txt"
+
+          unzip -p "$apk" classes.dex | strings | grep -q 'com/google/firebase/messaging'
+          unzip -p "$apk" classes.dex | strings | grep -q 'com/google/firebase/crashlytics'
+
+          apksigner_bin="$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/build-tools" -type f -name apksigner 2>/dev/null | sort -V | tail -n1)"
+          "$apksigner_bin" verify --verbose --print-certs "$apk" > "$RUNNER_TEMP/apksigner.txt"
+
+          # Verify compile-time Firebase REST config exists in AOT without printing values.
+          unzip -p "$apk" lib/arm64-v8a/libapp.so | strings > "$RUNNER_TEMP/aot-strings.txt"
+          grep -q "$FIREBASE_PROJECT_ID" "$RUNNER_TEMP/aot-strings.txt"
+          grep -q "$FIREBASE_WEB_API_KEY" "$RUNNER_TEMP/aot-strings.txt"
+
+          work="$RUNNER_TEMP/goanime-production-equivalent"
+          gpg_home="$work/gpg"
+          mkdir -p "$gpg_home" "$work/transfer"
+          chmod 700 "$gpg_home"
+          export GNUPGHOME="$gpg_home"
+          sha256="$(sha256sum "$apk" | awk '{print $1}')"
+          size="$(stat -c '%s' "$apk")"
+
+          gpg --batch --import "$GITHUB_WORKSPACE/trusted-source/keys/source-bundles-public.asc"
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_PGP_FINGERPRINT" | awk -F: '$1=="fpr"{print $10;exit}')"
+          test "$fingerprint" = "$EXPECTED_PGP_FINGERPRINT"
+          encrypted="$work/transfer/GoAnime-${SOURCE_SHA:0:12}-production-equivalent-private.apk.gpg"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_PGP_FINGERPRINT" --output "$encrypted" --encrypt "$apk"
+
+          python3 - "$work/transfer/manifest.json" "$sha256" "$size" <<'PY'
+          import datetime,json,sys
+          path,sha,size=sys.argv[1:]
+          json.dump({
+            'schema_version':1,
+            'source_sha':'9ed70c8fe968ce637c53b8bbb7057ce80a5f0168',
+            'build_type':'release-private-production-equivalent',
+            'flutter_mode':'release',
+            'target_platform':'android-arm64',
+            'firebase_rest_configured':True,
+            'firebase_native_configured':True,
+            'fcm_packaged':True,
+            'crashlytics_packaged':True,
+            'signing':'project release build type; debug certificate fallback because production keystore is not available to Offline-Toolchains',
+            'distribution':'private encrypted artifact only; no GitHub Release, Play Store, or updater rollout',
+            'apk_sha256':sha,
+            'apk_size_bytes':int(size),
+            'created_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),
+          },open(path,'w',encoding='utf-8'),indent=2,sort_keys=True)
+          PY
+          cp "$RUNNER_TEMP/apksigner.txt" "$work/transfer/apksigner.txt"
+          rm -f private-source/android/app/google-services.json
+          rm -rf "$gpg_home" "$RUNNER_TEMP/firebase-recovery"
+          echo "transfer_dir=$work/transfer" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+          echo "size=$size" >> "$GITHUB_OUTPUT"
+
+      - name: Upload encrypted private APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-production-equivalent-private-encrypted
+          path: ${{ steps.package.outputs.transfer_dir }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Summary
+        env:
+          APK_SHA256: ${{ steps.package.outputs.sha256 }}
+          APK_SIZE: ${{ steps.package.outputs.size }}
+        shell: bash
+        run: |
+          {
+            echo '## GoAnime production-equivalent private APK'
+            echo
+            echo "- Source: \`$SOURCE_SHA\`"
+            echo '- Flutter: release/AOT, arm64'
+            echo '- Firebase REST: configured'
+            echo '- Firebase Android/FCM/Crashlytics: configured from client resources recovered from official APK'
+            echo '- Signing: debug-certificate fallback (production keystore is intentionally unavailable in public toolchains)'
+            echo '- Distribution: private encrypted artifact only; no public release or rollout'
+            echo "- SHA-256: \`$APK_SHA256\`"
+            echo "- Bytes: \`$APK_SIZE\`"
+          } >> "$GITHUB_STEP_SUMMARY"
