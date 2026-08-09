@@ -1,0 +1,30 @@
+name: Run GoAnime AniTube HLS smoke
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-anitube-hls/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Verify AniTube direct HLS
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted probe
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+          sparse-checkout: scripts/anitube_hls_smoke.py
+          sparse-checkout-cone-mode: false
+          show-progress: false
+      - name: Run live HLS smoke
+        shell: bash
+        run: python3 scripts/anitube_hls_smoke.py
