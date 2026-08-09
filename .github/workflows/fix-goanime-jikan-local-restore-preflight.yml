@@ -51,8 +51,8 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path('infra/jikan/scripts/restore.sh')
-          text = path.read_text(encoding='utf-8')
+          restore = Path('infra/jikan/scripts/restore.sh')
+          text = restore.read_text(encoding='utf-8')
           marker = "require_command docker\n\n"
           probe = """if ! docker compose version >/dev/null 2>&1; then
             printf 'Could not verify Docker Compose availability before restore.\\n' >&2
@@ -70,10 +70,25 @@ jobs:
               raise SystemExit('restore.sh Compose probe block changed')
           text = text.replace(marker, marker + probe + '\n', 1)
           text = text.replace(old_probe, '', 1)
-          path.write_text(text, encoding='utf-8')
+          restore.write_text(text, encoding='utf-8')
+
+          contract = Path('infra/jikan/tests/backup_restore_contract_test.sh')
+          text = contract.read_text(encoding='utf-8')
+          old = """[[ ! -s \"$DOCKER_LOG\" ]] || \\
+            fail 'restored secret stage creation failure reached Docker'
+          """
+          new = """grep -Eq '^compose version[[:space:]]*$' \"$DOCKER_LOG\" || \\
+            fail 'restored secret stage creation failure skipped Compose preflight'
+          if grep -Ev '^compose version[[:space:]]*$' \"$DOCKER_LOG\" | grep -q .; then
+            fail 'restored secret stage creation failure reached Docker beyond the read-only Compose preflight'
+          fi
+          """
+          if text.count(old) != 1:
+              raise SystemExit('backup_restore_contract_test.sh secret-stage Docker assertion changed')
+          contract.write_text(text.replace(old, new, 1), encoding='utf-8')
           PY
           git diff --check
-          git diff -- infra/jikan/scripts/restore.sh
+          git diff -- infra/jikan/scripts/restore.sh infra/jikan/tests/backup_restore_contract_test.sh
 
       - name: Install PHP CLI for indexer contracts
         shell: bash
@@ -86,12 +101,13 @@ jobs:
           php -v | head -n1
           node --version
 
-      - name: Run focused restore contract
+      - name: Run focused restore contracts
         working-directory: target/infra/jikan
         shell: bash
         run: |
           set -euo pipefail
           bash tests/restore_compose_preflight_order_contract_test.sh
+          bash tests/backup_restore_contract_test.sh
 
       - name: Run Jikan infrastructure contracts
         working-directory: target/infra/jikan
@@ -118,6 +134,6 @@ jobs:
           fi
           git config user.name 'Arthur Almeida'
           git config user.email 'arthurgva1602@gmail.com'
-          git add infra/jikan/scripts/restore.sh
+          git add infra/jikan/scripts/restore.sh infra/jikan/tests/backup_restore_contract_test.sh
           git commit -m 'fix(jikan): probe compose before restore secret transaction'
           git push origin HEAD:"$TARGET_BRANCH"
