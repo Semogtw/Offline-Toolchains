@@ -1,0 +1,114 @@
+name: Run GoAnime manga provider stage audit privately
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-provider-stage-audit/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-provider-stage-audit-private-ci
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: GoAnime manga failed-provider stage audit
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision once
+        id: request
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-provider-stage-audit/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch requested < "toolchain-control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          remote="https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git"
+          if [[ "$requested" == "latest" ]]; then
+            resolved="$(git ls-remote "$remote" refs/heads/feature/manga-platform | cut -f1)"
+          else
+            resolved="$requested"
+          fi
+          [[ "$resolved" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$resolved" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout resolved private revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Diagnose HQ Now by sanitized stage
+        id: hqnow
+        continue-on-error: true
+        working-directory: private-source
+        run: dart run tools/manga/audit_planned_provider_stage.dart ptbr.hqnow
+
+      - name: Diagnose Manga Online by sanitized stage
+        id: mangaonline
+        continue-on-error: true
+        working-directory: private-source
+        run: dart run tools/manga/audit_planned_provider_stage.dart ptbr.mangaonline
+
+      - name: Diagnose Ninja Scan by sanitized stage
+        id: ninjascan
+        continue-on-error: true
+        working-directory: private-source
+        run: dart run tools/manga/audit_planned_provider_stage.dart ptbr.ninjascan
+
+      - name: Report aggregate stage audit outcome
+        if: always()
+        env:
+          HQNOW: ${{ steps.hqnow.outcome }}
+          MANGAONLINE: ${{ steps.mangaonline.outcome }}
+          NINJASCAN: ${{ steps.ninjascan.outcome }}
+        run: |
+          echo "hqnow_stage_audit=$HQNOW"
+          echo "mangaonline_stage_audit=$MANGAONLINE"
+          echo "ninjascan_stage_audit=$NINJASCAN"
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control"
