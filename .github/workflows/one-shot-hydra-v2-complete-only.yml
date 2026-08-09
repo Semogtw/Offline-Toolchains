@@ -1,0 +1,73 @@
+name: One-shot Hydra complete-only V2 runtime fix
+
+on:
+  push:
+    paths:
+      - "triggers/one-shot-hydra-v2-complete-only.json"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Hydra V2 branch
+        uses: actions/checkout@v4
+        with:
+          repository: Semogtw/HydraPersonalizado
+          ref: feat/drive-cloud-saves-v2
+          token: ${{ secrets.TOOLCHAIN_GH_TOKEN }}
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Require complete embedded V2 snapshots in runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/main/services/cloud-save/google-drive/google-drive-cloud-save-provider-v2-runtime.ts")
+          text = path.read_text()
+          old = '''const isV2Archive = (\n  archive: Awaited<ReturnType<typeof GameSaveArchive.create>>\n): archive is Awaited<ReturnType<typeof GameSaveArchive.create>> &\n  DriveV2DecoratedArchive =>\n  (archive as Partial<DriveV2DecoratedArchive>).v2Manifest?.schemaVersion === 2;\n'''
+          new = '''const isV2Archive = (\n  archive: Awaited<ReturnType<typeof GameSaveArchive.create>>\n): archive is Awaited<ReturnType<typeof GameSaveArchive.create>> &\n  DriveV2DecoratedArchive => {\n  const decorated = archive as Partial<DriveV2DecoratedArchive>;\n  return (\n    decorated.v2Manifest?.schemaVersion === 2 &&\n    decorated.v2ObservationComplete === true\n  );\n};\n'''
+          if text.count(old) != 1:
+              raise SystemExit("expected runtime V2 archive guard was not found exactly once")
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Commit and push Hydra fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git config user.name "toolchains-bot"
+          git config user.email "toolchains-bot@users.noreply.github.com"
+          git add src/main/services/cloud-save/google-drive/google-drive-cloud-save-provider-v2-runtime.ts
+          git commit -m "fix(cloud-save): require complete V2 runtime snapshots"
+          git push origin HEAD:feat/drive-cloud-saves-v2
+
+      - name: Remove one-shot Toolchains files
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TOOLCHAINS_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in ".github/workflows/one-shot-hydra-v2-complete-only.yml" "triggers/one-shot-hydra-v2-complete-only.json"; do
+            encoded="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$file")"
+            metadata="$(curl --fail-with-body --silent --show-error \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${TOOLCHAINS_REPO}/contents/${encoded}?ref=main")" || continue
+            sha="$(printf '%s' "$metadata" | jq -er '.sha')"
+            body="$(jq -cn --arg message "ci: remove completed Hydra V2 snapshot guard patch" --arg sha "$sha" '{message:$message,sha:$sha,branch:"main"}')"
+            curl --fail-with-body --silent --show-error -X DELETE \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${TOOLCHAINS_REPO}/contents/${encoded}" \
+              -d "$body" >/dev/null || true
+          done
