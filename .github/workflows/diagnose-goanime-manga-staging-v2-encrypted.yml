@@ -99,57 +99,26 @@ jobs:
           chmod 700 "$gpg_home"
 
           set +e
-          run_test() {
-            local label="$1"
-            local path="$2"
-            flutter test --no-pub "$path" >"$plain/${label}.log" 2>&1
-            printf '%s=%s\n' "$label" "$?" >> "$plain/STATUS.txt"
-          }
-          run_test http test/services/manga/manga_http_client_test.dart
-          run_test astratoons test/services/manga/providers/astratoons_manga_provider_test.dart
-          run_test hqnow test/services/manga/providers/hqnow_manga_provider_test.dart
-          run_test capitoons test/services/manga/providers/capitoons_manga_provider_test.dart
-          run_test mangaonline test/services/manga/providers/mangaonline_manga_provider_test.dart
-          run_test ninjascan test/services/manga/providers/ninja_scan_manga_provider_test.dart
-          run_test readability test/services/manga/manga_readability_verifier_test.dart
-          run_test live_evidence test/tools/manga/manga_live_provider_evidence_test.dart
-          run_test evidence_writer test/tools/manga/manga_live_provider_evidence_writer_test.dart
-          run_test evidence_reader test/tools/manga/manga_live_provider_evidence_reader_test.dart
-          run_test evidence_batch test/tools/manga/manga_live_provider_evidence_batch_test.dart
-          run_test evidence_clusterer test/tools/manga/manga_live_evidence_clusterer_test.dart
-          run_test canonical_draft test/tools/manga/manga_canonical_work_draft_test.dart
-          run_test canonical_id_ledger test/tools/manga/manga_canonical_id_ledger_test.dart
-          run_test canonical_record_assembler test/tools/manga/manga_canonical_record_assembler_test.dart
-          run_test production_policy test/tools/manga/manga_production_catalog_policy_test.dart
-          run_test planned_accounting test/architecture/manga_planned_provider_definitions_test.dart
+          flutter test --no-pub test/services/manga/manga_http_client_test.dart >"$plain/http.log" 2>&1
+          printf 'http=%s\n' "$?" >> "$plain/STATUS.txt"
+          flutter test --no-pub test/services/manga/providers >"$plain/providers.log" 2>&1
+          printf 'providers=%s\n' "$?" >> "$plain/STATUS.txt"
+          flutter test --no-pub test/services/manga/manga_readability_verifier_test.dart >"$plain/readability.log" 2>&1
+          printf 'readability=%s\n' "$?" >> "$plain/STATUS.txt"
+          flutter test --no-pub test/tools/manga >"$plain/manga-tooling.log" 2>&1
+          printf 'manga_tooling=%s\n' "$?" >> "$plain/STATUS.txt"
+          flutter test --no-pub test/architecture/manga_planned_provider_definitions_test.dart >"$plain/planned-accounting.log" 2>&1
+          printf 'planned_accounting=%s\n' "$?" >> "$plain/STATUS.txt"
 
           dart format \
             lib/services/manga/manga_http_client.dart \
             lib/services/manga/providers \
             test/services/manga/manga_http_client_test.dart \
             test/services/manga/providers \
-            tools/manga/manga_live_provider_audit.dart \
-            tools/manga/manga_live_provider_evidence.dart \
-            tools/manga/manga_live_provider_evidence_writer.dart \
-            tools/manga/manga_live_provider_evidence_reader.dart \
-            tools/manga/manga_live_provider_evidence_batch.dart \
-            tools/manga/manga_live_evidence_clusterer.dart \
-            tools/manga/manga_canonical_work_draft.dart \
-            tools/manga/manga_canonical_id_ledger.dart \
-            tools/manga/manga_canonical_record_assembler.dart \
-            tools/manga/collect_planned_manga_live_evidence.dart \
-            test/tools/manga/manga_live_provider_evidence_test.dart \
-            test/tools/manga/manga_live_provider_evidence_writer_test.dart \
-            test/tools/manga/manga_live_provider_evidence_reader_test.dart \
-            test/tools/manga/manga_live_provider_evidence_batch_test.dart \
-            test/tools/manga/manga_live_evidence_clusterer_test.dart \
-            test/tools/manga/manga_canonical_work_draft_test.dart \
-            test/tools/manga/manga_canonical_id_ledger_test.dart \
-            test/tools/manga/manga_canonical_record_assembler_test.dart \
-            test/tools/manga/manga_production_catalog_policy_test.dart \
+            tools/manga \
+            test/tools/manga \
             test/architecture/manga_planned_provider_definitions_test.dart >"$plain/format.log" 2>&1
-          format_status=$?
-          printf 'format=%s\n' "$format_status" >> "$plain/STATUS.txt"
+          printf 'format=%s\n' "$?" >> "$plain/STATUS.txt"
           git diff -- \
             lib/services/manga/manga_http_client.dart \
             lib/services/manga/providers \
