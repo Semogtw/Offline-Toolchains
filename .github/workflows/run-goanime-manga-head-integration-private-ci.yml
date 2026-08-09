@@ -1,0 +1,96 @@
+name: Run GoAnime manga integration private CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-integration/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-integration-private-ci
+  cancel-in-progress: false
+
+jobs:
+  integration:
+    name: GoAnime manga recovered integration
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout private manga branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: feature/manga-platform
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          flutter config --no-analytics >/dev/null
+          flutter pub get >/dev/null
+
+      - name: Test bundled and runtime composition
+        working-directory: private-source
+        run: |
+          flutter test --no-pub \
+            test/services/manga/manga_bundled_catalog_source_test.dart \
+            test/services/manga/manga_bundled_metadata_resolver_test.dart \
+            test/services/manga/manga_catalog_readiness_controller_test.dart \
+            test/services/manga/manga_platform_runtime_test.dart \
+            test/services/manga/manga_platform_runtime_service_test.dart
+
+      - name: Test local browse and details owners
+        working-directory: private-source
+        run: |
+          flutter test --no-pub \
+            test/services/manga/manga_repository_browse_data_source_test.dart \
+            test/services/manga/manga_details_data_source_test.dart
+
+      - name: Test recovered catalog UI
+        working-directory: private-source
+        run: |
+          flutter test --no-pub \
+            test/widgets/manga/manga_browse_views_test.dart \
+            test/widgets/manga/manga_browse_origin_order_test.dart \
+            test/widgets/manga/manga_readable_search_view_test.dart \
+            test/widgets/manga/manga_canonical_details_view_test.dart \
+            test/widgets/manga/manga_catalog_screen_integration_test.dart \
+            test/widgets/manga/manga_catalog_navigation_test.dart
+
+      - name: Test provider-driven deferred shell
+        working-directory: private-source
+        run: |
+          flutter test --no-pub \
+            test/widgets/manga/manga_platform_runtime_provider_test.dart \
+            test/widgets/manga/manga_runtime_provider_screen_test.dart
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
