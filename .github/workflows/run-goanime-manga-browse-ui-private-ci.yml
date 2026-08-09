@@ -103,6 +103,11 @@ jobs:
           flutter config --no-analytics >/dev/null
           flutter pub get >/dev/null
 
+      - name: Test repository-backed manga browse source
+        if: steps.request.outputs.project == 'goanime' && hashFiles('private-source/test/services/manga/manga_repository_browse_data_source_test.dart') != ''
+        working-directory: private-source
+        run: flutter test --no-pub test/services/manga/manga_repository_browse_data_source_test.dart
+
       - name: Test manga readable home
         if: steps.request.outputs.project == 'goanime'
         working-directory: private-source
@@ -130,6 +135,7 @@ jobs:
             lib/screens/manga \
             lib/services/manga \
             lib/widgets/manga \
+            test/services/manga/manga_repository_browse_data_source_test.dart \
             test/widgets/manga >/dev/null 2>&1
 
       - name: Report browse formatting drift safely
