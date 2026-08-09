@@ -1,0 +1,89 @@
+name: Refresh Fichario lockfile
+
+on:
+  workflow_call:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    if: >-
+      github.repository == 'Semogtw/FicharioVirtual' &&
+      github.actor == github.repository_owner &&
+      github.ref_type == 'branch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout caller branch without persisted credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up pnpm 10
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 10
+
+      - name: Set up Node.js 22.16
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22.16.0'
+          check-latest: false
+
+      - name: Require patched PDF.js declaration
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e "const p=require('./package.json'); if (p.dependencies?.['pdfjs-dist'] !== '6.2.108') process.exit(1)"
+
+      - name: Refresh deterministic lockfile
+        shell: bash
+        run: pnpm install --lockfile-only --no-frozen-lockfile
+
+      - name: Restrict generated delta to the lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          unexpected="$(git status --porcelain --untracked-files=all | grep -vE '^ M pnpm-lock\.yaml$' || true)"
+          if [ -n "$unexpected" ]; then
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          fi
+          git diff --quiet -- pnpm-lock.yaml && {
+            echo 'The lockfile did not change.' >&2
+            exit 1
+          }
+
+      - name: Validate refreshed lockfile
+        shell: bash
+        run: pnpm install --frozen-lockfile
+
+      - name: Commit refreshed lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- pnpm-lock.yaml
+          git diff --cached --quiet && {
+            echo 'No lockfile change to commit.' >&2
+            exit 1
+          }
+          git commit -m 'security: refresh lockfile for patched PDF.js'
+
+      - name: Push only the generated lockfile commit
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" \
+            push origin "HEAD:${GITHUB_REF_NAME}"
