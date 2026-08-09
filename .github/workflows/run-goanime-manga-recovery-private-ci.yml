@@ -40,9 +40,9 @@ jobs:
         id: request
         shell: bash
         run: |
-          request="$(jq -r '.head_commit.added[]? | select(startswith("triggers/goanime-manga-recovery/"))' "$GITHUB_EVENT_PATH" | head -n 1)"
-          test -n "$request"
-          read -r project branch sha < "toolchain-control/$request"
+          request_name="$(find toolchain-control/triggers/goanime-manga-recovery -maxdepth 1 -type f -name '*.request' -printf '%f\n' | sort | tail -n 1)"
+          test -n "$request_name"
+          read -r project branch sha < "toolchain-control/triggers/goanime-manga-recovery/$request_name"
           test "$project" = "goanime"
           test "$branch" = "feature/manga-platform"
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
@@ -116,6 +116,12 @@ jobs:
         continue-on-error: true
         working-directory: private-source
         run: flutter test --no-pub test/services/manga/manga_search_coordinator_test.dart >/tmp/manga-search-coordinator.log 2>&1
+
+      - name: Test persisted-aware canonical matcher
+        id: matcher
+        continue-on-error: true
+        working-directory: private-source
+        run: flutter test --no-pub test/services/manga/manga_work_matcher_service_test.dart >/tmp/manga-matcher.log 2>&1
 
       - name: Test sanitized reading routing
         id: reading_route
@@ -215,6 +221,7 @@ jobs:
           RUNTIME_SERVICE: ${{ steps.runtime_service.outcome }}
           DISCOVERY: ${{ steps.discovery.outcome }}
           SEARCH_COORDINATOR: ${{ steps.search_coordinator.outcome }}
+          MATCHER: ${{ steps.matcher.outcome }}
           READING_ROUTE: ${{ steps.reading_route.outcome }}
           BROWSE_OWNER: ${{ steps.browse_owner.outcome }}
           DETAILS_SOURCE: ${{ steps.details_source.outcome }}
@@ -237,6 +244,7 @@ jobs:
             "runtime_service=$RUNTIME_SERVICE" \
             "discovery=$DISCOVERY" \
             "search_coordinator=$SEARCH_COORDINATOR" \
+            "matcher=$MATCHER" \
             "reading_route=$READING_ROUTE" \
             "browse_owner=$BROWSE_OWNER" \
             "details_source=$DETAILS_SOURCE" \
@@ -260,6 +268,7 @@ jobs:
           steps.runtime_service.outcome == 'failure' ||
           steps.discovery.outcome == 'failure' ||
           steps.search_coordinator.outcome == 'failure' ||
+          steps.matcher.outcome == 'failure' ||
           steps.reading_route.outcome == 'failure' ||
           steps.browse_owner.outcome == 'failure' ||
           steps.details_source.outcome == 'failure' ||
