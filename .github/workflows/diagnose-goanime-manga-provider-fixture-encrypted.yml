@@ -104,6 +104,8 @@ jobs:
           evidence_writer_status=$?
           flutter test --no-pub test/tools/manga/manga_live_provider_evidence_batch_test.dart >"$plain/evidence-batch.log" 2>&1
           evidence_batch_status=$?
+          flutter test --no-pub test/tools/manga/manga_live_evidence_clusterer_test.dart >"$plain/evidence-clusterer.log" 2>&1
+          evidence_clusterer_status=$?
           flutter test --no-pub test/tools/manga/manga_production_catalog_policy_test.dart >"$plain/production-policy.log" 2>&1
           production_policy_status=$?
           flutter test --no-pub test/architecture/manga_planned_provider_definitions_test.dart >"$plain/planned-accounting.log" 2>&1
@@ -117,10 +119,12 @@ jobs:
             tools/manga/manga_live_provider_evidence.dart \
             tools/manga/manga_live_provider_evidence_writer.dart \
             tools/manga/manga_live_provider_evidence_batch.dart \
+            tools/manga/manga_live_evidence_clusterer.dart \
             tools/manga/collect_planned_manga_live_evidence.dart \
             test/tools/manga/manga_live_provider_evidence_test.dart \
             test/tools/manga/manga_live_provider_evidence_writer_test.dart \
             test/tools/manga/manga_live_provider_evidence_batch_test.dart \
+            test/tools/manga/manga_live_evidence_clusterer_test.dart \
             test/tools/manga/manga_production_catalog_policy_test.dart \
             test/architecture/manga_planned_provider_definitions_test.dart >"$plain/format.log" 2>&1
           format_status=$?
@@ -147,8 +151,8 @@ jobs:
             test/tools/manga \
             test/architecture/manga_planned_provider_definitions_test.dart)
 
-          printf 'http=%s\nastratoons=%s\nhqnow=%s\ncapitoons=%s\nmangaonline=%s\nninjascan=%s\nlive_evidence=%s\nevidence_writer=%s\nevidence_batch=%s\nproduction_policy=%s\nplanned_accounting=%s\nformat=%s\n' \
-            "$http_status" "$astratoons_status" "$hqnow_status" "$capitoons_status" "$mangaonline_status" "$ninjascan_status" "$live_evidence_status" "$evidence_writer_status" "$evidence_batch_status" "$production_policy_status" "$planned_accounting_status" "$format_status" > "$plain/STATUS.txt"
+          printf 'http=%s\nastratoons=%s\nhqnow=%s\ncapitoons=%s\nmangaonline=%s\nninjascan=%s\nlive_evidence=%s\nevidence_writer=%s\nevidence_batch=%s\nevidence_clusterer=%s\nproduction_policy=%s\nplanned_accounting=%s\nformat=%s\n' \
+            "$http_status" "$astratoons_status" "$hqnow_status" "$capitoons_status" "$mangaonline_status" "$ninjascan_status" "$live_evidence_status" "$evidence_writer_status" "$evidence_batch_status" "$evidence_clusterer_status" "$production_policy_status" "$planned_accounting_status" "$format_status" > "$plain/STATUS.txt"
           tar -C "$plain" -I 'zstd -T0 -6' -cf "$archive" .
 
           export GNUPGHOME="$gpg_home"
