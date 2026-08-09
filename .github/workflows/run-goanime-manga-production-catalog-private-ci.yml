@@ -1,0 +1,104 @@
+name: Run GoAnime manga production catalog private CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-production-catalog/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-production-catalog-private-ci
+  cancel-in-progress: true
+
+jobs:
+  production-catalog:
+    name: GoAnime manga production catalog preflight
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout latest private manga branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: feature/manga-platform
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Record tested revision safely
+        working-directory: private-source
+        run: echo "tested_private_sha=$(git rev-parse HEAD)"
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Validate production catalog tooling safely
+        working-directory: private-source
+        shell: bash
+        run: |
+          failures=()
+          run_gate() {
+            local label="$1"
+            shift
+            if "$@" >"/tmp/production-${label}.log" 2>&1; then
+              echo "${label}=success"
+            else
+              echo "${label}=failure"
+              failures+=("$label")
+            fi
+          }
+
+          run_gate seed_writer flutter test --no-pub test/tools/manga/manga_availability_seed_writer_test.dart
+          run_gate seed_coverage flutter test --no-pub test/tools/manga/manga_availability_seed_coverage_test.dart
+          run_gate production_policy flutter test --no-pub test/tools/manga/manga_production_catalog_policy_test.dart
+          run_gate production_builder flutter test --no-pub test/tools/manga/build_manga_production_catalog_test.dart
+          run_gate availability_builder flutter test --no-pub test/tools/manga/manga_availability_builder_test.dart
+          run_gate manifest_validator flutter test --no-pub test/architecture/manga_provider_manifest_validator_test.dart
+          run_gate registry_manifest flutter test --no-pub test/architecture/manga_provider_registry_manifest_test.dart
+
+          if dart format --output=none --set-exit-if-changed \
+            tools/manga/manga_availability_seed_writer.dart \
+            tools/manga/manga_availability_seed_coverage.dart \
+            tools/manga/manga_production_catalog_policy.dart \
+            tools/manga/build_manga_production_catalog.dart \
+            test/tools/manga/manga_availability_seed_writer_test.dart \
+            test/tools/manga/manga_availability_seed_coverage_test.dart \
+            test/tools/manga/manga_production_catalog_policy_test.dart \
+            test/tools/manga/build_manga_production_catalog_test.dart >/dev/null 2>&1; then
+            echo "format=success"
+          else
+            echo "format=failure"
+          fi
+
+          rm -f /tmp/production-*.log
+          if ((${#failures[@]} > 0)); then
+            printf 'functional_failures=%s\n' "${failures[*]}"
+            exit 1
+          fi
+
+      - name: Remove private checkout and transient logs
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" /tmp/production-*.log
