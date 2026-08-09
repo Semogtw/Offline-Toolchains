@@ -32,7 +32,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           path: toolchain-control
-          fetch-depth: 1
+          fetch-depth: 2
           persist-credentials: false
           show-progress: false
 
@@ -40,9 +40,9 @@ jobs:
         id: request
         shell: bash
         run: |
-          request_name="$(find toolchain-control/triggers/goanime-manga-recovery -maxdepth 1 -type f -name '*.request' -printf '%f\n' | sort | tail -n 1)"
-          test -n "$request_name"
-          read -r project branch sha < "toolchain-control/triggers/goanime-manga-recovery/$request_name"
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-recovery/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
           test "$project" = "goanime"
           test "$branch" = "feature/manga-platform"
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
@@ -116,6 +116,12 @@ jobs:
         continue-on-error: true
         working-directory: private-source
         run: flutter test --no-pub test/services/manga/manga_search_coordinator_test.dart >/tmp/manga-search-coordinator.log 2>&1
+
+      - name: Test persisted live-search identity
+        id: persisted_identity
+        continue-on-error: true
+        working-directory: private-source
+        run: flutter test --no-pub test/services/manga/manga_search_persisted_identity_test.dart >/tmp/manga-persisted-identity.log 2>&1
 
       - name: Test persisted-aware canonical matcher
         id: matcher
@@ -221,6 +227,7 @@ jobs:
           RUNTIME_SERVICE: ${{ steps.runtime_service.outcome }}
           DISCOVERY: ${{ steps.discovery.outcome }}
           SEARCH_COORDINATOR: ${{ steps.search_coordinator.outcome }}
+          PERSISTED_IDENTITY: ${{ steps.persisted_identity.outcome }}
           MATCHER: ${{ steps.matcher.outcome }}
           READING_ROUTE: ${{ steps.reading_route.outcome }}
           BROWSE_OWNER: ${{ steps.browse_owner.outcome }}
@@ -244,6 +251,7 @@ jobs:
             "runtime_service=$RUNTIME_SERVICE" \
             "discovery=$DISCOVERY" \
             "search_coordinator=$SEARCH_COORDINATOR" \
+            "persisted_identity=$PERSISTED_IDENTITY" \
             "matcher=$MATCHER" \
             "reading_route=$READING_ROUTE" \
             "browse_owner=$BROWSE_OWNER" \
@@ -268,6 +276,7 @@ jobs:
           steps.runtime_service.outcome == 'failure' ||
           steps.discovery.outcome == 'failure' ||
           steps.search_coordinator.outcome == 'failure' ||
+          steps.persisted_identity.outcome == 'failure' ||
           steps.matcher.outcome == 'failure' ||
           steps.reading_route.outcome == 'failure' ||
           steps.browse_owner.outcome == 'failure' ||
