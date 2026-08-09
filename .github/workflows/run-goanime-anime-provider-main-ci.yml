@@ -59,6 +59,15 @@ jobs:
           flutter-version: 3.44.1
           cache: true
 
+      - name: Precache Linux test engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter precache --linux
+          flutter_tester="$(flutter sdk-path)/bin/cache/artifacts/engine/linux-x64/flutter_tester"
+          test -x "$flutter_tester"
+          "$flutter_tester" --help >/dev/null
+
       - name: Resolve root dependencies
         working-directory: private-source
         shell: bash
@@ -87,7 +96,7 @@ jobs:
       - name: Run Flutter tests
         working-directory: private-source
         shell: bash
-        run: flutter test --no-pub
+        run: flutter test --no-pub --concurrency=1
 
       - name: Run goanime_core tests
         working-directory: private-source/packages/goanime_core
