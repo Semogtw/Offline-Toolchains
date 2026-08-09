@@ -74,18 +74,29 @@ jobs:
 
           contract = Path('infra/jikan/tests/backup_restore_contract_test.sh')
           text = contract.read_text(encoding='utf-8')
-          old = """[[ ! -s \"$DOCKER_LOG\" ]] || \\
-            fail 'restored secret stage creation failure reached Docker'
-          """
-          new = """grep -Eq '^compose version[[:space:]]*$' \"$DOCKER_LOG\" || \\
-            fail 'restored secret stage creation failure skipped Compose preflight'
-          if grep -Ev '^compose version[[:space:]]*$' \"$DOCKER_LOG\" | grep -q .; then
-            fail 'restored secret stage creation failure reached Docker beyond the read-only Compose preflight'
-          fi
-          """
-          if text.count(old) != 1:
-              raise SystemExit('backup_restore_contract_test.sh secret-stage Docker assertion changed')
-          contract.write_text(text.replace(old, new, 1), encoding='utf-8')
+          replacements = {
+              """[[ ! -s \"$DOCKER_LOG\" ]] || \\
+  fail 'restored secret stage creation failure reached Docker'
+""": """grep -Eq '^compose version[[:space:]]*$' \"$DOCKER_LOG\" || \\
+  fail 'restored secret stage creation failure skipped Compose preflight'
+if grep -Ev '^compose version[[:space:]]*$' \"$DOCKER_LOG\" | grep -q .; then
+  fail 'restored secret stage creation failure reached Docker beyond the read-only Compose preflight'
+fi
+""",
+              """[[ ! -s \"$DOCKER_LOG\" ]] || \\
+  fail 'restored secret stage chmod failure reached Docker'
+""": """grep -Eq '^compose version[[:space:]]*$' \"$DOCKER_LOG\" || \\
+  fail 'restored secret stage chmod failure skipped Compose preflight'
+if grep -Ev '^compose version[[:space:]]*$' \"$DOCKER_LOG\" | grep -q .; then
+  fail 'restored secret stage chmod failure reached Docker beyond the read-only Compose preflight'
+fi
+""",
+          }
+          for old, new in replacements.items():
+              if text.count(old) != 1:
+                  raise SystemExit('backup_restore_contract_test.sh secret-stage Docker assertion changed')
+              text = text.replace(old, new, 1)
+          contract.write_text(text, encoding='utf-8')
           PY
           git diff --check
           git diff -- infra/jikan/scripts/restore.sh infra/jikan/tests/backup_restore_contract_test.sh
