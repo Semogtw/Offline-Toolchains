@@ -1,4 +1,4 @@
-name: Repair GoAnime main formatting
+name: Diagnose GoAnime main tests
 
 on:
   push:
@@ -10,16 +10,16 @@ permissions:
   contents: read
 
 jobs:
-  format:
+  test:
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
-      - name: Checkout private GoAnime main
+      - name: Checkout exact private GoAnime revision
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
-          ref: main
+          ref: d893e093ac9dc7f79948716664171bbebd0e7122
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           persist-credentials: false
           fetch-depth: 1
@@ -30,13 +30,19 @@ jobs:
           channel: stable
           flutter-version: 3.44.1
 
-      - name: Format and expose mechanical diff
+      - name: Resolve packages
+        run: flutter pub get
+
+      - name: Run full tests with expanded diagnostics
         shell: bash
         run: |
-          set -euo pipefail
-          dart format tools/cache_builder.dart
-          git diff --check
-          test "$(git diff --name-only | tr -d '\r')" = 'tools/cache_builder.dart'
-          echo '--- FORMATTER PATCH START ---'
-          git diff -- tools/cache_builder.dart
-          echo '--- FORMATTER PATCH END ---'
+          set -uo pipefail
+          flutter test --reporter expanded --concurrency=1 --test-randomize-ordering-seed=random 2>&1 | tee /tmp/goanime-tests.log
+          status=${PIPESTATUS[0]}
+          echo '--- FAILURE SUMMARY START ---'
+          grep -n -E -B 8 -A 20 'FAILED|Test failed|Some tests failed|Expected:|Actual:|Error:|Exception|Failure' /tmp/goanime-tests.log || true
+          echo '--- FAILURE SUMMARY END ---'
+          echo '--- LAST 250 LINES START ---'
+          tail -n 250 /tmp/goanime-tests.log
+          echo '--- LAST 250 LINES END ---'
+          exit "$status"
