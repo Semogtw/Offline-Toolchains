@@ -1,0 +1,105 @@
+name: Apply GoAnime anime provider formatting privately
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-anime-provider-format/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-anime-provider-format-private-ci
+  cancel-in-progress: false
+
+jobs:
+  format:
+    name: GoAnime anime provider formatter
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-anime-provider-format/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "main"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Apply formatter and push only as fast-forward
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          remote_url="https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git"
+          current_remote="$(git ls-remote "$remote_url" refs/heads/main | cut -f1)"
+          test "$current_remote" = "$EXPECTED_SHA"
+
+          dart format lib test packages tools >/dev/null
+          git diff --check
+
+          if git diff --quiet; then
+            echo "format_change=none"
+            exit 0
+          fi
+
+          git add lib test packages tools
+          git config user.name "GoAnime Toolchains"
+          git config user.email "actions@users.noreply.github.com"
+          git commit -m "style(anime): apply provider formatter" >/dev/null
+
+          latest_remote="$(git ls-remote "$remote_url" refs/heads/main | cut -f1)"
+          test "$latest_remote" = "$EXPECTED_SHA"
+          git push "$remote_url" HEAD:refs/heads/main >/dev/null
+          echo "format_change=pushed"
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control"
