@@ -19,7 +19,7 @@ jobs:
     name: GoAnime manga runtime v2
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 35
 
     steps:
       - name: Require private repository token
@@ -94,6 +94,9 @@ jobs:
           run_gate persistence flutter test --no-pub test/services/manga/manga_search_catalog_persistence_test.dart
           run_gate runtime_overlay flutter test --no-pub test/services/manga/manga_runtime_availability_source_test.dart
           run_gate merge_overlay flutter test --no-pub test/services/manga/manga_availability_service_test.dart
+          run_gate platform_runtime flutter test --no-pub test/services/manga/manga_platform_runtime_test.dart
+          run_gate runtime_service flutter test --no-pub test/services/manga/manga_platform_runtime_service_test.dart
+          run_gate runtime_provider flutter test --no-pub test/widgets/manga/manga_platform_runtime_provider_test.dart
 
           if dart format --output=none --set-exit-if-changed \
             lib/services/manga/manga_availability_database_service.dart \
@@ -102,13 +105,19 @@ jobs:
             lib/services/manga/manga_browse_data_source.dart \
             lib/services/manga/manga_runtime_availability_source.dart \
             lib/services/manga/manga_search_catalog_persistence.dart \
+            lib/services/manga/manga_platform_runtime.dart \
+            lib/services/manga/manga_platform_runtime_service.dart \
+            lib/widgets/manga/manga_platform_runtime_provider.dart \
             tools/manga/manga_availability_v2_builder.dart \
             test/tools/manga/manga_availability_v2_builder_test.dart \
             test/services/manga/manga_bundled_catalog_source_test.dart \
             test/services/manga/manga_availability_database_service_test.dart \
             test/services/manga/manga_search_catalog_persistence_test.dart \
             test/services/manga/manga_runtime_availability_source_test.dart \
-            test/services/manga/manga_availability_service_test.dart >/dev/null 2>&1; then
+            test/services/manga/manga_availability_service_test.dart \
+            test/services/manga/manga_platform_runtime_test.dart \
+            test/services/manga/manga_platform_runtime_service_test.dart \
+            test/widgets/manga/manga_platform_runtime_provider_test.dart >/dev/null 2>&1; then
             echo "format=success"
           else
             echo "format=failure"
