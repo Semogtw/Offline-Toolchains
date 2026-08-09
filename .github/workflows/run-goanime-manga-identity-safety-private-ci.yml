@@ -1,0 +1,132 @@
+name: Run GoAnime manga identity safety private CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-identity-safety/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-identity-safety-private-ci
+  cancel-in-progress: false
+
+jobs:
+  safety:
+    name: GoAnime manga staging identity safety
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision once
+        id: request
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-identity-safety/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch requested < "toolchain-control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          remote="https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git"
+          if [[ "$requested" == "latest" ]]; then
+            resolved="$(git ls-remote "$remote" refs/heads/feature/manga-platform | cut -f1)"
+          else
+            resolved="$requested"
+          fi
+          [[ "$resolved" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$resolved" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout resolved private revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Run identity safety gates safely
+        working-directory: private-source
+        shell: bash
+        run: |
+          failures=()
+          run_gate() {
+            local label="$1"
+            shift
+            if "$@" >"/tmp/identity-${label}.log" 2>&1; then
+              echo "${label}=success"
+            else
+              echo "${label}=failure"
+              failures+=("$label")
+            fi
+          }
+
+          run_gate identity_values flutter test --no-pub test/tools/manga/manga_staging_identity_safety_test.dart
+          run_gate bundle_safety flutter test --no-pub test/tools/manga/manga_staging_bundle_safety_test.dart
+          run_gate safe_pipeline flutter test --no-pub test/tools/manga/manga_safe_canonical_staging_pipeline_test.dart
+          run_gate ledger_codec flutter test --no-pub test/tools/manga/manga_canonical_id_ledger_codec_test.dart
+          run_gate allocation_collision flutter test --no-pub test/tools/manga/manga_collision_safe_record_assembler_test.dart
+          run_gate canonical_pipeline flutter test --no-pub test/tools/manga/manga_canonical_staging_pipeline_test.dart
+
+          if dart format --output=none --set-exit-if-changed \
+            tools/manga/manga_staging_identity_safety.dart \
+            tools/manga/manga_staging_bundle_safety.dart \
+            tools/manga/manga_safe_canonical_staging_pipeline.dart \
+            tools/manga/build_safe_manga_canonical_staging.dart \
+            tools/manga/manga_canonical_id_ledger_codec.dart \
+            tools/manga/manga_collision_safe_record_assembler.dart \
+            test/tools/manga/manga_staging_identity_safety_test.dart \
+            test/tools/manga/manga_staging_bundle_safety_test.dart \
+            test/tools/manga/manga_safe_canonical_staging_pipeline_test.dart \
+            test/tools/manga/manga_canonical_id_ledger_codec_test.dart \
+            test/tools/manga/manga_collision_safe_record_assembler_test.dart >/dev/null 2>&1; then
+            echo "format=success"
+          else
+            echo "format=failure"
+            failures+=("format")
+          fi
+
+          rm -f /tmp/identity-*.log
+          if ((${#failures[@]} > 0)); then
+            printf 'identity_safety_failures=%s\n' "${failures[*]}"
+            exit 1
+          fi
+
+      - name: Remove private checkout and transient logs
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control" /tmp/identity-*.log
