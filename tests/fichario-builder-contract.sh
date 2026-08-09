@@ -20,6 +20,17 @@ grep -Fq 'record_gate unit pnpm --dir "$smoke" test' "$builder"
 grep -Fq 'record_gate build pnpm --dir "$smoke" build' "$builder"
 grep -Fq 'record_gate source-offline pnpm --dir "$smoke" test:source:offline' "$builder"
 grep -Fq 'record_gate e2e pnpm --dir "$smoke" test:e2e' "$builder"
+grep -Fq 'record_gate edge-offline "$root/bin/check-edge-offline" "$smoke"' "$builder"
+
+# The Fichário profile is also the fallback checkout/gate runner for development
+# sessions without a usable local environment. Database migrations and pgTAP are
+# part of the consumer's verify:full contract, so the public hub must exercise
+# them instead of silently documenting them as unavailable.
+grep -Fq 'record_gate database pnpm --dir "$smoke" test:db:local' "$builder"
+grep -Fq 'database_gate=executed' "$builder"
+! grep -Fq 'database_gate_note=Supabase CLI is included; local DB tests still require Docker' "$builder"
+grep -Fq 'postgresql-client' "$workflow"
+
 grep -Fq 'validation_status=' "$builder"
 grep -Fq 'validation_failures=' "$builder"
 grep -Fq 'echo "validation_status=$validation_status"' "$builder"
