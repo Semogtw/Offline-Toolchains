@@ -113,13 +113,29 @@ jobs:
         working-directory: public-source
         run: pnpm install --frozen-lockfile
 
-      - name: Upload public lockfile
+      - name: Audit resolved dependency tree
+        id: audit
+        continue-on-error: true
+        working-directory: public-source
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm audit --audit-level high --json 2>&1 | tee /tmp/fichario-pnpm-audit.json
+
+      - name: Upload public lockfile and dependency audit
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: fichario-pnpm-lock-${{ steps.source.outputs.sha }}
-          path: public-source/pnpm-lock.yaml
+          path: |
+            public-source/pnpm-lock.yaml
+            /tmp/fichario-pnpm-audit.json
           if-no-files-found: error
           retention-days: 1
+
+      - name: Reject high or critical dependency advisories
+        if: steps.audit.outcome != 'success'
+        shell: bash
+        run: exit 1
 
       - name: Remove public checkout
         if: always()
