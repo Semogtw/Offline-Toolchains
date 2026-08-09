@@ -1,0 +1,96 @@
+name: Reusable Fichario Prettier repair
+
+on:
+  workflow_call:
+    inputs:
+      expected_parent_sha:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    name: Apply exact CI Prettier repair
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout exact caller revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: true
+          show-progress: false
+
+      - name: Verify one-shot caller boundary
+        shell: bash
+        env:
+          EXPECTED_PARENT_SHA: ${{ inputs.expected_parent_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_PARENT_SHA"
+          added="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD)"
+          test "$added" = ".github/workflows/one-shot-fichario-prettier-repair.yml"
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "${{ github.sha }}"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.16.0
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install exact dependencies
+        shell: bash
+        run: pnpm install --frozen-lockfile
+
+      - name: Format exact paths and self-remove caller
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec prettier --write \
+            docs/CURRENT_STATUS.md \
+            docs/READINESS.md \
+            docs/TESTING.md \
+            supabase/functions/process-ocr/index.ts >/dev/null
+          rm .github/workflows/one-shot-fichario-prettier-repair.yml
+          git diff --check
+
+          expected_files="$(printf '%s\n' \
+            .github/workflows/one-shot-fichario-prettier-repair.yml \
+            docs/CURRENT_STATUS.md \
+            docs/READINESS.md \
+            docs/TESTING.md \
+            supabase/functions/process-ocr/index.ts | sort)"
+          actual_files="$(git diff --name-only | sort)"
+          test "$actual_files" = "$expected_files"
+
+          test "$(git hash-object docs/CURRENT_STATUS.md)" = "e0643591571d8c96f600978ebc87e543e8aa0cf0"
+          test "$(git hash-object docs/READINESS.md)" = "bbc5f05d9190d4328dd758775506bafa34b91476"
+          test "$(git hash-object docs/TESTING.md)" = "7096c25780bd95b9d480693417a16825bb9fd333"
+          test "$(git hash-object supabase/functions/process-ocr/index.ts)" = "7b1cb7605a439566a632313d1106f7e91ab8faab"
+
+      - name: Commit and fast-forward main
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "${{ github.sha }}"
+          git add -A -- \
+            .github/workflows/one-shot-fichario-prettier-repair.yml \
+            docs/CURRENT_STATUS.md \
+            docs/READINESS.md \
+            docs/TESTING.md \
+            supabase/functions/process-ocr/index.ts
+          git config user.name "Fichario Toolchains"
+          git config user.email "actions@users.noreply.github.com"
+          git commit -m "style: apply CI Prettier repair" >/dev/null
+          git push origin HEAD:refs/heads/main >/dev/null
+          echo "format_change=pushed"
