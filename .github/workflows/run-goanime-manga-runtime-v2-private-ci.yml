@@ -1,0 +1,120 @@
+name: Run GoAnime manga runtime v2 private CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-runtime-v2/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-runtime-v2-private-ci
+  cancel-in-progress: false
+
+jobs:
+  runtime:
+    name: GoAnime manga runtime v2
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-runtime-v2/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Run runtime v2 gates safely
+        working-directory: private-source
+        shell: bash
+        run: |
+          failures=()
+          run_gate() {
+            local label="$1"
+            shift
+            if "$@" >"/tmp/manga-runtime-${label}.log" 2>&1; then
+              echo "${label}=success"
+            else
+              echo "${label}=failure"
+              failures+=("$label")
+            fi
+          }
+
+          run_gate builder flutter test --no-pub test/tools/manga/manga_availability_v2_builder_test.dart
+          run_gate bundled flutter test --no-pub test/services/manga/manga_bundled_catalog_source_test.dart
+          run_gate adapter flutter test --no-pub test/services/manga/manga_availability_database_service_test.dart
+          run_gate overlay flutter test --no-pub test/services/manga/manga_availability_service_test.dart
+
+          if dart format --output=none --set-exit-if-changed \
+            lib/services/manga/manga_availability_database_service.dart \
+            lib/services/manga/manga_availability_service.dart \
+            lib/services/manga/manga_bundled_catalog_source.dart \
+            lib/services/manga/manga_browse_data_source.dart \
+            tools/manga/manga_availability_v2_builder.dart \
+            test/tools/manga/manga_availability_v2_builder_test.dart \
+            test/services/manga/manga_bundled_catalog_source_test.dart \
+            test/services/manga/manga_availability_database_service_test.dart \
+            test/services/manga/manga_availability_service_test.dart >/dev/null 2>&1; then
+            echo "format=success"
+          else
+            echo "format=failure"
+            failures+=("format")
+          fi
+
+          rm -f /tmp/manga-runtime-*.log
+          if ((${#failures[@]} > 0)); then
+            printf 'manga_runtime_v2_failures=%s\n' "${failures[*]}"
+            exit 1
+          fi
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control" /tmp/manga-runtime-*.log
