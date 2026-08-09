@@ -144,6 +144,11 @@ jobs:
           done
           flutter test --no-pub "${tests[@]}"
 
+      - name: Test manga availability builder tooling
+        if: steps.request.outputs.project == 'goanime' && hashFiles('private-source/test/tools/manga_availability_builder_test.dart') != ''
+        working-directory: private-source
+        run: flutter test --no-pub test/tools/manga_availability_builder_test.dart
+
       - name: Test manga availability persistence
         if: >-
           steps.request.outputs.project == 'goanime' &&
@@ -173,11 +178,13 @@ jobs:
             test/helpers/fake_manga_source_provider.dart \
             test/helpers/manga_provider_contract_harness.dart \
             test/architecture/manga_ptbr_source_scope_test.dart \
-            test/integration/manga_source_routing_test.dart; do
+            test/integration/manga_source_routing_test.dart \
+            test/tools/manga_availability_builder_test.dart; do
             [[ -f "$candidate" ]] && paths+=("$candidate")
           done
           [[ -d lib/services/manga ]] && paths+=(lib/services/manga)
           [[ -d test/services/manga ]] && paths+=(test/services/manga)
+          [[ -d tools/manga ]] && paths+=(tools/manga)
           test "${#paths[@]}" -gt 0
           dart format --output=none --set-exit-if-changed "${paths[@]}" >/dev/null 2>&1
 
