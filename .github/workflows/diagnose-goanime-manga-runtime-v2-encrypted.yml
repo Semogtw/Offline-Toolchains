@@ -1,0 +1,183 @@
+name: Diagnose GoAnime manga runtime v2 encrypted
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-runtime-v2-diagnostic/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-runtime-v2-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    name: GoAnime manga runtime v2 encrypted diagnostic
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-runtime-v2-diagnostic/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies privately
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Capture runtime v2 formatting privately
+        id: encrypt
+        working-directory: private-source
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/goanime-manga-runtime-v2-diagnostic"
+          plain="$root/plain"
+          formatted="$plain/formatted"
+          transfer="$root/transfer"
+          archive="$root/runtime-v2-diagnostic.tar.zst"
+          gpg_home="$root/gpg"
+          rm -rf "$root"
+          mkdir -p "$plain" "$formatted" "$transfer" "$gpg_home"
+          chmod 700 "$gpg_home"
+
+          set +e
+          flutter test --no-pub \
+            test/tools/manga/manga_availability_v2_builder_test.dart \
+            test/services/manga/manga_bundled_catalog_source_test.dart \
+            test/services/manga/manga_bundled_metadata_resolver_test.dart \
+            test/services/manga/manga_availability_database_service_test.dart \
+            test/services/manga/manga_search_catalog_persistence_test.dart \
+            test/services/manga/manga_runtime_availability_source_test.dart \
+            test/services/manga/manga_availability_service_test.dart \
+            test/services/manga/manga_platform_runtime_test.dart \
+            test/services/manga/manga_platform_runtime_service_test.dart \
+            test/widgets/manga/manga_platform_runtime_provider_test.dart \
+            >"$plain/runtime-tests.log" 2>&1
+          printf 'runtime_tests=%s\n' "$?" > "$plain/STATUS.txt"
+
+          dart format \
+            lib/services/manga/manga_availability_database_service.dart \
+            lib/services/manga/manga_availability_service.dart \
+            lib/services/manga/manga_bundled_catalog_source.dart \
+            lib/services/manga/manga_browse_data_source.dart \
+            lib/services/manga/manga_runtime_availability_source.dart \
+            lib/services/manga/manga_search_catalog_persistence.dart \
+            lib/services/manga/manga_platform_runtime.dart \
+            lib/services/manga/manga_platform_runtime_service.dart \
+            lib/widgets/manga/manga_platform_runtime_provider.dart \
+            tools/manga/manga_availability_v2_builder.dart \
+            test/tools/manga/manga_availability_v2_builder_test.dart \
+            test/services/manga/manga_bundled_catalog_source_test.dart \
+            test/services/manga/manga_bundled_metadata_resolver_test.dart \
+            test/services/manga/manga_availability_database_service_test.dart \
+            test/services/manga/manga_search_catalog_persistence_test.dart \
+            test/services/manga/manga_runtime_availability_source_test.dart \
+            test/services/manga/manga_availability_service_test.dart \
+            test/services/manga/manga_platform_runtime_test.dart \
+            test/services/manga/manga_platform_runtime_service_test.dart \
+            test/widgets/manga/manga_platform_runtime_provider_test.dart \
+            >"$plain/format.log" 2>&1
+          printf 'format=%s\n' "$?" >> "$plain/STATUS.txt"
+          set -e
+
+          while IFS= read -r path; do
+            test -n "$path"
+            mkdir -p "$formatted/$(dirname "$path")"
+            cp "$path" "$formatted/$path"
+          done < <(git diff --name-only -- \
+            lib/services/manga/manga_availability_database_service.dart \
+            lib/services/manga/manga_availability_service.dart \
+            lib/services/manga/manga_bundled_catalog_source.dart \
+            lib/services/manga/manga_browse_data_source.dart \
+            lib/services/manga/manga_runtime_availability_source.dart \
+            lib/services/manga/manga_search_catalog_persistence.dart \
+            lib/services/manga/manga_platform_runtime.dart \
+            lib/services/manga/manga_platform_runtime_service.dart \
+            lib/widgets/manga/manga_platform_runtime_provider.dart \
+            tools/manga/manga_availability_v2_builder.dart \
+            test/tools/manga/manga_availability_v2_builder_test.dart \
+            test/services/manga/manga_bundled_catalog_source_test.dart \
+            test/services/manga/manga_bundled_metadata_resolver_test.dart \
+            test/services/manga/manga_availability_database_service_test.dart \
+            test/services/manga/manga_search_catalog_persistence_test.dart \
+            test/services/manga/manga_runtime_availability_source_test.dart \
+            test/services/manga/manga_availability_service_test.dart \
+            test/services/manga/manga_platform_runtime_test.dart \
+            test/services/manga/manga_platform_runtime_service_test.dart \
+            test/widgets/manga/manga_platform_runtime_provider_test.dart)
+
+          tar -C "$plain" -I 'zstd -T0 -6' -cf "$archive" .
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import "$GITHUB_WORKSPACE/toolchain-control/keys/source-bundles-public.asc" >/dev/null 2>&1
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" \
+            --output "$transfer/runtime-v2-diagnostic.gpg" --encrypt "$archive"
+          sha256sum "$transfer/runtime-v2-diagnostic.gpg" > "$transfer/SHA256SUMS"
+
+          rm -rf "$plain" "$archive" "$gpg_home" "$GITHUB_WORKSPACE/private-source"
+          echo "transfer=$transfer" >> "$GITHUB_OUTPUT"
+          echo "encrypted_runtime_v2_diagnostic=success"
+
+      - name: Upload ciphertext only
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-manga-runtime-v2-diagnostic-encrypted
+          path: ${{ steps.encrypt.outputs.transfer }}
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Remove private checkout and transient data
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control" "$RUNNER_TEMP/goanime-manga-runtime-v2-diagnostic"
