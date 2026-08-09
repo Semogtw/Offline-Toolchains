@@ -103,20 +103,15 @@ jobs:
           flutter config --no-analytics >/dev/null
           flutter pub get >/dev/null
 
-      - name: Run manga catalog UI tests
-        if: steps.request.outputs.project == 'goanime'
+      - name: Test manga readable search UI
+        if: steps.request.outputs.project == 'goanime' && hashFiles('private-source/test/widgets/manga/manga_search_screen_test.dart') != ''
         working-directory: private-source
-        shell: bash
-        run: |
-          set -euo pipefail
-          tests=()
-          for candidate in \
-            test/widgets/manga/manga_search_screen_test.dart \
-            test/widgets/manga/manga_details_screen_test.dart; do
-            [[ -f "$candidate" ]] && tests+=("$candidate")
-          done
-          test "${#tests[@]}" -gt 0
-          flutter test --no-pub "${tests[@]}"
+        run: flutter test --no-pub test/widgets/manga/manga_search_screen_test.dart
+
+      - name: Test manga canonical details UI
+        if: steps.request.outputs.project == 'goanime' && hashFiles('private-source/test/widgets/manga/manga_details_screen_test.dart') != ''
+        working-directory: private-source
+        run: flutter test --no-pub test/widgets/manga/manga_details_screen_test.dart
 
       - name: Check manga catalog UI formatting
         id: format
