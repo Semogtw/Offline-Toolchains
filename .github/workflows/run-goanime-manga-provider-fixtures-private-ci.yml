@@ -92,6 +92,7 @@ jobs:
           run_gate hqnow flutter test --no-pub test/services/manga/providers/hqnow_manga_provider_test.dart
           run_gate capitoons flutter test --no-pub test/services/manga/providers/capitoons_manga_provider_test.dart
           run_gate mangaonline flutter test --no-pub test/services/manga/providers/mangaonline_manga_provider_test.dart
+          run_gate ninjascan flutter test --no-pub test/services/manga/providers/ninja_scan_manga_provider_test.dart
           run_gate readability flutter test --no-pub test/services/manga/manga_readability_verifier_test.dart
 
           if dart format --output=none --set-exit-if-changed \
