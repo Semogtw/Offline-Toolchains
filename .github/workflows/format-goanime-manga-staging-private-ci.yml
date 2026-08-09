@@ -1,0 +1,127 @@
+name: Format GoAnime manga staging privately
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-staging-format/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-staging-format-private-ci
+  cancel-in-progress: false
+
+jobs:
+  format:
+    name: GoAnime manga staging formatter
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision once
+        id: request
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-staging-format/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch requested < "toolchain-control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          remote="https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git"
+          if [[ "$requested" == "latest" ]]; then
+            resolved="$(git ls-remote "$remote" refs/heads/feature/manga-platform | cut -f1)"
+          else
+            resolved="$requested"
+          fi
+          [[ "$resolved" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$resolved" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout resolved private revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Format private staging scope
+        working-directory: private-source
+        shell: bash
+        run: |
+          dart format \
+            lib/services/manga \
+            test/services/manga \
+            test/integration/manga_source_routing_test.dart \
+            test/architecture/manga_planned_provider_definitions_test.dart \
+            tools/manga \
+            test/tools/manga >/dev/null 2>&1
+          if git diff --quiet; then
+            echo "format_changes=none"
+          else
+            echo "format_changes=present"
+          fi
+
+      - name: Commit formatter changes only if branch is unchanged
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          RESOLVED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            exit 0
+          fi
+          remote="https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git"
+          current="$(git ls-remote "$remote" refs/heads/feature/manga-platform | cut -f1)"
+          if [[ "$current" != "$RESOLVED_SHA" ]]; then
+            echo "format_push=skipped_branch_advanced"
+            exit 0
+          fi
+          git config user.name "GoAnime Toolchains"
+          git config user.email "toolchains@users.noreply.github.com"
+          git add -A
+          git commit --quiet -m "style(manga): format staging pipeline"
+          git push --quiet "$remote" HEAD:refs/heads/feature/manga-platform
+          echo "format_push=success"
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control"
