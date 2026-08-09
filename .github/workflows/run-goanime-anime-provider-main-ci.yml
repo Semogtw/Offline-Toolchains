@@ -98,7 +98,39 @@ jobs:
       - name: Run Flutter tests
         working-directory: private-source
         shell: bash
-        run: flutter test --no-pub --concurrency=1
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/ci-logs"
+          flutter test --no-pub --concurrency=1 2>&1 | tee "$GITHUB_WORKSPACE/ci-logs/flutter-test.log"
+
+      - name: Summarize Flutter test diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$GITHUB_WORKSPACE/ci-logs/flutter-test.log"
+          if [[ ! -f "$log" ]]; then
+            echo "Flutter test log was not produced."
+            exit 0
+          fi
+          echo "===== flutter test: last 200 lines ====="
+          tail -n 200 "$log"
+          {
+            echo "### Flutter test diagnostics"
+            echo
+            echo '```text'
+            tail -n 200 "$log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Flutter test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: goanime-flutter-test-${{ steps.pin.outputs.sha }}
+          path: ci-logs/flutter-test.log
+          if-no-files-found: ignore
+          retention-days: 1
 
       - name: Run goanime_core tests
         working-directory: private-source/packages/goanime_core
@@ -118,4 +150,4 @@ jobs:
       - name: Remove private checkout
         if: always()
         shell: bash
-        run: rm -rf "$GITHUB_WORKSPACE/private-source"
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/ci-logs"
