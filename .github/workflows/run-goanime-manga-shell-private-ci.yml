@@ -110,9 +110,13 @@ jobs:
         run: |
           set -euo pipefail
           tests=(test/services/media_mode_service_test.dart)
-          if [[ -f test/widgets/media_mode_slot_test.dart ]]; then
-            tests+=(test/widgets/media_mode_slot_test.dart)
-          fi
+          for candidate in \
+            test/widgets/media_mode_slot_test.dart \
+            test/widgets/media_switch_navigation_test.dart; do
+            if [[ -f "$candidate" ]]; then
+              tests+=("$candidate")
+            fi
+          done
           flutter test --no-pub "${tests[@]}"
 
       - name: Set up Dart 3.12.1
@@ -133,7 +137,10 @@ jobs:
           for candidate in \
             lib/services/media_mode_service.dart \
             test/widgets/media_mode_slot_test.dart \
-            lib/widgets/navigation/media_mode_slot.dart; do
+            lib/widgets/navigation/media_mode_slot.dart \
+            test/widgets/media_switch_navigation_test.dart \
+            lib/widgets/navigation/goanime_mobile_navigation.dart \
+            lib/widgets/navigation/goanime_desktop_sidebar.dart; do
             if [[ -f "$candidate" ]]; then
               paths+=("$candidate")
             fi
