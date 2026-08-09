@@ -1,4 +1,4 @@
-name: Fix GoAnime Jikan Local restore preflight
+name: Finalize GoAnime Jikan Local code gates
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: fix-goanime-jikan-local-restore-preflight
+  group: finalize-goanime-jikan-local-code-gates
   cancel-in-progress: true
 
 jobs:
@@ -42,7 +42,7 @@ jobs:
           submodules: false
           show-progress: false
 
-      - name: Patch restore and legacy contracts
+      - name: Patch remaining code-only issues
         working-directory: target
         shell: bash
         run: |
@@ -93,9 +93,42 @@ jobs:
               raise SystemExit('validate-images mktemp Docker assertion changed')
           text = text.replace(old_mktemp, new_mktemp, 1)
           images.write_text(text, encoding='utf-8')
+
+          home = Path('services/metadata-api/src/http_server.js')
+          text = home.read_text(encoding='utf-8')
+          old_home = """          response.setHeader(
+            'cache-control',
+            `public, max-age=${Math.max(0, Math.floor((config.homeFreshTtlMs ?? 60_000) / 1_000))}`,
+          );
+"""
+          new_home = """          // Home is assembled from independently aged section caches. A full
+          // downstream max-age would reset their effective freshness whenever
+          // the aggregate is requested, including stale fallback responses.
+          // Revalidate via the stable ETag instead; the internal caches still
+          // absorb refresh traffic without extending their freshness budget.
+          response.setHeader(
+            'cache-control',
+            'public, max-age=0, must-revalidate',
+          );
+"""
+          if text.count(old_home) != 1:
+              raise SystemExit('Home cache-control block changed')
+          home.write_text(text.replace(old_home, new_home, 1), encoding='utf-8')
+
+          rpm = Path('infra/jikan/scripts/measure-rpm.sh')
+          text = rpm.read_text(encoding='utf-8')
+          replacements = [
+              ('$1 ~ ("class=\\\\\\\"" class_name "\\\\\\\"")', 'index($1, "class=\\\"" class_name "\\\"") > 0'),
+              ('$1 ~ ("cache=\\\\\\\"" cache_name "\\\\\\\"")', 'index($1, "cache=\\\"" cache_name "\\\"") > 0'),
+          ]
+          for old, new in replacements:
+              if text.count(old) != 1:
+                  raise SystemExit('measure-rpm label matcher changed: ' + old)
+              text = text.replace(old, new, 1)
+          rpm.write_text(text, encoding='utf-8')
           PY
           git diff --check
-          git diff -- infra/jikan/scripts/restore.sh infra/jikan/tests/backup_restore_contract_test.sh infra/jikan/tests/validate_images_contract_test.sh
+          git diff -- infra/jikan/scripts/restore.sh infra/jikan/tests/backup_restore_contract_test.sh infra/jikan/tests/validate_images_contract_test.sh infra/jikan/scripts/measure-rpm.sh services/metadata-api/src/http_server.js
 
       - name: Install PHP CLI for indexer contracts
         shell: bash
@@ -108,7 +141,7 @@ jobs:
           php -v | head -n1
           node --version
 
-      - name: Run focused changed contracts
+      - name: Run focused Jikan contracts
         working-directory: target/infra/jikan
         shell: bash
         run: |
@@ -117,6 +150,17 @@ jobs:
           bash tests/backup_restore_contract_test.sh
           bash tests/validate_images_compose_preflight_contract_test.sh
           bash tests/validate_images_contract_test.sh
+          bash tests/measure_rpm_contract_test.sh
+
+      - name: Run focused Metadata API tests
+        working-directory: target/services/metadata-api
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test \
+            test/rate_limited_fetch.test.js \
+            test/jikan_client_shutdown_retry.test.js \
+            test/http_home_revalidation.test.js
 
       - name: Run Jikan infrastructure contracts
         working-directory: target/infra/jikan
@@ -143,6 +187,11 @@ jobs:
           fi
           git config user.name 'Arthur Almeida'
           git config user.email 'arthurgva1602@gmail.com'
-          git add infra/jikan/scripts/restore.sh infra/jikan/tests/backup_restore_contract_test.sh infra/jikan/tests/validate_images_contract_test.sh
-          git commit -m 'fix(jikan): close preflight contract regressions'
+          git add \
+            infra/jikan/scripts/restore.sh \
+            infra/jikan/tests/backup_restore_contract_test.sh \
+            infra/jikan/tests/validate_images_contract_test.sh \
+            infra/jikan/scripts/measure-rpm.sh \
+            services/metadata-api/src/http_server.js
+          git commit -m 'fix(jikan): close final code-only production gaps'
           git push origin HEAD:"$TARGET_BRANCH"
