@@ -111,14 +111,12 @@ jobs:
         working-directory: private-source/packages/goanime_core
         run: dart format --output=none --set-exit-if-changed lib test
 
-      - name: Show goanime_core formatting diff
+      - name: Report goanime_core formatting drift safely
         if: steps.request.outputs.project == 'goanime' && steps.core_format.outcome == 'failure'
-        working-directory: private-source
         shell: bash
         run: |
-          set -euo pipefail
-          (cd packages/goanime_core && dart format lib test)
-          git diff -- packages/goanime_core/lib packages/goanime_core/test
+          echo "goanime_core formatting drift detected."
+          echo "Private source diff is intentionally omitted from this public runner log."
 
       - name: Fail on goanime_core formatting drift
         if: steps.request.outputs.project == 'goanime' && steps.core_format.outcome == 'failure'
