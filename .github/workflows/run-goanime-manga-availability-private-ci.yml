@@ -130,7 +130,7 @@ jobs:
       - name: Test manga canonical aggregation
         if: >-
           steps.request.outputs.project == 'goanime' &&
-          hashFiles('private-source/test/services/manga/manga_search_coordinator_test.dart', 'private-source/test/services/manga/manga_chapter_merge_service_test.dart') != ''
+          hashFiles('private-source/test/services/manga/manga_search_coordinator_test.dart', 'private-source/test/services/manga/manga_chapter_merge_service_test.dart', 'private-source/test/integration/manga_source_routing_test.dart') != ''
         working-directory: private-source
         shell: bash
         run: |
@@ -138,7 +138,8 @@ jobs:
           tests=()
           for candidate in \
             test/services/manga/manga_search_coordinator_test.dart \
-            test/services/manga/manga_chapter_merge_service_test.dart; do
+            test/services/manga/manga_chapter_merge_service_test.dart \
+            test/integration/manga_source_routing_test.dart; do
             [[ -f "$candidate" ]] && tests+=("$candidate")
           done
           flutter test --no-pub "${tests[@]}"
@@ -171,7 +172,8 @@ jobs:
           for candidate in \
             test/helpers/fake_manga_source_provider.dart \
             test/helpers/manga_provider_contract_harness.dart \
-            test/architecture/manga_ptbr_source_scope_test.dart; do
+            test/architecture/manga_ptbr_source_scope_test.dart \
+            test/integration/manga_source_routing_test.dart; do
             [[ -f "$candidate" ]] && paths+=("$candidate")
           done
           [[ -d lib/services/manga ]] && paths+=(lib/services/manga)
