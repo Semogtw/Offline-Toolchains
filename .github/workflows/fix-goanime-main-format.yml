@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  format:
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -30,8 +30,9 @@ jobs:
           channel: stable
           flutter-version: 3.44.1
 
-      - name: Resolve packages
-        run: flutter pub get
-
-      - name: Verify architecture tests
-        run: flutter test test/architecture --reporter expanded --test-randomize-ordering-seed=random
+      - name: Print exact formatter diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format test/architecture/anime_metadata_seed_publication_guard_test.dart
+          git diff -- test/architecture/anime_metadata_seed_publication_guard_test.dart
