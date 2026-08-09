@@ -1,0 +1,151 @@
+name: Diagnose GoAnime manga private CI encrypted
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-diagnostic/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-diagnostic-encrypted
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    name: GoAnime manga encrypted diagnostics
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-diagnostic/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private manga revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies privately
+        working-directory: private-source
+        shell: bash
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Capture private diagnostics
+        id: diagnostics
+        working-directory: private-source
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          work_dir="$RUNNER_TEMP/goanime-manga-diagnostic"
+          logs_dir="$work_dir/logs"
+          transfer_dir="$work_dir/transfer"
+          archive="$work_dir/diagnostics.tar.zst"
+          encrypted="$transfer_dir/diagnostics.gpg"
+          gpg_home="$work_dir/gpg"
+          rm -rf "$work_dir"
+          mkdir -p "$logs_dir" "$transfer_dir" "$gpg_home"
+          chmod 700 "$gpg_home"
+
+          capture() {
+            local label="$1"
+            shift
+            set +e
+            "$@" >"$logs_dir/${label}.log" 2>&1
+            local status=$?
+            set -e
+            printf '%s=%s\n' "$label" "$status" >> "$logs_dir/STATUS.txt"
+          }
+
+          capture availability_db flutter test --no-pub test/services/manga/manga_availability_database_service_test.dart
+          capture metadata flutter test --no-pub test/services/manga/manga_bundled_metadata_resolver_test.dart
+          capture platform flutter test --no-pub test/services/manga/manga_platform_runtime_test.dart
+          capture runtime_service flutter test --no-pub test/services/manga/manga_platform_runtime_service_test.dart
+          capture discovery flutter test --no-pub test/services/manga/manga_source_discovery_service_test.dart
+          capture search_coordinator flutter test --no-pub test/services/manga/manga_search_coordinator_test.dart
+          capture persisted_identity flutter test --no-pub test/services/manga/manga_search_persisted_identity_test.dart
+          capture browse_owner flutter test --no-pub test/services/manga/manga_repository_browse_data_source_test.dart
+          capture details_source flutter test --no-pub test/services/manga/manga_details_data_source_test.dart
+          capture screens flutter test --no-pub test/widgets/manga/manga_catalog_screen_integration_test.dart
+          capture runtime_screens flutter test --no-pub test/widgets/manga/manga_runtime_catalog_screen_test.dart
+          capture default_nav flutter test --no-pub test/widgets/manga/manga_default_details_navigation_test.dart
+          capture bootstrap_wiring flutter test --no-pub test/architecture/manga_bootstrap_runtime_wiring_test.dart
+          capture manifest_validator flutter test --no-pub test/architecture/manga_provider_manifest_validator_test.dart
+          capture registry_manifest flutter test --no-pub test/architecture/manga_provider_registry_manifest_test.dart
+          capture format dart format --output=none --set-exit-if-changed lib/app/bootstrap.dart lib/services/manga lib/screens/manga lib/widgets/manga test/services/manga test/widgets/manga test/architecture tools/manga
+
+          tar -C "$logs_dir" -I 'zstd -T0 -6' -cf "$archive" .
+
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import "$GITHUB_WORKSPACE/toolchain-control/keys/source-bundles-public.asc" >/dev/null 2>&1
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          test -z "$(gpg --batch --with-colons --list-secret-keys 2>/dev/null | awk -F: '$1 == "sec" { print $1 }')"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" --output "$encrypted" --encrypt "$archive"
+          test -s "$encrypted"
+          sha256sum "$encrypted" > "$transfer_dir/SHA256SUMS"
+
+          rm -rf "$logs_dir" "$archive" "$gpg_home" "$GITHUB_WORKSPACE/private-source"
+          echo "transfer_dir=$transfer_dir" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=goanime-manga-diagnostic-encrypted" >> "$GITHUB_OUTPUT"
+          echo "diagnostics_encrypted=success"
+
+      - name: Upload ciphertext-only diagnostic
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.diagnostics.outputs.artifact_name }}
+          path: ${{ steps.diagnostics.outputs.transfer_dir }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Remove private and transient data
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source"
+          rm -rf "$GITHUB_WORKSPACE/toolchain-control"
+          rm -rf "$RUNNER_TEMP/goanime-manga-diagnostic"
