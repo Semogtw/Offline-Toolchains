@@ -1,0 +1,110 @@
+name: Run pinned GoAnime main anime provider CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-anime-provider-main/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-anime-provider-main-ci
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Pin and verify GoAnime main
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout GoAnime main once
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: main
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Pin resolved revision
+        id: pin
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Pinned GoAnime main: $sha"
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve root dependencies
+        working-directory: private-source
+        shell: bash
+        run: flutter pub get
+
+      - name: Resolve goanime_core development dependencies
+        working-directory: private-source/packages/goanime_core
+        shell: bash
+        run: dart pub get
+
+      - name: Verify formatting
+        working-directory: private-source
+        shell: bash
+        run: dart format --output=none --set-exit-if-changed lib test packages tools
+
+      - name: Analyze application and core library
+        working-directory: private-source
+        shell: bash
+        run: flutter analyze --no-pub lib test packages/goanime_core/lib
+
+      - name: Analyze goanime_core tests
+        working-directory: private-source/packages/goanime_core
+        shell: bash
+        run: dart analyze lib test
+
+      - name: Run Flutter tests
+        working-directory: private-source
+        shell: bash
+        run: flutter test --no-pub
+
+      - name: Run goanime_core tests
+        working-directory: private-source/packages/goanime_core
+        shell: bash
+        run: dart test
+
+      - name: Build Android debug APK
+        working-directory: private-source
+        shell: bash
+        run: flutter build apk --debug --no-pub
+
+      - name: Report pinned revision
+        if: always()
+        shell: bash
+        run: echo "GoAnime ref=${{ steps.pin.outputs.sha }}"
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
