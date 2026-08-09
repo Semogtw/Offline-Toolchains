@@ -73,7 +73,7 @@ jobs:
           dart format lib test packages tools
           git diff --check
 
-      - name: Emit whitespace-only edit plan
+      - name: Emit layout-only edit plan
         shell: bash
         env:
           PINNED_SHA: ${{ steps.pin.outputs.sha }}
@@ -85,6 +85,9 @@ jobs:
           import pathlib
           import subprocess
           import sys
+
+          def is_layout(ch: str) -> bool:
+              return ch.isspace() or ch == ','
 
           changed = subprocess.check_output(
               ['git', 'diff', '--name-only', '--', '*.dart'],
@@ -99,20 +102,20 @@ jobs:
               )
               formatted = pathlib.Path(path).read_text()
 
-              original_non_ws = ''.join(ch for ch in original if not ch.isspace())
-              formatted_non_ws = ''.join(ch for ch in formatted if not ch.isspace())
-              if original_non_ws != formatted_non_ws:
+              original_stable = ''.join(ch for ch in original if not is_layout(ch))
+              formatted_stable = ''.join(ch for ch in formatted if not is_layout(ch))
+              if original_stable != formatted_stable:
                   print(
-                      f'Unsafe non-whitespace formatter delta in {path}',
+                      f'Unsafe formatter delta outside whitespace/trailing commas in {path}',
                       file=sys.stderr,
                   )
                   sys.exit(2)
 
               original_positions = [
-                  index for index, ch in enumerate(original) if not ch.isspace()
+                  index for index, ch in enumerate(original) if not is_layout(ch)
               ]
               formatted_positions = [
-                  index for index, ch in enumerate(formatted) if not ch.isspace()
+                  index for index, ch in enumerate(formatted) if not is_layout(ch)
               ]
 
               edits = []
@@ -142,6 +145,12 @@ jobs:
                   before = original[original_start:original_end]
                   after = formatted[formatted_start:formatted_end]
                   if before != after:
+                      if any(not is_layout(ch) for ch in before + after):
+                          print(
+                              f'Unsafe edit span in {path}',
+                              file=sys.stderr,
+                          )
+                          sys.exit(2)
                       edits.append(
                           {
                               'start': original_start,
@@ -152,7 +161,7 @@ jobs:
 
               plan['files'].append({'path': path, 'edits': edits})
 
-          print('WHITESPACE_EDIT_PLAN=' + json.dumps(plan, separators=(',', ':')))
+          print('LAYOUT_EDIT_PLAN=' + json.dumps(plan, separators=(',', ':')))
           PY
 
       - name: Report result
