@@ -1,0 +1,50 @@
+name: Repair GoAnime main formatting
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fix-goanime-main-format.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout private GoAnime main
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: main
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          persist-credentials: true
+          fetch-depth: 1
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+
+      - name: Format offending source only
+        run: dart format tools/cache_builder.dart
+
+      - name: Commit and push mechanical formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          if git diff --quiet -- tools/cache_builder.dart; then
+            echo 'No formatting change required.'
+            exit 0
+          fi
+          test "$(git diff --name-only | tr -d '\r')" = 'tools/cache_builder.dart'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tools/cache_builder.dart
+          git commit -m 'style: format cache builder'
+          git push origin HEAD:main
