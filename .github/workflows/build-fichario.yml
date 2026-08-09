@@ -70,10 +70,31 @@ jobs:
           deno-version: ${{ env.DENO_VERSION }}
           cache: false
 
-      - name: Set up Supabase CLI
-        uses: supabase/setup-cli@v2
-        with:
-          version: ${{ env.SUPABASE_VERSION }}
+      - name: Install checksum-verified paired Supabase CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="supabase_${SUPABASE_VERSION}_linux_amd64.tar.gz"
+          release_base="https://github.com/supabase/cli/releases/download/v${SUPABASE_VERSION}"
+          release_dir="$RUNNER_TEMP/supabase-${SUPABASE_VERSION}"
+          mkdir -p "$release_dir"
+          curl --fail --silent --show-error --location \
+            "$release_base/$archive" \
+            --output "$RUNNER_TEMP/$archive"
+          curl --fail --silent --show-error --location \
+            "$release_base/checksums.txt" \
+            --output "$RUNNER_TEMP/checksums.txt"
+          (
+            cd "$RUNNER_TEMP"
+            grep -F "  $archive" checksums.txt | sha256sum --check -
+          )
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$release_dir"
+          test -x "$release_dir/supabase"
+          test -x "$release_dir/supabase-go"
+          sudo install -m 0755 "$release_dir/supabase" /usr/local/bin/supabase
+          sudo install -m 0755 "$release_dir/supabase-go" /usr/local/bin/supabase-go
+          supabase --version
+          supabase-go --version
 
       - name: Install archive and database tooling
         shell: bash
