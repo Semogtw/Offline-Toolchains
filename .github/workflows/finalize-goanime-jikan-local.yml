@@ -1,0 +1,268 @@
+name: Finalize GoAnime Jikan Local
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/finalize-goanime-jikan-local.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: finalize-goanime-jikan-local
+  cancel-in-progress: true
+
+jobs:
+  validate-and-push:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      TARGET_BRANCH: feat/self-hosted-metadata-api-2026-07-30
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout Jikan Local
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: feat/self-hosted-metadata-api-2026-07-30
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: target
+          fetch-depth: 0
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Apply remaining verified code fixes
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/jikan-final.patch <<'PATCH'
+          diff --git a/infra/jikan/scripts/restore.sh b/infra/jikan/scripts/restore.sh
+          --- a/infra/jikan/scripts/restore.sh
+          +++ b/infra/jikan/scripts/restore.sh
+          @@ -466,6 +466,11 @@ fi
+           
+           require_command docker
+           
+          +if ! docker compose version >/dev/null 2>&1; then
+          +  printf 'Could not verify Docker Compose availability before restore.\n' >&2
+          +  exit 74
+          +fi
+          +
+           if [[ "$RESTORE_SECRETS" == "1" ]]; then
+             if [[ -L "$BACKUP_DIR/secrets" || ! -d "$BACKUP_DIR/secrets" ]]; then
+               printf 'RESTORE_SECRETS=1, but the backup has no safe secrets directory.\n' >&2
+          @@ -502,10 +507,6 @@ if [[ "$RESTORE_SECRETS" == "1" && ! -e "$ROOT_DIR/.secrets" ]]; then
+             SECRETS_RESTORED=1
+           fi
+           
+          -if ! docker compose version >/dev/null; then
+          -  printf 'Could not verify Docker Compose availability before restore.\n' >&2
+          -  exit 74
+          -fi
+           if ! docker compose config --quiet; then
+             printf 'Could not validate the Jikan Compose configuration before restore.\n' >&2
+             exit 74
+          diff --git a/infra/jikan/tests/backup_restore_contract_test.sh b/infra/jikan/tests/backup_restore_contract_test.sh
+          --- a/infra/jikan/tests/backup_restore_contract_test.sh
+          +++ b/infra/jikan/tests/backup_restore_contract_test.sh
+          @@ -1459,8 +1459,11 @@ grep -Fq 'Could not create staged restored secret directory' \
+             fail 'restored secret stage creation failure was not actionable'
+           [[ ! -e "$FIXTURE_ROOT/.secrets" && ! -L "$FIXTURE_ROOT/.secrets" ]] || \
+             fail 'restored secret stage creation failure published secrets'
+          -[[ ! -s "$DOCKER_LOG" ]] || \
+          -  fail 'restored secret stage creation failure reached Docker'
+          +grep -Eq '^compose version[[:space:]]*$' "$DOCKER_LOG" || \
+          +  fail 'restored secret stage creation failure skipped Compose preflight'
+          +if grep -Ev '^compose version[[:space:]]*$' "$DOCKER_LOG" | grep -q .; then
+          +  fail 'restored secret stage creation failure reached Docker beyond the read-only Compose preflight'
+          +fi
+           
+           : > "$DOCKER_LOG"
+           set +e
+          @@ -1479,8 +1482,11 @@ if find "$FIXTURE_ROOT" -mindepth 1 -maxdepth 1 \
+             -name '.secrets-restore-partial.*' -print -quit | grep -q .; then
+             fail 'restored secret stage chmod failure left a partial directory'
+           fi
+          -[[ ! -s "$DOCKER_LOG" ]] || \
+          -  fail 'restored secret stage chmod failure reached Docker'
+          +grep -Eq '^compose version[[:space:]]*$' "$DOCKER_LOG" || \
+          +  fail 'restored secret stage chmod failure skipped Compose preflight'
+          +if grep -Ev '^compose version[[:space:]]*$' "$DOCKER_LOG" | grep -q .; then
+          +  fail 'restored secret stage chmod failure reached Docker beyond the read-only Compose preflight'
+          +fi
+           
+           : > "$DOCKER_LOG"
+           : > "$SYNC_LOG"
+          @@ -1502,8 +1508,11 @@ if find "$FIXTURE_ROOT" -mindepth 1 -maxdepth 1 \
+             -name '.secrets-restore-partial.*' -print -quit | grep -q .; then
+             fail 'restore left partial secrets after staged synchronization failure'
+           fi
+          -[[ ! -s "$DOCKER_LOG" ]] || \
+          -  fail 'staged secret synchronization failure must happen before Docker access'
+          +grep -Eq '^compose version[[:space:]]*$' "$DOCKER_LOG" || \
+          +  fail 'staged secret synchronization failure skipped Compose preflight'
+          +if grep -Ev '^compose version[[:space:]]*$' "$DOCKER_LOG" | grep -q .; then
+          +  fail 'staged secret synchronization failure reached Docker beyond the read-only Compose preflight'
+          +fi
+           
+           PUBLISH_SYNC_FAIL_MARKER="$TEMP_ROOT/secret-publish-sync-failed-once"
+           rm -f -- "$PUBLISH_SYNC_FAIL_MARKER"
+          @@ -1528,8 +1537,11 @@ grep -Fq 'Could not synchronize restored secret publication' \
+           root_sync_count="$(grep -Fxc "$FIXTURE_ROOT" "$SYNC_LOG" || true)"
+           [[ "$root_sync_count" -eq 2 ]] || \
+             fail "secret publication rollback must sync the parent; got $root_sync_count parent syncs"
+          -[[ ! -s "$DOCKER_LOG" ]] || \
+          -  fail 'secret publication synchronization failure must happen before Docker access'
+          +grep -Eq '^compose version[[:space:]]*$' "$DOCKER_LOG" || \
+          +  fail 'secret publication synchronization failure skipped Compose preflight'
+          +if grep -Ev '^compose version[[:space:]]*$' "$DOCKER_LOG" | grep -q .; then
+          +  fail 'secret publication synchronization failure reached Docker beyond the read-only Compose preflight'
+          +fi
+           
+           STALE_SECRET_CLEANUP_FAILURE="$FIXTURE_ROOT/.secrets-restore-partial.FAIL01"
+           mkdir -m 700 "$STALE_SECRET_CLEANUP_FAILURE"
+          diff --git a/infra/jikan/tests/validate_images_contract_test.sh b/infra/jikan/tests/validate_images_contract_test.sh
+          --- a/infra/jikan/tests/validate_images_contract_test.sh
+          +++ b/infra/jikan/tests/validate_images_contract_test.sh
+          @@ -19,6 +19,9 @@ cat > "$FAKE_BIN/docker" <<'EOF'
+           #!/usr/bin/env bash
+           set -euo pipefail
+           printf 'docker %s\n' "$*" >> "${CALL_LOG:?}"
+          +if [[ "${1:-}" == "compose" && "${2:-}" == "version" ]]; then
+          +  exit 0
+          +fi
+           if [[ "${1:-}" == "compose" && "${2:-}" == "config" && "${3:-}" == "--images" ]]; then
+             if [[ -n "${FAKE_CONFIG_IMAGES_STATUS:-}" ]]; then
+               printf 'fixture compose image resolution failure\n' >&2
+          @@ -195,8 +198,11 @@ set -e
+           grep -Fq 'Could not create a temporary Docker Compose image listing' \
+             "$TEMP_ROOT/mktemp-failure.out" || \
+             fail 'temporary image listing failure was not actionable'
+          -[[ ! -s "$CALL_LOG" ]] || \
+          -  fail 'temporary image listing failure reached Docker'
+          +grep -Fxq 'docker compose version' "$CALL_LOG" || \
+          +  fail 'temporary image listing failure skipped Compose preflight'
+          +if grep -Fvx 'docker compose version' "$CALL_LOG" | grep -q .; then
+          +  fail 'temporary image listing failure reached Docker beyond the read-only Compose preflight'
+          +fi
+           
+           : > "$CALL_LOG"
+           set +e
+          diff --git a/services/metadata-api/src/http_server.js b/services/metadata-api/src/http_server.js
+          --- a/services/metadata-api/src/http_server.js
+          +++ b/services/metadata-api/src/http_server.js
+          @@ -117,10 +117,15 @@ export function createMetadataServer({
+                   const day = url.searchParams.get('day') || currentUtcWeekday();
+                   try {
+                     const payload = await homeCatalog.load(day);
+          +          // Home is assembled from independently aged section caches. A full
+          +          // downstream max-age would reset their effective freshness whenever
+          +          // the aggregate is requested, including stale fallback responses.
+          +          // Revalidate via the stable ETag instead; internal section caches
+          +          // still absorb upstream refresh traffic.
+                     response.setHeader(
+                       'cache-control',
+          -            `public, max-age=${Math.max(0, Math.floor((config.homeFreshTtlMs ?? 60_000) / 1_000))}`,
+          +            'public, max-age=0, must-revalidate',
+                     );
+                     return sendJson(request, response, 200, payload, {
+                       etag: createHomeEtag(payload),
+          diff --git a/infra/jikan/scripts/measure-rpm.sh b/infra/jikan/scripts/measure-rpm.sh
+          --- a/infra/jikan/scripts/measure-rpm.sh
+          +++ b/infra/jikan/scripts/measure-rpm.sh
+          @@ -138,7 +138,7 @@ class_metric() {
+             local series="goanime_metadata_jikan_upstream_responses_by_class_total{class=\"$class_name\"}"
+             run_metric_parser -v class_name="$class_name" -v series="$series" '
+               $1 ~ /^goanime_metadata_jikan_upstream_responses_by_class_total\{/ &&
+          -      $1 ~ ("class=\\\"" class_name "\\\"") {
+          +      index($1, "class=\"" class_name "\"") > 0 {
+                 count += 1
+                 if ($2 !~ /^[0-9]+$/) invalid = 1
+                 value = $2
+          @@ -158,7 +158,7 @@ cache_metric() {
+             local series="$metric_name{cache=\"$cache_name\"}"
+             run_metric_parser -v metric="$metric_name" -v cache_name="$cache_name" -v series="$series" '
+               $1 ~ ("^" metric "\\{") &&
+          -      $1 ~ ("cache=\\\"" cache_name "\\\"") {
+          +      index($1, "cache=\"" cache_name "\"") > 0 {
+                 count += 1
+                 if ($2 !~ /^[0-9]+$/) invalid = 1
+                 value = $2
+          PATCH
+          git apply --check /tmp/jikan-final.patch
+          git apply /tmp/jikan-final.patch
+          git diff --check
+          git diff --stat
+
+      - name: Install PHP CLI if needed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v php >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y php-cli
+          fi
+          php -v | head -n1
+          node --version
+
+      - name: Focused Jikan gates
+        working-directory: target/infra/jikan
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tests/restore_compose_preflight_order_contract_test.sh
+          bash tests/backup_restore_contract_test.sh
+          bash tests/validate_images_compose_preflight_contract_test.sh
+          bash tests/validate_images_contract_test.sh
+          bash tests/measure_rpm_contract_test.sh
+
+      - name: Focused Metadata API gates
+        working-directory: target/services/metadata-api
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test \
+            test/rate_limited_fetch.test.js \
+            test/jikan_client_shutdown_retry.test.js \
+            test/http_home_revalidation.test.js
+
+      - name: Full Jikan infrastructure contracts
+        working-directory: target/infra/jikan
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tests/run.sh
+
+      - name: Full Metadata API tests
+        working-directory: target/services/metadata-api
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm test
+
+      - name: Commit and push verified fixes
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'Arthur Almeida'
+          git config user.email 'arthurgva1602@gmail.com'
+          git add \
+            infra/jikan/scripts/restore.sh \
+            infra/jikan/tests/backup_restore_contract_test.sh \
+            infra/jikan/tests/validate_images_contract_test.sh \
+            infra/jikan/scripts/measure-rpm.sh \
+            services/metadata-api/src/http_server.js
+          git commit -m 'fix(jikan): close final code-only production gaps'
+          git push origin HEAD:"$TARGET_BRANCH"
