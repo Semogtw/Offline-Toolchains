@@ -16,10 +16,10 @@ concurrency:
 
 jobs:
   audit:
-    name: GoAnime manga failed-provider stage audit
+    name: GoAnime manga planned-provider stage audit
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 35
 
     steps:
       - name: Require private repository token
@@ -80,9 +80,11 @@ jobs:
         working-directory: private-source
         run: flutter pub get >/dev/null 2>&1
 
-      - name: Validate Manga Online structure analyzer
+      - name: Diagnose Astratoons by sanitized stage
+        id: astratoons
+        continue-on-error: true
         working-directory: private-source
-        run: flutter test --no-pub test/tools/manga/audit_mangaonline_structure_test.dart
+        run: dart run tools/manga/audit_planned_provider_stage.dart ptbr.astratoons
 
       - name: Diagnose HQ Now by sanitized stage
         id: hqnow
@@ -90,17 +92,17 @@ jobs:
         working-directory: private-source
         run: dart run tools/manga/audit_planned_provider_stage.dart ptbr.hqnow
 
-      - name: Diagnose Manga Online by sanitized stage
-        id: mangaonline
+      - name: Diagnose Capitoons by sanitized stage
+        id: capitoons
         continue-on-error: true
         working-directory: private-source
-        run: dart run tools/manga/audit_planned_provider_stage.dart ptbr.mangaonline
+        run: dart run tools/manga/audit_planned_provider_stage.dart ptbr.capitoons
 
-      - name: Diagnose Manga Online sanitized HTML structure
-        id: mangaonline_structure
+      - name: Diagnose MangaDash by sanitized stage
+        id: mangadash
         continue-on-error: true
         working-directory: private-source
-        run: dart run tools/manga/audit_mangaonline_structure.dart
+        run: dart run tools/manga/audit_planned_provider_stage.dart ptbr.mangadash
 
       - name: Diagnose Ninja Scan by sanitized stage
         id: ninjascan
@@ -111,14 +113,16 @@ jobs:
       - name: Report aggregate stage audit outcome
         if: always()
         env:
+          ASTRATOONS: ${{ steps.astratoons.outcome }}
           HQNOW: ${{ steps.hqnow.outcome }}
-          MANGAONLINE: ${{ steps.mangaonline.outcome }}
-          MANGAONLINE_STRUCTURE: ${{ steps.mangaonline_structure.outcome }}
+          CAPITOONS: ${{ steps.capitoons.outcome }}
+          MANGADASH: ${{ steps.mangadash.outcome }}
           NINJASCAN: ${{ steps.ninjascan.outcome }}
         run: |
+          echo "astratoons_stage_audit=$ASTRATOONS"
           echo "hqnow_stage_audit=$HQNOW"
-          echo "mangaonline_stage_audit=$MANGAONLINE"
-          echo "mangaonline_structure_audit=$MANGAONLINE_STRUCTURE"
+          echo "capitoons_stage_audit=$CAPITOONS"
+          echo "mangadash_stage_audit=$MANGADASH"
           echo "ninjascan_stage_audit=$NINJASCAN"
 
       - name: Remove private checkout
