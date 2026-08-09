@@ -112,7 +112,8 @@ jobs:
           tests=(test/services/media_mode_service_test.dart)
           for candidate in \
             test/widgets/media_mode_slot_test.dart \
-            test/widgets/media_switch_navigation_test.dart; do
+            test/widgets/media_switch_navigation_test.dart \
+            test/widgets/media_mode_navigation_test.dart; do
             if [[ -f "$candidate" ]]; then
               tests+=("$candidate")
             fi
@@ -140,11 +141,17 @@ jobs:
             lib/widgets/navigation/media_mode_slot.dart \
             test/widgets/media_switch_navigation_test.dart \
             lib/widgets/navigation/goanime_mobile_navigation.dart \
-            lib/widgets/navigation/goanime_desktop_sidebar.dart; do
+            lib/widgets/navigation/goanime_desktop_sidebar.dart \
+            test/widgets/media_mode_navigation_test.dart \
+            lib/l10n/ui_manga_localizations.dart \
+            lib/l10n/app_localizations.dart; do
             if [[ -f "$candidate" ]]; then
               paths+=("$candidate")
             fi
           done
+          if [[ -d lib/screens/manga ]]; then
+            paths+=(lib/screens/manga)
+          fi
           dart format --output=none --set-exit-if-changed "${paths[@]}"
 
       - name: Report manga shell formatting drift safely
