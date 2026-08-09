@@ -85,20 +85,36 @@ jobs:
           chmod 700 "$gpg_home"
 
           set +e
+          flutter test --no-pub test/services/manga/manga_http_client_test.dart >"$plain/http.log" 2>&1
+          http_status=$?
           flutter test --no-pub test/services/manga/providers/astratoons_manga_provider_test.dart >"$plain/astratoons.log" 2>&1
-          test_status=$?
-          dart format --output=none --set-exit-if-changed lib/services/manga/providers/astratoons_manga_provider.dart test/services/manga/providers/astratoons_manga_provider_test.dart >"$plain/format.log" 2>&1
+          astratoons_status=$?
+          flutter test --no-pub test/services/manga/providers/hqnow_manga_provider_test.dart >"$plain/hqnow.log" 2>&1
+          hqnow_status=$?
+          flutter test --no-pub test/services/manga/providers/capitoons_manga_provider_test.dart >"$plain/capitoons.log" 2>&1
+          capitoons_status=$?
+          dart format \
+            lib/services/manga/manga_http_client.dart \
+            lib/services/manga/providers \
+            test/services/manga/manga_http_client_test.dart \
+            test/services/manga/providers >"$plain/format.log" 2>&1
           format_status=$?
+          git diff -- \
+            lib/services/manga/manga_http_client.dart \
+            lib/services/manga/providers \
+            test/services/manga/manga_http_client_test.dart \
+            test/services/manga/providers >"$plain/format.patch"
           set -e
-          printf 'astratoons=%s\nformat=%s\n' "$test_status" "$format_status" > "$plain/STATUS.txt"
+          printf 'http=%s\nastratoons=%s\nhqnow=%s\ncapitoons=%s\nformat=%s\n' \
+            "$http_status" "$astratoons_status" "$hqnow_status" "$capitoons_status" "$format_status" > "$plain/STATUS.txt"
           tar -C "$plain" -I 'zstd -T0 -6' -cf "$archive" .
 
           export GNUPGHOME="$gpg_home"
           gpg --batch --import "$GITHUB_WORKSPACE/toolchain-control/keys/source-bundles-public.asc" >/dev/null 2>&1
           fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1 == "fpr" { print $10; exit }')"
           test "$fingerprint" = "$EXPECTED_FINGERPRINT"
-          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" --output "$transfer/astratoons-fixture.gpg" --encrypt "$archive"
-          sha256sum "$transfer/astratoons-fixture.gpg" > "$transfer/SHA256SUMS"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" --output "$transfer/provider-fixtures.gpg" --encrypt "$archive"
+          sha256sum "$transfer/provider-fixtures.gpg" > "$transfer/SHA256SUMS"
 
           rm -rf "$plain" "$archive" "$gpg_home" "$GITHUB_WORKSPACE/private-source"
           echo "transfer=$transfer" >> "$GITHUB_OUTPUT"
