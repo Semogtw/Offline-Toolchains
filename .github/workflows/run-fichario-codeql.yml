@@ -1,0 +1,171 @@
+name: Run Fichario CodeQL
+
+on:
+  workflow_run:
+    workflows:
+      - Request private project CI
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fichario-codeql-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  normalize:
+    name: Normalize trusted Fichario CodeQL request
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'build/private-ci' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.actor.login == github.repository_owner &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      project: ${{ steps.request.outputs.project }}
+      ref: ${{ steps.request.outputs.ref }}
+
+    steps:
+      - name: Checkout trusted request validator
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: main
+          path: trusted-source
+          persist-credentials: false
+          sparse-checkout: scripts/private_ci_request.py
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout connector request revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          path: request-source
+          persist-credentials: false
+          sparse-checkout: triggers/private-ci.json
+          sparse-checkout-cone-mode: false
+
+      - name: Normalize request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          normalized="$(python3 trusted-source/scripts/private_ci_request.py request-source/triggers/private-ci.json)"
+          python3 - "$normalized" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          request = json.loads(sys.argv[1])
+          if request["repository"] != "Semogtw/FicharioVirtual":
+              raise SystemExit("unexpected repository mapping")
+          with open(sys.argv[2], "a", encoding="utf-8") as stream:
+              stream.write(f"project={request['project']}\n")
+              stream.write(f"ref={request['ref']}\n")
+          PY
+
+  analyze:
+    name: Fichário JavaScript/TypeScript security-extended
+    needs: normalize
+    if: needs.normalize.outputs.project == 'fichario'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout public Fichario source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/FicharioVirtual
+          ref: ${{ needs.normalize.outputs.ref }}
+          path: public-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Record resolved commit
+        id: source
+        shell: bash
+        run: echo "sha=$(git -C public-source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
+        with:
+          languages: javascript-typescript
+          build-mode: none
+          source-root: public-source
+          queries: security-extended
+
+      - name: Analyze without Code Scanning upload
+        id: analyze
+        uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
+        with:
+          upload: never
+          upload-database: false
+          checkout_path: public-source
+          output: ${{ runner.temp }}/fichario-codeql
+
+      - name: Summarize SARIF findings
+        id: summary
+        shell: bash
+        env:
+          SARIF_DIR: ${{ runner.temp }}/fichario-codeql
+        run: |
+          set -euo pipefail
+          python3 - "$SARIF_DIR" "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          root = pathlib.Path(sys.argv[1])
+          summary = pathlib.Path(sys.argv[2])
+          findings = []
+          for path in sorted(root.rglob('*.sarif')):
+              payload = json.loads(path.read_text(encoding='utf-8'))
+              for run in payload.get('runs', []):
+                  rules = {
+                      rule.get('id'): rule
+                      for rule in run.get('tool', {}).get('driver', {}).get('rules', [])
+                  }
+                  for result in run.get('results', []):
+                      rule_id = result.get('ruleId', 'unknown')
+                      message = result.get('message', {}).get('text', '')
+                      level = result.get('level', 'warning')
+                      rule = rules.get(rule_id, {})
+                      severity = rule.get('properties', {}).get('security-severity')
+                      locations = result.get('locations', [])
+                      uri = None
+                      line = None
+                      if locations:
+                          physical = locations[0].get('physicalLocation', {})
+                          uri = physical.get('artifactLocation', {}).get('uri')
+                          line = physical.get('region', {}).get('startLine')
+                      findings.append((rule_id, level, severity, uri, line, message))
+
+          with summary.open('a', encoding='utf-8') as stream:
+              stream.write('## Fichario CodeQL security-extended\n\n')
+              stream.write(f'- Findings: `{len(findings)}`\n')
+              if findings:
+                  stream.write('\n| Rule | Level | Security severity | Location |\n')
+                  stream.write('| --- | --- | --- | --- |\n')
+                  for rule_id, level, severity, uri, line, _message in findings[:100]:
+                      location = f'{uri}:{line}' if uri and line else (uri or 'n/a')
+                      stream.write(f'| `{rule_id}` | {level} | {severity or "n/a"} | `{location}` |\n')
+          print(f'CodeQL findings: {len(findings)}')
+          PY
+
+      - name: Upload short-lived SARIF evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fichario-codeql-${{ steps.source.outputs.sha }}
+          path: ${{ runner.temp }}/fichario-codeql/
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Remove public checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/public-source"
