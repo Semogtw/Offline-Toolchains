@@ -1,0 +1,171 @@
+name: Run GoAnime manga availability private CI
+
+on:
+  workflow_run:
+    workflows:
+      - Request private project CI
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-availability-private-ci-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  availability:
+    name: GoAnime manga availability focused tests
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'build/private-ci' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.actor.login == github.repository_owner &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted request implementation
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: trusted-source
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/private_ci_request.py
+            config/workflow-hub-projects.json
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout connector request revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          path: request-source
+          persist-credentials: false
+          sparse-checkout: triggers/private-ci.json
+          sparse-checkout-cone-mode: false
+
+      - name: Normalize trusted request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          normalized="$(python3 trusted-source/scripts/private_ci_request.py request-source/triggers/private-ci.json)"
+          python3 - "$normalized" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          request = json.loads(sys.argv[1])
+          with open(sys.argv[2], "a", encoding="utf-8") as stream:
+              for key in ("project", "repository", "ref"):
+                  value = request[key]
+                  if "\n" in value or "\r" in value:
+                      raise SystemExit(f"unsafe newline in normalized {key}")
+                  stream.write(f"{key}={value}\n")
+          PY
+
+      - name: Checkout private GoAnime source
+        if: steps.request.outputs.project == 'goanime'
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ steps.request.outputs.repository }}
+          ref: ${{ steps.request.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        if: steps.request.outputs.project == 'goanime'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve root dependencies
+        if: steps.request.outputs.project == 'goanime'
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+
+      - name: Run manga availability focused tests
+        if: steps.request.outputs.project == 'goanime'
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=()
+          for candidate in \
+            test/services/manga/manga_source_registry_test.dart \
+            test/services/manga/providers/provider_contract_harness_test.dart \
+            test/architecture/manga_ptbr_source_scope_test.dart \
+            test/services/manga/manga_request_scheduler_test.dart \
+            test/services/manga/manga_http_client_test.dart \
+            test/services/manga/manga_search_coordinator_test.dart \
+            test/services/manga/manga_chapter_merge_service_test.dart \
+            test/services/manga/manga_readability_verifier_test.dart \
+            test/services/manga/manga_availability_database_service_test.dart \
+            test/services/manga/manga_availability_service_test.dart; do
+            if [[ -f "$candidate" ]]; then
+              tests+=("$candidate")
+            fi
+          done
+          test "${#tests[@]}" -gt 0
+          flutter test --no-pub "${tests[@]}"
+
+      - name: Check manga availability formatting
+        id: availability_format
+        if: steps.request.outputs.project == 'goanime'
+        continue-on-error: true
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          paths=()
+          for candidate in \
+            test/helpers/fake_manga_source_provider.dart \
+            test/helpers/manga_provider_contract_harness.dart \
+            test/architecture/manga_ptbr_source_scope_test.dart; do
+            if [[ -f "$candidate" ]]; then
+              paths+=("$candidate")
+            fi
+          done
+          if [[ -d lib/services/manga ]]; then
+            paths+=(lib/services/manga)
+          fi
+          if [[ -d test/services/manga ]]; then
+            paths+=(test/services/manga)
+          fi
+          test "${#paths[@]}" -gt 0
+          dart format --output=none --set-exit-if-changed "${paths[@]}"
+
+      - name: Report manga availability formatting drift safely
+        if: steps.request.outputs.project == 'goanime' && steps.availability_format.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "Manga availability formatting drift detected."
+          echo "Private source diff is intentionally omitted from this public runner log."
+
+      - name: Fail on manga availability formatting drift
+        if: steps.request.outputs.project == 'goanime' && steps.availability_format.outcome == 'failure'
+        run: exit 1
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
