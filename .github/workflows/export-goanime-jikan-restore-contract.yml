@@ -1,0 +1,63 @@
+name: Export GoAnime Jikan restore contract
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/export-goanime-jikan-restore-contract.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Jikan Local
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: feat/self-hosted-metadata-api-2026-07-30
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: target
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Align legacy restore assertions
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('infra/jikan/tests/backup_restore_contract_test.sh')
+          text = path.read_text(encoding='utf-8')
+          cases = [
+              ('restored secret stage creation failure reached Docker', 'restored secret stage creation failure'),
+              ('restored secret stage chmod failure reached Docker', 'restored secret stage chmod failure'),
+              ('staged secret synchronization failure must happen before Docker access', 'staged secret synchronization failure'),
+              ('secret publication synchronization failure must happen before Docker access', 'secret publication synchronization failure'),
+          ]
+          for old_message, context in cases:
+              old = '[[ ! -s "$DOCKER_LOG" ]] || \\\n  fail \'%s\'\n' % old_message
+              new = 'grep -Eq \'^compose version[[:space:]]*$\' "$DOCKER_LOG" || \\\n  fail \'%s skipped Compose preflight\'\n' % context
+              new += 'if grep -Ev \'^compose version[[:space:]]*$\' "$DOCKER_LOG" | grep -q .; then\n'
+              new += '  fail \'%s reached Docker beyond the read-only Compose preflight\'\n' % context
+              new += 'fi\n'
+              if text.count(old) != 1:
+                  raise SystemExit(f'{old_message}: expected one match, got {text.count(old)}')
+              text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+          bash infra/jikan/tests/backup_restore_contract_test.sh
+
+      - name: Upload corrected contract
+        uses: actions/upload-artifact@v4
+        with:
+          name: goanime-jikan-restore-contract
+          path: target/infra/jikan/tests/backup_restore_contract_test.sh
+          if-no-files-found: error
+          retention-days: 1
