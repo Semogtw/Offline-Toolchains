@@ -64,7 +64,9 @@ jobs:
         run: |
           set -euo pipefail
           flutter precache --linux
-          flutter_tester="$(flutter sdk-path)/bin/cache/artifacts/engine/linux-x64/flutter_tester"
+          flutter_bin="$(readlink -f "$(command -v flutter)")"
+          flutter_root="$(cd "$(dirname "$flutter_bin")/.." && pwd)"
+          flutter_tester="$flutter_root/bin/cache/artifacts/engine/linux-x64/flutter_tester"
           test -x "$flutter_tester"
           "$flutter_tester" --help >/dev/null
 
