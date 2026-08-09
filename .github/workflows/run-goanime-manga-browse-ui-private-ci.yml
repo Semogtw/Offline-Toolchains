@@ -1,0 +1,148 @@
+name: Run GoAnime manga browse UI private CI
+
+on:
+  workflow_run:
+    workflows:
+      - Request private project CI
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-browse-ui-private-ci-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  browse-ui:
+    name: GoAnime manga browse UI focused tests
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'build/private-ci' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.actor.login == github.repository_owner &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted request implementation
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: trusted-source
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/private_ci_request.py
+            config/workflow-hub-projects.json
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout connector request revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          path: request-source
+          persist-credentials: false
+          sparse-checkout: triggers/private-ci.json
+          sparse-checkout-cone-mode: false
+
+      - name: Normalize trusted request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          normalized="$(python3 trusted-source/scripts/private_ci_request.py request-source/triggers/private-ci.json)"
+          python3 - "$normalized" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          request = json.loads(sys.argv[1])
+          with open(sys.argv[2], "a", encoding="utf-8") as stream:
+              for key in ("project", "repository", "ref"):
+                  value = request[key]
+                  if "\n" in value or "\r" in value:
+                      raise SystemExit(f"unsafe newline in normalized {key}")
+                  stream.write(f"{key}={value}\n")
+          PY
+
+      - name: Checkout private GoAnime source
+        if: steps.request.outputs.project == 'goanime'
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ steps.request.outputs.repository }}
+          ref: ${{ steps.request.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        if: steps.request.outputs.project == 'goanime'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve root dependencies
+        if: steps.request.outputs.project == 'goanime'
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics >/dev/null
+          flutter pub get >/dev/null
+
+      - name: Test manga readable home
+        if: steps.request.outputs.project == 'goanime'
+        working-directory: private-source
+        run: flutter test --no-pub test/widgets/manga/manga_home_screen_test.dart
+
+      - name: Test manga readable categories
+        if: steps.request.outputs.project == 'goanime'
+        working-directory: private-source
+        run: flutter test --no-pub test/widgets/manga/manga_categories_screen_test.dart
+
+      - name: Test manga canonical library
+        if: steps.request.outputs.project == 'goanime'
+        working-directory: private-source
+        run: flutter test --no-pub test/widgets/manga/manga_library_screen_test.dart
+
+      - name: Check manga browse UI formatting
+        id: format
+        if: steps.request.outputs.project == 'goanime'
+        continue-on-error: true
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format --output=none --set-exit-if-changed \
+            lib/screens/manga \
+            lib/services/manga \
+            lib/widgets/manga \
+            test/widgets/manga >/dev/null 2>&1
+
+      - name: Report browse formatting drift safely
+        if: steps.request.outputs.project == 'goanime' && steps.format.outcome == 'failure'
+        run: |
+          echo "Manga browse UI formatting drift detected."
+          echo "Private source paths and diffs are intentionally omitted."
+
+      - name: Fail on browse formatting drift
+        if: steps.request.outputs.project == 'goanime' && steps.format.outcome == 'failure'
+        run: exit 1
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
