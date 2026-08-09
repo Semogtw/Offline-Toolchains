@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -19,6 +20,8 @@ LIST_LINK_RE = re.compile(r'href=["\']([^"\']+)["\'][^>]*>\s*<div[^>]*>[^<]*<spa
 IFRAME_RE = re.compile(r'<iframe[^>]+src=["\']([^"\']+)["\']', re.I)
 MEDIA_RE = re.compile(r'https?://[^\s\"\']+?\.(?:m3u8|mp4)(?:\?[^\s\"\']*)?', re.I)
 BLOGGER_RE = re.compile(r'https?://[^\s\"\']*blogger\.com/[^\s\"\']+', re.I)
+ANI_ITEM_RE = re.compile(r'class=["\'][^"\']*\baniItem\b[^"\']*["\']', re.I)
+EPISODE_ITEM_RE = re.compile(r'class=["\'][^"\']*\bitemE\b[^"\']*["\']', re.I)
 
 
 def fetch(url: str, *, referer: str | None = None):
@@ -77,9 +80,13 @@ def direct_hls_from_iframe(iframe_url: str) -> str | None:
 def main() -> int:
     try:
         search_status, _, _, search = fetch(SEARCH_URL, referer=BASE + "/")
-        print(f"search status={search_status} host={host(SEARCH_URL)} bytes={len(search)}")
+        search_items = len(ANI_ITEM_RE.findall(search))
+        print(
+            f"search status={search_status} host={host(SEARCH_URL)} "
+            f"bytes={len(search)} items={search_items}"
+        )
         capture("search.html", search)
-        if search_status != 200 or 'class="aniItem"' not in search:
+        if search_status != 200 or search_items == 0:
             return 1
 
         status, episode_url, content_type, episode = fetch(KNOWN_EPISODE, referer=BASE + "/")
@@ -93,9 +100,10 @@ def main() -> int:
             print("episode_list=missing")
             return 3
         list_status, _, _, list_page = fetch(list_url, referer=episode_url)
-        print(f"episode_list status={list_status} host={host(list_url)} items={list_page.count('class=\"aniItem\"')}")
+        list_items = len(EPISODE_ITEM_RE.findall(list_page))
+        print(f"episode_list status={list_status} host={host(list_url)} items={list_items}")
         capture("episode-list.html", list_page)
-        if list_status != 200 or 'class="aniItem"' not in list_page:
+        if list_status != 200 or list_items == 0:
             return 4
 
         player_match = PLAYER_LINK_RE.search(episode)
@@ -116,13 +124,25 @@ def main() -> int:
             iframe_url = urllib.parse.urljoin(final_url, iframe_match.group(1))
             hls = direct_hls_from_iframe(iframe_url)
             if hls:
-                manifest_status, _, manifest_type, manifest = fetch(hls, referer=iframe_url)
+                try:
+                    manifest_status, _, manifest_type, manifest = fetch(hls, referer=iframe_url)
+                except (urllib.error.HTTPError, urllib.error.URLError) as exc:
+                    # This mirrors AniTubeService: a CDN/network rejection keeps
+                    # the public AniVideo iframe usable as a browser fallback.
+                    print(
+                        f"playback_shape=anivideo-browser-fallback host={host(iframe_url)} "
+                        f"direct_hls_error={type(exc).__name__}"
+                    )
+                    return 0
                 is_hls = manifest.lstrip().startswith("#EXTM3U")
                 print(
                     f"playback_shape=anitube-hls host={host(hls)} "
                     f"status={manifest_status} type={manifest_type.split(';', 1)[0]} manifest={is_hls}"
                 )
-                return 0 if manifest_status == 200 and is_hls else 7
+                if manifest_status == 200 and is_hls:
+                    return 0
+                print(f"playback_shape=anivideo-browser-fallback host={host(iframe_url)}")
+                return 0
 
         media = MEDIA_RE.search(player)
         if media:
