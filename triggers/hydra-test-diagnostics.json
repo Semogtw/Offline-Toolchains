@@ -1,4 +1,4 @@
 {
-  "ref": "a598c73fa687435ae20ea821ee23a181461a28b2",
-  "start_after": "src/main/events/misc/renderer-temp-file-store.test.ts"
+  "ref": "72dec8d89d1791cc920de6b12d1eedc9e7c96ac0",
+  "start_after": "src/main/events/emulators/emulation-save-restore-policy.test.ts"
 }
