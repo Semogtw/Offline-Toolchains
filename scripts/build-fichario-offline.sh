@@ -206,6 +206,7 @@ record_gate e2e pnpm --dir "$smoke" test:e2e
 export npm_config_registry="$canonical_npm_registry"
 export NPM_CONFIG_REGISTRY="$canonical_npm_registry"
 record_gate edge-offline "$root/bin/check-edge-offline" "$smoke"
+record_gate database pnpm --dir "$smoke" test:db:local
 record_gate doctor "$root/bin/doctor" "$smoke"
 
 failures="$(validation_failures_csv)"
@@ -227,10 +228,10 @@ lock_sha="$(sha256sum "$root/workspace/pnpm-lock.yaml" | cut -d' ' -f1)"
   echo "lock_sha256=$lock_sha"
   echo "validation_status=$validation_status"
   echo "validation_failures=$failures"
+  echo "database_gate=executed"
   echo "pnpm_store=packaged"
   echo "playwright=chromium_packaged"
   echo "deno_cache=packaged_best_effort"
-  echo "database_gate_note=Supabase CLI is included; local DB tests still require Docker and Supabase container images"
 } > "$root/MANIFEST.txt"
 
 tar -C "$RUNNER_TEMP" -I 'zstd -T0 -8' -cf "$archive" fichario-offline
