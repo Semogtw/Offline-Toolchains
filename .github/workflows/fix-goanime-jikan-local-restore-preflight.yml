@@ -65,18 +65,20 @@ jobs:
 
           contract = Path('infra/jikan/tests/backup_restore_contract_test.sh')
           text = contract.read_text(encoding='utf-8')
-          cases = [
-              ('restored secret stage creation failure', 'restored secret stage creation failure'),
-              ('restored secret stage chmod failure', 'restored secret stage chmod failure'),
+          exact_cases = [
+              ('restored secret stage creation failure reached Docker', 'restored secret stage creation failure'),
+              ('restored secret stage chmod failure reached Docker', 'restored secret stage chmod failure'),
+              ('staged secret synchronization failure must happen before Docker access', 'staged secret synchronization failure'),
+              ('secret publication synchronization failure must happen before Docker access', 'secret publication synchronization failure'),
           ]
-          for old_context, new_context in cases:
-              old = '[[ ! -s "$DOCKER_LOG" ]] || \\\n  fail \'%s reached Docker\'\n' % old_context
-              new = 'grep -Eq \'^compose version[[:space:]]*$\' "$DOCKER_LOG" || \\\n  fail \'%s skipped Compose preflight\'\n' % new_context
+          for old_message, context in exact_cases:
+              old = '[[ ! -s "$DOCKER_LOG" ]] || \\\n  fail \'%s\'\n' % old_message
+              new = 'grep -Eq \'^compose version[[:space:]]*$\' "$DOCKER_LOG" || \\\n  fail \'%s skipped Compose preflight\'\n' % context
               new += 'if grep -Ev \'^compose version[[:space:]]*$\' "$DOCKER_LOG" | grep -q .; then\n'
-              new += '  fail \'%s reached Docker beyond the read-only Compose preflight\'\n' % new_context
+              new += '  fail \'%s reached Docker beyond the read-only Compose preflight\'\n' % context
               new += 'fi\n'
               if text.count(old) != 1:
-                  raise SystemExit('backup_restore_contract_test.sh assertion changed: ' + old_context)
+                  raise SystemExit('backup_restore_contract_test.sh assertion changed: ' + old_message)
               text = text.replace(old, new, 1)
           contract.write_text(text, encoding='utf-8')
           PY
