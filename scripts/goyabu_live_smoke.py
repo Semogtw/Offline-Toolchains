@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""Small live smoke probe for the public Goyabu source.
+
+The probe intentionally prints only stage/status/host information. It never
+persists page bodies, tokens, cookies, or resolved media URLs.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sys
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
+
+BASE = "https://goyabu.io"
+QUERY = "one piece"
+UA = (
+    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36"
+)
+
+NONCE_RE = re.compile(r'"nonce"\s*:\s*"([a-f0-9]+)"', re.I)
+EPISODE_URL_RES = [
+    re.compile(r'"link"\s*:\s*"([^"]+)"', re.I),
+    re.compile(r"link\s*:\s*['\"]([^'\"]+)['\"]", re.I),
+    re.compile(r'href=["\']([^"\']*(?:\?p=|/episode/)[^"\']*)["\']', re.I),
+]
+PLAYERS_DATA_RE = re.compile(r"var\s+playersData\s*=\s*(\[[\s\S]*?\])\s*;", re.I)
+BLOGGER_RE = re.compile(r"https?://[^\s\"']*blogger\.com/[^\s\"']+", re.I)
+MEDIA_RE = re.compile(r"https?://[^\s\"']+?\.(?:m3u8|mp4)(?:\?[^\s\"']*)?", re.I)
+VIDEO_CONFIG_RE = re.compile(r"var\s+VIDEO_CONFIG\s*=\s*(\{[\s\S]*?\});", re.I)
+PLAY_URL_RE = re.compile(r'"play_url"\s*:\s*"([^"]+)"', re.I)
+
+
+@dataclass(frozen=True)
+class Response:
+    status: int
+    url: str
+    body: str
+
+
+def request(url: str, *, method: str = "GET", data: bytes | None = None, referer: str | None = None) -> Response:
+    headers = {
+        "User-Agent": UA,
+        "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.7",
+    }
+    if referer:
+        headers["Referer"] = referer
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        raw = resp.read(6 * 1024 * 1024)
+        return Response(resp.status, resp.geturl(), raw.decode("utf-8", errors="replace"))
+
+
+def safe_host(url: str) -> str:
+    return urllib.parse.urlparse(url).hostname or "unknown"
+
+
+def resolve(base: str, value: str) -> str:
+    return urllib.parse.urljoin(base, value.replace(r"\/", "/"))
+
+
+def first_episode_url(page_url: str, body: str) -> str | None:
+    for pattern in EPISODE_URL_RES:
+        for match in pattern.finditer(body):
+            candidate = resolve(page_url, match.group(1))
+            parsed = urllib.parse.urlparse(candidate)
+            if parsed.scheme in {"http", "https"} and parsed.hostname:
+                return candidate
+    return None
+
+
+def player_candidates(episode_url: str, body: str) -> list[str]:
+    candidates: list[str] = []
+    match = PLAYERS_DATA_RE.search(body)
+    if match:
+        try:
+            data = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            data = []
+        if isinstance(data, list):
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                value = str(item.get("url") or "").strip()
+                if value:
+                    candidates.append(resolve(episode_url, value))
+
+    candidates.extend(resolve(episode_url, m.group(0)) for m in BLOGGER_RE.finditer(body))
+    candidates.extend(resolve(episode_url, m.group(0)) for m in MEDIA_RE.finditer(body))
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate not in seen:
+            seen.add(candidate)
+            deduped.append(candidate)
+    return deduped
+
+
+def blogger_has_media(player_url: str) -> bool:
+    response = request(player_url, referer=BASE + "/")
+    if response.status != 200:
+        return False
+    if MEDIA_RE.search(response.body) or PLAY_URL_RE.search(response.body):
+        return True
+    config = VIDEO_CONFIG_RE.search(response.body)
+    if not config:
+        return False
+    try:
+        payload = json.loads(config.group(1))
+    except json.JSONDecodeError:
+        return False
+    streams = payload.get("streams") if isinstance(payload, dict) else None
+    return isinstance(streams, list) and any(
+        isinstance(stream, dict) and bool(stream.get("play_url")) for stream in streams
+    )
+
+
+def main() -> int:
+    try:
+        home = request(BASE + "/")
+        print(f"home status={home.status} host={safe_host(home.url)}")
+        if home.status != 200:
+            return 2
+
+        nonce_match = NONCE_RE.search(home.body)
+        if not nonce_match:
+            print("nonce=missing")
+            return 3
+        nonce = nonce_match.group(1)
+        print("nonce=present")
+
+        params = urllib.parse.urlencode({"keyword": QUERY, "nonce": nonce})
+        search = request(f"{BASE}/wp-json/animeonline/search/?{params}", referer=BASE + "/")
+        print(f"search status={search.status} host={safe_host(search.url)}")
+        if search.status != 200:
+            return 4
+
+        payload = json.loads(search.body)
+        if not isinstance(payload, dict):
+            print("search_shape=unexpected")
+            return 5
+        result = next((v for v in payload.values() if isinstance(v, dict) and v.get("url")), None)
+        if not result:
+            print("search_result=missing")
+            return 6
+        anime_url = resolve(BASE + "/", str(result["url"]))
+        print(f"anime_result=present host={safe_host(anime_url)}")
+
+        anime = request(anime_url, referer=BASE + "/")
+        print(f"anime status={anime.status} host={safe_host(anime.url)}")
+        if anime.status != 200:
+            return 7
+        episode_url = first_episode_url(anime.url, anime.body)
+        if not episode_url:
+            print("episode=missing")
+            return 8
+        print(f"episode=present host={safe_host(episode_url)}")
+
+        episode = request(episode_url, referer=anime.url)
+        print(f"episode_page status={episode.status} host={safe_host(episode.url)}")
+        if episode.status != 200:
+            return 9
+
+        candidates = player_candidates(episode.url, episode.body)
+        if not candidates:
+            print("player=missing")
+            return 10
+        print(f"player=present count={len(candidates)} hosts={','.join(sorted({safe_host(c) for c in candidates}))}")
+
+        for candidate in candidates:
+            lower = candidate.lower()
+            if ".m3u8" in lower or ".mp4" in lower:
+                print(f"playback_shape=direct host={safe_host(candidate)}")
+                return 0
+            if "blogger.com" in safe_host(candidate):
+                try:
+                    if blogger_has_media(candidate):
+                        print(f"playback_shape=blogger-resolvable host={safe_host(candidate)}")
+                        return 0
+                except Exception as exc:  # noqa: BLE001 - live probe reports only type.
+                    print(f"blogger_probe_error={type(exc).__name__}")
+
+        print("playback_shape=unresolved")
+        return 11
+    except Exception as exc:  # noqa: BLE001 - sanitized CI diagnostic.
+        print(f"probe_error={type(exc).__name__}")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
