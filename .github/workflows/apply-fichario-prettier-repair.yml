@@ -1,0 +1,131 @@
+name: Apply Fichario Prettier repair
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/fichario-prettier-repair/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fichario-prettier-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    name: Fichario exact Prettier repair
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Require repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact Fichario revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/fichario-prettier-repair/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = "fichario"
+          test "$branch" = "main"
+          test "$sha" = "eb1cd91a89dfe5ee4be9fe3237f3a118b16a1ae7"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact Fichario revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/FicharioVirtual
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: fichario-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.16.0
+          cache: pnpm
+          cache-dependency-path: fichario-source/pnpm-lock.yaml
+
+      - name: Install exact dependencies
+        working-directory: fichario-source
+        shell: bash
+        run: pnpm install --frozen-lockfile
+
+      - name: Format, verify exact repair, and push fast-forward only
+        working-directory: fichario-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          remote_url="https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/FicharioVirtual.git"
+          current_remote="$(git ls-remote "$remote_url" refs/heads/main | cut -f1)"
+          test "$current_remote" = "$EXPECTED_SHA"
+
+          pnpm exec prettier --write \
+            docs/CURRENT_STATUS.md \
+            docs/READINESS.md \
+            docs/TESTING.md \
+            supabase/functions/process-ocr/index.ts >/dev/null
+          git diff --check
+
+          expected_files="$(printf '%s\n' \
+            docs/CURRENT_STATUS.md \
+            docs/READINESS.md \
+            docs/TESTING.md \
+            supabase/functions/process-ocr/index.ts | sort)"
+          actual_files="$(git diff --name-only | sort)"
+          test "$actual_files" = "$expected_files"
+
+          test "$(git hash-object docs/CURRENT_STATUS.md)" = "e0643591571d8c96f600978ebc87e543e8aa0cf0"
+          test "$(git hash-object docs/READINESS.md)" = "bbc5f05d9190d4328dd758775506bafa34b91476"
+          test "$(git hash-object docs/TESTING.md)" = "7096c25780bd95b9d480693417a16825bb9fd333"
+          test "$(git hash-object supabase/functions/process-ocr/index.ts)" = "7b1cb7605a439566a632313d1106f7e91ab8faab"
+
+          git add \
+            docs/CURRENT_STATUS.md \
+            docs/READINESS.md \
+            docs/TESTING.md \
+            supabase/functions/process-ocr/index.ts
+          git config user.name "Fichario Toolchains"
+          git config user.email "actions@users.noreply.github.com"
+          git commit -m "style: apply CI Prettier repair" >/dev/null
+
+          latest_remote="$(git ls-remote "$remote_url" refs/heads/main | cut -f1)"
+          test "$latest_remote" = "$EXPECTED_SHA"
+          git push "$remote_url" HEAD:refs/heads/main >/dev/null
+          echo "format_change=pushed"
+
+      - name: Remove target checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/fichario-source" "$GITHUB_WORKSPACE/toolchain-control"
