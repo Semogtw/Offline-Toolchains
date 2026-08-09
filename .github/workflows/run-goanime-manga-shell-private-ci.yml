@@ -86,6 +86,35 @@ jobs:
           submodules: false
           show-progress: false
 
+      - name: Set up Flutter 3.44.1
+        if: steps.request.outputs.project == 'goanime'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve root dependencies
+        if: steps.request.outputs.project == 'goanime'
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+
+      - name: Run manga shell focused tests
+        if: steps.request.outputs.project == 'goanime'
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=(test/services/media_mode_service_test.dart)
+          if [[ -f test/widgets/media_mode_slot_test.dart ]]; then
+            tests+=(test/widgets/media_mode_slot_test.dart)
+          fi
+          flutter test --no-pub "${tests[@]}"
+
       - name: Set up Dart 3.12.1
         if: steps.request.outputs.project == 'goanime'
         uses: dart-lang/setup-dart@v1
@@ -121,35 +150,6 @@ jobs:
       - name: Fail on manga shell formatting drift
         if: steps.request.outputs.project == 'goanime' && steps.shell_format.outcome == 'failure'
         run: exit 1
-
-      - name: Set up Flutter 3.44.1
-        if: steps.request.outputs.project == 'goanime'
-        uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          flutter-version: 3.44.1
-          cache: true
-
-      - name: Resolve root dependencies
-        if: steps.request.outputs.project == 'goanime'
-        working-directory: private-source
-        shell: bash
-        run: |
-          set -euo pipefail
-          flutter config --no-analytics
-          flutter pub get
-
-      - name: Run manga shell focused tests
-        if: steps.request.outputs.project == 'goanime'
-        working-directory: private-source
-        shell: bash
-        run: |
-          set -euo pipefail
-          tests=(test/services/media_mode_service_test.dart)
-          if [[ -f test/widgets/media_mode_slot_test.dart ]]; then
-            tests+=(test/widgets/media_mode_slot_test.dart)
-          fi
-          flutter test --no-pub "${tests[@]}"
 
       - name: Remove private checkout
         if: always()
