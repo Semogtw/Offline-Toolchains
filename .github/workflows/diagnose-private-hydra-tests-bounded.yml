@@ -142,6 +142,9 @@ jobs:
             started=true
           fi
           found_start=false
+          last_green=""
+          printf '%s' "$START_AFTER" > "$RUNNER_TEMP/hydra-last-green-test"
+          : > "$RUNNER_TEMP/hydra-first-failed-test"
           for test_file in "${tests[@]}"; do
             if [[ "$started" != true ]]; then
               if [[ "$test_file" == "$START_AFTER" ]]; then
@@ -151,9 +154,18 @@ jobs:
               continue
             fi
             echo "::group::${test_file}"
+            set +e
             timeout --signal=TERM --kill-after=15s 180s \
               node --import ./scripts/register-ts-node.mjs --test "$test_file"
+            status=$?
+            set -e
             echo "::endgroup::"
+            if [[ $status -ne 0 ]]; then
+              printf '%s' "$test_file" > "$RUNNER_TEMP/hydra-first-failed-test"
+              exit "$status"
+            fi
+            last_green="$test_file"
+            printf '%s' "$last_green" > "$RUNNER_TEMP/hydra-last-green-test"
           done
           if [[ -n "$START_AFTER" && "$found_start" != true ]]; then
             echo "start_after path was not found" >&2
@@ -174,9 +186,17 @@ jobs:
         env:
           RESULT: ${{ job.status }}
         run: |
+          last_green="$(cat "$RUNNER_TEMP/hydra-last-green-test" 2>/dev/null || true)"
+          first_failed="$(cat "$RUNNER_TEMP/hydra-first-failed-test" 2>/dev/null || true)"
           {
             echo "## Hydra bounded test diagnostic"
             echo
             echo "- Result: \`$RESULT\`"
+            if [[ -n "$last_green" ]]; then
+              echo "- Last green test: \`$last_green\`"
+            fi
+            if [[ -n "$first_failed" ]]; then
+              echo "- First failed test: \`$first_failed\`"
+            fi
             echo "- Private source and dependencies were discarded; no artifact or cache was uploaded."
           } >> "$GITHUB_STEP_SUMMARY"
