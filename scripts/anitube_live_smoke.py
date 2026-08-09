@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Probe AniTube.biz episode -> x2episodio -> player shape without leaking URLs."""
+"""Probe AniTube.biz and optionally capture live provider fixtures privately."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import urllib.request
 
 BASE = "https://www.anitube.biz"
 KNOWN_EPISODE = f"{BASE}/589734"
+SEARCH_URL = f"{BASE}/?s=naruto"
 UA = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/126.0 Mobile Safari/537.36"
 PLAYER_LINK_RE = re.compile(r'href=["\']([^"\']*x2episodio[^"\']*)["\']', re.I)
 IFRAME_RE = re.compile(r'<iframe[^>]+src=["\']([^"\']+)["\']', re.I)
@@ -48,14 +49,19 @@ def capture(name: str, body: str) -> None:
 
 def main() -> int:
     try:
+        search_status, _, _, search = fetch(SEARCH_URL, referer=BASE + "/")
+        print(f"search status={search_status} host={host(SEARCH_URL)} bytes={len(search)}")
+        if search_status == 200:
+            capture("search.html", search)
+
         status, episode_url, content_type, episode = fetch(KNOWN_EPISODE, referer=BASE + "/")
         print(f"episode status={status} host={host(episode_url)} type={content_type.split(';', 1)[0]}")
+        capture("episode.html", episode)
         if status != 200:
             return 2
 
         player_match = PLAYER_LINK_RE.search(episode)
         if not player_match:
-            capture("episode.html", episode)
             print("x2episodio=missing")
             return 3
         player_url = urllib.parse.urljoin(episode_url, player_match.group(1).replace("&amp;", "&"))
@@ -63,8 +69,9 @@ def main() -> int:
 
         status, final_url, content_type, player = fetch(player_url, referer=episode_url)
         print(f"player status={status} host={host(final_url)} type={content_type.split(';', 1)[0]} bytes={len(player)}")
+        capture("player-response.html", player)
+        capture("player-final-url.txt", final_url)
         if status != 200:
-            capture("player-response.txt", player)
             return 4
 
         media = MEDIA_RE.search(player)
@@ -79,10 +86,8 @@ def main() -> int:
         if iframe:
             iframe_url = urllib.parse.urljoin(final_url, iframe.group(1))
             print(f"playback_shape=iframe host={host(iframe_url)}")
-            capture("player-response.html", player)
             return 0
 
-        capture("player-response.html", player)
         print("playback_shape=unresolved")
         return 5
     except Exception as exc:
