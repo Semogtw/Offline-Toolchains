@@ -1,0 +1,88 @@
+name: Run GoAnime manga branch-head UI private CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-ui/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-branch-head-ui-private-ci
+  cancel-in-progress: false
+
+jobs:
+  manga-ui:
+    name: GoAnime manga branch-head UI tests
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout private manga branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: feature/manga-platform
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics >/dev/null
+          flutter pub get >/dev/null
+
+      - name: Test local manga browse views
+        working-directory: private-source
+        run: flutter test --no-pub test/widgets/manga/manga_browse_views_test.dart
+
+      - name: Check focused formatting without exposing private paths
+        id: format
+        continue-on-error: true
+        working-directory: private-source
+        shell: bash
+        run: |
+          dart format --output=none --set-exit-if-changed \
+            lib/services/manga/manga_browse_data_source.dart \
+            lib/services/manga/manga_repository_browse_data_source.dart \
+            lib/widgets/manga/manga_browse_item_tile.dart \
+            lib/widgets/manga/manga_browse_home_view.dart \
+            lib/widgets/manga/manga_browse_categories_view.dart \
+            lib/widgets/manga/manga_browse_library_view.dart \
+            test/services/manga/manga_repository_browse_data_source_test.dart \
+            test/widgets/manga/manga_browse_views_test.dart >/dev/null 2>&1
+
+      - name: Report formatting drift safely
+        if: steps.format.outcome == 'failure'
+        run: |
+          echo "Focused manga browse formatting drift detected."
+          echo "Private source paths and diffs are intentionally omitted."
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
