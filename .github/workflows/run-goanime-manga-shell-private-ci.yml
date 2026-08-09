@@ -101,9 +101,14 @@ jobs:
         run: |
           set -euo pipefail
           paths=(test/services/media_mode_service_test.dart)
-          if [[ -f lib/services/media_mode_service.dart ]]; then
-            paths+=(lib/services/media_mode_service.dart)
-          fi
+          for candidate in \
+            lib/services/media_mode_service.dart \
+            test/widgets/media_mode_slot_test.dart \
+            lib/widgets/navigation/media_mode_slot.dart; do
+            if [[ -f "$candidate" ]]; then
+              paths+=("$candidate")
+            fi
+          done
           dart format --output=none --set-exit-if-changed "${paths[@]}"
 
       - name: Report manga shell formatting drift safely
@@ -137,7 +142,14 @@ jobs:
       - name: Run manga shell focused tests
         if: steps.request.outputs.project == 'goanime'
         working-directory: private-source
-        run: flutter test --no-pub test/services/media_mode_service_test.dart
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=(test/services/media_mode_service_test.dart)
+          if [[ -f test/widgets/media_mode_slot_test.dart ]]; then
+            tests+=(test/widgets/media_mode_slot_test.dart)
+          fi
+          flutter test --no-pub "${tests[@]}"
 
       - name: Remove private checkout
         if: always()
