@@ -1,0 +1,109 @@
+name: Run GoAnime manga provider fixtures private CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-provider-fixtures/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-provider-fixtures-private-ci
+  cancel-in-progress: false
+
+jobs:
+  fixtures:
+    name: GoAnime manga provider fixtures
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-provider-fixtures/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Test Astratoons deterministic fixtures safely
+        id: astratoons
+        continue-on-error: true
+        working-directory: private-source
+        run: flutter test --no-pub test/services/manga/providers/astratoons_manga_provider_test.dart >/tmp/astratoons.log 2>&1
+
+      - name: Test readability verifier against provider contract safely
+        id: readability
+        continue-on-error: true
+        working-directory: private-source
+        run: flutter test --no-pub test/services/manga/manga_readability_verifier_test.dart >/tmp/readability.log 2>&1
+
+      - name: Check provider formatting safely
+        id: format
+        continue-on-error: true
+        working-directory: private-source
+        run: dart format --output=none --set-exit-if-changed lib/services/manga/providers/astratoons_manga_provider.dart test/services/manga/providers/astratoons_manga_provider_test.dart >/dev/null 2>&1
+
+      - name: Report provider fixture status safely
+        if: always()
+        env:
+          ASTRATOONS: ${{ steps.astratoons.outcome }}
+          READABILITY: ${{ steps.readability.outcome }}
+          FORMAT: ${{ steps.format.outcome }}
+        run: |
+          echo "astratoons=$ASTRATOONS"
+          echo "readability=$READABILITY"
+          echo "format=$FORMAT"
+
+      - name: Fail on functional provider fixture failure
+        if: steps.astratoons.outcome == 'failure' || steps.readability.outcome == 'failure'
+        run: exit 1
+
+      - name: Remove private checkout and transient logs
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control" /tmp/astratoons.log /tmp/readability.log
