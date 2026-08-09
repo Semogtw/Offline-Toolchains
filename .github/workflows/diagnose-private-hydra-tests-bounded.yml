@@ -45,20 +45,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ref="$(python3 - <<'PY'
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
+          import re
           from pathlib import Path
 
           request = json.loads(Path("request-source/triggers/hydra-test-diagnostics.json").read_text(encoding="utf-8"))
-          if set(request) != {"ref"}:
-              raise SystemExit("diagnostic request must contain only ref")
-          value = request["ref"]
-          if not isinstance(value, str) or len(value) != 40 or any(ch not in "0123456789abcdef" for ch in value):
+          if not set(request).issubset({"ref", "start_after"}) or "ref" not in request:
+              raise SystemExit("diagnostic request may contain only ref and optional start_after")
+          ref = request["ref"]
+          if not isinstance(ref, str) or len(ref) != 40 or any(ch not in "0123456789abcdef" for ch in ref):
               raise SystemExit("diagnostic ref must be an exact lowercase commit SHA")
-          print(value)
+          start_after = request.get("start_after", "")
+          if not isinstance(start_after, str) or (start_after and not re.fullmatch(r"src/[A-Za-z0-9_./-]+\.test\.ts", start_after)):
+              raise SystemExit("start_after must be a repository test path")
+          print(f"ref={ref}")
+          print(f"start_after={start_after}")
           PY
-          )"
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
 
       - name: Checkout private Hydra source
         uses: actions/checkout@v6
@@ -127,17 +130,35 @@ jobs:
       - name: Run each test file with a hard timeout
         working-directory: private-source
         shell: bash
+        env:
+          START_AFTER: ${{ steps.request.outputs.start_after }}
         run: |
           set -euo pipefail
           mapfile -d '' tests < <(find src -type f -name '*.test.ts' -print0 | sort -z)
           test "${#tests[@]}" -gt 0
           echo "Discovered ${#tests[@]} Hydra test files"
+          started=false
+          if [[ -z "$START_AFTER" ]]; then
+            started=true
+          fi
+          found_start=false
           for test_file in "${tests[@]}"; do
+            if [[ "$started" != true ]]; then
+              if [[ "$test_file" == "$START_AFTER" ]]; then
+                found_start=true
+                started=true
+              fi
+              continue
+            fi
             echo "::group::${test_file}"
             timeout --signal=TERM --kill-after=15s 180s \
               node --import ./scripts/register-ts-node.mjs --test "$test_file"
             echo "::endgroup::"
           done
+          if [[ -n "$START_AFTER" && "$found_start" != true ]]; then
+            echo "start_after path was not found" >&2
+            exit 2
+          fi
 
       - name: Remove private checkout and transient native source
         if: always()
