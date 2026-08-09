@@ -1,0 +1,89 @@
+name: Run GoAnime manga branch-head private CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-branch-head-private-ci
+  cancel-in-progress: false
+
+jobs:
+  manga-head:
+    name: GoAnime manga branch-head focused tests
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout private manga branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: feature/manga-platform
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics >/dev/null
+          flutter pub get >/dev/null
+
+      - name: Test repository-backed browse source
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f test/services/manga/manga_repository_browse_data_source_test.dart
+          flutter test --no-pub test/services/manga/manga_repository_browse_data_source_test.dart
+
+      - name: Test availability runtime stack when present
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=()
+          for candidate in \
+            test/services/manga/manga_request_scheduler_test.dart \
+            test/services/manga/manga_http_client_test.dart \
+            test/services/manga/manga_readability_verifier_test.dart \
+            test/services/manga/manga_search_coordinator_test.dart \
+            test/services/manga/manga_chapter_merge_service_test.dart \
+            test/services/manga/manga_runtime_availability_source_test.dart; do
+            [[ -f "$candidate" ]] && tests+=("$candidate")
+          done
+          if [[ "${#tests[@]}" -gt 0 ]]; then
+            flutter test --no-pub "${tests[@]}"
+          fi
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
