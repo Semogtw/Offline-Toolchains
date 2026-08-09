@@ -162,11 +162,25 @@ jobs:
           version: 2.111.0
 
       - name: Run complete verification
+        id: verification
+        continue-on-error: true
         working-directory: public-source
-        run: pnpm verify:full
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm verify:full 2>&1 | tee /tmp/fichario-verify-full.log
+
+      - name: Upload verification failure log
+        if: steps.verification.outcome == 'failure'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fichario-verification-failure-${{ steps.source.outputs.sha }}
+          path: /tmp/fichario-verify-full.log
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Print formatting patch after failure
-        if: failure()
+        if: steps.verification.outcome == 'failure'
         working-directory: public-source
         shell: bash
         run: |
@@ -179,6 +193,10 @@ jobs:
             git diff --no-ext-diff --no-color -- .
             echo "::endgroup::"
           fi
+
+      - name: Reject verification failure
+        if: steps.verification.outcome == 'failure'
+        run: exit 1
 
       - name: Remove public checkout
         if: always()
@@ -199,5 +217,5 @@ jobs:
             echo "- Requested ref: \`$REQUESTED_REF\`"
             echo "- Resolved commit: \`${RESOLVED_SHA:-unresolved}\`"
             echo "- Result: \`$RESULT\`"
-            echo "- Build outputs were verified and discarded; no private artifact was uploaded."
+            echo "- Build outputs were verified and discarded; failure logs are retained for one day only."
           } >> "$GITHUB_STEP_SUMMARY"
