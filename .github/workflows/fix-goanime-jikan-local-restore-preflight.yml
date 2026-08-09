@@ -19,7 +19,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      TARGET_REPO: Semogtw/goanime-mobile
       TARGET_BRANCH: feat/self-hosted-metadata-api-2026-07-30
     steps:
       - name: Require private repository token
@@ -54,16 +53,8 @@ jobs:
           restore = Path('infra/jikan/scripts/restore.sh')
           text = restore.read_text(encoding='utf-8')
           marker = "require_command docker\n\n"
-          probe = """if ! docker compose version >/dev/null 2>&1; then
-            printf 'Could not verify Docker Compose availability before restore.\\n' >&2
-            exit 74
-          fi
-          """
-          old_probe = """if ! docker compose version >/dev/null; then
-            printf 'Could not verify Docker Compose availability before restore.\\n' >&2
-            exit 74
-          fi
-          """
+          probe = "if ! docker compose version >/dev/null 2>&1; then\n  printf 'Could not verify Docker Compose availability before restore.\\n' >&2\n  exit 74\nfi\n"
+          old_probe = "if ! docker compose version >/dev/null; then\n  printf 'Could not verify Docker Compose availability before restore.\\n' >&2\n  exit 74\nfi\n"
           if text.count(marker) != 1:
               raise SystemExit('restore.sh require_command docker marker changed')
           if text.count(old_probe) != 1:
@@ -74,27 +65,18 @@ jobs:
 
           contract = Path('infra/jikan/tests/backup_restore_contract_test.sh')
           text = contract.read_text(encoding='utf-8')
-          replacements = {
-              """[[ ! -s \"$DOCKER_LOG\" ]] || \\
-  fail 'restored secret stage creation failure reached Docker'
-""": """grep -Eq '^compose version[[:space:]]*$' \"$DOCKER_LOG\" || \\
-  fail 'restored secret stage creation failure skipped Compose preflight'
-if grep -Ev '^compose version[[:space:]]*$' \"$DOCKER_LOG\" | grep -q .; then
-  fail 'restored secret stage creation failure reached Docker beyond the read-only Compose preflight'
-fi
-""",
-              """[[ ! -s \"$DOCKER_LOG\" ]] || \\
-  fail 'restored secret stage chmod failure reached Docker'
-""": """grep -Eq '^compose version[[:space:]]*$' \"$DOCKER_LOG\" || \\
-  fail 'restored secret stage chmod failure skipped Compose preflight'
-if grep -Ev '^compose version[[:space:]]*$' \"$DOCKER_LOG\" | grep -q .; then
-  fail 'restored secret stage chmod failure reached Docker beyond the read-only Compose preflight'
-fi
-""",
-          }
-          for old, new in replacements.items():
+          cases = [
+              ('restored secret stage creation failure', 'restored secret stage creation failure'),
+              ('restored secret stage chmod failure', 'restored secret stage chmod failure'),
+          ]
+          for old_context, new_context in cases:
+              old = '[[ ! -s "$DOCKER_LOG" ]] || \\\n  fail \'%s reached Docker\'\n' % old_context
+              new = 'grep -Eq \'^compose version[[:space:]]*$\' "$DOCKER_LOG" || \\\n  fail \'%s skipped Compose preflight\'\n' % new_context
+              new += 'if grep -Ev \'^compose version[[:space:]]*$\' "$DOCKER_LOG" | grep -q .; then\n'
+              new += '  fail \'%s reached Docker beyond the read-only Compose preflight\'\n' % new_context
+              new += 'fi\n'
               if text.count(old) != 1:
-                  raise SystemExit('backup_restore_contract_test.sh secret-stage Docker assertion changed')
+                  raise SystemExit('backup_restore_contract_test.sh assertion changed: ' + old_context)
               text = text.replace(old, new, 1)
           contract.write_text(text, encoding='utf-8')
           PY
