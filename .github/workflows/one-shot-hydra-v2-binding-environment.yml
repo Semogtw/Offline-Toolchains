@@ -1,0 +1,79 @@
+name: One-shot Hydra V2 binding environment reconciliation
+
+on:
+  push:
+    paths:
+      - "triggers/one-shot-hydra-v2-binding-environment.json"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Hydra V2 branch
+        uses: actions/checkout@v4
+        with:
+          repository: Semogtw/HydraPersonalizado
+          ref: feat/drive-cloud-saves-v2
+          token: ${{ secrets.TOOLCHAIN_GH_TOKEN }}
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Reconcile bindings against current environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/main/services/cloud-save/google-drive/google-drive-v2-overview.ts")
+          text = path.read_text()
+          old = '''  return {\n    gameKey,\n    shop,\n    objectId,\n    available: connected,\n    gameRunning,\n    environmentId:\n      localManifest?.environment.environmentId ??\n      anchor?.manifest.environment.environmentId ??\n      null,\n'''
+          new = '''  const currentEnvironmentId =\n    localManifest?.environment.environmentId ??\n    anchor?.manifest.environment.environmentId ??\n    null;\n  const presentedBindings = bindings.map((binding) => ({\n    id: binding.id,\n    rawPath: binding.rawPath,\n    displayPath: maskLocalPath(binding.localPath),\n    state:\n      localManifest &&\n      binding.environmentId !== localManifest.environment.environmentId\n        ? ("unresolved" as const)\n        : binding.state,\n    updatedAt: binding.updatedAt,\n  }));\n\n  return {\n    gameKey,\n    shop,\n    objectId,\n    available: connected,\n    gameRunning,\n    environmentId: currentEnvironmentId,\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f"expected overview environment block exactly once, found {text.count(old)}")
+          text = text.replace(old, new, 1)
+
+          old_paths = '''    customPaths: bindings.map((binding) => ({\n      id: binding.id,\n      rawPath: binding.rawPath,\n      displayPath: maskLocalPath(binding.localPath),\n      state: binding.state,\n      updatedAt: binding.updatedAt,\n    })),\n    unresolvedCustomPathCount: bindings.filter(\n      (binding) => binding.state !== "ready"\n    ).length,\n'''
+          new_paths = '''    customPaths: presentedBindings,\n    unresolvedCustomPathCount: presentedBindings.filter(\n      (binding) => binding.state !== "ready"\n    ).length,\n'''
+          if text.count(old_paths) != 1:
+              raise SystemExit(f"expected overview binding block exactly once, found {text.count(old_paths)}")
+          path.write_text(text.replace(old_paths, new_paths, 1))
+          PY
+
+      - name: Commit and push Hydra fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git config user.name "toolchains-bot"
+          git config user.email "toolchains-bot@users.noreply.github.com"
+          git add src/main/services/cloud-save/google-drive/google-drive-v2-overview.ts
+          git commit -m "fix(cloud-save): reconcile V2 bindings after environment changes"
+          git push origin HEAD:feat/drive-cloud-saves-v2
+
+      - name: Remove one-shot files
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TOOLCHAINS_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in ".github/workflows/one-shot-hydra-v2-binding-environment.yml" "triggers/one-shot-hydra-v2-binding-environment.json"; do
+            encoded="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$file")"
+            metadata="$(curl --fail-with-body --silent --show-error \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${TOOLCHAINS_REPO}/contents/${encoded}?ref=main")" || continue
+            sha="$(printf '%s' "$metadata" | jq -er '.sha')"
+            body="$(jq -cn --arg message "ci: remove completed V2 binding environment patch" --arg sha "$sha" '{message:$message,sha:$sha,branch:"main"}')"
+            curl --fail-with-body --silent --show-error -X DELETE \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${TOOLCHAINS_REPO}/contents/${encoded}" \
+              -d "$body" >/dev/null || true
+          done
