@@ -1,0 +1,176 @@
+{
+  "project": "hydra",
+  "ref": "feat/drive-cloud-saves-v2",
+  "request_id": "drive-v2-definitive",
+  "run_id": 31336443387,
+  "conclusion": "cancelled",
+  "run_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/31336443387",
+  "created_at": "2026-08-09T21:17:21Z",
+  "updated_at": "2026-08-09T21:19:02Z",
+  "jobs": [
+    {
+      "id": 93303006174,
+      "name": "Checkout, install and run repository gates",
+      "status": "completed",
+      "conclusion": "cancelled",
+      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/31336443387/job/93303006174",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1
+        },
+        {
+          "name": "Checkout trusted validation workflow",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2
+        },
+        {
+          "name": "Resolve Hydra ref",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3
+        },
+        {
+          "name": "Require private repository token",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4
+        },
+        {
+          "name": "Checkout fixed Hydra repository",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5
+        },
+        {
+          "name": "Set up pinned Node.js",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6
+        },
+        {
+          "name": "Install native build prerequisites",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7
+        },
+        {
+          "name": "Install pinned GTK4 Layer Shell",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8
+        },
+        {
+          "name": "Set up Rust",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9
+        },
+        {
+          "name": "Install exact dependencies without persistent Actions cache",
+          "status": "completed",
+          "conclusion": "cancelled",
+          "number": 10
+        },
+        {
+          "name": "Typecheck Node",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 11
+        },
+        {
+          "name": "Typecheck renderer",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 12
+        },
+        {
+          "name": "Run tests",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13
+        },
+        {
+          "name": "Check formatting",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 14
+        },
+        {
+          "name": "Run ESLint without modifying the checkout",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 15
+        },
+        {
+          "name": "Build application",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 16
+        },
+        {
+          "name": "Remove private checkout and transient build source",
+          "status": "completed",
+          "conclusion": "failure",
+          "number": 17
+        },
+        {
+          "name": "Post Set up pinned Node.js",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 32
+        },
+        {
+          "name": "Post Checkout fixed Hydra repository",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 33
+        },
+        {
+          "name": "Post Checkout trusted validation workflow",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 34
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 35
+        }
+      ]
+    }
+  ],
+  "annotations": [
+    {
+      "path": ".github",
+      "start_line": 1,
+      "end_line": 1,
+      "annotation_level": "failure",
+      "message": "Canceling since a higher priority waiting request for validate-hydra-refs/heads/main exists",
+      "title": "",
+      "raw_details": ""
+    },
+    {
+      "path": ".github",
+      "start_line": 14,
+      "end_line": 14,
+      "annotation_level": "failure",
+      "message": "Process completed with exit code 1.",
+      "title": "",
+      "raw_details": ""
+    },
+    {
+      "path": ".github",
+      "start_line": 32,
+      "end_line": 32,
+      "annotation_level": "failure",
+      "message": "The operation was canceled.",
+      "title": "",
+      "raw_details": ""
+    }
+  ]
+}
