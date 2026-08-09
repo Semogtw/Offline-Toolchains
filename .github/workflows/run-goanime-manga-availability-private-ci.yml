@@ -179,14 +179,14 @@ jobs:
           [[ -d lib/services/manga ]] && paths+=(lib/services/manga)
           [[ -d test/services/manga ]] && paths+=(test/services/manga)
           test "${#paths[@]}" -gt 0
-          dart format --output=none --set-exit-if-changed "${paths[@]}"
+          dart format --output=none --set-exit-if-changed "${paths[@]}" >/dev/null 2>&1
 
       - name: Report manga availability formatting drift safely
         if: steps.request.outputs.project == 'goanime' && steps.availability_format.outcome == 'failure'
         shell: bash
         run: |
           echo "Manga availability formatting drift detected."
-          echo "Private source diff is intentionally omitted from this public runner log."
+          echo "Private source diff and paths are intentionally omitted from this public runner log."
 
       - name: Fail on manga availability formatting drift
         if: steps.request.outputs.project == 'goanime' && steps.availability_format.outcome == 'failure'
