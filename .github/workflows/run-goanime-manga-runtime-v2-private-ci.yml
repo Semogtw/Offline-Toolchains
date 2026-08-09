@@ -91,17 +91,23 @@ jobs:
           run_gate builder flutter test --no-pub test/tools/manga/manga_availability_v2_builder_test.dart
           run_gate bundled flutter test --no-pub test/services/manga/manga_bundled_catalog_source_test.dart
           run_gate adapter flutter test --no-pub test/services/manga/manga_availability_database_service_test.dart
-          run_gate overlay flutter test --no-pub test/services/manga/manga_availability_service_test.dart
+          run_gate persistence flutter test --no-pub test/services/manga/manga_search_catalog_persistence_test.dart
+          run_gate runtime_overlay flutter test --no-pub test/services/manga/manga_runtime_availability_source_test.dart
+          run_gate merge_overlay flutter test --no-pub test/services/manga/manga_availability_service_test.dart
 
           if dart format --output=none --set-exit-if-changed \
             lib/services/manga/manga_availability_database_service.dart \
             lib/services/manga/manga_availability_service.dart \
             lib/services/manga/manga_bundled_catalog_source.dart \
             lib/services/manga/manga_browse_data_source.dart \
+            lib/services/manga/manga_runtime_availability_source.dart \
+            lib/services/manga/manga_search_catalog_persistence.dart \
             tools/manga/manga_availability_v2_builder.dart \
             test/tools/manga/manga_availability_v2_builder_test.dart \
             test/services/manga/manga_bundled_catalog_source_test.dart \
             test/services/manga/manga_availability_database_service_test.dart \
+            test/services/manga/manga_search_catalog_persistence_test.dart \
+            test/services/manga/manga_runtime_availability_source_test.dart \
             test/services/manga/manga_availability_service_test.dart >/dev/null 2>&1; then
             echo "format=success"
           else
