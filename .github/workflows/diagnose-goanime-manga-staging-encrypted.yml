@@ -1,0 +1,194 @@
+name: Diagnose GoAnime manga staging encrypted
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-staging-diagnostic/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-staging-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    name: GoAnime manga staging encrypted diagnostic
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision once
+        id: request
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-staging-diagnostic/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch requested < "toolchain-control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          if [[ "$requested" == "latest" ]]; then
+            remote="https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git"
+            resolved="$(git ls-remote "$remote" refs/heads/feature/manga-platform | cut -f1)"
+          else
+            resolved="$requested"
+          fi
+          [[ "$resolved" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$resolved" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout resolved private revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies privately
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Capture staging diagnostics and formatted files
+        id: encrypt
+        working-directory: private-source
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/goanime-manga-staging-diagnostic"
+          plain="$root/plain"
+          formatted="$plain/formatted"
+          transfer="$root/transfer"
+          archive="$root/staging-diagnostic.tar.zst"
+          gpg_home="$root/gpg"
+          rm -rf "$root"
+          mkdir -p "$plain" "$formatted" "$transfer" "$gpg_home"
+          chmod 700 "$gpg_home"
+
+          set +e
+          run_test() {
+            local label="$1"
+            local path="$2"
+            flutter test --no-pub "$path" >"$plain/${label}.log" 2>&1
+            printf '%s=%s\n' "$label" "$?" >> "$plain/STATUS.txt"
+          }
+          run_test http test/services/manga/manga_http_client_test.dart
+          run_test astratoons test/services/manga/providers/astratoons_manga_provider_test.dart
+          run_test hqnow test/services/manga/providers/hqnow_manga_provider_test.dart
+          run_test capitoons test/services/manga/providers/capitoons_manga_provider_test.dart
+          run_test mangaonline test/services/manga/providers/mangaonline_manga_provider_test.dart
+          run_test ninjascan test/services/manga/providers/ninja_scan_manga_provider_test.dart
+          run_test readability test/services/manga/manga_readability_verifier_test.dart
+          run_test live_evidence test/tools/manga/manga_live_provider_evidence_test.dart
+          run_test evidence_writer test/tools/manga/manga_live_provider_evidence_writer_test.dart
+          run_test evidence_batch test/tools/manga/manga_live_provider_evidence_batch_test.dart
+          run_test evidence_clusterer test/tools/manga/manga_live_evidence_clusterer_test.dart
+          run_test canonical_draft test/tools/manga/manga_canonical_work_draft_test.dart
+          run_test canonical_id_ledger test/tools/manga/manga_canonical_id_ledger_test.dart
+          run_test production_policy test/tools/manga/manga_production_catalog_policy_test.dart
+          run_test planned_accounting test/architecture/manga_planned_provider_definitions_test.dart
+
+          dart format \
+            lib/services/manga/manga_http_client.dart \
+            lib/services/manga/providers \
+            test/services/manga/manga_http_client_test.dart \
+            test/services/manga/providers \
+            tools/manga/manga_live_provider_audit.dart \
+            tools/manga/manga_live_provider_evidence.dart \
+            tools/manga/manga_live_provider_evidence_writer.dart \
+            tools/manga/manga_live_provider_evidence_batch.dart \
+            tools/manga/manga_live_evidence_clusterer.dart \
+            tools/manga/manga_canonical_work_draft.dart \
+            tools/manga/manga_canonical_id_ledger.dart \
+            tools/manga/collect_planned_manga_live_evidence.dart \
+            test/tools/manga/manga_live_provider_evidence_test.dart \
+            test/tools/manga/manga_live_provider_evidence_writer_test.dart \
+            test/tools/manga/manga_live_provider_evidence_batch_test.dart \
+            test/tools/manga/manga_live_evidence_clusterer_test.dart \
+            test/tools/manga/manga_canonical_work_draft_test.dart \
+            test/tools/manga/manga_canonical_id_ledger_test.dart \
+            test/tools/manga/manga_production_catalog_policy_test.dart \
+            test/architecture/manga_planned_provider_definitions_test.dart >"$plain/format.log" 2>&1
+          format_status=$?
+          printf 'format=%s\n' "$format_status" >> "$plain/STATUS.txt"
+          git diff -- \
+            lib/services/manga/manga_http_client.dart \
+            lib/services/manga/providers \
+            test/services/manga/manga_http_client_test.dart \
+            test/services/manga/providers \
+            tools/manga \
+            test/tools/manga \
+            test/architecture/manga_planned_provider_definitions_test.dart >"$plain/format.patch"
+          set -e
+
+          while IFS= read -r path; do
+            test -n "$path"
+            mkdir -p "$formatted/$(dirname "$path")"
+            cp "$path" "$formatted/$path"
+          done < <(git diff --name-only -- \
+            lib/services/manga/manga_http_client.dart \
+            lib/services/manga/providers \
+            test/services/manga/manga_http_client_test.dart \
+            test/services/manga/providers \
+            tools/manga \
+            test/tools/manga \
+            test/architecture/manga_planned_provider_definitions_test.dart)
+
+          tar -C "$plain" -I 'zstd -T0 -6' -cf "$archive" .
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import "$GITHUB_WORKSPACE/toolchain-control/keys/source-bundles-public.asc" >/dev/null 2>&1
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" \
+            --output "$transfer/staging-diagnostic.gpg" --encrypt "$archive"
+          sha256sum "$transfer/staging-diagnostic.gpg" > "$transfer/SHA256SUMS"
+
+          rm -rf "$plain" "$archive" "$gpg_home" "$GITHUB_WORKSPACE/private-source"
+          echo "transfer=$transfer" >> "$GITHUB_OUTPUT"
+          echo "encrypted_staging_diagnostic=success"
+
+      - name: Upload ciphertext only
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-manga-staging-diagnostic-encrypted
+          path: ${{ steps.encrypt.outputs.transfer }}
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Remove private checkout and transient data
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control" "$RUNNER_TEMP/goanime-manga-staging-diagnostic"
