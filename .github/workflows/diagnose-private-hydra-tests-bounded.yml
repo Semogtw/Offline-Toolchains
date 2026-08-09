@@ -1,0 +1,161 @@
+name: Diagnose private Hydra tests bounded
+
+on:
+  push:
+    branches:
+      - build/hydra-test-diagnostics
+    paths:
+      - triggers/hydra-test-diagnostics.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hydra-private-test-diagnostics
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    name: Hydra bounded per-file tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      NODE_VERSION: "22.23.1"
+      GTK4_LAYER_SHELL_COMMIT: "1c963c51514581c41b9bdae08cdf69171265cdda"
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout diagnostic request only
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: request-source
+          persist-credentials: false
+          sparse-checkout: triggers/hydra-test-diagnostics.json
+          sparse-checkout-cone-mode: false
+          show-progress: false
+
+      - name: Validate fixed Hydra request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref="$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          request = json.loads(Path("request-source/triggers/hydra-test-diagnostics.json").read_text(encoding="utf-8"))
+          if set(request) != {"ref"}:
+              raise SystemExit("diagnostic request must contain only ref")
+          value = request["ref"]
+          if not isinstance(value, str) or len(value) != 40 or any(ch not in "0123456789abcdef" for ch in value):
+              raise SystemExit("diagnostic ref must be an exact lowercase commit SHA")
+          print(value)
+          PY
+          )"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout private Hydra source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/HydraPersonalizado
+          ref: ${{ steps.request.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up pinned Node.js without persistent dependency cache
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          check-latest: false
+
+      - name: Install pinned Yarn Classic
+        shell: bash
+        run: npm install --global yarn@1.22.22
+
+      - name: Install native build prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential ca-certificates git libgtk-4-dev meson ninja-build \
+            pkg-config python3 wayland-protocols
+
+      - name: Install pinned GTK4 Layer Shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_dir="$RUNNER_TEMP/gtk4-layer-shell"
+          git init "$source_dir"
+          git -C "$source_dir" remote add origin https://github.com/wmww/gtk4-layer-shell.git
+          git -C "$source_dir" fetch --depth=1 origin "$GTK4_LAYER_SHELL_COMMIT"
+          git -C "$source_dir" checkout --detach FETCH_HEAD
+          test "$(git -C "$source_dir" rev-parse HEAD)" = "$GTK4_LAYER_SHELL_COMMIT"
+          meson setup "$source_dir/build" "$source_dir" \
+            --prefix=/usr/local --libdir=lib \
+            -Dexamples=false -Ddocs=false -Dtests=false -Dsmoke-tests=false \
+            -Dintrospection=false -Dvapi=false
+          meson compile -C "$source_dir/build"
+          sudo meson install -C "$source_dir/build"
+          sudo ldconfig
+          pkg-config --modversion gtk4-layer-shell-0
+
+      - name: Set up Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Install exact dependencies
+        working-directory: private-source
+        env:
+          CI: "true"
+        run: yarn install --frozen-lockfile --non-interactive
+
+      - name: Run each test file with a hard timeout
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' tests < <(find src -type f -name '*.test.ts' -print0 | sort -z)
+          test "${#tests[@]}" -gt 0
+          echo "Discovered ${#tests[@]} Hydra test files"
+          for test_file in "${tests[@]}"; do
+            echo "::group::${test_file}"
+            timeout --signal=TERM --kill-after=15s 180s \
+              node --import ./scripts/register-ts-node.mjs --test "$test_file"
+            echo "::endgroup::"
+          done
+
+      - name: Remove private checkout and transient native source
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source"
+          rm -rf "$GITHUB_WORKSPACE/request-source"
+          rm -rf "$RUNNER_TEMP/gtk4-layer-shell"
+
+      - name: Summarize sanitized result
+        if: always()
+        shell: bash
+        env:
+          RESULT: ${{ job.status }}
+        run: |
+          {
+            echo "## Hydra bounded test diagnostic"
+            echo
+            echo "- Result: \`$RESULT\`"
+            echo "- Private source and dependencies were discarded; no artifact or cache was uploaded."
+          } >> "$GITHUB_STEP_SUMMARY"
