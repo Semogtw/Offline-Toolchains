@@ -1,0 +1,101 @@
+name: Run GoAnime manga providers live private CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-providers-live/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-providers-live-private-ci
+  cancel-in-progress: false
+
+jobs:
+  live:
+    name: GoAnime manga providers live audit
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-providers-live/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Audit Astratoons live readability safely
+        id: astratoons
+        continue-on-error: true
+        working-directory: private-source
+        run: dart run tools/manga/audit_astratoons_live.dart >/tmp/astratoons-live.log 2>&1
+
+      - name: Audit HQ Now live readability safely
+        id: hqnow
+        continue-on-error: true
+        working-directory: private-source
+        run: dart run tools/manga/audit_hqnow_live.dart >/tmp/hqnow-live.log 2>&1
+
+      - name: Report live audit status safely
+        if: always()
+        env:
+          ASTRATOONS: ${{ steps.astratoons.outcome }}
+          HQNOW: ${{ steps.hqnow.outcome }}
+        run: |
+          echo "astratoons_live=$ASTRATOONS"
+          echo "hqnow_live=$HQNOW"
+
+      - name: Fail if a live provider audit failed
+        if: ${{ steps.astratoons.outcome == 'failure' || steps.hqnow.outcome == 'failure' }}
+        run: exit 1
+
+      - name: Remove private checkout and live output
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control" /tmp/astratoons-live.log /tmp/hqnow-live.log
