@@ -1,0 +1,1 @@
+Re-run AnimesOnline public smoke with HTTP status reporting so unavailable, protected, and parser-drift cases can be distinguished safely.
