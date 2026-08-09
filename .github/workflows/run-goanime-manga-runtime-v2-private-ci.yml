@@ -90,6 +90,7 @@ jobs:
 
           run_gate builder flutter test --no-pub test/tools/manga/manga_availability_v2_builder_test.dart
           run_gate bundled flutter test --no-pub test/services/manga/manga_bundled_catalog_source_test.dart
+          run_gate bundled_metadata flutter test --no-pub test/services/manga/manga_bundled_metadata_resolver_test.dart
           run_gate adapter flutter test --no-pub test/services/manga/manga_availability_database_service_test.dart
           run_gate persistence flutter test --no-pub test/services/manga/manga_search_catalog_persistence_test.dart
           run_gate runtime_overlay flutter test --no-pub test/services/manga/manga_runtime_availability_source_test.dart
@@ -111,6 +112,7 @@ jobs:
             tools/manga/manga_availability_v2_builder.dart \
             test/tools/manga/manga_availability_v2_builder_test.dart \
             test/services/manga/manga_bundled_catalog_source_test.dart \
+            test/services/manga/manga_bundled_metadata_resolver_test.dart \
             test/services/manga/manga_availability_database_service_test.dart \
             test/services/manga/manga_search_catalog_persistence_test.dart \
             test/services/manga/manga_runtime_availability_source_test.dart \
