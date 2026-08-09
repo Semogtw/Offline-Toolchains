@@ -1,0 +1,155 @@
+name: Format GoAnime manga private source
+
+on:
+  workflow_run:
+    workflows:
+      - Request private project CI
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-private-format
+  cancel-in-progress: false
+
+jobs:
+  format:
+    name: Format GoAnime manga source privately
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'build/private-ci' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.actor.login == github.repository_owner &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted request implementation
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: trusted-source
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/private_ci_request.py
+            config/workflow-hub-projects.json
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout connector request revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          path: request-source
+          persist-credentials: false
+          sparse-checkout: triggers/private-ci.json
+          sparse-checkout-cone-mode: false
+
+      - name: Normalize trusted request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          normalized="$(python3 trusted-source/scripts/private_ci_request.py request-source/triggers/private-ci.json)"
+          python3 - "$normalized" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          request = json.loads(sys.argv[1])
+          with open(sys.argv[2], "a", encoding="utf-8") as stream:
+              for key in ("project", "repository", "ref"):
+                  value = request[key]
+                  if "\n" in value or "\r" in value:
+                      raise SystemExit(f"unsafe newline in normalized {key}")
+                  stream.write(f"{key}={value}\n")
+          PY
+
+      - name: Checkout current manga branch
+        if: steps.request.outputs.project == 'goanime'
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ steps.request.outputs.repository }}
+          ref: feature/manga-platform
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Require requested ref to still be branch head
+        if: steps.request.outputs.project == 'goanime'
+        id: freshness
+        working-directory: private-source
+        shell: bash
+        env:
+          REQUESTED_REF: ${{ steps.request.outputs.ref }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          if [[ "$actual" != "$REQUESTED_REF" ]]; then
+            echo "fresh=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "fresh=true" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Flutter 3.44.1
+        if: steps.request.outputs.project == 'goanime' && steps.freshness.outputs.fresh == 'true'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Format focused manga source privately
+        if: steps.request.outputs.project == 'goanime' && steps.freshness.outputs.fresh == 'true'
+        id: format
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          paths=()
+          [[ -d lib/services/manga ]] && paths+=(lib/services/manga)
+          [[ -d test/services/manga ]] && paths+=(test/services/manga)
+          [[ -f test/integration/manga_source_routing_test.dart ]] && paths+=(test/integration/manga_source_routing_test.dart)
+          [[ -f test/tools/manga_availability_builder_test.dart ]] && paths+=(test/tools/manga_availability_builder_test.dart)
+          [[ -d tools/manga ]] && paths+=(tools/manga)
+          test "${#paths[@]}" -gt 0
+          dart format "${paths[@]}" >/dev/null 2>&1
+          if git diff --quiet --exit-code; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and push formatter result privately
+        if: >-
+          steps.request.outputs.project == 'goanime' &&
+          steps.freshness.outputs.fresh == 'true' &&
+          steps.format.outputs.changed == 'true'
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]" >/dev/null
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com" >/dev/null
+          git add -- lib/services/manga test/services/manga tools/manga >/dev/null 2>&1 || true
+          [[ -f test/integration/manga_source_routing_test.dart ]] && git add -- test/integration/manga_source_routing_test.dart >/dev/null 2>&1
+          [[ -f test/tools/manga_availability_builder_test.dart ]] && git add -- test/tools/manga_availability_builder_test.dart >/dev/null 2>&1
+          git commit -m "style(manga): apply Dart formatter" >/dev/null 2>&1
+          git push origin HEAD:feature/manga-platform >/dev/null 2>&1
+          echo "Focused manga formatting was applied and pushed privately."
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
