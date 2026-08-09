@@ -1,0 +1,130 @@
+name: Collect GoAnime manga live evidence privately
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-live-evidence/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-live-evidence-private-ci
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    name: GoAnime manga live evidence
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-live-evidence/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Collect and encrypt live evidence
+        id: evidence
+        working-directory: private-source
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/goanime-manga-live-evidence"
+          plain="$root/plain"
+          transfer="$root/transfer"
+          archive="$root/live-evidence.tar.zst"
+          gpg_home="$root/gpg"
+          rm -rf "$root"
+          mkdir -p "$plain" "$transfer" "$gpg_home"
+          chmod 700 "$gpg_home"
+
+          set +e
+          dart run tools/manga/collect_planned_manga_live_evidence.dart \
+            "$plain/evidence.json" "$plain/status.json" \
+            >"$plain/collector.log" 2>&1
+          collector_status=$?
+          set -e
+
+          test -s "$plain/status.json"
+          rm -f "$plain/collector.log"
+          case "$collector_status" in
+            0) echo "collection=complete" ;;
+            1) echo "collection=partial" ;;
+            *) echo "collection=failed" ;;
+          esac
+          printf 'collector_exit=%s\n' "$collector_status" > "$plain/RUN_STATUS.txt"
+
+          tar -C "$plain" -I 'zstd -T0 -6' -cf "$archive" .
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import "$GITHUB_WORKSPACE/toolchain-control/keys/source-bundles-public.asc" >/dev/null 2>&1
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" \
+            --output "$transfer/live-evidence.gpg" --encrypt "$archive"
+          sha256sum "$transfer/live-evidence.gpg" > "$transfer/SHA256SUMS"
+
+          rm -rf "$plain" "$archive" "$gpg_home" "$GITHUB_WORKSPACE/private-source"
+          echo "transfer=$transfer" >> "$GITHUB_OUTPUT"
+
+      - name: Upload ciphertext only
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-manga-live-evidence-encrypted
+          path: ${{ steps.evidence.outputs.transfer }}
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Remove private checkout and transient data
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control" "$RUNNER_TEMP/goanime-manga-live-evidence"
