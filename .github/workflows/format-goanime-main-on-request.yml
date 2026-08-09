@@ -35,7 +35,7 @@ jobs:
           ref: main
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           fetch-depth: 1
-          persist-credentials: true
+          persist-credentials: false
           lfs: false
           submodules: false
           show-progress: false
@@ -64,26 +64,63 @@ jobs:
           dart format lib test packages tools
           git diff --check
 
-      - name: Commit formatting if needed
+      - name: Emit whitespace-only edit plan
         shell: bash
+        env:
+          PINNED_SHA: ${{ steps.pin.outputs.sha }}
         run: |
           set -euo pipefail
-          if git diff --quiet; then
-            echo "No formatting changes needed."
-            exit 0
-          fi
+          python3 - <<'PY'
+          import difflib
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import sys
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- lib test packages tools
-          git commit -m "style: apply Dart 3.12.1 formatting"
+          changed = subprocess.check_output(
+              ['git', 'diff', '--name-only', '--', '*.dart'],
+              text=True,
+          ).splitlines()
 
-          # A normal non-force push makes a concurrent update fail safely.
-          git push origin HEAD:main
+          plan = {'base': os.environ['PINNED_SHA'], 'files': []}
+          for path in changed:
+              original = subprocess.check_output(
+                  ['git', 'show', f'HEAD:{path}'],
+                  text=True,
+              )
+              formatted = pathlib.Path(path).read_text()
+              matcher = difflib.SequenceMatcher(
+                  a=original,
+                  b=formatted,
+                  autojunk=False,
+              )
+              edits = []
+              for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+                  if tag == 'equal':
+                      continue
+                  before = original[i1:i2]
+                  after = formatted[j1:j2]
+                  if before.strip() or after.strip():
+                      print(
+                          f'Unsafe non-whitespace formatter delta in {path} '
+                          f'at original[{i1}:{i2}] formatted[{j1}:{j2}]',
+                          file=sys.stderr,
+                      )
+                      sys.exit(2)
+                  edits.append(
+                      {
+                          'start': i1,
+                          'end': i2,
+                          'replacement': after,
+                      }
+                  )
+              plan['files'].append({'path': path, 'edits': edits})
+
+          print('WHITESPACE_EDIT_PLAN=' + json.dumps(plan, separators=(',', ':')))
+          PY
 
       - name: Report result
         if: always()
         shell: bash
-        run: |
-          echo "Started from GoAnime ref=${{ steps.pin.outputs.sha }}"
-          echo "Finished at GoAnime ref=$(git rev-parse HEAD 2>/dev/null || true)"
+        run: echo "Formatted GoAnime ref=${{ steps.pin.outputs.sha }}"
