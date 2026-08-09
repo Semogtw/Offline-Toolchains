@@ -1,6 +1,6 @@
 # Fichário Virtual — workspace offline portátil
 
-O workflow `Build Fichário offline workspace` fabrica um ambiente Linux x64 para continuar o desenvolvimento de `Semogtw/FicharioVirtual` em sessões sem acesso direto à internet.
+O workflow `Build Fichário offline workspace` fabrica um ambiente Linux x64 para continuar o desenvolvimento de `Semogtw/FicharioVirtual` em sessões sem acesso direto à internet e, no runner público, executa o contrato completo de validação automatizável do projeto, incluindo o banco Supabase local.
 
 ## Conteúdo
 
@@ -14,7 +14,7 @@ O archive inclui:
 - Supabase CLI `2.111.0`;
 - scripts de ativação, instalação offline, verificação Edge e diagnóstico.
 
-O bundle não contém secrets, sessões, configuração de produção, banco de dados, imagens Docker ou a chave OpenPGP privada.
+O bundle não contém secrets, sessões, configuração de produção, banco de dados, imagens Docker ou a chave OpenPGP privada. O `postgresql-client` usado pelo gate de banco é instalado no runner durante a fabricação; ele não é empacotado como parte da toolchain portátil.
 
 ## Gerar
 
@@ -26,7 +26,7 @@ Edite `triggers/fichario-toolchain.json` com uma branch, tag ou SHA público de 
 }
 ```
 
-Para uma prova reproduzível, prefira um SHA integralmente validado no lugar de uma branch móvel.
+Para uma prova reproduzível, prefira um SHA exato. Um SHA ainda não validado pode ser solicitado para diagnóstico; ele só deve ser tratado como base validada depois que o manifest registrar `validation_status=passed` e o workflow concluir com sucesso.
 
 Um push desse arquivo ou execução manual do workflow inicia a fabricação. O resultado é registrado na issue `[CI] Fichário offline workspace`.
 
@@ -39,9 +39,10 @@ O `MANIFEST.txt` e `PARTS.txt` registram explicitamente:
 ```text
 validation_status=passed|failed
 validation_failures=none|gate:exit_code,...
+database_gate=executed
 ```
 
-Os gates de código são executados individualmente para maximizar o diagnóstico: lint, `svelte-check`, unitários, build, gates de fonte offline, E2E, Edge offline e doctor. Uma falha não impede os gates seguintes nem a criação dos artifacts.
+Os gates de código são executados individualmente para maximizar o diagnóstico: lint, `svelte-check`, unitários, build, gates de fonte offline, E2E, Edge offline, Supabase local/pgTAP e doctor. Uma falha não impede os gates seguintes nem a criação dos artifacts.
 
 Quando `validation_status=failed`:
 
@@ -86,6 +87,8 @@ Fixar a identidade é necessário porque o Deno incorpora o URL do registry à r
 
 ## Gates disponíveis offline
 
+Depois que o archive já estiver em uma máquina compatível, os gates que não dependem de containers continuam disponíveis diretamente:
+
 ```bash
 pnpm verify
 pnpm test:e2e
@@ -96,19 +99,20 @@ pnpm test:source:offline
 Durante a fabricação, o workflow:
 
 1. popula o cache Deno com o registry npm canônico;
-2. bloqueia `HTTP_PROXY`, `HTTPS_PROXY` e `ALL_PROXY` em um endpoint loopback indisponível;
-3. verifica os cinco módulos Edge com `deno check --no-config`;
-4. registra qualquer dependência ausente ou gate falho no manifest em vez de descartar um workspace já montado.
+2. bloqueia `HTTP_PROXY`, `HTTPS_PROXY` e `ALL_PROXY` em um endpoint loopback indisponível para o smoke de Edge;
+3. verifica os módulos Edge com `deno check --no-config`;
+4. executa `pnpm test:db:local` no checkout smoke usando Docker do runner, Supabase CLI e `psql`;
+5. registra qualquer gate falho no manifest em vez de descartar um workspace já montado.
 
 O bloqueio por proxy mantém a identidade canônica dos pacotes. Alterar o registry para um endereço inválido mudaria a chave de resolução e produziria um falso negativo mesmo com os bytes corretos armazenados.
 
-`pnpm test:db:local` requer adicionalmente:
+`pnpm test:db:local` não é prometido como gate portátil/offline do artifact porque ainda requer adicionalmente:
 
 - Docker funcional;
 - imagens de containers usadas pelo Supabase local;
 - permissões para iniciar os serviços.
 
-O Supabase CLI está no bundle, mas as imagens Docker não são incluídas porque são grandes e mudam independentemente do workspace Node.
+Essas dependências existem no runner usado para fabricar/validar o snapshot, mas as imagens Docker não são incluídas no bundle porque são grandes e mudam independentemente do workspace Node.
 
 ## Chave OpenPGP anexada
 
@@ -137,5 +141,7 @@ A geração v2 foi fixada no commit validado do Fichário `f961461cf27df2fe6e860
 - proteção contra material privado no repositório de toolchains.
 
 A geração v3 separa fabricação de validação. Ela mantém os artifacts quando os gates do snapshot falham, grava o estado de validação no manifest e deixa o workflow vermelho somente depois dos uploads. O run `31203776099` comprovou esse contrato: builder, diagnóstico, manifest e duas partes foram concluídos antes do passo final reportar a validação falha.
+
+A geração v4 acrescenta o gate Supabase local/pgTAP à validação executada no runner. O banco continua fora do artifact portátil, mas deixa de ser uma lacuna silenciosa do recibo do hub.
 
 O recibo mais recente na issue de CI e o `MANIFEST.txt` do artifact são as fontes de verdade para a versão vigente do bundle.
