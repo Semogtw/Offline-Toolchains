@@ -21,6 +21,15 @@ jobs:
           PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
         run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
 
+      - name: Checkout toolchains helper
+        uses: actions/checkout@v6
+        with:
+          path: toolchains
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
       - name: Checkout Jikan Local
         uses: actions/checkout@v6
         with:
@@ -38,7 +47,7 @@ jobs:
         working-directory: target
         run: |
           set -euo pipefail
-          python3 ../.github/scripts/finalize_goanime_jikan_local.py
+          python3 ../toolchains/.github/scripts/finalize_goanime_jikan_local.py
           git diff --check
           git diff --stat
 
