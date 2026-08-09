@@ -109,21 +109,35 @@ jobs:
         working-directory: core-source/codex-rs
         shell: bash
         run: |
-          set -euo pipefail
-          cargo build --locked --release -p codex-cli --bin codex
-          binary="$PWD/target/release/codex"
-          test -f "$binary"
-          test -x "$binary"
-          sha256="$(sha256sum "$binary" | cut -d' ' -f1)"
-          size_bytes="$(stat -c '%s' "$binary")"
-          file_description="$(file -b "$binary")"
-          readelf -h "$binary" > "$RUNNER_TEMP/codex-elf-header.txt"
-          printf 'path=%s\n' "$binary" >> "$GITHUB_OUTPUT"
-          printf 'sha256=%s\n' "$sha256" >> "$GITHUB_OUTPUT"
-          printf 'size_bytes=%s\n' "$size_bytes" >> "$GITHUB_OUTPUT"
-          printf '%s\n' "$file_description" > "$RUNNER_TEMP/codex-file-description.txt"
+          set -uo pipefail
+          log="$RUNNER_TEMP/pair-cargo-build.log"
+          set +e
+          cargo build --locked --release -p codex-cli --bin codex 2>&1 | tee "$log"
+          status=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$status" -eq 0 ]; then
+            binary="$PWD/target/release/codex"
+            if [ ! -f "$binary" ] || [ ! -x "$binary" ]; then
+              echo "Cargo reported success but the expected executable is missing: $binary" >&2
+              status=1
+            else
+              sha256="$(sha256sum "$binary" | cut -d' ' -f1)"
+              size_bytes="$(stat -c '%s' "$binary")"
+              file_description="$(file -b "$binary")"
+              readelf -h "$binary" > "$RUNNER_TEMP/codex-elf-header.txt"
+              printf 'path=%s\n' "$binary" >> "$GITHUB_OUTPUT"
+              printf 'sha256=%s\n' "$sha256" >> "$GITHUB_OUTPUT"
+              printf 'size_bytes=%s\n' "$size_bytes" >> "$GITHUB_OUTPUT"
+              printf '%s\n' "$file_description" > "$RUNNER_TEMP/codex-file-description.txt"
+            fi
+          fi
+
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+          exit 0
 
       - name: Emit native core provenance manifest
+        if: steps.binary.outputs.status == '0'
         id: manifest
         working-directory: core-source
         shell: bash
@@ -161,12 +175,18 @@ jobs:
               raise SystemExit("wrapper native-core commit pin mismatch")
           PY
 
-      - name: Test wrapper native core gate
+      - name: Test wrapper native core helper contract
         shell: bash
         run: |
           set -euo pipefail
           python3 -m unittest wrapper-source/scripts/lib/native-core-bundle.test.py
           bash -n wrapper-source/scripts/stage-native-core.sh
+
+      - name: Verify real native core against wrapper
+        if: steps.binary.outputs.status == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
           python3 wrapper-source/scripts/lib/native-core-bundle.py verify \
             --pin wrapper-source/native-core/pin.json \
             --manifest '${{ steps.manifest.outputs.path }}' \
@@ -174,6 +194,7 @@ jobs:
             --target linux-x86_64
 
       - name: Stage verified real native core
+        if: steps.binary.outputs.status == '0'
         id: stage
         shell: bash
         run: |
@@ -193,6 +214,7 @@ jobs:
           printf 'path=%s\n' "$destination" >> "$GITHUB_OUTPUT"
 
       - name: Write immutable pair receipt
+        if: always()
         id: receipt
         shell: bash
         run: |
@@ -202,31 +224,46 @@ jobs:
             "$receipt" \
             '${{ steps.identity.outputs.core_commit }}' \
             '${{ steps.identity.outputs.wrapper_commit }}' \
+            '${{ steps.binary.outputs.status }}' \
             '${{ steps.binary.outputs.sha256 }}' \
             '${{ steps.binary.outputs.size_bytes }}' \
             "$RUNNER_TEMP/codex-file-description.txt" \
             '${{ steps.manifest.outputs.path }}' \
-            '${{ steps.source_contract.outcome }}' <<'PY'
+            '${{ steps.source_contract.outcome }}' \
+            '${{ steps.stage.outcome }}' <<'PY'
           import json
           import pathlib
           import sys
 
-          file_description = pathlib.Path(sys.argv[6]).read_text(encoding="utf-8").strip()
-          manifest = json.loads(pathlib.Path(sys.argv[7]).read_text(encoding="utf-8"))
+          build_status = sys.argv[4] or "missing"
+          file_description_path = pathlib.Path(sys.argv[7])
+          manifest_path = pathlib.Path(sys.argv[8]) if sys.argv[8] else None
+          manifest = None
+          if manifest_path is not None and manifest_path.is_file():
+              manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
           receipt = {
-              "schema_version": 2,
-              "pair_contract": manifest["pair_contract"],
+              "schema_version": 3,
+              "pair_contract": (
+                  manifest["pair_contract"]
+                  if manifest is not None
+                  else "codex-gemini-native-harness-v1"
+              ),
               "core_repository": "Semogtw/codex-gemini-agents",
               "core_commit": sys.argv[2].lower(),
               "wrapper_repository": "Semogtw/codex-desktop-linux-gemini-",
               "wrapper_commit": sys.argv[3].lower(),
               "binary_relative_name": "codex",
-              "binary_sha256": sys.argv[4].lower(),
-              "binary_size_bytes": int(sys.argv[5]),
-              "file_description": file_description,
-              "target": manifest["target"],
-              "source_contract_status": sys.argv[8],
-              "staging_status": "verified-and-staged-in-ci",
+              "build_status": build_status,
+              "binary_sha256": sys.argv[5].lower() or None,
+              "binary_size_bytes": int(sys.argv[6]) if sys.argv[6] else None,
+              "file_description": (
+                  file_description_path.read_text(encoding="utf-8").strip()
+                  if file_description_path.is_file()
+                  else None
+              ),
+              "target": manifest["target"] if manifest is not None else "linux-x86_64",
+              "source_contract_status": sys.argv[9],
+              "staging_status": sys.argv[10],
           }
           pathlib.Path(sys.argv[1]).write_text(
               json.dumps(receipt, indent=2, sort_keys=True) + "\n",
@@ -236,6 +273,7 @@ jobs:
           printf 'path=%s\n' "$receipt" >> "$GITHUB_OUTPUT"
 
       - name: Verify product checkouts stayed clean
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
@@ -256,13 +294,21 @@ jobs:
             ${{ runner.temp }}/codex-elf-header.txt
             ${{ runner.temp }}/codex-file-description.txt
             ${{ runner.temp }}/pair-core-source-verification.json
+            ${{ runner.temp }}/pair-cargo-build.log
           if-no-files-found: warn
           compression-level: 0
           retention-days: 7
+
+      - name: Enforce real Codex CLI build gate
+        if: steps.binary.outputs.status != '0'
+        shell: bash
+        run: |
+          echo 'Real Codex CLI release build failed; full Cargo output was preserved above.' >&2
+          exit 1
 
       - name: Enforce deterministic source contract
         if: steps.source_contract.outcome != 'success'
         shell: bash
         run: |
-          echo 'Deterministic core source contract failed; staging evidence was preserved above.' >&2
+          echo 'Deterministic core source contract failed; build/staging evidence was preserved above.' >&2
           exit 1
