@@ -1,0 +1,69 @@
+name: Run GoAnime manga catalog screens private CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-screens/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-catalog-screens-private-ci
+  cancel-in-progress: false
+
+jobs:
+  screens:
+    name: GoAnime manga catalog screen integration
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout private manga branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: feature/manga-platform
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          flutter config --no-analytics >/dev/null
+          flutter pub get >/dev/null
+
+      - name: Test readable catalog screen integration
+        working-directory: private-source
+        run: flutter test --no-pub test/widgets/manga/manga_catalog_screen_integration_test.dart
+
+      - name: Test canonical details data source
+        working-directory: private-source
+        run: flutter test --no-pub test/services/manga/manga_details_data_source_test.dart
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
