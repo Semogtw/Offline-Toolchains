@@ -94,6 +94,7 @@ jobs:
           python3 scripts/verify_external_agent_integration.py \
             --python-only \
             --report "$RUNNER_TEMP/pair-core-source-verification.json"
+          python3 -m unittest scripts.native_core_artifact_manifest_test
 
       - name: Build real Codex CLI release binary
         id: binary
@@ -114,6 +115,75 @@ jobs:
           printf 'size_bytes=%s\n' "$size_bytes" >> "$GITHUB_OUTPUT"
           printf '%s\n' "$file_description" > "$RUNNER_TEMP/codex-file-description.txt"
 
+      - name: Emit native core provenance manifest
+        id: manifest
+        working-directory: core-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest="$RUNNER_TEMP/codex-native.json"
+          python3 scripts/native_core_artifact_manifest.py \
+            --binary '${{ steps.binary.outputs.path }}' \
+            --target linux-x86_64 \
+            --commit '${{ steps.identity.outputs.core_commit }}' \
+            --output "$manifest"
+          printf 'path=%s\n' "$manifest" >> "$GITHUB_OUTPUT"
+
+      - name: Verify wrapper pin matches immutable pair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - \
+            wrapper-source/native-core/pin.json \
+            '${{ steps.pair.outputs.core_repository }}' \
+            '${{ steps.identity.outputs.core_commit }}' <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          pin = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if pin.get("schema_version") != 1:
+              raise SystemExit("wrapper native-core pin schema mismatch")
+          if pin.get("pair_contract") != "codex-gemini-native-harness-v1":
+              raise SystemExit("wrapper native-core pair contract mismatch")
+          core = pin.get("core") or {}
+          if core.get("repository") != sys.argv[2]:
+              raise SystemExit("wrapper native-core repository pin mismatch")
+          if str(core.get("commit", "")).lower() != sys.argv[3].lower():
+              raise SystemExit("wrapper native-core commit pin mismatch")
+          PY
+
+      - name: Test wrapper native core gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest wrapper-source/scripts/lib/native-core-bundle.test.py
+          python3 wrapper-source/scripts/lib/native-core-bundle.py verify \
+            --pin wrapper-source/native-core/pin.json \
+            --manifest '${{ steps.manifest.outputs.path }}' \
+            --binary '${{ steps.binary.outputs.path }}' \
+            --target linux-x86_64
+
+      - name: Stage verified real native core
+        id: stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="$RUNNER_TEMP/native-core-stage/codex"
+          mkdir -p "$(dirname "$destination")"
+          printf '#!/bin/sh\necho old-core\n' > "$destination"
+          chmod 0755 "$destination"
+          python3 wrapper-source/scripts/lib/native-core-bundle.py install \
+            --pin wrapper-source/native-core/pin.json \
+            --manifest '${{ steps.manifest.outputs.path }}' \
+            --binary '${{ steps.binary.outputs.path }}' \
+            --destination "$destination" \
+            --target linux-x86_64
+          test -x "$destination"
+          test -f "$destination.previous"
+          test "$(sha256sum "$destination" | cut -d' ' -f1)" = '${{ steps.binary.outputs.sha256 }}'
+          printf 'path=%s\n' "$destination" >> "$GITHUB_OUTPUT"
+
       - name: Write immutable pair receipt
         id: receipt
         shell: bash
@@ -126,14 +196,17 @@ jobs:
             '${{ steps.identity.outputs.wrapper_commit }}' \
             '${{ steps.binary.outputs.sha256 }}' \
             '${{ steps.binary.outputs.size_bytes }}' \
-            "$RUNNER_TEMP/codex-file-description.txt" <<'PY'
+            "$RUNNER_TEMP/codex-file-description.txt" \
+            '${{ steps.manifest.outputs.path }}' <<'PY'
           import json
           import pathlib
           import sys
 
           file_description = pathlib.Path(sys.argv[6]).read_text(encoding="utf-8").strip()
+          manifest = json.loads(pathlib.Path(sys.argv[7]).read_text(encoding="utf-8"))
           receipt = {
-              "schema_version": 1,
+              "schema_version": 2,
+              "pair_contract": manifest["pair_contract"],
               "core_repository": "Semogtw/codex-gemini-agents",
               "core_commit": sys.argv[2].lower(),
               "wrapper_repository": "Semogtw/codex-desktop-linux-gemini-",
@@ -142,7 +215,8 @@ jobs:
               "binary_sha256": sys.argv[4].lower(),
               "binary_size_bytes": int(sys.argv[5]),
               "file_description": file_description,
-              "staging_status": "not-executed-in-ci",
+              "target": manifest["target"],
+              "staging_status": "verified-and-staged-in-ci",
           }
           pathlib.Path(sys.argv[1]).write_text(
               json.dumps(receipt, indent=2, sort_keys=True) + "\n",
@@ -166,6 +240,7 @@ jobs:
           name: codex-gemini-pair-${{ steps.identity.outputs.core_commit }}-${{ steps.identity.outputs.wrapper_commit }}
           path: |
             ${{ steps.binary.outputs.path }}
+            ${{ steps.manifest.outputs.path }}
             ${{ steps.receipt.outputs.path }}
             ${{ runner.temp }}/codex-elf-header.txt
             ${{ runner.temp }}/codex-file-description.txt
