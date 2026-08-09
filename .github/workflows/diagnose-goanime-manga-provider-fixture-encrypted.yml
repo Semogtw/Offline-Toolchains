@@ -15,7 +15,7 @@ jobs:
     name: GoAnime manga provider fixture encrypted diagnostic
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Require private repository token
@@ -67,7 +67,7 @@ jobs:
         working-directory: private-source
         run: flutter pub get >/dev/null 2>&1
 
-      - name: Capture provider fixture diagnostic
+      - name: Capture provider and evidence diagnostics
         id: encrypt
         working-directory: private-source
         shell: bash
@@ -98,17 +98,40 @@ jobs:
           mangaonline_status=$?
           flutter test --no-pub test/services/manga/providers/ninja_scan_manga_provider_test.dart >"$plain/ninjascan.log" 2>&1
           ninjascan_status=$?
+          flutter test --no-pub test/tools/manga/manga_live_provider_evidence_test.dart >"$plain/live-evidence.log" 2>&1
+          live_evidence_status=$?
+          flutter test --no-pub test/tools/manga/manga_live_provider_evidence_writer_test.dart >"$plain/evidence-writer.log" 2>&1
+          evidence_writer_status=$?
+          flutter test --no-pub test/tools/manga/manga_live_provider_evidence_batch_test.dart >"$plain/evidence-batch.log" 2>&1
+          evidence_batch_status=$?
+          flutter test --no-pub test/tools/manga/manga_production_catalog_policy_test.dart >"$plain/production-policy.log" 2>&1
+          production_policy_status=$?
+          flutter test --no-pub test/architecture/manga_planned_provider_definitions_test.dart >"$plain/planned-accounting.log" 2>&1
+          planned_accounting_status=$?
           dart format \
             lib/services/manga/manga_http_client.dart \
             lib/services/manga/providers \
             test/services/manga/manga_http_client_test.dart \
-            test/services/manga/providers >"$plain/format.log" 2>&1
+            test/services/manga/providers \
+            tools/manga/manga_live_provider_audit.dart \
+            tools/manga/manga_live_provider_evidence.dart \
+            tools/manga/manga_live_provider_evidence_writer.dart \
+            tools/manga/manga_live_provider_evidence_batch.dart \
+            tools/manga/collect_planned_manga_live_evidence.dart \
+            test/tools/manga/manga_live_provider_evidence_test.dart \
+            test/tools/manga/manga_live_provider_evidence_writer_test.dart \
+            test/tools/manga/manga_live_provider_evidence_batch_test.dart \
+            test/tools/manga/manga_production_catalog_policy_test.dart \
+            test/architecture/manga_planned_provider_definitions_test.dart >"$plain/format.log" 2>&1
           format_status=$?
           git diff -- \
             lib/services/manga/manga_http_client.dart \
             lib/services/manga/providers \
             test/services/manga/manga_http_client_test.dart \
-            test/services/manga/providers >"$plain/format.patch"
+            test/services/manga/providers \
+            tools/manga \
+            test/tools/manga \
+            test/architecture/manga_planned_provider_definitions_test.dart >"$plain/format.patch"
           set -e
 
           while IFS= read -r path; do
@@ -119,10 +142,13 @@ jobs:
             lib/services/manga/manga_http_client.dart \
             lib/services/manga/providers \
             test/services/manga/manga_http_client_test.dart \
-            test/services/manga/providers)
+            test/services/manga/providers \
+            tools/manga \
+            test/tools/manga \
+            test/architecture/manga_planned_provider_definitions_test.dart)
 
-          printf 'http=%s\nastratoons=%s\nhqnow=%s\ncapitoons=%s\nmangaonline=%s\nninjascan=%s\nformat=%s\n' \
-            "$http_status" "$astratoons_status" "$hqnow_status" "$capitoons_status" "$mangaonline_status" "$ninjascan_status" "$format_status" > "$plain/STATUS.txt"
+          printf 'http=%s\nastratoons=%s\nhqnow=%s\ncapitoons=%s\nmangaonline=%s\nninjascan=%s\nlive_evidence=%s\nevidence_writer=%s\nevidence_batch=%s\nproduction_policy=%s\nplanned_accounting=%s\nformat=%s\n' \
+            "$http_status" "$astratoons_status" "$hqnow_status" "$capitoons_status" "$mangaonline_status" "$ninjascan_status" "$live_evidence_status" "$evidence_writer_status" "$evidence_batch_status" "$production_policy_status" "$planned_accounting_status" "$format_status" > "$plain/STATUS.txt"
           tar -C "$plain" -I 'zstd -T0 -6' -cf "$archive" .
 
           export GNUPGHOME="$gpg_home"
