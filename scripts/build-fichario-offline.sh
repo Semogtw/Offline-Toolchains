@@ -63,8 +63,10 @@ cp -a "$node_root/." "$root/node/"
 "$root/node/bin/npm" install --global --prefix "$root/pnpm" "pnpm@$PNPM_VERSION"
 install -m 0755 "$(command -v deno)" "$root/deno/bin/deno"
 install -m 0755 "$(command -v supabase)" "$root/supabase/bin/supabase"
+install -m 0755 "$(command -v supabase-go)" "$root/supabase/bin/supabase-go"
 
 export PATH="$root/pnpm/bin:$root/node/bin:$root/deno/bin:$root/supabase/bin:$PATH"
+export SUPABASE_GO_BINARY="$root/supabase/bin/supabase-go"
 export PNPM_STORE_DIR="$root/pnpm-store"
 export PLAYWRIGHT_BROWSERS_PATH="$root/playwright-browsers"
 export DENO_DIR="$root/deno/cache"
@@ -98,6 +100,7 @@ cat > "$root/bin/activate" <<'ACTIVATE'
 #!/usr/bin/env bash
 toolchain_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PATH="$toolchain_root/pnpm/bin:$toolchain_root/node/bin:$toolchain_root/deno/bin:$toolchain_root/supabase/bin:$PATH"
+export SUPABASE_GO_BINARY="$toolchain_root/supabase/bin/supabase-go"
 export PNPM_STORE_DIR="$toolchain_root/pnpm-store"
 export PLAYWRIGHT_BROWSERS_PATH="$toolchain_root/playwright-browsers"
 export DENO_DIR="$toolchain_root/deno/cache"
@@ -162,6 +165,7 @@ node --version
 pnpm --version
 deno --version
 supabase --version
+"$SUPABASE_GO_BINARY" --version
 test -f "$workspace/pnpm-lock.yaml"
 test -d "$PNPM_STORE_DIR"
 test -d "$PLAYWRIGHT_BROWSERS_PATH"
