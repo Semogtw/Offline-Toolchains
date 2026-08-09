@@ -131,6 +131,8 @@ jobs:
           paths=(test/services/media_mode_service_test.dart)
           for candidate in \
             lib/services/media_mode_service.dart \
+            lib/app/bootstrap.dart \
+            lib/screens/main_navigation_screen.dart \
             test/widgets/media_mode_slot_test.dart \
             lib/widgets/navigation/media_mode_slot.dart \
             test/widgets/media_switch_navigation_test.dart \
