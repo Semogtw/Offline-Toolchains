@@ -87,6 +87,8 @@ jobs:
           cargo --version
 
       - name: Verify deterministic core source contract
+        id: source_contract
+        continue-on-error: true
         working-directory: core-source
         shell: bash
         run: |
@@ -94,7 +96,13 @@ jobs:
           python3 scripts/verify_external_agent_integration.py \
             --python-only \
             --report "$RUNNER_TEMP/pair-core-source-verification.json"
-          python3 -m unittest scripts.native_core_artifact_manifest_test
+
+      - name: Test native artifact manifest contract
+        working-directory: core-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest scripts/native_core_artifact_manifest_test.py
 
       - name: Build real Codex CLI release binary
         id: binary
@@ -158,6 +166,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m unittest wrapper-source/scripts/lib/native-core-bundle.test.py
+          bash -n wrapper-source/scripts/stage-native-core.sh
           python3 wrapper-source/scripts/lib/native-core-bundle.py verify \
             --pin wrapper-source/native-core/pin.json \
             --manifest '${{ steps.manifest.outputs.path }}' \
@@ -173,10 +182,9 @@ jobs:
           mkdir -p "$(dirname "$destination")"
           printf '#!/bin/sh\necho old-core\n' > "$destination"
           chmod 0755 "$destination"
-          python3 wrapper-source/scripts/lib/native-core-bundle.py install \
-            --pin wrapper-source/native-core/pin.json \
-            --manifest '${{ steps.manifest.outputs.path }}' \
+          bash wrapper-source/scripts/stage-native-core.sh \
             --binary '${{ steps.binary.outputs.path }}' \
+            --manifest '${{ steps.manifest.outputs.path }}' \
             --destination "$destination" \
             --target linux-x86_64
           test -x "$destination"
@@ -197,7 +205,8 @@ jobs:
             '${{ steps.binary.outputs.sha256 }}' \
             '${{ steps.binary.outputs.size_bytes }}' \
             "$RUNNER_TEMP/codex-file-description.txt" \
-            '${{ steps.manifest.outputs.path }}' <<'PY'
+            '${{ steps.manifest.outputs.path }}' \
+            '${{ steps.source_contract.outcome }}' <<'PY'
           import json
           import pathlib
           import sys
@@ -216,6 +225,7 @@ jobs:
               "binary_size_bytes": int(sys.argv[5]),
               "file_description": file_description,
               "target": manifest["target"],
+              "source_contract_status": sys.argv[8],
               "staging_status": "verified-and-staged-in-ci",
           }
           pathlib.Path(sys.argv[1]).write_text(
@@ -235,6 +245,7 @@ jobs:
           test -z "$(git -C wrapper-source status --porcelain=v1)"
 
       - name: Upload immutable pair build evidence
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: codex-gemini-pair-${{ steps.identity.outputs.core_commit }}-${{ steps.identity.outputs.wrapper_commit }}
@@ -245,6 +256,13 @@ jobs:
             ${{ runner.temp }}/codex-elf-header.txt
             ${{ runner.temp }}/codex-file-description.txt
             ${{ runner.temp }}/pair-core-source-verification.json
-          if-no-files-found: error
+          if-no-files-found: warn
           compression-level: 0
           retention-days: 7
+
+      - name: Enforce deterministic source contract
+        if: steps.source_contract.outcome != 'success'
+        shell: bash
+        run: |
+          echo 'Deterministic core source contract failed; staging evidence was preserved above.' >&2
+          exit 1
