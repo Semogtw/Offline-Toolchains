@@ -97,6 +97,7 @@ jobs:
           run_gate live_evidence flutter test --no-pub test/tools/manga/manga_live_provider_evidence_test.dart
           run_gate evidence_writer flutter test --no-pub test/tools/manga/manga_live_provider_evidence_writer_test.dart
           run_gate evidence_batch flutter test --no-pub test/tools/manga/manga_live_provider_evidence_batch_test.dart
+          run_gate evidence_clusterer flutter test --no-pub test/tools/manga/manga_live_evidence_clusterer_test.dart
           run_gate production_policy flutter test --no-pub test/tools/manga/manga_production_catalog_policy_test.dart
           run_gate planned_accounting flutter test --no-pub test/architecture/manga_planned_provider_definitions_test.dart
 
@@ -109,10 +110,12 @@ jobs:
             tools/manga/manga_live_provider_evidence.dart \
             tools/manga/manga_live_provider_evidence_writer.dart \
             tools/manga/manga_live_provider_evidence_batch.dart \
+            tools/manga/manga_live_evidence_clusterer.dart \
             tools/manga/collect_planned_manga_live_evidence.dart \
             test/tools/manga/manga_live_provider_evidence_test.dart \
             test/tools/manga/manga_live_provider_evidence_writer_test.dart \
             test/tools/manga/manga_live_provider_evidence_batch_test.dart \
+            test/tools/manga/manga_live_evidence_clusterer_test.dart \
             test/tools/manga/manga_production_catalog_policy_test.dart \
             test/architecture/manga_planned_provider_definitions_test.dart >/dev/null 2>&1; then
             echo "format=success"
