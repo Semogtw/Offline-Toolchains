@@ -19,7 +19,7 @@ jobs:
     name: GoAnime manga providers live audit
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
 
     steps:
       - name: Require private repository token
@@ -83,19 +83,43 @@ jobs:
         working-directory: private-source
         run: dart run tools/manga/audit_hqnow_live.dart >/tmp/hqnow-live.log 2>&1
 
+      - name: Audit Capitoons live readability safely
+        id: capitoons
+        continue-on-error: true
+        working-directory: private-source
+        run: dart run tools/manga/audit_capitoons_live.dart >/tmp/capitoons-live.log 2>&1
+
+      - name: Audit Manga Online live readability safely
+        id: mangaonline
+        continue-on-error: true
+        working-directory: private-source
+        run: dart run tools/manga/audit_mangaonline_live.dart >/tmp/mangaonline-live.log 2>&1
+
+      - name: Audit Ninja Scan live readability safely
+        id: ninjascan
+        continue-on-error: true
+        working-directory: private-source
+        run: dart run tools/manga/audit_ninja_scan_live.dart >/tmp/ninjascan-live.log 2>&1
+
       - name: Report live audit status safely
         if: always()
         env:
           ASTRATOONS: ${{ steps.astratoons.outcome }}
           HQNOW: ${{ steps.hqnow.outcome }}
+          CAPITOONS: ${{ steps.capitoons.outcome }}
+          MANGAONLINE: ${{ steps.mangaonline.outcome }}
+          NINJASCAN: ${{ steps.ninjascan.outcome }}
         run: |
           echo "astratoons_live=$ASTRATOONS"
           echo "hqnow_live=$HQNOW"
+          echo "capitoons_live=$CAPITOONS"
+          echo "mangaonline_live=$MANGAONLINE"
+          echo "ninjascan_live=$NINJASCAN"
 
       - name: Fail if a live provider audit failed
-        if: ${{ steps.astratoons.outcome == 'failure' || steps.hqnow.outcome == 'failure' }}
+        if: ${{ steps.astratoons.outcome == 'failure' || steps.hqnow.outcome == 'failure' || steps.capitoons.outcome == 'failure' || steps.mangaonline.outcome == 'failure' || steps.ninjascan.outcome == 'failure' }}
         run: exit 1
 
       - name: Remove private checkout and live output
         if: always()
-        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control" /tmp/astratoons-live.log /tmp/hqnow-live.log
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control" /tmp/astratoons-live.log /tmp/hqnow-live.log /tmp/capitoons-live.log /tmp/mangaonline-live.log /tmp/ninjascan-live.log
