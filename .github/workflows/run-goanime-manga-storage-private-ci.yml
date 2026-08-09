@@ -109,21 +109,12 @@ jobs:
           fi
           dart format --output=none --set-exit-if-changed "${paths[@]}"
 
-      - name: Show storage formatting diff
+      - name: Report storage formatting drift safely
         if: steps.request.outputs.project == 'goanime' && steps.storage_format.outcome == 'failure'
-        working-directory: private-source
         shell: bash
         run: |
-          set -euo pipefail
-          paths=()
-          if [[ -d test/services/manga/storage ]]; then
-            paths+=(test/services/manga/storage)
-          fi
-          if [[ -d lib/services/manga/storage ]]; then
-            paths+=(lib/services/manga/storage)
-          fi
-          dart format "${paths[@]}"
-          git diff -- test/services/manga/storage lib/services/manga/storage
+          echo "Manga storage formatting drift detected."
+          echo "Private source diff is intentionally omitted from this public runner log."
 
       - name: Fail on storage formatting drift
         if: steps.request.outputs.project == 'goanime' && steps.storage_format.outcome == 'failure'
