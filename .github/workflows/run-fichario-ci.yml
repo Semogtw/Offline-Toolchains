@@ -49,7 +49,7 @@ jobs:
           test "$ACTOR" = "$OWNER"
 
       - name: Checkout trusted request validator
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: main
           path: trusted-source
@@ -59,7 +59,7 @@ jobs:
 
       - name: Checkout connector request revision
         if: github.event_name == 'workflow_run'
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           path: request-source
@@ -116,7 +116,7 @@ jobs:
 
     steps:
       - name: Checkout public Fichario source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: Semogtw/FicharioVirtual
           ref: ${{ needs.normalize.outputs.ref }}
@@ -133,12 +133,12 @@ jobs:
         run: echo "sha=$(git -C public-source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Set up pnpm 10
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
           version: 10
 
       - name: Set up Node.js 22.16
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "22.16.0"
           check-latest: false
@@ -152,14 +152,14 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
 
       - name: Set up Deno
-        uses: denoland/setup-deno@v2
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
         with:
           deno-version: 2.8.1
 
       - name: Set up Supabase CLI
-        uses: supabase/setup-cli@v1
+        uses: supabase/setup-cli@3c2f5e2ae34c34e428e8e206e2c4d21fa2d20fbf # v2
         with:
-          version: latest
+          version: 2.111.0
 
       - name: Run complete verification
         working-directory: public-source
