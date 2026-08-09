@@ -130,7 +130,7 @@ jobs:
       - name: Test manga canonical aggregation
         if: >-
           steps.request.outputs.project == 'goanime' &&
-          hashFiles('private-source/test/services/manga/manga_search_coordinator_test.dart', 'private-source/test/services/manga/manga_chapter_merge_service_test.dart', 'private-source/test/integration/manga_source_routing_test.dart') != ''
+          hashFiles('private-source/test/services/manga/manga_search_coordinator_test.dart', 'private-source/test/services/manga/manga_chapter_merge_service_test.dart', 'private-source/test/services/manga/manga_search_catalog_persistence_test.dart', 'private-source/test/integration/manga_source_routing_test.dart') != ''
         working-directory: private-source
         shell: bash
         run: |
@@ -139,6 +139,7 @@ jobs:
           for candidate in \
             test/services/manga/manga_search_coordinator_test.dart \
             test/services/manga/manga_chapter_merge_service_test.dart \
+            test/services/manga/manga_search_catalog_persistence_test.dart \
             test/integration/manga_source_routing_test.dart; do
             [[ -f "$candidate" ]] && tests+=("$candidate")
           done
