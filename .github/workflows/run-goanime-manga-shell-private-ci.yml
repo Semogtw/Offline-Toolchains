@@ -115,7 +115,9 @@ jobs:
             test/widgets/media_switch_navigation_test.dart \
             test/widgets/media_mode_navigation_test.dart \
             test/widgets/media_mode_secondary_actions_test.dart \
-            test/navigation/media_route_target_test.dart; do
+            test/widgets/main_navigation_responsive_test.dart \
+            test/navigation/media_route_target_test.dart \
+            test/architecture/documentation_drift_test.dart; do
             if [[ -f "$candidate" ]]; then
               tests+=("$candidate")
             fi
@@ -143,7 +145,9 @@ jobs:
             lib/widgets/navigation/goanime_desktop_sidebar.dart \
             test/widgets/media_mode_navigation_test.dart \
             test/widgets/media_mode_secondary_actions_test.dart \
+            test/widgets/main_navigation_responsive_test.dart \
             test/navigation/media_route_target_test.dart \
+            test/architecture/documentation_drift_test.dart \
             lib/l10n/ui_manga_localizations.dart \
             lib/l10n/app_localizations.dart; do
             if [[ -f "$candidate" ]]; then
