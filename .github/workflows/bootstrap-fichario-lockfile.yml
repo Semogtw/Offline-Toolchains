@@ -31,7 +31,7 @@ jobs:
 
     steps:
       - name: Checkout trusted request validator
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: main
           path: trusted-source
@@ -40,7 +40,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Checkout connector request revision
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           path: request-source
@@ -78,7 +78,7 @@ jobs:
 
     steps:
       - name: Checkout public Fichario source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: Semogtw/FicharioVirtual
           ref: ${{ needs.normalize.outputs.ref }}
@@ -94,22 +94,18 @@ jobs:
         shell: bash
         run: echo "sha=$(git -C public-source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Require missing lockfile
-        shell: bash
-        run: test ! -e public-source/pnpm-lock.yaml
-
       - name: Set up pnpm 10
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
           version: 10
 
       - name: Set up Node.js 22.16
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "22.16.0"
           check-latest: false
 
-      - name: Generate deterministic lockfile
+      - name: Generate or refresh deterministic lockfile
         working-directory: public-source
         run: pnpm install --lockfile-only --no-frozen-lockfile
 
@@ -118,7 +114,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Upload public lockfile
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: fichario-pnpm-lock-${{ steps.source.outputs.sha }}
           path: public-source/pnpm-lock.yaml
