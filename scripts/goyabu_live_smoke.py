@@ -51,6 +51,9 @@ def request(url: str, *, method: str = "GET", data: bytes | None = None, referer
     }
     if referer:
         headers["Referer"] = referer
+    if data is not None:
+        headers["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
+        headers["X-Requested-With"] = "XMLHttpRequest"
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     with urllib.request.urlopen(req, timeout=20) as resp:
         raw = resp.read(6 * 1024 * 1024)
@@ -97,8 +100,9 @@ def first_episode_url(page_url: str, body: str) -> str | None:
     return None
 
 
-def player_candidates(episode_url: str, body: str) -> list[str]:
+def player_data(episode_url: str, body: str) -> tuple[list[str], str | None]:
     candidates: list[str] = []
+    blogger_token: str | None = None
     match = PLAYERS_DATA_RE.search(body)
     if match:
         try:
@@ -107,13 +111,46 @@ def player_candidates(episode_url: str, body: str) -> list[str]:
             data = []
         if isinstance(data, list):
             for item in data:
-                if isinstance(item, dict):
-                    value = str(item.get("url") or "").strip()
-                    if value:
-                        candidates.append(resolve(episode_url, value))
+                if not isinstance(item, dict):
+                    continue
+                value = str(item.get("url") or "").strip()
+                if value:
+                    candidates.append(resolve(episode_url, value))
+                token = str(item.get("blogger_token") or "").strip()
+                if token and blogger_token is None:
+                    blogger_token = token
     candidates.extend(resolve(episode_url, m.group(0)) for m in BLOGGER_RE.finditer(body))
     candidates.extend(resolve(episode_url, m.group(0)) for m in MEDIA_RE.finditer(body))
-    return list(dict.fromkeys(candidates))
+    return list(dict.fromkeys(candidates)), blogger_token
+
+
+def decode_goyabu_blogger(token: str, referer: str) -> str | None:
+    form = urllib.parse.urlencode({"action": "decode_blogger_video", "token": token}).encode()
+    response = request(
+        f"{BASE}/wp-admin/admin-ajax.php",
+        method="POST",
+        data=form,
+        referer=referer,
+    )
+    if response.status != 200:
+        return None
+    try:
+        payload = json.loads(response.body)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict) or not payload.get("success"):
+        return None
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return None
+    play = data.get("play")
+    if not isinstance(play, list):
+        return None
+    candidates = [item for item in play if isinstance(item, dict) and item.get("src")]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: float(item.get("size") or 0), reverse=True)
+    return str(candidates[0]["src"])
 
 
 def blogger_has_media(player_url: str) -> bool:
@@ -179,12 +216,24 @@ def main() -> int:
         print(f"episode_page status={episode.status} host={safe_host(episode.url)}")
         if episode.status != 200:
             return 9
-        candidates = player_candidates(episode.url, episode.body)
-        if not candidates:
+        candidates, token = player_data(episode.url, episode.body)
+        if not candidates and not token:
             capture_episode_html(episode.body)
             print("player=missing")
             return 10
-        print(f"player=present count={len(candidates)} hosts={','.join(sorted({safe_host(c) for c in candidates}))}")
+        hosts = sorted({safe_host(c) for c in candidates})
+        print(f"player=present count={len(candidates)} hosts={','.join(hosts) if hosts else 'token-only'}")
+
+        if token:
+            try:
+                decoded_url = decode_goyabu_blogger(token, episode.url)
+            except Exception as exc:
+                print(f"goyabu_ajax_error={type(exc).__name__}")
+            else:
+                if decoded_url:
+                    print(f"playback_shape=goyabu-ajax host={safe_host(decoded_url)}")
+                    return 0
+
         for candidate in candidates:
             lower = candidate.lower()
             if ".m3u8" in lower or ".mp4" in lower:
