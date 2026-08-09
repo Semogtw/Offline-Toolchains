@@ -1,0 +1,97 @@
+name: Run GoAnime AnimesOnline live smoke
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-animesonline-live/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-animesonline-live-smoke
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Probe public AnimesOnline playback shape
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout trusted probe
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/animesonline_live_smoke.py
+            keys/source-bundles-public.asc
+          sparse-checkout-cone-mode: false
+          show-progress: false
+
+      - name: Run sanitized live smoke
+        id: smoke
+        shell: bash
+        env:
+          CAPTURE_DIR: ${{ runner.temp }}/animesonline-live-capture
+        run: |
+          set +e
+          python3 scripts/animesonline_live_smoke.py
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Pack diagnostic capture when present
+        id: capture
+        shell: bash
+        run: |
+          set -euo pipefail
+          capture="$RUNNER_TEMP/animesonline-live-capture"
+          if test -d "$capture" && find "$capture" -type f -size +0c | grep -q .; then
+            tar -czf "$RUNNER_TEMP/animesonline-live-capture.tar.gz" -C "$capture" .
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Encrypt diagnostic capture
+        if: steps.capture.outputs.present == 'true'
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          export GNUPGHOME="$RUNNER_TEMP/animesonline-live-gpg"
+          mkdir -p "$GNUPGHOME" "$RUNNER_TEMP/animesonline-live-out"
+          chmod 700 "$GNUPGHOME"
+          gpg --batch --import keys/source-bundles-public.asc
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1=="fpr"{print $10;exit}')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" \
+            --output "$RUNNER_TEMP/animesonline-live-out/capture.tar.gz.gpg" \
+            --encrypt "$RUNNER_TEMP/animesonline-live-capture.tar.gz"
+
+      - name: Upload encrypted diagnostic capture
+        if: steps.capture.outputs.present == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-animesonline-live-diagnostic-encrypted
+          path: ${{ runner.temp }}/animesonline-live-out/capture.tar.gz.gpg
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Enforce smoke result
+        shell: bash
+        env:
+          EXIT_CODE: ${{ steps.smoke.outputs.exit_code }}
+        run: test "$EXIT_CODE" = "0"
+
+      - name: Remove transient capture
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/animesonline-live-capture" "$RUNNER_TEMP/animesonline-live-capture.tar.gz" "$RUNNER_TEMP/animesonline-live-gpg" "$RUNNER_TEMP/animesonline-live-out"
