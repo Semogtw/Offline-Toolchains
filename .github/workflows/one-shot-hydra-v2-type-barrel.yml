@@ -1,0 +1,95 @@
+name: One-shot Hydra V2 type barrel
+
+on:
+  push:
+    paths:
+      - "triggers/one-shot-hydra-v2-type-barrel.json"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout current Hydra V2 branch
+        uses: actions/checkout@v4
+        with:
+          repository: Semogtw/HydraPersonalizado
+          ref: feat/drive-cloud-saves-v2
+          token: ${{ secrets.TOOLCHAIN_GH_TOKEN }}
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Normalize V2 type imports
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          barrel = Path("src/types/index.ts")
+          text = barrel.read_text()
+          export = 'export * from "./google-drive-cloud-save-v2-ui.types";\n'
+          anchor = 'export * from "./google-drive-cloud-save.types";\n'
+          if export not in text:
+              if text.count(anchor) != 1:
+                  raise SystemExit("type barrel anchor not found exactly once")
+              text = text.replace(anchor, anchor + export, 1)
+              barrel.write_text(text)
+
+          for filename in [
+              "src/renderer/src/pages/game-details/cloud-sync/cloud-sync-panel.tsx",
+              "src/big-picture/src/components/pages/game/game-settings-modal/cloud-tab.tsx",
+          ]:
+              path = Path(filename)
+              text = path.read_text()
+              old = 'import type { GoogleDriveV2Overview } from "@app-types/google-drive-cloud-save-v2-ui.types";'
+              new = 'import type { GoogleDriveV2Overview } from "@types";'
+              if old in text:
+                  text = text.replace(old, new, 1)
+                  path.write_text(text)
+              elif new not in text:
+                  raise SystemExit(f"{filename}: V2 overview import is not recognized")
+          PY
+
+      - name: Commit and push if changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          if git diff --quiet; then
+            echo "No patch required"
+            exit 0
+          fi
+          git config user.name "toolchains-bot"
+          git config user.email "toolchains-bot@users.noreply.github.com"
+          git add src/types/index.ts \
+            src/renderer/src/pages/game-details/cloud-sync/cloud-sync-panel.tsx \
+            src/big-picture/src/components/pages/game/game-settings-modal/cloud-tab.tsx
+          git commit -m "fix(cloud-save): export V2 UI contracts through app types"
+          git push origin HEAD:feat/drive-cloud-saves-v2
+
+      - name: Remove one-shot files
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TOOLCHAINS_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in ".github/workflows/one-shot-hydra-v2-type-barrel.yml" "triggers/one-shot-hydra-v2-type-barrel.json"; do
+            encoded="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$file")"
+            metadata="$(curl --fail-with-body --silent --show-error \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${TOOLCHAINS_REPO}/contents/${encoded}?ref=main")" || continue
+            sha="$(printf '%s' "$metadata" | jq -er '.sha')"
+            body="$(jq -cn --arg message "ci: remove completed V2 type barrel patch" --arg sha "$sha" '{message:$message,sha:$sha,branch:"main"}')"
+            curl --fail-with-body --silent --show-error -X DELETE \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${TOOLCHAINS_REPO}/contents/${encoded}" \
+              -d "$body" >/dev/null || true
+          done
