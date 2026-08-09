@@ -6,6 +6,7 @@ from __future__ import annotations
 import html
 import re
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -16,16 +17,16 @@ X2_RE = re.compile(r'href=["\']([^"\']*x2episodio[^"\']*)["\']', re.I)
 ANIVIDEO_RE = re.compile(r'src=["\'](https://api\.anivideo\.net/videohls\.php\?[^"\']+)["\']', re.I)
 
 
-def fetch(url: str, referer: str):
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": UA,
-            "Accept": "*/*",
-            "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.7",
-            "Referer": referer,
-        },
-    )
+def fetch(url: str, referer: str, *, origin: str | None = None):
+    headers = {
+        "User-Agent": UA,
+        "Accept": "*/*",
+        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.7",
+        "Referer": referer,
+    }
+    if origin:
+        headers["Origin"] = origin
+    request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=20) as response:
         body = response.read(2 * 1024 * 1024).decode("utf-8", errors="replace")
         return response.status, response.geturl(), response.headers.get("Content-Type", ""), body
@@ -33,6 +34,40 @@ def fetch(url: str, referer: str):
 
 def host(url: str) -> str:
     return urllib.parse.urlparse(url).hostname or "unknown"
+
+
+def origin(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def try_manifest(label: str, hls_url: str, referer: str, *, request_origin: str | None = None) -> bool:
+    try:
+        status, _, content_type, manifest = fetch(
+            hls_url,
+            referer,
+            origin=request_origin,
+        )
+    except urllib.error.HTTPError as exc:
+        print(f"{label} http={exc.code} host={host(hls_url)}")
+        return False
+    except urllib.error.URLError as exc:
+        reason = exc.reason
+        print(
+            f"{label} url_error={type(reason).__name__} "
+            f"errno={getattr(reason, 'errno', 'none')} host={host(hls_url)}"
+        )
+        return False
+    except Exception as exc:
+        print(f"{label} error={type(exc).__name__} host={host(hls_url)}")
+        return False
+
+    valid = manifest.lstrip().startswith("#EXTM3U")
+    print(
+        f"{label} status={status} host={host(hls_url)} "
+        f"type={content_type.split(';', 1)[0] or 'unknown'} manifest={valid}"
+    )
+    return status == 200 and valid
 
 
 def main() -> int:
@@ -62,13 +97,31 @@ def main() -> int:
             print("hls=missing")
             return 6
 
-        status, _, content_type, manifest = fetch(hls_url, iframe_url)
-        valid = manifest.lstrip().startswith("#EXTM3U")
+        attempts = [
+            ("iframe-referer", iframe_url, None),
+            ("iframe-origin", iframe_url, origin(iframe_url)),
+            ("player-referer", player_url, None),
+            ("player-origin", player_url, origin(player_url)),
+        ]
+        for label, referer, request_origin in attempts:
+            if try_manifest(
+                label,
+                hls_url,
+                referer,
+                request_origin=request_origin,
+            ):
+                return 0
+        return 7
+    except urllib.error.HTTPError as exc:
+        print(f"probe_http={exc.code}")
+        return 1
+    except urllib.error.URLError as exc:
+        reason = exc.reason
         print(
-            f"hls status={status} host={host(hls_url)} "
-            f"type={content_type.split(';', 1)[0] or 'unknown'} manifest={valid}"
+            f"probe_url_error={type(reason).__name__} "
+            f"errno={getattr(reason, 'errno', 'none')}"
         )
-        return 0 if status == 200 and valid else 7
+        return 1
     except Exception as exc:
         print(f"probe_error={type(exc).__name__}")
         return 1
