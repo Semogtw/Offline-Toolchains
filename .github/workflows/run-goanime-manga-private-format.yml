@@ -132,10 +132,12 @@ jobs:
           fi
 
       - name: Commit and push formatter result privately
+        id: publish
         if: >-
           steps.request.outputs.project == 'goanime' &&
           steps.freshness.outputs.fresh == 'true' &&
           steps.format.outputs.changed == 'true'
+        continue-on-error: true
         working-directory: private-source
         shell: bash
         run: |
@@ -147,7 +149,20 @@ jobs:
           [[ -f test/tools/manga_availability_builder_test.dart ]] && git add -- test/tools/manga_availability_builder_test.dart >/dev/null 2>&1
           git commit -m "style(manga): apply Dart formatter" >/dev/null 2>&1
           git push origin HEAD:feature/manga-platform >/dev/null 2>&1
-          echo "Focused manga formatting was applied and pushed privately."
+
+      - name: Report formatter publication result safely
+        if: >-
+          steps.request.outputs.project == 'goanime' &&
+          steps.freshness.outputs.fresh == 'true' &&
+          steps.format.outputs.changed == 'true'
+        shell: bash
+        run: |
+          if [[ "${{ steps.publish.outcome }}" == "success" ]]; then
+            echo "Focused manga formatting was applied and published privately."
+          else
+            echo "Focused manga formatting completed, but publication was unavailable."
+            echo "Functional validation continues; private source paths and diffs are omitted."
+          fi
 
       - name: Remove private checkout
         if: always()
