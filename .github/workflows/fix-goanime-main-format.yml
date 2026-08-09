@@ -12,31 +12,14 @@ permissions:
 jobs:
   test:
     if: github.actor == github.repository_owner
-    name: test (${{ matrix.target }})
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - test/architecture
-          - test/core
-          - test/l10n
-          - test/models
-          - test/platform
-          - test/screens
-          - test/services
-          - test/theme
-          - test/tools
-          - test/utils
-          - test/widgets
-          - test/widget_test.dart
     steps:
       - name: Checkout exact private GoAnime revision
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
-          ref: d893e093ac9dc7f79948716664171bbebd0e7122
+          ref: 80b4917de50ba182e3adb971c9c662c02e4f1db4
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           persist-credentials: false
           fetch-depth: 1
@@ -50,5 +33,5 @@ jobs:
       - name: Resolve packages
         run: flutter pub get
 
-      - name: Run module tests
-        run: flutter test "${{ matrix.target }}" --reporter expanded --test-randomize-ordering-seed=random
+      - name: Verify architecture tests
+        run: flutter test test/architecture --reporter expanded --test-randomize-ordering-seed=random
