@@ -21,7 +21,7 @@ jobs:
           repository: Semogtw/goanime-mobile
           ref: main
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-          persist-credentials: true
+          persist-credentials: false
           fetch-depth: 1
 
       - name: Set up Flutter 3.44.1
@@ -30,21 +30,13 @@ jobs:
           channel: stable
           flutter-version: 3.44.1
 
-      - name: Format offending source only
-        run: dart format tools/cache_builder.dart
-
-      - name: Commit and push mechanical formatting
+      - name: Format and expose mechanical diff
         shell: bash
         run: |
           set -euo pipefail
+          dart format tools/cache_builder.dart
           git diff --check
-          if git diff --quiet -- tools/cache_builder.dart; then
-            echo 'No formatting change required.'
-            exit 0
-          fi
           test "$(git diff --name-only | tr -d '\r')" = 'tools/cache_builder.dart'
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add tools/cache_builder.dart
-          git commit -m 'style: format cache builder'
-          git push origin HEAD:main
+          echo '--- FORMATTER PATCH START ---'
+          git diff -- tools/cache_builder.dart
+          echo '--- FORMATTER PATCH END ---'
