@@ -1,0 +1,204 @@
+name: Report Hydra validation
+
+on:
+  push:
+    paths:
+      - "triggers/hydra-validation-report/*.json"
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  validate-and-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Resolve request
+        id: request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit_json="$(curl --fail-with-body --silent --show-error \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}")"
+          request_path="$(printf '%s' "$commit_json" | jq -er '[.files[].filename | select(startswith("triggers/hydra-validation-report/") and endswith(".json"))][0]')"
+          encoded="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$request_path")"
+          request="$(curl --fail-with-body --silent --show-error \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${encoded}?ref=${GITHUB_SHA}")"
+          ref="$(printf '%s' "$request" | jq -er '.ref | select(type == "string" and length > 0 and length <= 255)')"
+          request_id="$(basename "$request_path" .json)"
+          printf 'ref=%s\n' "$ref" >> "$GITHUB_OUTPUT"
+          printf 'request_path=%s\n' "$request_path" >> "$GITHUB_OUTPUT"
+          printf 'request_id=%s\n' "$request_id" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch canonical validator
+        id: dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HYDRA_REF: ${{ steps.request.outputs.ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          dispatched_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          body="$(jq -cn --arg ref "$HYDRA_REF" '{ref:"main",inputs:{ref:$ref}}')"
+          curl --fail-with-body --silent --show-error \
+            -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/validate-hydra.yml/dispatches" \
+            -d "$body"
+          printf 'dispatched_at=%s\n' "$dispatched_at" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for dispatched validator
+        id: wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCHED_AT: ${{ steps.dispatch.outputs.dispatched_at }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_id=""
+          for _ in $(seq 1 60); do
+            runs="$(curl --fail-with-body --silent --show-error \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/validate-hydra.yml/runs?event=workflow_dispatch&per_page=20")"
+            run_id="$(printf '%s' "$runs" | jq -r --arg dispatched "$DISPATCHED_AT" '[.workflow_runs[] | select(.created_at >= $dispatched)] | sort_by(.created_at) | last | .id // empty')"
+            [[ -n "$run_id" ]] && break
+            sleep 5
+          done
+          if [[ -z "$run_id" ]]; then
+            echo "Unable to resolve dispatched validator run" >&2
+            exit 1
+          fi
+          printf 'run_id=%s\n' "$run_id" >> "$GITHUB_OUTPUT"
+
+          for _ in $(seq 1 360); do
+            run="$(curl --fail-with-body --silent --show-error \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}")"
+            status="$(printf '%s' "$run" | jq -r '.status')"
+            if [[ "$status" == "completed" ]]; then
+              conclusion="$(printf '%s' "$run" | jq -r '.conclusion // "unknown"')"
+              html_url="$(printf '%s' "$run" | jq -r '.html_url')"
+              created_at="$(printf '%s' "$run" | jq -r '.created_at')"
+              updated_at="$(printf '%s' "$run" | jq -r '.updated_at')"
+              printf 'conclusion=%s\n' "$conclusion" >> "$GITHUB_OUTPUT"
+              printf 'html_url=%s\n' "$html_url" >> "$GITHUB_OUTPUT"
+              printf 'created_at=%s\n' "$created_at" >> "$GITHUB_OUTPUT"
+              printf 'updated_at=%s\n' "$updated_at" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Validator did not complete within report timeout" >&2
+          exit 1
+
+      - name: Collect jobs and annotations
+        id: details
+        if: always() && steps.wait.outputs.run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.wait.outputs.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          jobs="$(curl --fail-with-body --silent --show-error \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/jobs?per_page=100")"
+          printf '%s' "$jobs" > /tmp/jobs.json
+          jq '[.jobs[] | {id,name,status,conclusion,html_url,steps:[.steps[]? | {name,status,conclusion,number}]}]' /tmp/jobs.json > /tmp/job-summary.json
+
+          echo '[]' > /tmp/annotations.json
+          while read -r job_id; do
+            [[ -z "$job_id" ]] && continue
+            annotations="$(curl --fail-with-body --silent --show-error \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/check-runs/${job_id}/annotations?per_page=100" || printf '[]')"
+            jq -s '.[0] + (.[1] | map({path,start_line,end_line,annotation_level,message,title,raw_details}))' /tmp/annotations.json <(printf '%s' "$annotations") > /tmp/annotations.next.json
+            mv /tmp/annotations.next.json /tmp/annotations.json
+          done < <(jq -r '.jobs[] | select(.conclusion != "success") | .id' /tmp/jobs.json)
+
+      - name: Write validation report
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HYDRA_REF: ${{ steps.request.outputs.ref }}
+          REQUEST_ID: ${{ steps.request.outputs.request_id }}
+          REQUEST_PATH: ${{ steps.request.outputs.request_path }}
+          RUN_ID: ${{ steps.wait.outputs.run_id }}
+          CONCLUSION: ${{ steps.wait.outputs.conclusion }}
+          RUN_URL: ${{ steps.wait.outputs.html_url }}
+          RUN_CREATED_AT: ${{ steps.wait.outputs.created_at }}
+          RUN_UPDATED_AT: ${{ steps.wait.outputs.updated_at }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/report
+          [[ -f /tmp/job-summary.json ]] || echo '[]' > /tmp/job-summary.json
+          [[ -f /tmp/annotations.json ]] || echo '[]' > /tmp/annotations.json
+          jq -n \
+            --arg project "hydra" \
+            --arg ref "${HYDRA_REF:-unknown}" \
+            --arg request_id "${REQUEST_ID:-unknown}" \
+            --arg run_id "${RUN_ID:-}" \
+            --arg conclusion "${CONCLUSION:-reporter-failed}" \
+            --arg run_url "${RUN_URL:-}" \
+            --arg created_at "${RUN_CREATED_AT:-}" \
+            --arg updated_at "${RUN_UPDATED_AT:-}" \
+            --slurpfile jobs /tmp/job-summary.json \
+            --slurpfile annotations /tmp/annotations.json \
+            '{project:$project,ref:$ref,request_id:$request_id,run_id:($run_id|if length>0 then tonumber else null end),conclusion:$conclusion,run_url:$run_url,created_at:$created_at,updated_at:$updated_at,jobs:$jobs[0],annotations:$annotations[0]}' \
+            > /tmp/report.json
+
+          report_path="validation-results/hydra/${REQUEST_ID}.json"
+          encoded_report="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$report_path")"
+          current_sha="$(curl --silent --show-error \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${encoded_report}?ref=main" | jq -r '.sha // empty')"
+          content="$(base64 -w0 /tmp/report.json)"
+          if [[ -n "$current_sha" ]]; then
+            body="$(jq -cn --arg message "ci(hydra): update validation report ${REQUEST_ID}" --arg content "$content" --arg sha "$current_sha" '{message:$message,content:$content,sha:$sha,branch:"main"}')"
+          else
+            body="$(jq -cn --arg message "ci(hydra): add validation report ${REQUEST_ID}" --arg content "$content" '{message:$message,content:$content,branch:"main"}')"
+          fi
+          curl --fail-with-body --silent --show-error \
+            -X PUT \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${encoded_report}" \
+            -d "$body" >/dev/null
+
+          if [[ -n "${REQUEST_PATH:-}" ]]; then
+            encoded_request="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$REQUEST_PATH")"
+            metadata="$(curl --fail-with-body --silent --show-error \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${encoded_request}?ref=main")" || exit 0
+            sha="$(printf '%s' "$metadata" | jq -er '.sha')"
+            delete_body="$(jq -cn --arg message "ci(hydra): consume validation report request" --arg sha "$sha" '{message:$message,sha:$sha,branch:"main"}')"
+            curl --fail-with-body --silent --show-error -X DELETE \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${encoded_request}" \
+              -d "$delete_body" >/dev/null
+          fi
+
+      - name: Mirror canonical conclusion
+        if: always()
+        env:
+          CONCLUSION: ${{ steps.wait.outputs.conclusion }}
+        shell: bash
+        run: |
+          [[ "$CONCLUSION" == "success" ]]
