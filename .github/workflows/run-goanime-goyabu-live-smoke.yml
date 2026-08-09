@@ -28,10 +28,59 @@ jobs:
         with:
           ref: main
           persist-credentials: false
-          sparse-checkout: scripts/goyabu_live_smoke.py
+          sparse-checkout: |
+            scripts/goyabu_live_smoke.py
+            keys/source-bundles-public.asc
           sparse-checkout-cone-mode: false
           show-progress: false
 
       - name: Run sanitized live smoke
+        id: smoke
         shell: bash
-        run: python3 scripts/goyabu_live_smoke.py
+        env:
+          CAPTURE_DIR: ${{ runner.temp }}/goyabu-live-capture
+        run: |
+          set +e
+          python3 scripts/goyabu_live_smoke.py
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Encrypt diagnostic capture
+        if: steps.smoke.outputs.exit_code != '0'
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          capture="$RUNNER_TEMP/goyabu-live-capture/episode.html"
+          test -s "$capture"
+          export GNUPGHOME="$RUNNER_TEMP/goyabu-live-gpg"
+          mkdir -p "$GNUPGHOME" "$RUNNER_TEMP/goyabu-live-out"
+          chmod 700 "$GNUPGHOME"
+          gpg --batch --import keys/source-bundles-public.asc
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1=="fpr"{print $10;exit}')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" \
+            --output "$RUNNER_TEMP/goyabu-live-out/episode.html.gpg" --encrypt "$capture"
+
+      - name: Upload encrypted diagnostic capture
+        if: steps.smoke.outputs.exit_code != '0'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-goyabu-live-diagnostic-encrypted
+          path: ${{ runner.temp }}/goyabu-live-out/episode.html.gpg
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Enforce smoke result
+        shell: bash
+        env:
+          EXIT_CODE: ${{ steps.smoke.outputs.exit_code }}
+        run: test "$EXIT_CODE" = "0"
+
+      - name: Remove transient capture
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/goyabu-live-capture" "$RUNNER_TEMP/goyabu-live-gpg" "$RUNNER_TEMP/goyabu-live-out"
