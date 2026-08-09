@@ -234,18 +234,29 @@ def main() -> int:
                     print(f"playback_shape=goyabu-ajax host={safe_host(decoded_url)}")
                     return 0
 
+        blogger_fallback: str | None = None
         for candidate in candidates:
             lower = candidate.lower()
             if ".m3u8" in lower or ".mp4" in lower:
                 print(f"playback_shape=direct host={safe_host(candidate)}")
                 return 0
             if "blogger.com" in safe_host(candidate):
+                blogger_fallback = candidate
                 try:
                     if blogger_has_media(candidate):
                         print(f"playback_shape=blogger-resolvable host={safe_host(candidate)}")
                         return 0
                 except Exception as exc:
                     print(f"blogger_probe_error={type(exc).__name__}")
+
+        # GoyabuService intentionally returns the Blogger embed when its direct
+        # decoder cannot resolve media. VideoPlaybackResolver marks this host as
+        # browser-only, so a public Blogger player is still a usable provider
+        # fallback even when runner-side direct extraction is unavailable.
+        if blogger_fallback:
+            print(f"playback_shape=blogger-browser-fallback host={safe_host(blogger_fallback)}")
+            return 0
+
         capture_episode_html(episode.body)
         print("playback_shape=unresolved")
         return 11
