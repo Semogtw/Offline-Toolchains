@@ -120,12 +120,6 @@ jobs:
           done
           flutter test --no-pub "${tests[@]}"
 
-      - name: Set up Dart 3.12.1
-        if: steps.request.outputs.project == 'goanime'
-        uses: dart-lang/setup-dart@v1
-        with:
-          sdk: 3.12.1
-
       - name: Check manga shell formatting
         id: shell_format
         if: steps.request.outputs.project == 'goanime'
