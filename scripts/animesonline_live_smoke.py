@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -37,7 +38,12 @@ def fetch(url: str, *, referer: str | None = None):
     if referer:
         headers["Referer"] = referer
     request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=20) as response:
+    try:
+        response = urllib.request.urlopen(request, timeout=20)
+    except urllib.error.HTTPError as error:
+        body = error.read(6 * 1024 * 1024).decode("utf-8", errors="replace")
+        return error.code, error.geturl(), error.headers.get("Content-Type", ""), body
+    with response:
         body = response.read(6 * 1024 * 1024).decode("utf-8", errors="replace")
         return response.status, response.geturl(), response.headers.get("Content-Type", ""), body
 
@@ -139,9 +145,6 @@ def main() -> int:
             print(f"playback_shape=direct host={player_host}")
             return 0
         if "blogger.com" in player_host:
-            # AnimesOnlineService reuses AnimeFire's Blogger resolver, including
-            # the same explicit browser-only fallback when direct media cannot
-            # be extracted on the current network.
             print(f"playback_shape=blogger-browser-fallback host={player_host}")
             return 0
 
