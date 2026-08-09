@@ -1,0 +1,44 @@
+name: Validate GoAnime Jikan Local head
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/validate-goanime-jikan-local-head.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout Jikan Local
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: feat/self-hosted-metadata-api-2026-07-30
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: target
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify clean repository text diff
+        working-directory: target
+        run: git diff --check
+
+      - name: Run Jikan infrastructure contracts
+        working-directory: target/infra/jikan
+        run: bash tests/run.sh
+
+      - name: Run Metadata API tests
+        working-directory: target/services/metadata-api
+        run: npm test
