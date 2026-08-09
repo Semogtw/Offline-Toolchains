@@ -1,0 +1,150 @@
+name: Run GoAnime manga staging private CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-staging/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-staging-private-ci
+  cancel-in-progress: false
+
+jobs:
+  staging:
+    name: GoAnime manga evidence and canonical staging
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision once
+        id: request
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-staging/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch requested < "toolchain-control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          if [[ "$requested" == "latest" ]]; then
+            remote="https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git"
+            resolved="$(git ls-remote "$remote" refs/heads/feature/manga-platform | cut -f1)"
+          else
+            resolved="$requested"
+          fi
+          [[ "$resolved" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$resolved" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout resolved private revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Run staging gates safely
+        working-directory: private-source
+        shell: bash
+        run: |
+          failures=()
+          run_gate() {
+            local label="$1"
+            shift
+            if "$@" >"/tmp/staging-${label}.log" 2>&1; then
+              echo "${label}=success"
+            else
+              echo "${label}=failure"
+              failures+=("$label")
+            fi
+          }
+
+          run_gate http flutter test --no-pub test/services/manga/manga_http_client_test.dart
+          run_gate astratoons flutter test --no-pub test/services/manga/providers/astratoons_manga_provider_test.dart
+          run_gate hqnow flutter test --no-pub test/services/manga/providers/hqnow_manga_provider_test.dart
+          run_gate capitoons flutter test --no-pub test/services/manga/providers/capitoons_manga_provider_test.dart
+          run_gate mangaonline flutter test --no-pub test/services/manga/providers/mangaonline_manga_provider_test.dart
+          run_gate ninjascan flutter test --no-pub test/services/manga/providers/ninja_scan_manga_provider_test.dart
+          run_gate readability flutter test --no-pub test/services/manga/manga_readability_verifier_test.dart
+          run_gate live_evidence flutter test --no-pub test/tools/manga/manga_live_provider_evidence_test.dart
+          run_gate evidence_writer flutter test --no-pub test/tools/manga/manga_live_provider_evidence_writer_test.dart
+          run_gate evidence_batch flutter test --no-pub test/tools/manga/manga_live_provider_evidence_batch_test.dart
+          run_gate evidence_clusterer flutter test --no-pub test/tools/manga/manga_live_evidence_clusterer_test.dart
+          run_gate canonical_draft flutter test --no-pub test/tools/manga/manga_canonical_work_draft_test.dart
+          run_gate canonical_id_ledger flutter test --no-pub test/tools/manga/manga_canonical_id_ledger_test.dart
+          run_gate production_policy flutter test --no-pub test/tools/manga/manga_production_catalog_policy_test.dart
+          run_gate planned_accounting flutter test --no-pub test/architecture/manga_planned_provider_definitions_test.dart
+
+          if dart format --output=none --set-exit-if-changed \
+            lib/services/manga/manga_http_client.dart \
+            lib/services/manga/providers \
+            test/services/manga/manga_http_client_test.dart \
+            test/services/manga/providers \
+            tools/manga/manga_live_provider_audit.dart \
+            tools/manga/manga_live_provider_evidence.dart \
+            tools/manga/manga_live_provider_evidence_writer.dart \
+            tools/manga/manga_live_provider_evidence_batch.dart \
+            tools/manga/manga_live_evidence_clusterer.dart \
+            tools/manga/manga_canonical_work_draft.dart \
+            tools/manga/manga_canonical_id_ledger.dart \
+            tools/manga/collect_planned_manga_live_evidence.dart \
+            test/tools/manga/manga_live_provider_evidence_test.dart \
+            test/tools/manga/manga_live_provider_evidence_writer_test.dart \
+            test/tools/manga/manga_live_provider_evidence_batch_test.dart \
+            test/tools/manga/manga_live_evidence_clusterer_test.dart \
+            test/tools/manga/manga_canonical_work_draft_test.dart \
+            test/tools/manga/manga_canonical_id_ledger_test.dart \
+            test/tools/manga/manga_production_catalog_policy_test.dart \
+            test/architecture/manga_planned_provider_definitions_test.dart >/dev/null 2>&1; then
+            echo "format=success"
+          else
+            echo "format=failure"
+            failures+=("format")
+          fi
+
+          rm -f /tmp/staging-*.log
+          if ((${#failures[@]} > 0)); then
+            printf 'staging_failures=%s\n' "${failures[*]}"
+            exit 1
+          fi
+
+      - name: Remove private checkout and transient logs
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control" /tmp/staging-*.log
