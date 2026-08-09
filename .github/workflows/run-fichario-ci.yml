@@ -165,6 +165,21 @@ jobs:
         working-directory: public-source
         run: pnpm verify:full
 
+      - name: Print formatting patch after failure
+        if: failure()
+        working-directory: public-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec prettier --write . >/dev/null
+          if git diff --quiet -- .; then
+            echo "No Prettier formatting diff was produced."
+          else
+            echo "::group::Prettier formatting patch"
+            git diff --no-ext-diff --no-color -- .
+            echo "::endgroup::"
+          fi
+
       - name: Remove public checkout
         if: always()
         shell: bash
