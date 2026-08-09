@@ -42,7 +42,7 @@ jobs:
           submodules: false
           show-progress: false
 
-      - name: Patch restore Compose preflight order
+      - name: Patch restore and legacy contracts
         working-directory: target
         shell: bash
         run: |
@@ -55,10 +55,8 @@ jobs:
           marker = "require_command docker\n\n"
           probe = "if ! docker compose version >/dev/null 2>&1; then\n  printf 'Could not verify Docker Compose availability before restore.\\n' >&2\n  exit 74\nfi\n"
           old_probe = "if ! docker compose version >/dev/null; then\n  printf 'Could not verify Docker Compose availability before restore.\\n' >&2\n  exit 74\nfi\n"
-          if text.count(marker) != 1:
-              raise SystemExit('restore.sh require_command docker marker changed')
-          if text.count(old_probe) != 1:
-              raise SystemExit('restore.sh Compose probe block changed')
+          if text.count(marker) != 1 or text.count(old_probe) != 1:
+              raise SystemExit('restore.sh Compose probe boundary changed')
           text = text.replace(marker, marker + probe + '\n', 1)
           text = text.replace(old_probe, '', 1)
           restore.write_text(text, encoding='utf-8')
@@ -78,12 +76,26 @@ jobs:
               new += '  fail \'%s reached Docker beyond the read-only Compose preflight\'\n' % context
               new += 'fi\n'
               if text.count(old) != 1:
-                  raise SystemExit('backup_restore_contract_test.sh assertion changed: ' + old_message)
+                  raise SystemExit('backup restore assertion changed: ' + old_message)
               text = text.replace(old, new, 1)
           contract.write_text(text, encoding='utf-8')
+
+          images = Path('infra/jikan/tests/validate_images_contract_test.sh')
+          text = images.read_text(encoding='utf-8')
+          fake_marker = 'printf \'docker %s\\n\' "$*" >> "${CALL_LOG:?}"\n'
+          fake_probe = 'if [[ "${1:-}" == "compose" && "${2:-}" == "version" ]]; then\n  exit 0\nfi\n'
+          if text.count(fake_marker) != 1:
+              raise SystemExit('validate-images fake Docker marker changed')
+          text = text.replace(fake_marker, fake_marker + fake_probe, 1)
+          old_mktemp = '[[ ! -s "$CALL_LOG" ]] || \\\n  fail \'temporary image listing failure reached Docker\'\n'
+          new_mktemp = 'grep -Fxq \'docker compose version\' "$CALL_LOG" || \\\n  fail \'temporary image listing failure skipped Compose preflight\'\nif grep -Fvx \'docker compose version\' "$CALL_LOG" | grep -q .; then\n  fail \'temporary image listing failure reached Docker beyond the read-only Compose preflight\'\nfi\n'
+          if text.count(old_mktemp) != 1:
+              raise SystemExit('validate-images mktemp Docker assertion changed')
+          text = text.replace(old_mktemp, new_mktemp, 1)
+          images.write_text(text, encoding='utf-8')
           PY
           git diff --check
-          git diff -- infra/jikan/scripts/restore.sh infra/jikan/tests/backup_restore_contract_test.sh
+          git diff -- infra/jikan/scripts/restore.sh infra/jikan/tests/backup_restore_contract_test.sh infra/jikan/tests/validate_images_contract_test.sh
 
       - name: Install PHP CLI for indexer contracts
         shell: bash
@@ -96,13 +108,15 @@ jobs:
           php -v | head -n1
           node --version
 
-      - name: Run focused restore contracts
+      - name: Run focused changed contracts
         working-directory: target/infra/jikan
         shell: bash
         run: |
           set -euo pipefail
           bash tests/restore_compose_preflight_order_contract_test.sh
           bash tests/backup_restore_contract_test.sh
+          bash tests/validate_images_compose_preflight_contract_test.sh
+          bash tests/validate_images_contract_test.sh
 
       - name: Run Jikan infrastructure contracts
         working-directory: target/infra/jikan
@@ -118,7 +132,7 @@ jobs:
           set -euo pipefail
           npm test
 
-      - name: Commit and push verified restore fix
+      - name: Commit and push verified fixes
         working-directory: target
         shell: bash
         run: |
@@ -129,6 +143,6 @@ jobs:
           fi
           git config user.name 'Arthur Almeida'
           git config user.email 'arthurgva1602@gmail.com'
-          git add infra/jikan/scripts/restore.sh infra/jikan/tests/backup_restore_contract_test.sh
-          git commit -m 'fix(jikan): probe compose before restore secret transaction'
+          git add infra/jikan/scripts/restore.sh infra/jikan/tests/backup_restore_contract_test.sh infra/jikan/tests/validate_images_contract_test.sh
+          git commit -m 'fix(jikan): close preflight contract regressions'
           git push origin HEAD:"$TARGET_BRANCH"
