@@ -31,6 +31,16 @@ grep -Fq 'database_gate=executed' "$builder"
 ! grep -Fq 'database_gate_note=Supabase CLI is included; local DB tests still require Docker' "$builder"
 grep -Fq 'postgresql-client' "$workflow"
 
+# Supabase CLI 2.111.0 is a paired shim + legacy Go binary. The official release
+# tarball must be checksum-verified and both executables must stay co-located in
+# the runner and portable bundle so delegated commands such as `db reset` work.
+grep -Fq 'supabase_${SUPABASE_VERSION}_linux_amd64.tar.gz' "$workflow"
+grep -Fq 'checksums.txt' "$workflow"
+grep -Fq 'sha256sum --check' "$workflow"
+grep -Fq 'supabase-go' "$workflow"
+grep -Fq '"$root/supabase/bin/supabase-go"' "$builder"
+grep -Fq 'export SUPABASE_GO_BINARY="$root/supabase/bin/supabase-go"' "$builder"
+
 grep -Fq 'validation_status=' "$builder"
 grep -Fq 'validation_failures=' "$builder"
 grep -Fq 'echo "validation_status=$validation_status"' "$builder"
