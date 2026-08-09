@@ -80,6 +80,10 @@ jobs:
         working-directory: private-source
         run: flutter pub get >/dev/null 2>&1
 
+      - name: Validate Manga Online structure analyzer
+        working-directory: private-source
+        run: flutter test --no-pub test/tools/manga/audit_mangaonline_structure_test.dart
+
       - name: Diagnose HQ Now by sanitized stage
         id: hqnow
         continue-on-error: true
@@ -92,6 +96,12 @@ jobs:
         working-directory: private-source
         run: dart run tools/manga/audit_planned_provider_stage.dart ptbr.mangaonline
 
+      - name: Diagnose Manga Online sanitized HTML structure
+        id: mangaonline_structure
+        continue-on-error: true
+        working-directory: private-source
+        run: dart run tools/manga/audit_mangaonline_structure.dart
+
       - name: Diagnose Ninja Scan by sanitized stage
         id: ninjascan
         continue-on-error: true
@@ -103,10 +113,12 @@ jobs:
         env:
           HQNOW: ${{ steps.hqnow.outcome }}
           MANGAONLINE: ${{ steps.mangaonline.outcome }}
+          MANGAONLINE_STRUCTURE: ${{ steps.mangaonline_structure.outcome }}
           NINJASCAN: ${{ steps.ninjascan.outcome }}
         run: |
           echo "hqnow_stage_audit=$HQNOW"
           echo "mangaonline_stage_audit=$MANGAONLINE"
+          echo "mangaonline_structure_audit=$MANGAONLINE_STRUCTURE"
           echo "ninjascan_stage_audit=$NINJASCAN"
 
       - name: Remove private checkout
