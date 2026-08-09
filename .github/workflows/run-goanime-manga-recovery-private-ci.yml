@@ -19,7 +19,7 @@ jobs:
     name: GoAnime manga recovered stack
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 45
 
     steps:
       - name: Require private repository token
@@ -56,32 +56,106 @@ jobs:
           flutter pub get >/dev/null
 
       - name: Test bundled readable catalog
+        id: bundled
+        continue-on-error: true
         working-directory: private-source
-        run: flutter test --no-pub test/services/manga/manga_bundled_catalog_source_test.dart
+        run: flutter test --no-pub test/services/manga/manga_bundled_catalog_source_test.dart >/tmp/manga-bundled.log 2>&1
+
+      - name: Test bundled metadata resolver
+        id: metadata
+        continue-on-error: true
+        working-directory: private-source
+        run: flutter test --no-pub test/services/manga/manga_bundled_metadata_resolver_test.dart >/tmp/manga-metadata.log 2>&1
 
       - name: Test readiness gate
+        id: readiness
+        continue-on-error: true
         working-directory: private-source
-        run: flutter test --no-pub test/services/manga/manga_catalog_readiness_controller_test.dart
+        run: flutter test --no-pub test/services/manga/manga_catalog_readiness_controller_test.dart >/tmp/manga-readiness.log 2>&1
 
       - name: Test platform runtime composition
+        id: platform
+        continue-on-error: true
         working-directory: private-source
-        run: flutter test --no-pub test/services/manga/manga_platform_runtime_test.dart
+        run: flutter test --no-pub test/services/manga/manga_platform_runtime_test.dart >/tmp/manga-platform.log 2>&1
+
+      - name: Test deferred runtime service
+        id: runtime_service
+        continue-on-error: true
+        working-directory: private-source
+        run: flutter test --no-pub test/services/manga/manga_platform_runtime_service_test.dart >/tmp/manga-runtime-service.log 2>&1
 
       - name: Test repository-backed browse owner
+        id: browse_owner
+        continue-on-error: true
         working-directory: private-source
-        run: flutter test --no-pub test/services/manga/manga_repository_browse_data_source_test.dart
+        run: flutter test --no-pub test/services/manga/manga_repository_browse_data_source_test.dart >/tmp/manga-browse-owner.log 2>&1
+
+      - name: Test canonical details data source
+        id: details_source
+        continue-on-error: true
+        working-directory: private-source
+        run: flutter test --no-pub test/services/manga/manga_details_data_source_test.dart >/tmp/manga-details-source.log 2>&1
 
       - name: Test browse views
+        id: browse_views
+        continue-on-error: true
         working-directory: private-source
-        run: flutter test --no-pub test/widgets/manga/manga_browse_views_test.dart
+        run: flutter test --no-pub test/widgets/manga/manga_browse_views_test.dart >/tmp/manga-browse-views.log 2>&1
+
+      - name: Test categories ordering and origin filters
+        id: categories_sort
+        continue-on-error: true
+        working-directory: private-source
+        run: flutter test --no-pub test/widgets/manga/manga_browse_categories_sort_test.dart >/tmp/manga-categories-sort.log 2>&1
 
       - name: Test readable search view
+        id: search_view
+        continue-on-error: true
         working-directory: private-source
-        run: flutter test --no-pub test/widgets/manga/manga_readable_search_view_test.dart
+        run: flutter test --no-pub test/widgets/manga/manga_readable_search_view_test.dart >/tmp/manga-search-view.log 2>&1
 
       - name: Test canonical details view
+        id: details_view
+        continue-on-error: true
         working-directory: private-source
-        run: flutter test --no-pub test/widgets/manga/manga_canonical_details_view_test.dart
+        run: flutter test --no-pub test/widgets/manga/manga_canonical_details_view_test.dart >/tmp/manga-details-view.log 2>&1
+
+      - name: Test catalog screen integration
+        id: screens
+        continue-on-error: true
+        working-directory: private-source
+        run: flutter test --no-pub test/widgets/manga/manga_catalog_screen_integration_test.dart >/tmp/manga-screens.log 2>&1
+
+      - name: Test runtime-driven default screens
+        id: runtime_screens
+        continue-on-error: true
+        working-directory: private-source
+        run: flutter test --no-pub test/widgets/manga/manga_runtime_catalog_screen_test.dart >/tmp/manga-runtime-screens.log 2>&1
+
+      - name: Test deferred runtime provider
+        id: runtime_provider
+        continue-on-error: true
+        working-directory: private-source
+        run: flutter test --no-pub test/widgets/manga/manga_platform_runtime_provider_test.dart >/tmp/manga-runtime-provider.log 2>&1
+
+      - name: Test default details navigation
+        id: default_nav
+        continue-on-error: true
+        working-directory: private-source
+        run: flutter test --no-pub test/widgets/manga/manga_default_details_navigation_test.dart >/tmp/manga-default-nav.log 2>&1
+
+      - name: Test bootstrap runtime wiring guard
+        id: bootstrap_wiring
+        continue-on-error: true
+        working-directory: private-source
+        shell: bash
+        run: |
+          if [ -f test/architecture/manga_bootstrap_runtime_wiring_test.dart ]; then
+            flutter test --no-pub test/architecture/manga_bootstrap_runtime_wiring_test.dart >/tmp/manga-bootstrap.log 2>&1
+          else
+            exit 1
+          fi
 
       - name: Check recovery formatting safely
         id: format
@@ -90,18 +164,80 @@ jobs:
         shell: bash
         run: |
           dart format --output=none --set-exit-if-changed \
+            lib/app/bootstrap.dart \
             lib/services/manga \
+            lib/screens/manga \
             lib/widgets/manga \
             test/services/manga \
-            test/widgets/manga >/dev/null 2>&1
+            test/widgets/manga \
+            test/architecture/manga_bootstrap_runtime_wiring_test.dart >/dev/null 2>&1
 
-      - name: Report formatting drift safely
-        if: steps.format.outcome == 'failure'
-        run: |
-          echo "Recovered manga stack has formatter drift."
-          echo "Private source paths and diffs are intentionally omitted."
-
-      - name: Remove private checkout
+      - name: Report recovered stack status safely
         if: always()
         shell: bash
-        run: rm -rf "$GITHUB_WORKSPACE/private-source"
+        env:
+          BUNDLED: ${{ steps.bundled.outcome }}
+          METADATA: ${{ steps.metadata.outcome }}
+          READINESS: ${{ steps.readiness.outcome }}
+          PLATFORM: ${{ steps.platform.outcome }}
+          RUNTIME_SERVICE: ${{ steps.runtime_service.outcome }}
+          BROWSE_OWNER: ${{ steps.browse_owner.outcome }}
+          DETAILS_SOURCE: ${{ steps.details_source.outcome }}
+          BROWSE_VIEWS: ${{ steps.browse_views.outcome }}
+          CATEGORIES_SORT: ${{ steps.categories_sort.outcome }}
+          SEARCH_VIEW: ${{ steps.search_view.outcome }}
+          DETAILS_VIEW: ${{ steps.details_view.outcome }}
+          SCREENS: ${{ steps.screens.outcome }}
+          RUNTIME_SCREENS: ${{ steps.runtime_screens.outcome }}
+          RUNTIME_PROVIDER: ${{ steps.runtime_provider.outcome }}
+          DEFAULT_NAV: ${{ steps.default_nav.outcome }}
+          BOOTSTRAP_WIRING: ${{ steps.bootstrap_wiring.outcome }}
+          FORMAT: ${{ steps.format.outcome }}
+        run: |
+          printf '%s\n' \
+            "bundled=$BUNDLED" \
+            "metadata=$METADATA" \
+            "readiness=$READINESS" \
+            "platform=$PLATFORM" \
+            "runtime_service=$RUNTIME_SERVICE" \
+            "browse_owner=$BROWSE_OWNER" \
+            "details_source=$DETAILS_SOURCE" \
+            "browse_views=$BROWSE_VIEWS" \
+            "categories_sort=$CATEGORIES_SORT" \
+            "search_view=$SEARCH_VIEW" \
+            "details_view=$DETAILS_VIEW" \
+            "screens=$SCREENS" \
+            "runtime_screens=$RUNTIME_SCREENS" \
+            "runtime_provider=$RUNTIME_PROVIDER" \
+            "default_nav=$DEFAULT_NAV" \
+            "bootstrap_wiring=$BOOTSTRAP_WIRING" \
+            "format=$FORMAT"
+
+      - name: Fail if any functional recovery gate failed
+        if: >-
+          steps.bundled.outcome == 'failure' ||
+          steps.metadata.outcome == 'failure' ||
+          steps.readiness.outcome == 'failure' ||
+          steps.platform.outcome == 'failure' ||
+          steps.runtime_service.outcome == 'failure' ||
+          steps.browse_owner.outcome == 'failure' ||
+          steps.details_source.outcome == 'failure' ||
+          steps.browse_views.outcome == 'failure' ||
+          steps.categories_sort.outcome == 'failure' ||
+          steps.search_view.outcome == 'failure' ||
+          steps.details_view.outcome == 'failure' ||
+          steps.screens.outcome == 'failure' ||
+          steps.runtime_screens.outcome == 'failure' ||
+          steps.runtime_provider.outcome == 'failure' ||
+          steps.default_nav.outcome == 'failure' ||
+          steps.bootstrap_wiring.outcome == 'failure'
+        run: exit 1
+
+      - name: Report formatter drift safely
+        if: steps.format.outcome == 'failure'
+        run: echo "Recovered manga stack has formatter drift; private paths and diffs are omitted."
+
+      - name: Remove private checkout and transient logs
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" /tmp/manga-*.log
