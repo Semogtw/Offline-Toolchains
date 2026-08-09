@@ -33,7 +33,7 @@ jobs:
           test "$ACTOR" = "$OWNER"
 
       - name: Checkout trusted request validator
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: main
           path: trusted-source
@@ -42,7 +42,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Checkout request revision
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.sha }}
           path: request-source
