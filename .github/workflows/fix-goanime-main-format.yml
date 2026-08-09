@@ -12,8 +12,25 @@ permissions:
 jobs:
   test:
     if: github.actor == github.repository_owner
+    name: test (${{ matrix.target }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - test/architecture
+          - test/core
+          - test/l10n
+          - test/models
+          - test/platform
+          - test/screens
+          - test/services
+          - test/theme
+          - test/tools
+          - test/utils
+          - test/widgets
+          - test/widget_test.dart
     steps:
       - name: Checkout exact private GoAnime revision
         uses: actions/checkout@v6
@@ -33,16 +50,5 @@ jobs:
       - name: Resolve packages
         run: flutter pub get
 
-      - name: Run full tests with expanded diagnostics
-        shell: bash
-        run: |
-          set -uo pipefail
-          flutter test --reporter expanded --concurrency=1 --test-randomize-ordering-seed=random 2>&1 | tee /tmp/goanime-tests.log
-          status=${PIPESTATUS[0]}
-          echo '--- FAILURE SUMMARY START ---'
-          grep -n -E -B 8 -A 20 'FAILED|Test failed|Some tests failed|Expected:|Actual:|Error:|Exception|Failure' /tmp/goanime-tests.log || true
-          echo '--- FAILURE SUMMARY END ---'
-          echo '--- LAST 250 LINES START ---'
-          tail -n 250 /tmp/goanime-tests.log
-          echo '--- LAST 250 LINES END ---'
-          exit "$status"
+      - name: Run module tests
+        run: flutter test "${{ matrix.target }}" --reporter expanded --test-randomize-ordering-seed=random
