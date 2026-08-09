@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Small live smoke probe for the public Goyabu source.
+"""Live smoke probe for the public Goyabu source.
 
-The probe prints only stage/status/host information. When ``CAPTURE_DIR`` is
-set and playback discovery fails, the public episode HTML is written only to
-the ephemeral runner directory so the workflow can encrypt it before upload.
+Only stage/status/host information is printed. Failed-page captures stay in
+the ephemeral runner directory so the workflow can encrypt them before upload.
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ import urllib.request
 from dataclasses import dataclass
 
 BASE = "https://goyabu.io"
-QUERY = "one piece"
+QUERY = "black clover dublado"
 UA = (
     "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36"
@@ -28,7 +27,7 @@ NONCE_RE = re.compile(r'"nonce"\s*:\s*"([a-f0-9]+)"', re.I)
 EPISODE_URL_RES = [
     re.compile(r'"link"\s*:\s*"([^"]+)"', re.I),
     re.compile(r"link\s*:\s*['\"]([^'\"]+)['\"]", re.I),
-    re.compile(r'href=["\']([^"\']*(?:\?p=|/episode/)[^"\']*)["\']', re.I),
+    re.compile(r'href=["\']([^"\']*(?:/episodio/|/episode/)[^"\']*)["\']', re.I),
 ]
 PLAYERS_DATA_RE = re.compile(r"var\s+playersData\s*=\s*(\[[\s\S]*?\])\s*;", re.I)
 BLOGGER_RE = re.compile(r"https?://[^\s\"']*blogger\.com/[^\s\"']+", re.I)
@@ -66,6 +65,10 @@ def resolve(base: str, value: str) -> str:
     return urllib.parse.urljoin(base, value.replace(r"\/", "/"))
 
 
+def normalize_title(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+
 def capture_episode_html(body: str) -> None:
     capture_dir = os.environ.get("CAPTURE_DIR", "").strip()
     if not capture_dir:
@@ -73,6 +76,15 @@ def capture_episode_html(body: str) -> None:
     output = Path(capture_dir)
     output.mkdir(parents=True, exist_ok=True)
     (output / "episode.html").write_text(body, encoding="utf-8")
+
+
+def choose_search_result(payload: dict) -> dict | None:
+    results = [v for v in payload.values() if isinstance(v, dict) and v.get("url")]
+    if not results:
+        return None
+    wanted = normalize_title(QUERY)
+    exact = next((v for v in results if normalize_title(str(v.get("title", ""))) == wanted), None)
+    return exact or results[0]
 
 
 def first_episode_url(page_url: str, body: str) -> str | None:
@@ -95,22 +107,13 @@ def player_candidates(episode_url: str, body: str) -> list[str]:
             data = []
         if isinstance(data, list):
             for item in data:
-                if not isinstance(item, dict):
-                    continue
-                value = str(item.get("url") or "").strip()
-                if value:
-                    candidates.append(resolve(episode_url, value))
-
+                if isinstance(item, dict):
+                    value = str(item.get("url") or "").strip()
+                    if value:
+                        candidates.append(resolve(episode_url, value))
     candidates.extend(resolve(episode_url, m.group(0)) for m in BLOGGER_RE.finditer(body))
     candidates.extend(resolve(episode_url, m.group(0)) for m in MEDIA_RE.finditer(body))
-
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        if candidate not in seen:
-            seen.add(candidate)
-            deduped.append(candidate)
-    return deduped
+    return list(dict.fromkeys(candidates))
 
 
 def blogger_has_media(player_url: str) -> bool:
@@ -138,7 +141,6 @@ def main() -> int:
         print(f"home status={home.status} host={safe_host(home.url)}")
         if home.status != 200:
             return 2
-
         nonce_match = NONCE_RE.search(home.body)
         if not nonce_match:
             print("nonce=missing")
@@ -151,12 +153,11 @@ def main() -> int:
         print(f"search status={search.status} host={safe_host(search.url)}")
         if search.status != 200:
             return 4
-
         payload = json.loads(search.body)
         if not isinstance(payload, dict):
             print("search_shape=unexpected")
             return 5
-        result = next((v for v in payload.values() if isinstance(v, dict) and v.get("url")), None)
+        result = choose_search_result(payload)
         if not result:
             print("search_result=missing")
             return 6
@@ -169,6 +170,7 @@ def main() -> int:
             return 7
         episode_url = first_episode_url(anime.url, anime.body)
         if not episode_url:
+            capture_episode_html(anime.body)
             print("episode=missing")
             return 8
         print(f"episode=present host={safe_host(episode_url)}")
@@ -177,14 +179,12 @@ def main() -> int:
         print(f"episode_page status={episode.status} host={safe_host(episode.url)}")
         if episode.status != 200:
             return 9
-
         candidates = player_candidates(episode.url, episode.body)
         if not candidates:
             capture_episode_html(episode.body)
             print("player=missing")
             return 10
         print(f"player=present count={len(candidates)} hosts={','.join(sorted({safe_host(c) for c in candidates}))}")
-
         for candidate in candidates:
             lower = candidate.lower()
             if ".m3u8" in lower or ".mp4" in lower:
@@ -195,13 +195,12 @@ def main() -> int:
                     if blogger_has_media(candidate):
                         print(f"playback_shape=blogger-resolvable host={safe_host(candidate)}")
                         return 0
-                except Exception as exc:  # noqa: BLE001 - live probe reports only type.
+                except Exception as exc:
                     print(f"blogger_probe_error={type(exc).__name__}")
-
         capture_episode_html(episode.body)
         print("playback_shape=unresolved")
         return 11
-    except Exception as exc:  # noqa: BLE001 - sanitized CI diagnostic.
+    except Exception as exc:
         print(f"probe_error={type(exc).__name__}")
         return 1
 
