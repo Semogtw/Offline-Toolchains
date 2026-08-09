@@ -1,0 +1,124 @@
+name: Run GoAnime analyzer diagnostic
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-analyzer/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-analyzer-diagnostic
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze exact private GoAnime ref
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-analyzer/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "main"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: flutter pub get >/dev/null
+
+      - name: Capture analyzer output
+        id: analyze
+        working-directory: private-source
+        shell: bash
+        run: |
+          set +e
+          flutter analyze --no-pub > "$RUNNER_TEMP/goanime-analyze.log" 2>&1
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Encrypt analyzer output
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          export GNUPGHOME="$RUNNER_TEMP/goanime-analyze-gpg"
+          mkdir -p "$GNUPGHOME" "$RUNNER_TEMP/goanime-analyze-out"
+          chmod 700 "$GNUPGHOME"
+          gpg --batch --import "$GITHUB_WORKSPACE/toolchain-control/keys/source-bundles-public.asc"
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1=="fpr"{print $10;exit}')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" \
+            --output "$RUNNER_TEMP/goanime-analyze-out/flutter-analyze.log.gpg" \
+            --encrypt "$RUNNER_TEMP/goanime-analyze.log"
+          printf '%s\n' '${{ steps.request.outputs.sha }}' > "$RUNNER_TEMP/goanime-analyze-out/source-ref.txt"
+          printf '%s\n' '${{ steps.analyze.outputs.exit_code }}' > "$RUNNER_TEMP/goanime-analyze-out/exit-code.txt"
+
+      - name: Upload encrypted analyzer output
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-analyzer-diagnostic-encrypted
+          path: ${{ runner.temp }}/goanime-analyze-out
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Enforce analyzer result
+        shell: bash
+        env:
+          EXIT_CODE: ${{ steps.analyze.outputs.exit_code }}
+        run: test "$EXIT_CODE" = "0"
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control" "$RUNNER_TEMP/goanime-analyze.log" "$RUNNER_TEMP/goanime-analyze-gpg" "$RUNNER_TEMP/goanime-analyze-out"
