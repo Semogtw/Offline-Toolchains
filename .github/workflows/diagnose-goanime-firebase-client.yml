@@ -1,0 +1,110 @@
+name: Diagnose GoAnime Firebase client identifiers
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/diagnose-goanime-firebase-client.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+      PRIVATE_JOB_ID: '93030315271'
+    steps:
+      - name: Checkout trusted toolchain source
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: trusted-source
+          persist-credentials: false
+
+      - name: Fetch private successful job logs and extract client identifiers
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPOSITORIES_TOKEN"
+          work="$RUNNER_TEMP/firebase-diagnostic"
+          mkdir -p "$work"
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer $PRIVATE_REPOSITORIES_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/Semogtw/goanime-mobile/actions/jobs/$PRIVATE_JOB_ID/logs" \
+            -o "$work/job-logs"
+
+          file "$work/job-logs" > "$work/file-type.txt"
+          if unzip -tq "$work/job-logs" >/dev/null 2>&1; then
+            mkdir -p "$work/unpacked"
+            unzip -qq "$work/job-logs" -d "$work/unpacked"
+            cat "$work"/unpacked/* > "$work/logs.txt" 2>/dev/null || true
+          else
+            cp "$work/job-logs" "$work/logs.txt"
+          fi
+
+          python3 - "$work/logs.txt" "$work/extracted.json" <<'PY'
+          import json, re, sys
+          text = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+          result = {
+            'android_app_ids': sorted(set(re.findall(r'1:\d+:android:[0-9a-fA-F]+', text))),
+            'project_numbers': sorted(set(re.findall(r'(?i)(?:project[_ -]?number|messagingSenderId|gcm_defaultSenderId)[^0-9]{0,80}([0-9]{6,})', text))),
+            'google_app_id_lines': [],
+            'sender_lines': [],
+            'crashlytics_lines': [],
+          }
+          for raw in text.splitlines():
+              line = raw.strip()
+              lower = line.lower()
+              if 'google_app_id' in lower or 'mobilesdk_app_id' in lower:
+                  result['google_app_id_lines'].append(line[:1000])
+              if 'gcm_defaultsenderid' in lower or 'messagingsenderid' in lower or 'project_number' in lower:
+                  result['sender_lines'].append(line[:1000])
+              if 'crashlytics' in lower and any(token in lower for token in ('app id', 'appid', 'firebase', 'mapping', 'upload')):
+                  result['crashlytics_lines'].append(line[:1000])
+          for key in ('google_app_id_lines','sender_lines','crashlytics_lines'):
+              result[key] = result[key][:200]
+          with open(sys.argv[2], 'w', encoding='utf-8') as f:
+              json.dump(result, f, indent=2, ensure_ascii=False)
+          print('Diagnostic extracted without printing identifiers.')
+          print('android_app_ids_count=' + str(len(result['android_app_ids'])))
+          print('project_numbers_count=' + str(len(result['project_numbers'])))
+          print('google_app_id_lines_count=' + str(len(result['google_app_id_lines'])))
+          print('sender_lines_count=' + str(len(result['sender_lines'])))
+          print('crashlytics_lines_count=' + str(len(result['crashlytics_lines'])))
+          PY
+
+      - name: Encrypt diagnostic
+        id: encrypt
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/firebase-diagnostic"
+          out="$RUNNER_TEMP/firebase-diagnostic-transfer"
+          gpg_home="$RUNNER_TEMP/firebase-diagnostic-gpg"
+          mkdir -p "$out" "$gpg_home"
+          chmod 700 "$gpg_home"
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import "$GITHUB_WORKSPACE/trusted-source/keys/source-bundles-public.asc"
+          fp="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1=="fpr"{print $10;exit}')"
+          test "$fp" = "$EXPECTED_FINGERPRINT"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" \
+            --output "$out/firebase-client-diagnostic.json.gpg" --encrypt "$work/extracted.json"
+          rm -rf "$work" "$gpg_home"
+          echo "dir=$out" >> "$GITHUB_OUTPUT"
+
+      - name: Upload encrypted diagnostic
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-firebase-client-diagnostic-encrypted
+          path: ${{ steps.encrypt.outputs.dir }}
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
