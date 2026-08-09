@@ -75,11 +75,11 @@ jobs:
         with:
           version: ${{ env.SUPABASE_VERSION }}
 
-      - name: Install archive tooling
+      - name: Install archive and database tooling
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends zstd
+          sudo apt-get install --yes --no-install-recommends zstd postgresql-client
 
       - name: Validate bundle builder syntax
         run: bash -n scripts/build-fichario-offline.sh
