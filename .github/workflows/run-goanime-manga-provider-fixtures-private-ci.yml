@@ -19,7 +19,7 @@ jobs:
     name: GoAnime manga provider fixtures
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Require private repository token
@@ -71,39 +71,45 @@ jobs:
         working-directory: private-source
         run: flutter pub get >/dev/null 2>&1
 
-      - name: Test Astratoons deterministic fixtures safely
-        id: astratoons
-        continue-on-error: true
+      - name: Run provider fixture gates safely
         working-directory: private-source
-        run: flutter test --no-pub test/services/manga/providers/astratoons_manga_provider_test.dart >/tmp/astratoons.log 2>&1
-
-      - name: Test readability verifier against provider contract safely
-        id: readability
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/services/manga/manga_readability_verifier_test.dart >/tmp/readability.log 2>&1
-
-      - name: Check provider formatting safely
-        id: format
-        continue-on-error: true
-        working-directory: private-source
-        run: dart format --output=none --set-exit-if-changed lib/services/manga/providers/astratoons_manga_provider.dart test/services/manga/providers/astratoons_manga_provider_test.dart >/dev/null 2>&1
-
-      - name: Report provider fixture status safely
-        if: always()
-        env:
-          ASTRATOONS: ${{ steps.astratoons.outcome }}
-          READABILITY: ${{ steps.readability.outcome }}
-          FORMAT: ${{ steps.format.outcome }}
+        shell: bash
         run: |
-          echo "astratoons=$ASTRATOONS"
-          echo "readability=$READABILITY"
-          echo "format=$FORMAT"
+          failures=()
+          run_gate() {
+            local label="$1"
+            shift
+            if "$@" >"/tmp/provider-${label}.log" 2>&1; then
+              echo "${label}=success"
+            else
+              echo "${label}=failure"
+              failures+=("$label")
+            fi
+          }
 
-      - name: Fail on functional provider fixture failure
-        if: ${{ steps.astratoons.outcome == 'failure' || steps.readability.outcome == 'failure' }}
-        run: exit 1
+          run_gate http flutter test --no-pub test/services/manga/manga_http_client_test.dart
+          run_gate astratoons flutter test --no-pub test/services/manga/providers/astratoons_manga_provider_test.dart
+          run_gate hqnow flutter test --no-pub test/services/manga/providers/hqnow_manga_provider_test.dart
+          run_gate capitoons flutter test --no-pub test/services/manga/providers/capitoons_manga_provider_test.dart
+          run_gate readability flutter test --no-pub test/services/manga/manga_readability_verifier_test.dart
+
+          if dart format --output=none --set-exit-if-changed \
+            lib/services/manga/manga_http_client.dart \
+            lib/services/manga/providers \
+            test/services/manga/manga_http_client_test.dart \
+            test/services/manga/providers >/dev/null 2>&1; then
+            echo "format=success"
+          else
+            echo "format=failure"
+            failures+=("format")
+          fi
+
+          rm -f /tmp/provider-*.log
+          if ((${#failures[@]} > 0)); then
+            printf 'provider_fixture_failures=%s\n' "${failures[*]}"
+            exit 1
+          fi
 
       - name: Remove private checkout and transient logs
         if: always()
-        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control" /tmp/astratoons.log /tmp/readability.log
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control" /tmp/provider-*.log
