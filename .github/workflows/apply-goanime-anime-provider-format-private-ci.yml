@@ -1,4 +1,4 @@
-name: Apply GoAnime anime provider formatting privately
+name: Prepare GoAnime anime provider formatting privately
 
 on:
   push:
@@ -69,37 +69,56 @@ jobs:
           flutter-version: 3.44.1
           cache: true
 
-      - name: Apply formatter and push only as fast-forward
+      - name: Format exact private revision
         working-directory: private-source
         shell: bash
-        env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
         run: |
           set -euo pipefail
-          remote_url="https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git"
-          current_remote="$(git ls-remote "$remote_url" refs/heads/main | cut -f1)"
-          test "$current_remote" = "$EXPECTED_SHA"
-
           dart format lib test packages tools >/dev/null
           git diff --check
 
-          if git diff --quiet; then
-            echo "format_change=none"
-            exit 0
+          work="$RUNNER_TEMP/goanime-anime-provider-format"
+          mkdir -p "$work"
+          git diff --name-only -- lib test packages tools > "$work/files.txt"
+          if test ! -s "$work/files.txt"; then
+            printf '%s\n' 'none' > "$work/files.txt"
+            mkdir -p "$work/empty"
+            printf '%s\n' 'No formatting changes required.' > "$work/empty/README.txt"
+            tar -czf "$work/formatted-files.tar.gz" -C "$work/empty" README.txt
+          else
+            tar -czf "$work/formatted-files.tar.gz" -T "$work/files.txt"
           fi
+          printf '%s\n' '${{ steps.request.outputs.sha }}' > "$work/source-ref.txt"
 
-          git add lib test packages tools
-          git config user.name "GoAnime Toolchains"
-          git config user.email "actions@users.noreply.github.com"
-          git commit -m "style(anime): apply provider formatter" >/dev/null
+      - name: Encrypt formatted bundle
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/goanime-anime-provider-format"
+          export GNUPGHOME="$work/gpg"
+          mkdir -p "$GNUPGHOME" "$work/out"
+          chmod 700 "$GNUPGHOME"
+          gpg --batch --import "$GITHUB_WORKSPACE/toolchain-control/keys/source-bundles-public.asc"
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1=="fpr"{print $10;exit}')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" \
+            --output "$work/out/formatted-files.tar.gz.gpg" --encrypt "$work/formatted-files.tar.gz"
+          cp "$work/files.txt" "$work/out/files.txt"
+          cp "$work/source-ref.txt" "$work/out/source-ref.txt"
+          sha256sum "$work/formatted-files.tar.gz" > "$work/out/formatted-files.tar.gz.sha256"
 
-          latest_remote="$(git ls-remote "$remote_url" refs/heads/main | cut -f1)"
-          test "$latest_remote" = "$EXPECTED_SHA"
-          git push "$remote_url" HEAD:refs/heads/main >/dev/null
-          echo "format_change=pushed"
+      - name: Upload encrypted formatting handoff
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-anime-provider-format-encrypted
+          path: ${{ runner.temp }}/goanime-anime-provider-format/out
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
 
       - name: Remove private checkout
         if: always()
         shell: bash
-        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control"
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control" "$RUNNER_TEMP/goanime-anime-provider-format"
