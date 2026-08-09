@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -42,7 +43,12 @@ def fetch(url: str, *, referer: str | None = None):
     if referer:
         headers["Referer"] = referer
     request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=20) as response:
+    try:
+        response = urllib.request.urlopen(request, timeout=20)
+    except urllib.error.HTTPError as error:
+        body = error.read(6 * 1024 * 1024).decode("utf-8", errors="replace")
+        return error.code, error.geturl(), error.headers.get("Content-Type", ""), body
+    with response:
         body = response.read(6 * 1024 * 1024).decode("utf-8", errors="replace")
         return response.status, response.geturl(), response.headers.get("Content-Type", ""), body
 
@@ -166,9 +172,6 @@ def main() -> int:
             print(f"playback_shape=direct host={player_host}")
             return 0
         if "blogger.com" in player_host:
-            # AnimeFireService deliberately returns the Blogger embed itself if
-            # direct extraction is unavailable; the central resolver classifies
-            # it as a browser-only fallback.
             print(f"playback_shape=blogger-browser-fallback host={player_host}")
             return 0
         if "/video/" in urllib.parse.urlparse(player).path.lower():
@@ -183,9 +186,6 @@ def main() -> int:
                 return 0
             return 8
 
-        # Unknown public iframe/player pages remain usable only when the app has
-        # an explicit browser-only classification. AnimeFire currently does not,
-        # so keep the smoke strict here rather than accepting arbitrary embeds.
         print(f"playback_shape=unrecognized host={player_host}")
         return 9
     except Exception as exc:
