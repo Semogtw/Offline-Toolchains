@@ -1,0 +1,37 @@
+name: Run GoAnime Goyabu live smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-goyabu-live/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-goyabu-live-smoke
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Probe public Goyabu playback shape
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout trusted probe
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+          sparse-checkout: scripts/goyabu_live_smoke.py
+          sparse-checkout-cone-mode: false
+          show-progress: false
+
+      - name: Run sanitized live smoke
+        shell: bash
+        run: python3 scripts/goyabu_live_smoke.py
