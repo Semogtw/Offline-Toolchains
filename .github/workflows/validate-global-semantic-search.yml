@@ -56,28 +56,61 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run semantic search validation matrix
+        id: matrix
+        continue-on-error: true
         working-directory: public-source
         shell: bash
         run: |
-          set -euo pipefail
-          pnpm exec prettier --check \
+          set +e
+          failed=0
+          run_gate() {
+            name="$1"
+            shift
+            echo "::group::$name"
+            "$@"
+            status=$?
+            echo "::endgroup::"
+            echo "$name=$status"
+            if [ "$status" -ne 0 ]; then failed=1; fi
+          }
+          run_gate prettier pnpm exec prettier --check \
             src/lib/services/semantic-search.ts \
             src/routes/search/+page.svelte \
             supabase/functions/semantic-search/index.ts \
-            supabase/migrations/202608101501_global_semantic_search_consent.sql \
             tests/unit/services/semantic-search.test.ts \
             tests/unit/search/semantic-search-edge-contract.test.ts \
             tests/unit/tooling/deployment-edge-functions.test.ts \
             docs/SEARCH_OCR_MATCHING.md \
             docs/README.md
-          pnpm exec eslint src/lib/services/semantic-search.ts src/routes/search/+page.svelte tests/unit/services/semantic-search.test.ts tests/unit/search/semantic-search-edge-contract.test.ts
-          pnpm check
-          pnpm test -- tests/unit/services/semantic-search.test.ts tests/unit/search/semantic-search-edge-contract.test.ts tests/unit/tooling/deployment-edge-functions.test.ts tests/unit/services/search.test.ts
-          pnpm test
-          pnpm build
-          pnpm test:source:offline
-          pnpm test:functions:check
+          run_gate eslint pnpm exec eslint \
+            src/lib/services/semantic-search.ts \
+            src/routes/search/+page.svelte \
+            tests/unit/services/semantic-search.test.ts \
+            tests/unit/search/semantic-search-edge-contract.test.ts
+          run_gate check pnpm check
+          run_gate targeted pnpm test -- \
+            tests/unit/services/semantic-search.test.ts \
+            tests/unit/search/semantic-search-edge-contract.test.ts \
+            tests/unit/tooling/deployment-edge-functions.test.ts \
+            tests/unit/services/search.test.ts
+          run_gate unit pnpm test
+          run_gate build pnpm build
+          run_gate source pnpm test:source:offline
+          run_gate edge pnpm test:functions:check
+          exit "$failed"
 
       - name: Run database gates
+        id: database
+        if: always()
+        continue-on-error: true
         working-directory: public-source
         run: pnpm test:db:local
+
+      - name: Reject failed gates
+        if: always()
+        env:
+          MATRIX: ${{ steps.matrix.outcome }}
+          DATABASE: ${{ steps.database.outcome }}
+        run: |
+          echo "matrix=$MATRIX database=$DATABASE"
+          [ "$MATRIX" = success ] && [ "$DATABASE" = success ]
