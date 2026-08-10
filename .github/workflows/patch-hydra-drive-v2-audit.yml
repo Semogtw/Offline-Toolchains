@@ -73,32 +73,44 @@ jobs:
 
           target = Path('src/main/services/cloud-save/google-drive/google-drive-cloud-save-provider-v2-runtime.ts')
           text = target.read_text()
+          old = '''          if (plan.action === "none") {
+            if (remote) {
+              await writeDriveV2SyncedState({
+                game,
+                backup: remote,
+                manifest: archive.v2Manifest,
+              });
+            }
+            return { status: "noop" };
+          }
+'''
+          new = '''          if (plan.action === "none") {
+            if (plan.state === "remote-ahead" && remote) {
+              await this.notifyRemoteNewer(game).catch(() => undefined);
+              return { status: "remote-newer", fileId: remote.id };
+            }
+            if (remote) {
+              await writeDriveV2SyncedState({
+                game,
+                backup: remote,
+                manifest: archive.v2Manifest,
+              });
+            }
+            return { status: "noop" };
+          }
+'''
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'expected exactly one remote-ahead patch match, found {count}')
+          target.write_text(text.replace(old, new, 1))
 
-          replacements = [
-              (
-                  'const AFTER_CLOSE_WRITE_DELAY_MS = 1_500;\nconst PREPARED_LAUNCH_TTL_MS = 2 * 60_000;\n',
-                  'const AFTER_CLOSE_WRITE_DELAY_MS = 1_500;\n',
-              ),
-              (
-                  '      if (result.status === "conflict") return null;\n',
-                  '      if (result.status === "conflict" || result.status === "blocked") {\n        return null;\n      }\n',
-              ),
-              (
-                  '    try {\n      let backups: GoogleDriveBackup[];\n',
-                  '''    try {\n      if (isV2Archive(archive) && !archive.v2ObservationComplete) {\n        googleDriveLogger.warn("Drive V2 synchronization blocked by partial observation", {\n          gameKey,\n          phase,\n          sessionId,\n          warnings: archive.v2Warnings,\n        });\n        await this.notify(\n          game,\n          "CLOUD_SAVE_FAILED",\n          "Sincronização de save bloqueada",\n          `O save de ${game.title} não pôde ser observado por completo. Nenhuma versão remota foi sobrescrita.`\n        ).catch(() => undefined);\n        return {\n          status: "blocked",\n          reason: "local-observation-incomplete",\n        };\n      }\n\n      let backups: GoogleDriveBackup[];\n''',
-              ),
-          ]
-
-          for old, new in replacements:
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'expected exactly one runtime patch match, found {count}: {old[:80]!r}')
-              text = text.replace(old, new, 1)
-
-          target.write_text(text)
+          contract = Path('src/main/services/cloud-save/google-drive/google-drive-v2-remote-ahead-runtime-contract.test.ts')
+          contract.write_text('''import assert from "node:assert/strict";\nimport fs from "node:fs";\nimport test from "node:test";\n\nconst source = fs.readFileSync(\n  new URL("./google-drive-cloud-save-provider-v2-runtime.ts", import.meta.url),\n  "utf8"\n);\n\ntest("remote-ahead no-op does not advance the Drive V2 synced anchor", () => {\n  const noAction = source.indexOf('if (plan.action === "none")');\n  const remoteAhead = source.indexOf(\n    'if (plan.state === "remote-ahead" && remote)',\n    noAction\n  );\n  const syncedWrite = source.indexOf("await writeDriveV2SyncedState", noAction);\n\n  assert.ok(noAction >= 0);\n  assert.ok(remoteAhead > noAction);\n  assert.ok(syncedWrite > remoteAhead);\n\n  const remoteAheadBranch = source.slice(remoteAhead, syncedWrite);\n  assert.match(remoteAheadBranch, /notifyRemoteNewer/);\n  assert.match(\n    remoteAheadBranch,\n    /return \\{ status: "remote-newer", fileId: remote\\.id \\};/\n  );\n});\n''')
           PY
           git diff --check
-          git diff -- src/main/services/cloud-save/google-drive/google-drive-cloud-save-provider-v2-runtime.ts
+          git diff -- \
+            src/main/services/cloud-save/google-drive/google-drive-cloud-save-provider-v2-runtime.ts \
+            src/main/services/cloud-save/google-drive/google-drive-v2-remote-ahead-runtime-contract.test.ts
 
       - name: Verify branch still points to requested SHA
         working-directory: private-source
@@ -122,9 +134,11 @@ jobs:
           set -euo pipefail
           git config user.name "Arthur Almeida"
           git config user.email "arthurgva1602@gmail.com"
-          git add src/main/services/cloud-save/google-drive/google-drive-cloud-save-provider-v2-runtime.ts
+          git add \
+            src/main/services/cloud-save/google-drive/google-drive-cloud-save-provider-v2-runtime.ts \
+            src/main/services/cloud-save/google-drive/google-drive-v2-remote-ahead-runtime-contract.test.ts
           git diff --cached --quiet && exit 1
-          git commit -m "fix(cloud-save): block partial Drive V2 synchronization"
+          git commit -m "fix(cloud-save): preserve anchor when Drive V2 remote is ahead"
           git remote set-url origin "https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/HydraPersonalizado.git"
           git push origin "HEAD:refs/heads/$TARGET_BRANCH"
 
