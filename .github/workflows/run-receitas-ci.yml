@@ -25,6 +25,12 @@ jobs:
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      CI: 'true'
+      VITE_SUPABASE_URL: https://receitas-ci.invalid
+      VITE_SUPABASE_ANON_KEY: ci-public-placeholder-not-a-secret
+      VITE_POWERSYNC_URL: https://powersync.receitas-ci.invalid
+      RELEASE_ENV: preview
 
     steps:
       - name: Checkout request revision
@@ -116,51 +122,69 @@ jobs:
             pnpm install --no-frozen-lockfile
           fi
 
-      - name: Run independent repository gates and collect failures
-        id: gates
+      - name: Release script tests
+        id: release_scripts
+        continue-on-error: true
         working-directory: private-source
+        run: pnpm test:release-scripts
+
+      - name: Source security audits
+        id: source_audits
+        continue-on-error: true
+        working-directory: private-source
+        run: pnpm verify:source
+
+      - name: ESLint
+        id: lint
+        continue-on-error: true
+        working-directory: private-source
+        run: pnpm lint
+
+      - name: TypeScript
+        id: typecheck
+        continue-on-error: true
+        working-directory: private-source
+        run: pnpm typecheck
+
+      - name: Unit tests
+        id: unit
+        continue-on-error: true
+        working-directory: private-source
+        run: pnpm test:run
+
+      - name: Static Pages build and artifact audits
+        id: build_pages
+        continue-on-error: true
+        working-directory: private-source
+        run: pnpm build:pages
+
+      - name: Aggregate Receitas gate results
+        if: always()
         shell: bash
         env:
-          CI: 'true'
-          VITE_SUPABASE_URL: https://receitas-ci.invalid
-          VITE_SUPABASE_ANON_KEY: ci-public-placeholder-not-a-secret
-          VITE_POWERSYNC_URL: https://powersync.receitas-ci.invalid
-          RELEASE_ENV: preview
           LOCKFILE_STATE: ${{ steps.install.outputs.lockfile }}
+          RELEASE_SCRIPTS: ${{ steps.release_scripts.outcome }}
+          SOURCE_AUDITS: ${{ steps.source_audits.outcome }}
+          LINT: ${{ steps.lint.outcome }}
+          TYPECHECK: ${{ steps.typecheck.outcome }}
+          UNIT: ${{ steps.unit.outcome }}
+          BUILD_PAGES: ${{ steps.build_pages.outcome }}
         run: |
-          set -uo pipefail
+          set -euo pipefail
           failures=()
-
-          run_gate() {
-            local label="$1"
-            shift
-            echo "::group::$label"
-            "$@"
-            local status=$?
-            echo "::endgroup::"
-            if [[ $status -ne 0 ]]; then
-              failures+=("$label")
-            fi
-          }
-
-          run_gate 'release script tests' pnpm test:release-scripts
-          run_gate 'source security audits' pnpm verify:source
-          run_gate 'eslint' pnpm lint
-          run_gate 'typescript' pnpm typecheck
-          run_gate 'unit tests' pnpm test:run
-          run_gate 'static Pages build and artifact audits' pnpm build:pages
-
-          if [[ "$LOCKFILE_STATE" != 'present' ]]; then
-            failures+=("reproducible lockfile")
-          fi
-
+          [[ "$RELEASE_SCRIPTS" == 'success' ]] || failures+=('release script tests')
+          [[ "$SOURCE_AUDITS" == 'success' ]] || failures+=('source security audits')
+          [[ "$LINT" == 'success' ]] || failures+=('eslint')
+          [[ "$TYPECHECK" == 'success' ]] || failures+=('typescript')
+          [[ "$UNIT" == 'success' ]] || failures+=('unit tests')
+          [[ "$BUILD_PAGES" == 'success' ]] || failures+=('static Pages build and artifact audits')
+          [[ "$LOCKFILE_STATE" == 'present' ]] || failures+=('reproducible lockfile')
           if (( ${#failures[@]} > 0 )); then
             printf 'Receitas CI failed gates:' >&2
             printf ' %s;' "${failures[@]}" >&2
             printf '\n' >&2
             exit 1
           fi
-
           echo 'All non-E2E Receitas repository gates passed.'
 
       - name: Remove private checkout and request copy
@@ -182,7 +206,7 @@ jobs:
             echo
             echo "- Result: \`$RESULT\`"
             echo "- Reproducible lockfile at checkout: \`${LOCKFILE_STATE:-unknown}\`"
-            echo '- Lint, typecheck, unit tests, release-script tests, source audits and a static Pages build were attempted.'
+            echo '- Lint, typecheck, unit tests, release-script tests, source audits and a static Pages build were attempted as independent steps.'
             echo '- E2E/backend credentials were deliberately excluded from this public runner.'
             echo '- Build outputs and private source were discarded; no artifact was uploaded.'
           } >> "$GITHUB_STEP_SUMMARY"
