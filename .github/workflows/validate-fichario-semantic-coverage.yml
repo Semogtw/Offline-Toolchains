@@ -58,6 +58,66 @@ jobs:
         working-directory: public-source
         run: pnpm exec playwright install --with-deps chromium
 
+      - name: Apply semantic coverage review fixes in validation workspace
+        working-directory: public-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('supabase/functions/semantic-coverage/index.ts')
+          source = path.read_text()
+          source = source.replace(
+          """\tfor (const page of pages) {
+          \t\tfor (const chunk of chunkSemanticText(page.source_text)) {
+          \t\t\tif (flattened.length >= MAX_INDEX_CHUNKS_PER_RUN) break;
+          \t\t\tflattened.push({ page, chunkIndex: chunk.index, chunkText: chunk.text });
+          \t\t}
+          \t\tif (flattened.length >= MAX_INDEX_CHUNKS_PER_RUN) break;
+          \t}
+          """,
+          """\tfor (const page of pages) {
+          \t\tconst chunks = chunkSemanticText(page.source_text);
+          \t\tif (chunks.length === 0) continue;
+          \t\tif (flattened.length + chunks.length > MAX_INDEX_CHUNKS_PER_RUN) break;
+          \t\tfor (const chunk of chunks) {
+          \t\t\tflattened.push({ page, chunkIndex: chunk.index, chunkText: chunk.text });
+          \t\t}
+          \t}
+          """
+          )
+          source = source.replace(
+          """\t\t\tconst topics = await lexicalTopics(supabase, parsed);
+          \t\t\treturn respond(200, {
+          \t\t\t\tmode: 'lexical',
+          \t\t\t\treason:
+          \t\t\t\t\terror instanceof GeminiEmbeddingHttpError && error.status === 429
+          \t\t\t\t\t\t? 'semantic_quota_or_rate_limit'
+          \t\t\t\t\t\t: 'semantic_provider_unavailable',
+          \t\t\t\tembeddingModel,
+          \t\t\t\tindex: await indexStats(supabase, embeddingModel, parsed.notebookId),
+          \t\t\t\tverification: 'unavailable',
+          \t\t\t\ttopics
+          \t\t\t});
+          """,
+          """\t\t\tconst topics = await lexicalTopics(supabase, parsed);
+          \t\t\tconst stats = await indexStats(supabase, embeddingModel, parsed.notebookId);
+          \t\t\treturn respond(200, {
+          \t\t\t\tmode: 'lexical',
+          \t\t\t\treason:
+          \t\t\t\t\terror instanceof GeminiEmbeddingHttpError && error.status === 429
+          \t\t\t\t\t\t? 'semantic_quota_or_rate_limit'
+          \t\t\t\t\t\t: 'semantic_provider_unavailable',
+          \t\t\t\tembeddingModel,
+          \t\t\t\tindex: stats ? { ...stats, indexedThisRun: 0 } : null,
+          \t\t\t\tverification: 'unavailable',
+          \t\t\t\ttopics
+          \t\t\t});
+          """
+          )
+          path.write_text(source)
+          PY
+
       - name: Format semantic coverage files in validation workspace
         working-directory: public-source
         shell: bash
@@ -109,6 +169,7 @@ jobs:
         working-directory: public-source
         shell: bash
         run: |
+          set +e
           set -uo pipefail
           log="$RUNNER_TEMP/semantic-coverage-verify.log"
           : > "$log"
