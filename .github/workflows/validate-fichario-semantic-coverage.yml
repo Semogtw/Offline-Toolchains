@@ -58,35 +58,102 @@ jobs:
         working-directory: public-source
         run: pnpm exec playwright install --with-deps chromium
 
-      - name: Run complete verification
+      - name: Format semantic coverage files in validation workspace
+        working-directory: public-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec prettier --write \
+            docs/README.md \
+            docs/UNIT_TOPIC_COVERAGE.md \
+            docs/SEMANTIC_COVERAGE.md \
+            src/lib/coverage/semantic-coverage.ts \
+            src/lib/services/semantic-coverage.ts \
+            src/lib/services/topic-coverage.ts \
+            src/routes/coverage/+page.svelte \
+            supabase/functions/_shared/gemini-embedding-client.ts \
+            supabase/functions/_shared/gemini-coverage-verifier.ts \
+            supabase/functions/_shared/semantic-chunks.ts \
+            supabase/functions/semantic-coverage/index.ts \
+            tests/unit/coverage/semantic-coverage.test.ts \
+            tests/unit/coverage/semantic-service.test.ts \
+            tests/unit/coverage/semantic-chunks.test.ts \
+            tests/unit/coverage/gemini-semantic-clients.test.ts
+
+      - name: Upload formatted semantic source snapshot
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: semantic-coverage-formatted-source
+          path: |
+            public-source/docs/README.md
+            public-source/docs/UNIT_TOPIC_COVERAGE.md
+            public-source/docs/SEMANTIC_COVERAGE.md
+            public-source/src/lib/coverage/semantic-coverage.ts
+            public-source/src/lib/services/semantic-coverage.ts
+            public-source/src/lib/services/topic-coverage.ts
+            public-source/src/routes/coverage/+page.svelte
+            public-source/supabase/functions/_shared/gemini-embedding-client.ts
+            public-source/supabase/functions/_shared/gemini-coverage-verifier.ts
+            public-source/supabase/functions/_shared/semantic-chunks.ts
+            public-source/supabase/functions/semantic-coverage/index.ts
+            public-source/tests/unit/coverage/semantic-coverage.test.ts
+            public-source/tests/unit/coverage/semantic-service.test.ts
+            public-source/tests/unit/coverage/semantic-chunks.test.ts
+            public-source/tests/unit/coverage/gemini-semantic-clients.test.ts
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Run semantic coverage validation matrix
         id: verify
         continue-on-error: true
         working-directory: public-source
         shell: bash
         run: |
-          set -o pipefail
-          pnpm verify:full 2>&1 | tee "$RUNNER_TEMP/semantic-coverage-verify.log"
+          set -uo pipefail
+          log="$RUNNER_TEMP/semantic-coverage-verify.log"
+          : > "$log"
+          failures=0
+          run_gate() {
+            name="$1"
+            shift
+            echo "===== $name =====" | tee -a "$log"
+            "$@" 2>&1 | tee -a "$log"
+            status=${PIPESTATUS[0]}
+            echo "===== $name exit=$status =====" | tee -a "$log"
+            if [ "$status" -ne 0 ]; then failures=$((failures + 1)); fi
+          }
+          run_gate feature-format pnpm exec prettier --check \
+            docs/README.md docs/UNIT_TOPIC_COVERAGE.md docs/SEMANTIC_COVERAGE.md \
+            src/lib/coverage/semantic-coverage.ts src/lib/services/semantic-coverage.ts \
+            src/lib/services/topic-coverage.ts src/routes/coverage/+page.svelte \
+            supabase/functions/_shared/gemini-embedding-client.ts \
+            supabase/functions/_shared/gemini-coverage-verifier.ts \
+            supabase/functions/_shared/semantic-chunks.ts supabase/functions/semantic-coverage/index.ts \
+            tests/unit/coverage/semantic-coverage.test.ts tests/unit/coverage/semantic-service.test.ts \
+            tests/unit/coverage/semantic-chunks.test.ts tests/unit/coverage/gemini-semantic-clients.test.ts
+          run_gate feature-eslint pnpm exec eslint \
+            src/lib/coverage/semantic-coverage.ts src/lib/services/semantic-coverage.ts \
+            src/lib/services/topic-coverage.ts src/routes/coverage/+page.svelte \
+            tests/unit/coverage/semantic-coverage.test.ts tests/unit/coverage/semantic-service.test.ts \
+            tests/unit/coverage/semantic-chunks.test.ts tests/unit/coverage/gemini-semantic-clients.test.ts
+          run_gate typecheck pnpm check
+          run_gate unit-tests pnpm test
+          run_gate build pnpm build
+          run_gate e2e pnpm test:e2e
+          run_gate offline-source pnpm test:source:offline
+          run_gate edge-functions pnpm test:functions:check
+          run_gate local-db pnpm test:db:local
+          exit "$failures"
 
-      - name: Generate formatter diagnostics
-        if: steps.verify.outcome == 'failure'
-        working-directory: public-source
-        shell: bash
-        run: |
-          set -euo pipefail
-          pnpm exec prettier --write . >/dev/null
-          git diff --no-ext-diff --no-color -- . > "$RUNNER_TEMP/semantic-coverage-prettier.patch" || true
-
-      - name: Upload failure diagnostics
-        if: steps.verify.outcome == 'failure'
+      - name: Upload validation log
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: semantic-coverage-validation-failure
-          path: |
-            ${{ runner.temp }}/semantic-coverage-verify.log
-            ${{ runner.temp }}/semantic-coverage-prettier.patch
+          name: semantic-coverage-validation-log
+          path: ${{ runner.temp }}/semantic-coverage-verify.log
           if-no-files-found: error
           retention-days: 1
 
-      - name: Reject failed verification
+      - name: Reject failed validation
         if: steps.verify.outcome == 'failure'
         run: exit 1
