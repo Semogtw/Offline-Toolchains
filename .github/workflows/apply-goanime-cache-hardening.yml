@@ -1,0 +1,176 @@
+name: Apply GoAnime cache hardening
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-cache-hardening/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-cache-hardening
+  cancel-in-progress: false
+
+jobs:
+  harden:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact GoAnime revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-cache-hardening/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = 'goanime'
+          test "$branch" = 'main'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Require private repository credentials
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPOSITORIES_TOKEN"
+          test -n "$WRITE_TOKEN"
+
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify exact private source
+        working-directory: private-source
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = '${{ steps.request.outputs.sha }}'
+
+      - name: Apply deterministic cache hardening patch
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          tool = Path('tools/provider_catalog_cache.dart')
+          text = tool.read_text(encoding='utf-8')
+
+          old_import = "import 'package:goanime/utils/title_normalizer.dart';\n"
+          new_import = old_import + "import 'package:goanime_core/goanime_core.dart' show SourceUrlMatcher;\n"
+          if text.count(old_import) != 1 or 'SourceUrlMatcher' in text:
+              raise SystemExit('unexpected provider catalog import layout')
+          text = text.replace(old_import, new_import, 1)
+
+          old_filter = """  final sitemapUrls = _parseLocUrls(index.body)\n      .where(\n        (uri) =>\n            uri.host.toLowerCase().contains('animesonlinecc') &&\n            (uri.toString().contains('episodes-sitemap') ||\n                uri.toString().contains('tvshows-sitemap')),\n      )\n      .toSet();\n"""
+          new_filter = """  final sitemapUrls = _parseLocUrls(index.body)\n      .where(isAnimesOnlineCatalogSitemap)\n      .toSet();\n"""
+          if text.count(old_filter) != 1:
+              raise SystemExit('unexpected AnimesOnline sitemap filter layout')
+          text = text.replace(old_filter, new_filter, 1)
+
+          old_complete = """  final complete =\n      !fetcher.shouldStop && failures == 0 ||\n      (!fetcher.shouldStop && completionRatio >= 0.97 && entries.isNotEmpty);\n"""
+          new_complete = """  final complete =\n      !fetcher.shouldStop &&\n      entries.isNotEmpty &&\n      (failures == 0 || completionRatio >= 0.97);\n"""
+          if text.count(old_complete) != 1:
+              raise SystemExit('unexpected AnimesOnline completion layout')
+          text = text.replace(old_complete, new_complete, 1)
+
+          anchor = "Future<ProviderCrawlResult> crawlGoyabu(_CatalogFetcher fetcher) async {\n"
+          helper = """bool isAnimesOnlineCatalogSitemap(Uri uri) {\n  if (!SourceUrlMatcher.matchesHost(uri.toString(), 'animesonlinecc.to')) {\n    return false;\n  }\n  final path = uri.path.toLowerCase();\n  return path.contains('episodes-sitemap') || path.contains('tvshows-sitemap');\n}\n\n"""
+          if text.count(anchor) != 1 or 'bool isAnimesOnlineCatalogSitemap' in text:
+              raise SystemExit('unexpected helper insertion point')
+          text = text.replace(anchor, helper + anchor, 1)
+          tool.write_text(text, encoding='utf-8')
+
+          test = Path('test/tools/provider_catalog_cache_test.dart')
+          tests = test.read_text(encoding='utf-8')
+          test_anchor = "  group('Goyabu full catalog parser', () {\n"
+          block = """  group('AnimesOnline sitemap ownership', () {\n    test('accepts owned catalog sitemaps and rejects spoofed hosts', () {\n      expect(\n        catalog.isAnimesOnlineCatalogSitemap(\n          Uri.parse('https://animesonlinecc.to/episodes-sitemap1.xml'),\n        ),\n        isTrue,\n      );\n      expect(\n        catalog.isAnimesOnlineCatalogSitemap(\n          Uri.parse('https://cdn.animesonlinecc.to/tvshows-sitemap.xml'),\n        ),\n        isTrue,\n      );\n      expect(\n        catalog.isAnimesOnlineCatalogSitemap(\n          Uri.parse('https://animesonlinecc.to.attacker.test/episodes-sitemap.xml'),\n        ),\n        isFalse,\n      );\n      expect(\n        catalog.isAnimesOnlineCatalogSitemap(\n          Uri.parse('https://fakeanimesonlinecc.to/tvshows-sitemap.xml'),\n        ),\n        isFalse,\n      );\n      expect(\n        catalog.isAnimesOnlineCatalogSitemap(\n          Uri.parse('ftp://animesonlinecc.to/episodes-sitemap.xml'),\n        ),\n        isFalse,\n      );\n    });\n  });\n\n"""
+          if tests.count(test_anchor) != 1 or 'AnimesOnline sitemap ownership' in tests:
+              raise SystemExit('unexpected provider catalog test layout')
+          tests = tests.replace(test_anchor, block + test_anchor, 1)
+          test.write_text(tests, encoding='utf-8')
+          PY
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Format and validate hardening
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format tools/provider_catalog_cache.dart test/tools/provider_catalog_cache_test.dart
+          dart analyze tools/provider_catalog_cache.dart
+          flutter test --no-pub test/tools/provider_catalog_cache_test.dart
+
+      - name: Commit hardening to private main
+        id: commit
+        working-directory: private-source
+        shell: bash
+        env:
+          WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '4189828+github-actions[bot]@users.noreply.github.com'
+          git add tools/provider_catalog_cache.dart test/tools/provider_catalog_cache_test.dart
+          git diff --cached --check
+          git commit -m 'fix(cache): harden AnimesOnline catalog ownership'
+          auth="$(printf 'x-access-token:%s' "$WRITE_TOKEN" | base64 -w0)"
+          extraheader="AUTHORIZATION: basic $auth"
+          git -c http.https://github.com/.extraheader="$extraheader" fetch origin main
+          test "$(git rev-parse origin/main)" = "$EXPECTED_SHA"
+          git -c http.https://github.com/.extraheader="$extraheader" push origin HEAD:main
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          unset auth extraheader WRITE_TOKEN
+
+      - name: Summary
+        shell: bash
+        run: |
+          echo '## GoAnime cache hardening' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Source base: `${{ steps.request.outputs.sha }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo '- New private commit: `${{ steps.commit.outputs.sha }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo '- AnimesOnline sitemap ownership is label-aware and HTTP(S)-only.' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Empty AnimesOnline crawls can no longer report complete.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
