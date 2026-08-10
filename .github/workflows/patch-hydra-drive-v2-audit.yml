@@ -73,32 +73,36 @@ jobs:
 
           target = Path('src/main/services/cloud-save/google-drive/google-drive-cloud-save-provider-v2-runtime.ts')
           text = target.read_text()
-          old = '''          if (plan.action === "none") {
-            if (remote) {
-              await writeDriveV2SyncedState({
-                game,
-                backup: remote,
-                manifest: archive.v2Manifest,
-              });
-            }
-            return { status: "noop" };
-          }
-          '''
-          new = '''          if (plan.action === "none") {
-            if (plan.state === "remote-ahead" && remote) {
-              await this.notifyRemoteNewer(game).catch(() => undefined);
-              return { status: "remote-newer", fileId: remote.id };
-            }
-            if (remote) {
-              await writeDriveV2SyncedState({
-                game,
-                backup: remote,
-                manifest: archive.v2Manifest,
-              });
-            }
-            return { status: "noop" };
-          }
-          '''
+          old_lines = [
+              '          if (plan.action === "none") {',
+              '            if (remote) {',
+              '              await writeDriveV2SyncedState({',
+              '                game,',
+              '                backup: remote,',
+              '                manifest: archive.v2Manifest,',
+              '              });',
+              '            }',
+              '            return { status: "noop" };',
+              '          }',
+          ]
+          new_lines = [
+              '          if (plan.action === "none") {',
+              '            if (plan.state === "remote-ahead" && remote) {',
+              '              await this.notifyRemoteNewer(game).catch(() => undefined);',
+              '              return { status: "remote-newer", fileId: remote.id };',
+              '            }',
+              '            if (remote) {',
+              '              await writeDriveV2SyncedState({',
+              '                game,',
+              '                backup: remote,',
+              '                manifest: archive.v2Manifest,',
+              '              });',
+              '            }',
+              '            return { status: "noop" };',
+              '          }',
+          ]
+          old = '\n'.join(old_lines) + '\n'
+          new = '\n'.join(new_lines) + '\n'
           count = text.count(old)
           if count != 1:
               raise SystemExit(f'expected exactly one remote-ahead patch match, found {count}')
