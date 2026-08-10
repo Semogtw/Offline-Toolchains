@@ -1,14 +1,134 @@
 name: Patch Hydra Drive V2 audit findings
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/hydra-drive-v2-audit/*.request'
 
 permissions:
   contents: read
 
+concurrency:
+  group: hydra-drive-v2-audit-patch
+  cancel-in-progress: false
+
 jobs:
-  disabled-cleanup-window:
-    if: ${{ false }}
+  patch:
+    name: Apply exact Drive V2 audit patch
+    if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
     steps:
-      - run: echo "temporarily disabled while removing one-off audit requests"
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/hydra-drive-v2-audit/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = "hydra"
+          test "$branch" = "feat/drive-cloud-saves-v2"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact Hydra revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/HydraPersonalizado
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Apply verified runtime patch
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          target = Path('src/main/services/cloud-save/google-drive/google-drive-cloud-save-provider-v2-runtime.ts')
+          text = target.read_text()
+
+          replacements = [
+              (
+                  'const AFTER_CLOSE_WRITE_DELAY_MS = 1_500;\nconst PREPARED_LAUNCH_TTL_MS = 2 * 60_000;\n',
+                  'const AFTER_CLOSE_WRITE_DELAY_MS = 1_500;\n',
+              ),
+              (
+                  '      if (result.status === "conflict") return null;\n',
+                  '      if (result.status === "conflict" || result.status === "blocked") {\n        return null;\n      }\n',
+              ),
+              (
+                  '    try {\n      let backups: GoogleDriveBackup[];\n',
+                  '''    try {\n      if (isV2Archive(archive) && !archive.v2ObservationComplete) {\n        googleDriveLogger.warn("Drive V2 synchronization blocked by partial observation", {\n          gameKey,\n          phase,\n          sessionId,\n          warnings: archive.v2Warnings,\n        });\n        await this.notify(\n          game,\n          "CLOUD_SAVE_FAILED",\n          "Sincronização de save bloqueada",\n          `O save de ${game.title} não pôde ser observado por completo. Nenhuma versão remota foi sobrescrita.`\n        ).catch(() => undefined);\n        return {\n          status: "blocked",\n          reason: "local-observation-incomplete",\n        };\n      }\n\n      let backups: GoogleDriveBackup[];\n''',
+              ),
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one runtime patch match, found {count}: {old[:80]!r}')
+              text = text.replace(old, new, 1)
+
+          target.write_text(text)
+          PY
+          git diff --check
+          git diff -- src/main/services/cloud-save/google-drive/google-drive-cloud-save-provider-v2-runtime.ts
+
+      - name: Verify branch still points to requested SHA
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          remote_sha="$(git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)" ls-remote https://github.com/Semogtw/HydraPersonalizado.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_sha" = "$EXPECTED_SHA"
+
+      - name: Commit and push exact patch
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          git config user.name "Arthur Almeida"
+          git config user.email "arthurgva1602@gmail.com"
+          git add src/main/services/cloud-save/google-drive/google-drive-cloud-save-provider-v2-runtime.ts
+          git diff --cached --quiet && exit 1
+          git commit -m "fix(cloud-save): block partial Drive V2 synchronization"
+          git remote set-url origin "https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/HydraPersonalizado.git"
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control"
