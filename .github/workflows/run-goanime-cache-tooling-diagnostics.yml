@@ -80,105 +80,36 @@ jobs:
           flutter pub get
           (cd packages/goanime_core && dart pub get)
 
-      - name: Analyze provider catalog executable
+      - name: Analyze cache executables
         working-directory: private-source
-        run: dart analyze tools/provider_catalog_cache.dart
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart analyze tools/provider_catalog_cache.dart
+          dart analyze tools/build_mal_provider_availability_cache.dart
 
-      - name: Analyze MAL provider executable
+      - name: Test provider catalog tooling
         working-directory: private-source
-        run: dart analyze tools/build_mal_provider_availability_cache.dart
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter test --no-pub --concurrency=1 --reporter expanded test/tools/provider_catalog_cache_test.dart test/tools/goyabu_catalog_regression_test.dart
+          flutter test --no-pub --concurrency=1 --test-randomize-ordering-seed=1701 test/tools/provider_catalog_cache_test.dart test/tools/goyabu_catalog_regression_test.dart
 
-      - name: Provider catalog full file attempt 1
-        id: full1
-        continue-on-error: true
+      - name: Test MAL provider provenance tooling
         working-directory: private-source
-        run: flutter test --no-pub --concurrency=1 --reporter expanded test/tools/provider_catalog_cache_test.dart
+        run: flutter test --no-pub --reporter expanded test/tools/build_mal_provider_availability_cache_test.dart
 
-      - name: Provider catalog full file attempt 2
-        id: full2
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub --concurrency=1 --reporter expanded test/tools/provider_catalog_cache_test.dart
-
-      - name: Provider catalog randomized file
-        id: randomized
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub --concurrency=1 --test-randomize-ordering-seed=1701 test/tools/provider_catalog_cache_test.dart
-
-      - name: Live crawler runtime diagnostic
-        id: crawl
-        continue-on-error: true
+      - name: Live crawler smoke audit
         working-directory: private-source
         shell: bash
         env:
           CACHE_BUILDER_MAX_RUNTIME_MINUTES: '5'
         run: |
-          set +e
-          output="$(dart run tools/provider_catalog_cache.dart --minimum-provider-entries=1 2>&1)"
-          status=$?
-          if [ "$status" -ne 0 ]; then
-            summary="$(printf '%s\n' "$output" | tail -n 8 | tr '\n' ' ' | sed -E 's#https?://[^ ]+#<url>#g; s#/[A-Za-z0-9_.@:+-]+/private-source/#<private-source>/#g' | cut -c1-1200)"
-            echo "::error title=GoAnime provider crawler runtime::exit=$status $summary"
-            exit "$status"
-          fi
-          printf '%s\n' "$output" | tail -n 12
-
-      - name: Pinpoint live Goyabu parser failure
-        id: goyabu
-        continue-on-error: true
-        working-directory: private-source
-        shell: bash
-        run: |
           set -euo pipefail
-          cat > tool/_goyabu_catalog_probe.dart <<'DART'
-          import 'dart:io';
-
-          import 'package:http/http.dart' as http;
-
-          import '../tools/provider_catalog_cache.dart' as catalog;
-
-          Future<void> main() async {
-            final uri = Uri.parse('https://goyabu.io/lista-de-animes');
-            final response = await http.get(
-              uri,
-              headers: const <String, String>{
-                HttpHeaders.userAgentHeader:
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36',
-              },
-            );
-            stdout.writeln('HTTP ${response.statusCode}; bytes=${response.bodyBytes.length}');
-            try {
-              final parsed = catalog.parseGoyabuCatalogPage(
-                response.body,
-                pageUrl: uri,
-              );
-              stdout.writeln(
-                'parsed entries=${parsed.entries.length}; pages=${parsed.paginationPages.length}',
-              );
-            } catch (error, stackTrace) {
-              stderr.writeln('GOYABU_PARSE_ERROR=${error.runtimeType}: $error');
-              final lines = stackTrace.toString().split('\n').take(8);
-              for (final line in lines) {
-                stderr.writeln(line.replaceAll(RegExp(r'/[^ ]+/private-source/'), '<private-source>/'));
-              }
-              exitCode = 17;
-            }
-          }
-          DART
-          set +e
-          output="$(dart run tool/_goyabu_catalog_probe.dart 2>&1)"
-          status=$?
-          rm -f tool/_goyabu_catalog_probe.dart
-          printf '%s\n' "$output"
-          if [ "$status" -ne 0 ]; then
-            summary="$(printf '%s\n' "$output" | tail -n 10 | tr '\n' ' ' | sed -E 's#https?://[^ ]+#<url>#g' | cut -c1-1600)"
-            echo "::warning title=Goyabu parser trace::$summary"
-          fi
-          exit "$status"
+          dart run tools/provider_catalog_cache.dart --minimum-provider-entries=1
 
       - name: Production provider catalog audit
-        id: production
         working-directory: private-source
         shell: bash
         env:
@@ -193,8 +124,11 @@ jobs:
           manifest = json.loads(Path('assets/data/anime_provider_catalog_manifest.json').read_text(encoding='utf-8'))
           providers = manifest.get('providers') or {}
           required = ('animefire', 'animesonline', 'goyabu', 'anitube')
+          missing = [name for name in required if name not in providers]
+          if missing:
+              raise SystemExit(f'missing provider manifest entries: {missing}')
           for provider in required:
-              info = providers.get(provider) or {}
+              info = providers[provider]
               status = str(info.get('status') or 'missing')
               count = int(info.get('count') or 0)
               attempted = int(info.get('attemptedUrls') or 0)
@@ -202,22 +136,6 @@ jobs:
               print(f'::notice title=GoAnime provider audit::{provider}: status={status}, titles={count}, urls={successful}/{attempted}')
           print(f'::notice title=GoAnime catalog union::titles={int(manifest.get("availableTitleCount") or 0)}, allProvidersComplete={bool(manifest.get("allProvidersComplete"))}')
           PY
-
-      - name: Test MAL provider provenance tooling
-        working-directory: private-source
-        run: flutter test --no-pub --reporter expanded test/tools/build_mal_provider_availability_cache_test.dart
-
-      - name: Diagnostics summary
-        if: always()
-        shell: bash
-        run: |
-          echo '## GoAnime cache diagnostics' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Full file attempt 1: `${{ steps.full1.outcome }}`' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Full file attempt 2: `${{ steps.full2.outcome }}`' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Randomized file: `${{ steps.randomized.outcome }}`' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Live crawler: `${{ steps.crawl.outcome }}`' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Goyabu parser probe: `${{ steps.goyabu.outcome }}`' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Production provider audit: `${{ steps.production.outcome }}`' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove private checkout
         if: always()
