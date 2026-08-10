@@ -63,7 +63,7 @@ jobs:
           set -euo pipefail
           nohup python3 -m http.server 4173 --bind 127.0.0.1 --directory build > "$RUNNER_TEMP/fichario-http.log" 2>&1 &
           for attempt in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:4173/coverage/ >/dev/null; then exit 0; fi
+            if curl --fail --silent http://127.0.0.1:4173/login/ >/dev/null; then exit 0; fi
             sleep 1
           done
           cat "$RUNNER_TEMP/fichario-http.log" >&2
@@ -77,10 +77,42 @@ jobs:
           mkdir -p "$RUNNER_TEMP/fichario-coverage"
           node --input-type=module <<'NODE'
           import { chromium } from '@playwright/test';
+
           const browser = await chromium.launch({ headless: true });
           const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
+          const userId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+          const now = Math.floor(Date.now() / 1000);
+          const encode = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
+          const accessToken = `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode({ sub: userId, aud: 'authenticated', role: 'authenticated', email: 'capture@example.test', exp: now + 3600, iat: now })}.capture-signature`;
+          const session = {
+            access_token: accessToken,
+            token_type: 'bearer',
+            expires_in: 3600,
+            expires_at: now + 3600,
+            refresh_token: 'capture-refresh-token',
+            user: {
+              id: userId,
+              aud: 'authenticated',
+              role: 'authenticated',
+              email: 'capture@example.test',
+              app_metadata: { provider: 'email', providers: ['email'] },
+              user_metadata: {},
+              identities: [],
+              created_at: '2026-08-10T00:00:00.000Z',
+              updated_at: '2026-08-10T00:00:00.000Z'
+            }
+          };
+
           await page.route('https://playwright-fichario.supabase.co/**', async (route) => {
             const url = route.request().url();
+            if (url.includes('/auth/v1/token')) {
+              await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(session) });
+              return;
+            }
+            if (url.includes('/rest/v1/app_users')) {
+              await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ is_active: true }) });
+              return;
+            }
             if (url.includes('/rest/v1/rpc/list_notebooks')) {
               await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
               return;
@@ -96,27 +128,46 @@ jobs:
               await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(rows) });
               return;
             }
-            await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+            await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
           });
+
+          await page.goto('http://127.0.0.1:4173/login/', { waitUntil: 'networkidle' });
+          console.log('Login URL:', page.url());
+          await page.getByLabel('E-mail').fill('capture@example.test');
+          await page.getByLabel('Senha').fill('capture-only');
+          await page.getByRole('button', { name: 'Entrar' }).click();
+          await page.waitForURL('http://127.0.0.1:4173/');
+
           await page.goto('http://127.0.0.1:4173/coverage/', { waitUntil: 'networkidle' });
-          await page.getByPlaceholder('Ex.: Unidade III — Termodinâmica').fill('Unidade III — Termodinâmica');
+          console.log('Coverage URL:', page.url());
+          console.log('Coverage title:', await page.title());
+          await page.screenshot({ path: process.env.RUNNER_TEMP + '/fichario-coverage/coverage-before-fill.png', fullPage: true });
+
+          const unitInput = page.getByPlaceholder('Ex.: Unidade III — Termodinâmica');
+          await unitInput.waitFor({ state: 'visible' });
+          await unitInput.fill('Unidade III — Termodinâmica');
           await page.locator('textarea').fill('3.1 Temperatura\n3.2 Calor específico\n3.3 Mudanças de fase\n3.4 Primeira lei da termodinâmica');
           await page.getByRole('button', { name: 'Transformar em campos' }).click();
           await page.screenshot({ path: process.env.RUNNER_TEMP + '/fichario-coverage/coverage-editor.png', fullPage: true });
+
           await page.getByRole('button', { name: 'Verificar cobertura' }).click();
-          await page.getByRole('heading', { name: 'Unidade III — Termodinâmica' }).waitFor();
+          await page.locator('.coverage').waitFor({ state: 'visible' });
           await page.locator('.coverage').screenshot({ path: process.env.RUNNER_TEMP + '/fichario-coverage/coverage-results.png' });
           await page.screenshot({ path: process.env.RUNNER_TEMP + '/fichario-coverage/coverage-full.png', fullPage: true });
+
           const statuses = await page.locator('.topic-card .status').allTextContents();
           console.log('Rendered statuses:', statuses);
-          if (!statuses.includes('Coberto') || !statuses.includes('Parcial') || !statuses.includes('Não encontrado')) throw new Error('Coverage states not rendered as expected');
+          if (!statuses.includes('Coberto') || !statuses.includes('Parcial') || !statuses.includes('Não encontrado')) {
+            throw new Error(`Coverage states not rendered as expected: ${statuses.join(', ')}`);
+          }
           await browser.close();
           NODE
 
       - name: Upload screenshots
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: fichario-coverage-playwright
           path: ${{ runner.temp }}/fichario-coverage/*.png
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 1
