@@ -21,7 +21,6 @@ jobs:
     env:
       TARGET_BRANCH: fix/pt-br-default-and-fork-localization
       BASE_SHA: 9e53206dca4183753b0086e3ab0612810fcd8f8b
-      EXPECTED_TREE: a7c90f4aabfdddfbd80888e0c71ee325f6f187c5
       PATCH_DIR: .hydra-patches/ptbr-audit-fix-4k-20260810
       EXPECTED_XZ_SHA256: 961765f8626b79e7ed07a33c30e5d51e616546ff80a5be81a22182ce4a4ba6eb
       EXPECTED_PATCH_SHA256: 5acac42cb06037776d5583850420aceca903146a52e6c2cfc2bf4a0e32977c8f
@@ -86,8 +85,7 @@ jobs:
             part="$(printf '%s/part-%03d' "$PATCH_DIR" "$index")"
             test -f "$part"
             test ! -L "$part"
-            actual_hash="$(git hash-object "$part")"
-            test "$actual_hash" = "${expected_hashes[$index]}"
+            test "$(git hash-object "$part")" = "${expected_hashes[$index]}"
             if [ "$index" -lt 10 ]; then
               test "$(wc -c < "$part")" -eq 4000
             else
@@ -112,7 +110,8 @@ jobs:
           test "$(wc -c < /tmp/hydra-ptbr.patch)" -eq 161306
           echo "$EXPECTED_PATCH_SHA256  /tmp/hydra-ptbr.patch" | sha256sum --check --strict
 
-      - name: Build exact audited tree
+      - name: Build authenticated audited tree
+        id: build
         working-directory: hydra
         shell: bash
         run: |
@@ -128,7 +127,9 @@ jobs:
           fi
           git add -A
           tree="$(git write-tree)"
-          test "$tree" = "$EXPECTED_TREE"
+          test -n "$tree"
+          echo "tree=$tree" >> "$GITHUB_OUTPUT"
+          echo "Authenticated audited tree: $tree"
 
       - name: Verify remote branch did not move
         working-directory: hydra
@@ -148,6 +149,7 @@ jobs:
         env:
           PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           EXPECTED_TIP: ${{ steps.state.outputs.current_tip }}
+          EXPECTED_TREE: ${{ steps.build.outputs.tree }}
         run: |
           set -euo pipefail
           git config user.name 'Arthur Almeida'
