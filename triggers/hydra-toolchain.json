@@ -1,6 +1,6 @@
 {
   "profile": "hydra",
   "ref": "fix/pt-br-default-and-fork-localization",
-  "requested_at_utc": "2026-08-10T05:10:00Z",
-  "reason": "Validate the Hydra PT-BR default and fork localization branch with the shared Hydra toolchain workflow"
+  "requested_at_utc": "2026-08-10T05:14:00Z",
+  "reason": "Revalidate the final Hydra PT-BR localization branch after removing the last onboarding error leak"
 }
