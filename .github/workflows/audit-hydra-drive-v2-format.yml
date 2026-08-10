@@ -1,0 +1,109 @@
+name: Audit Hydra Drive V2 formatting
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/hydra-drive-v2-format.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hydra-drive-v2-format
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout toolchain control files
+        uses: actions/checkout@v6
+        with:
+          path: control
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact Hydra ref
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          value = json.loads(Path('control/triggers/hydra-drive-v2-format.json').read_text())
+          ref = value.get('ref')
+          if not isinstance(ref, str) or len(ref) != 40 or any(c not in '0123456789abcdef' for c in ref):
+              raise SystemExit('invalid Hydra ref')
+          print(f'ref={ref}')
+          PY
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout exact Hydra revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/HydraPersonalizado
+          ref: ${{ steps.request.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: hydra
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.17.0
+          check-latest: false
+
+      - name: Install formatter dependencies without build scripts
+        working-directory: hydra
+        env:
+          CI: 'true'
+        run: yarn install --frozen-lockfile --non-interactive --ignore-scripts
+
+      - name: Format Drive V2 touched files and print exact diff
+        working-directory: hydra
+        shell: bash
+        run: |
+          set -euo pipefail
+          yarn prettier --write \
+            src/main/services/cloud-save/google-drive/google-drive-v2-queue-guard.ts \
+            src/main/services/cloud-save/google-drive/google-drive-v2-queue-reconciliation.ts \
+            src/main/services/cloud-save/google-drive/google-drive-v2-queue-reconciliation.test.ts \
+            src/main/services/cloud-save/google-drive/google-drive-v2-queue-runtime.ts \
+            src/main/services/cloud-save/google-drive/google-drive-v2-queue-runtime-contract.test.ts \
+            src/main/services/cloud-save/google-drive/google-drive-v2-remote-ahead-runtime-contract.test.ts
+          git diff --check
+          if git diff --quiet -- \
+            src/main/services/cloud-save/google-drive/google-drive-v2-queue-guard.ts \
+            src/main/services/cloud-save/google-drive/google-drive-v2-queue-reconciliation.ts \
+            src/main/services/cloud-save/google-drive/google-drive-v2-queue-reconciliation.test.ts \
+            src/main/services/cloud-save/google-drive/google-drive-v2-queue-runtime.ts \
+            src/main/services/cloud-save/google-drive/google-drive-v2-queue-runtime-contract.test.ts \
+            src/main/services/cloud-save/google-drive/google-drive-v2-remote-ahead-runtime-contract.test.ts; then
+            echo 'FORMAT_DIFF=clean'
+          else
+            echo 'FORMAT_DIFF=required'
+            git diff -- \
+              src/main/services/cloud-save/google-drive/google-drive-v2-queue-guard.ts \
+              src/main/services/cloud-save/google-drive/google-drive-v2-queue-reconciliation.ts \
+              src/main/services/cloud-save/google-drive/google-drive-v2-queue-reconciliation.test.ts \
+              src/main/services/cloud-save/google-drive/google-drive-v2-queue-runtime.ts \
+              src/main/services/cloud-save/google-drive/google-drive-v2-queue-runtime-contract.test.ts \
+              src/main/services/cloud-save/google-drive/google-drive-v2-remote-ahead-runtime-contract.test.ts
+          fi
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/hydra" "$GITHUB_WORKSPACE/control"
