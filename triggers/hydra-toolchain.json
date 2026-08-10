@@ -1,6 +1,6 @@
 {
   "profile": "hydra",
-  "ref": "main",
-  "requested_at_utc": "2026-08-02T05:53:00Z",
-  "reason": "Build the initial portable Node, Yarn, Rust and exact Hydra dependency cache"
+  "ref": "fix/pt-br-default-and-fork-localization",
+  "requested_at_utc": "2026-08-10T05:10:00Z",
+  "reason": "Validate the Hydra PT-BR default and fork localization branch with the shared Hydra toolchain workflow"
 }
