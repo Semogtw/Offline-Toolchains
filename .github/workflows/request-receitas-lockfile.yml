@@ -64,7 +64,7 @@ jobs:
           key = Path('request-source/triggers/receitas-lockfile-recipient.asc').read_text(encoding='utf-8')
           if len(key.encode('utf-8')) > 16 * 1024:
               raise SystemExit('recipient key is too large')
-          if 'BEGIN PGP PRIVATE KEY BLOCK' in key:
+          if 'PRIVATE KEY' in key:
               raise SystemExit('private key material is forbidden')
           if 'BEGIN PGP PUBLIC KEY BLOCK' not in key or 'END PGP PUBLIC KEY BLOCK' not in key:
               raise SystemExit('recipient must be an ASCII-armored OpenPGP public key')
