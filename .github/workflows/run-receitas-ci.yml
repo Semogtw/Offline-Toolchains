@@ -24,10 +24,11 @@ jobs:
       github.event.workflow_run.actor.login == github.repository_owner &&
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       CI: 'true'
       DENO_NO_UPDATE_CHECK: '1'
+      SUPABASE_TELEMETRY_DISABLED: '1'
       VITE_SUPABASE_URL: https://receitas-ci.invalid
       VITE_SUPABASE_ANON_KEY: ci-public-placeholder-not-a-secret
       VITE_POWERSYNC_URL: https://powersync.receitas-ci.invalid
@@ -171,6 +172,46 @@ jobs:
         shell: bash
         run: deno check supabase/functions/*/index.ts
 
+      - name: Local Supabase migrations and SQL contracts
+        id: supabase_local
+        continue-on-error: true
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq postgresql-client
+          fi
+
+          pnpm exec supabase start
+          pnpm exec supabase db reset --local --no-seed
+
+          # config.toml does not override the standard local database port. Ask
+          # the CLI to prove the stack is healthy before using its documented
+          # local Postgres endpoint; never print status env because it also
+          # contains local JWT keys that need not appear in public logs.
+          pnpm exec supabase status >/dev/null
+          db_url='postgresql://postgres:postgres@127.0.0.1:54322/postgres'
+
+          shopt -s nullglob
+          sql_tests=(supabase/tests/*.sql)
+          if (( ${#sql_tests[@]} == 0 )); then
+            echo 'No Supabase SQL contract tests found.' >&2
+            exit 1
+          fi
+          for test_file in "${sql_tests[@]}"; do
+            echo "Running SQL contract: $(basename "$test_file")"
+            psql "$db_url" -X -v ON_ERROR_STOP=1 -f "$test_file" >/dev/null
+          done
+
+      - name: Stop local Supabase and delete volumes
+        if: always()
+        working-directory: private-source
+        shell: bash
+        run: pnpm exec supabase stop --no-backup || true
+
       - name: Static Pages build and artifact audits
         id: build_pages
         continue-on-error: true
@@ -189,6 +230,7 @@ jobs:
           UNIT: ${{ steps.unit.outcome }}
           DENO_TESTS: ${{ steps.deno_tests.outcome }}
           DENO_CHECK: ${{ steps.deno_check.outcome }}
+          SUPABASE_LOCAL: ${{ steps.supabase_local.outcome }}
           BUILD_PAGES: ${{ steps.build_pages.outcome }}
         run: |
           set -euo pipefail
@@ -200,6 +242,7 @@ jobs:
           [[ "$UNIT" == 'success' ]] || failures+=('unit tests')
           [[ "$DENO_TESTS" == 'success' ]] || failures+=('Deno Edge Function tests')
           [[ "$DENO_CHECK" == 'success' ]] || failures+=('Deno Edge Function typecheck')
+          [[ "$SUPABASE_LOCAL" == 'success' ]] || failures+=('local Supabase migrations and SQL contracts')
           [[ "$BUILD_PAGES" == 'success' ]] || failures+=('static Pages build and artifact audits')
           [[ "$LOCKFILE_STATE" == 'present' ]] || failures+=('reproducible lockfile')
           if (( ${#failures[@]} > 0 )); then
@@ -229,7 +272,7 @@ jobs:
             echo
             echo "- Result: \`$RESULT\`"
             echo "- Reproducible lockfile at checkout: \`${LOCKFILE_STATE:-unknown}\`"
-            echo '- Lint, typecheck, unit tests, Edge Function Deno tests/typecheck, release-script tests, source audits and a static Pages build were attempted as independent steps.'
-            echo '- E2E/backend credentials were deliberately excluded from this public runner.'
-            echo '- Build outputs and private source were discarded; no artifact was uploaded.'
+            echo '- Lint, typecheck, unit tests, Edge Function Deno tests/typecheck, local Supabase migration/SQL contracts, release-script tests, source audits and a static Pages build were attempted as independent steps.'
+            echo '- No remote Supabase/PowerSync/E2E/deploy credentials were provided to this public runner.'
+            echo '- Build outputs, local database volumes and private source were discarded; no artifact was uploaded.'
           } >> "$GITHUB_STEP_SUMMARY"
