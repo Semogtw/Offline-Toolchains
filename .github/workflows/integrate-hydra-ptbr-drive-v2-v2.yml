@@ -1,0 +1,328 @@
+name: Integrate audited Hydra pt-BR into Drive V2 v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/integrate-hydra-ptbr-drive-v2-v2.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: integrate-hydra-ptbr-drive-v2-v2
+  cancel-in-progress: false
+
+jobs:
+  integrate:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      SOURCE_BRANCH: fix/pt-br-default-and-fork-localization
+      TARGET_BRANCH: feat/drive-cloud-saves-v2
+      EXPECTED_TARGET_SHA: bb8a745aaa3ab42787a85dce5d1c598f7bf1c81f
+      EXPECTED_TREE: 0e8e23e9ad2f2c12e489a64ce26e3ddc1202a5d6
+      PATCH_DIR: .hydra-patches/ptbr-audit-fix-4k-20260810
+      EXPECTED_XZ_SHA256: 961765f8626b79e7ed07a33c30e5d51e616546ff80a5be81a22182ce4a4ba6eb
+      EXPECTED_PATCH_SHA256: 5acac42cb06037776d5583850420aceca903146a52e6c2cfc2bf4a0e32977c8f
+      CANDIDATE_PRIVATE_REPOSITORIES_WRITE_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_WRITE_TOKEN }}
+      CANDIDATE_HYDRA_WRITE_TOKEN: ${{ secrets.HYDRA_WRITE_TOKEN }}
+      CANDIDATE_HYDRA_REPOSITORY_TOKEN: ${{ secrets.HYDRA_REPOSITORY_TOKEN }}
+      CANDIDATE_REPOSITORIES_WRITE_TOKEN: ${{ secrets.REPOSITORIES_WRITE_TOKEN }}
+      CANDIDATE_PRIVATE_REPOSITORIES_PAT: ${{ secrets.PRIVATE_REPOSITORIES_PAT }}
+      CANDIDATE_GH_WRITE_TOKEN: ${{ secrets.GH_WRITE_TOKEN }}
+      CANDIDATE_GH_PAT: ${{ secrets.GH_PAT }}
+      CANDIDATE_GITHUB_PAT: ${{ secrets.GITHUB_PAT }}
+      CANDIDATE_REPO_WRITE_TOKEN: ${{ secrets.REPO_WRITE_TOKEN }}
+      CANDIDATE_FINE_GRAINED_PAT: ${{ secrets.FINE_GRAINED_PAT }}
+
+    steps:
+      - name: Require private repository read token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout localization staging source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/HydraPersonalizado
+          ref: ${{ env.SOURCE_BRANCH }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: localization-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Reconstruct and authenticate localization patch
+        id: patch
+        working-directory: localization-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_hashes=(
+            4f139f7c8f6fce85b90a2eff5e8d8feeff57a261
+            171ea9e9e49b710dc3058db84679e6e34b2659b1
+            45f0aae406a90513ce52d10e9208afb17860cc3d
+            4dfc44c124d5097c57e9c42c27bc3096d9a40d93
+            42aed0b460923e6fe70aaaa6a57ed8a508eb4727
+            b14e4552eaa2b4e810948fb0c005690da5bac116
+            f28e16b68686137359a837e00327b3e1e20e06fc
+            1cc4d91171b3bd4e8a288dda800ab35b213d0629
+            3e0dcee650b8b76b0484540f1a54db90649676f2
+            f8053821b7053173e82d030366b5268a2d051e33
+            9c9c3df1d0f4eff32d94e1fff7be495904f677ea
+          )
+          : > /tmp/hydra-ptbr.patch.xz.b64
+          for index in $(seq 0 10); do
+            part="$(printf '%s/part-%03d' "$PATCH_DIR" "$index")"
+            test -f "$part"
+            test ! -L "$part"
+            test "$(git hash-object "$part")" = "${expected_hashes[$index]}"
+            if [ "$index" -lt 10 ]; then
+              test "$(wc -c < "$part")" -eq 4000
+            else
+              test "$(wc -c < "$part")" -eq 1488
+            fi
+            cat "$part" >> /tmp/hydra-ptbr.patch.xz.b64
+          done
+          test "$(wc -c < /tmp/hydra-ptbr.patch.xz.b64)" -eq 41488
+          base64 --decode /tmp/hydra-ptbr.patch.xz.b64 > /tmp/hydra-ptbr.patch.xz
+          echo "$EXPECTED_XZ_SHA256  /tmp/hydra-ptbr.patch.xz" | sha256sum --check --strict
+          xz --test /tmp/hydra-ptbr.patch.xz
+          xz --decompress --stdout /tmp/hydra-ptbr.patch.xz > /tmp/hydra-ptbr.patch
+          test "$(wc -c < /tmp/hydra-ptbr.patch)" -eq 161306
+          echo "$EXPECTED_PATCH_SHA256  /tmp/hydra-ptbr.patch" | sha256sum --check --strict
+
+      - name: Checkout exact Drive V2 base
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/HydraPersonalizado
+          ref: ${{ env.EXPECTED_TARGET_SHA }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: hydra
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Inspect current Drive V2 branch
+        id: current
+        working-directory: hydra
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          read_auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_sha="$(git -c http.extraheader="AUTHORIZATION: basic $read_auth" ls-remote https://github.com/Semogtw/HydraPersonalizado.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test -n "$remote_sha"
+          echo "remote_sha=$remote_sha" >> "$GITHUB_OUTPUT"
+          if [ "$remote_sha" = "$EXPECTED_TARGET_SHA" ]; then
+            echo "needs_publish=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git -c http.extraheader="AUTHORIZATION: basic $read_auth" fetch --quiet https://github.com/Semogtw/HydraPersonalizado.git "$remote_sha"
+          remote_tree="$(git rev-parse FETCH_HEAD^{tree})"
+          test "$remote_tree" = "$EXPECTED_TREE"
+          echo "needs_publish=false" >> "$GITHUB_OUTPUT"
+
+      - name: Apply authenticated patch and prove exact tree
+        id: apply
+        working-directory: hydra
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_TARGET_SHA"
+          git apply --check /tmp/hydra-ptbr.patch
+          git apply /tmp/hydra-ptbr.patch
+          git diff --check
+          test "$(git diff --name-only | wc -l)" -eq 55
+          if git diff --name-only | grep -Eq '(^|/)(\.env|secrets?)(/|$)|^\.github/workflows/|^\.hydra-patches/'; then
+            echo 'Authenticated patch touched a protected path.' >&2
+            exit 1
+          fi
+          git add -A
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+          git config user.name 'Arthur Almeida'
+          git config user.email 'arthurgva1602@gmail.com'
+          git commit -m 'merge(i18n): integrate audited pt-BR localization into Drive V2'
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_TARGET_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+
+      - name: Set up pinned Node.js
+        id: node
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: hydra/.nvmrc
+          cache: yarn
+          cache-dependency-path: hydra/yarn.lock
+
+      - name: Enable Corepack
+        shell: bash
+        run: corepack enable
+
+      - name: Install dependencies
+        id: install
+        working-directory: hydra
+        shell: bash
+        run: yarn install --immutable
+
+      - name: Typecheck
+        id: typecheck
+        working-directory: hydra
+        shell: bash
+        run: yarn typecheck
+
+      - name: Test
+        id: test
+        working-directory: hydra
+        shell: bash
+        run: yarn test
+
+      - name: Find an already-provisioned write credential
+        id: writer
+        if: steps.current.outputs.needs_publish == 'true'
+        working-directory: hydra
+        shell: bash
+        run: |
+          set -euo pipefail
+          probe_branch="integration/ptbr-drive-v2-probe-${GITHUB_RUN_ID}"
+          token_vars=(
+            CANDIDATE_PRIVATE_REPOSITORIES_WRITE_TOKEN
+            CANDIDATE_HYDRA_WRITE_TOKEN
+            CANDIDATE_HYDRA_REPOSITORY_TOKEN
+            CANDIDATE_REPOSITORIES_WRITE_TOKEN
+            CANDIDATE_PRIVATE_REPOSITORIES_PAT
+            CANDIDATE_GH_WRITE_TOKEN
+            CANDIDATE_GH_PAT
+            CANDIDATE_GITHUB_PAT
+            CANDIDATE_REPO_WRITE_TOKEN
+            CANDIDATE_FINE_GRAINED_PAT
+          )
+          selected=false
+          for var_name in "${token_vars[@]}"; do
+            token="${!var_name:-}"
+            [ -n "$token" ] || continue
+            auth="$(printf 'x-access-token:%s' "$token" | base64 -w0)"
+            if git -c http.extraheader="AUTHORIZATION: basic $auth" push \
+              https://github.com/Semogtw/HydraPersonalizado.git \
+              "HEAD:refs/heads/$probe_branch" >/tmp/probe.out 2>/tmp/probe.err; then
+              printf '%s' "$token" > /tmp/hydra-write-token
+              chmod 600 /tmp/hydra-write-token
+              selected=true
+              break
+            fi
+          done
+          test "$selected" = true
+          test -s /tmp/hydra-write-token
+          echo "probe_branch=$probe_branch" >> "$GITHUB_OUTPUT"
+
+      - name: Fast-forward Drive V2
+        id: publish
+        if: steps.current.outputs.needs_publish == 'true'
+        working-directory: hydra
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          read_auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_sha="$(git -c http.extraheader="AUTHORIZATION: basic $read_auth" ls-remote https://github.com/Semogtw/HydraPersonalizado.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_sha" = "$EXPECTED_TARGET_SHA"
+          write_token="$(cat /tmp/hydra-write-token)"
+          write_auth="$(printf 'x-access-token:%s' "$write_token" | base64 -w0)"
+          git -c http.extraheader="AUTHORIZATION: basic $write_auth" push \
+            --force-with-lease="refs/heads/$TARGET_BRANCH:$EXPECTED_TARGET_SHA" \
+            https://github.com/Semogtw/HydraPersonalizado.git \
+            "HEAD:refs/heads/$TARGET_BRANCH"
+
+      - name: Verify published Drive V2 tree
+        id: verify
+        working-directory: hydra
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          read_auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          published_sha="$(git -c http.extraheader="AUTHORIZATION: basic $read_auth" ls-remote https://github.com/Semogtw/HydraPersonalizado.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test -n "$published_sha"
+          git -c http.extraheader="AUTHORIZATION: basic $read_auth" fetch --quiet https://github.com/Semogtw/HydraPersonalizado.git "$published_sha"
+          published_tree="$(git rev-parse FETCH_HEAD^{tree})"
+          test "$published_tree" = "$EXPECTED_TREE"
+          echo "published_sha=$published_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Write sanitized integration result
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          read_auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          published_sha="$(git -C hydra -c http.extraheader="AUTHORIZATION: basic $read_auth" ls-remote https://github.com/Semogtw/HydraPersonalizado.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}' || true)"
+          published_tree=""
+          if [ -n "$published_sha" ]; then
+            git -C hydra -c http.extraheader="AUTHORIZATION: basic $read_auth" fetch --quiet https://github.com/Semogtw/HydraPersonalizado.git "$published_sha" || true
+            published_tree="$(git -C hydra rev-parse FETCH_HEAD^{tree} 2>/dev/null || true)"
+          fi
+          status=failure
+          if [ "$published_tree" = "$EXPECTED_TREE" ] && \
+             [ "${{ steps.apply.outcome }}" = "success" ] && \
+             [ "${{ steps.install.outcome }}" = "success" ] && \
+             [ "${{ steps.typecheck.outcome }}" = "success" ] && \
+             [ "${{ steps.test.outcome }}" = "success" ]; then
+            status=success
+          fi
+          mkdir -p /tmp/result
+          cat > /tmp/result/hydra-ptbr-drive-v2-integration.txt <<EOF
+          status=$status
+          target_branch=$TARGET_BRANCH
+          base_sha=$EXPECTED_TARGET_SHA
+          expected_tree=$EXPECTED_TREE
+          published_sha=$published_sha
+          published_tree=$published_tree
+          patch_sha256=$EXPECTED_PATCH_SHA256
+          install=${{ steps.install.outcome }}
+          typecheck=${{ steps.typecheck.outcome }}
+          test=${{ steps.test.outcome }}
+          verify=${{ steps.verify.outcome }}
+          run_id=$GITHUB_RUN_ID
+          EOF
+          sed -i 's/^          //' /tmp/result/hydra-ptbr-drive-v2-integration.txt
+          content="$(base64 -w0 /tmp/result/hydra-ptbr-drive-v2-integration.txt)"
+          path='results/hydra-ptbr-drive-v2-integration.txt'
+          existing_sha="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path?ref=main" --jq .sha 2>/dev/null || true)"
+          if [ -n "$existing_sha" ]; then
+            jq -n --arg message 'ci(hydra): record pt-BR Drive V2 integration result' --arg content "$content" --arg branch main --arg sha "$existing_sha" '{message:$message,content:$content,branch:$branch,sha:$sha}' > /tmp/result/payload.json
+          else
+            jq -n --arg message 'ci(hydra): record pt-BR Drive V2 integration result' --arg content "$content" --arg branch main '{message:$message,content:$content,branch:$branch}' > /tmp/result/payload.json
+          fi
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" --input /tmp/result/payload.json >/dev/null
+
+      - name: Remove temporary probe branch
+        if: always() && steps.writer.outputs.probe_branch != ''
+        working-directory: hydra
+        shell: bash
+        env:
+          PROBE_BRANCH: ${{ steps.writer.outputs.probe_branch }}
+        run: |
+          set +e
+          if [ -s /tmp/hydra-write-token ]; then
+            write_token="$(cat /tmp/hydra-write-token)"
+            write_auth="$(printf 'x-access-token:%s' "$write_token" | base64 -w0)"
+            git -c http.extraheader="AUTHORIZATION: basic $write_auth" push \
+              https://github.com/Semogtw/HydraPersonalizado.git \
+              ":refs/heads/$PROBE_BRANCH" >/dev/null 2>&1
+          fi
+
+      - name: Remove private and transient data
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/hydra" "$GITHUB_WORKSPACE/localization-source" /tmp/hydra-ptbr.patch /tmp/hydra-ptbr.patch.xz /tmp/hydra-ptbr.patch.xz.b64 /tmp/hydra-write-token /tmp/probe.out /tmp/probe.err /tmp/result
