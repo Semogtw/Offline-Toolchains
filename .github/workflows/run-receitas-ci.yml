@@ -1,0 +1,188 @@
+name: Run Receitas CI
+
+on:
+  workflow_run:
+    workflows:
+      - Request Receitas CI
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: receitas-ci-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Receitas executable repository gates
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'build/receitas-ci' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.actor.login == github.repository_owner &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout request revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          path: request-source
+          persist-credentials: false
+          sparse-checkout: triggers/receitas-ci.json
+          sparse-checkout-cone-mode: false
+
+      - name: Normalize fixed Receitas request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          request = json.loads(Path('request-source/triggers/receitas-ci.json').read_text(encoding='utf-8'))
+          if set(request) != {'ref'}:
+              raise SystemExit('request must contain exactly the ref field')
+          ref = request['ref']
+          if not isinstance(ref, str) or not ref:
+              raise SystemExit('ref must be a non-empty string')
+          if len(ref) > 200 or ref.startswith('-') or '..' in ref or '@{' in ref:
+              raise SystemExit('unsafe git ref')
+          if not re.fullmatch(r'[A-Za-z0-9._/-]+', ref):
+              raise SystemExit('ref contains unsupported characters')
+          with open(sys.argv[1], 'a', encoding='utf-8') as stream:
+              stream.write(f'ref={ref}\n')
+          PY
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout private Receitas source read-only
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/Receitas
+          ref: ${{ steps.request.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up pinned Node.js without persistent dependency cache
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24.18.0'
+          check-latest: false
+
+      - name: Activate repository-pinned pnpm
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_manager="$(node -p "JSON.parse(require('node:fs').readFileSync('package.json','utf8')).packageManager")"
+          case "$package_manager" in
+            pnpm@*) ;;
+            *) echo "package.json must pin pnpm via packageManager" >&2; exit 1 ;;
+          esac
+          corepack enable
+          corepack prepare "$package_manager" --activate
+          node --version
+          pnpm --version
+
+      - name: Install dependencies without persistent cache
+        id: install
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f pnpm-lock.yaml ]]; then
+            echo 'lockfile=present' >> "$GITHUB_OUTPUT"
+            pnpm install --frozen-lockfile
+          else
+            echo 'lockfile=missing' >> "$GITHUB_OUTPUT"
+            echo 'pnpm-lock.yaml is missing; using an ephemeral resolution only to discover additional gate failures.' >&2
+            pnpm install --no-frozen-lockfile
+          fi
+
+      - name: Run independent repository gates and collect failures
+        id: gates
+        working-directory: private-source
+        shell: bash
+        env:
+          CI: 'true'
+          VITE_SUPABASE_URL: https://receitas-ci.invalid
+          VITE_SUPABASE_ANON_KEY: ci-public-placeholder-not-a-secret
+          VITE_POWERSYNC_URL: https://powersync.receitas-ci.invalid
+          RELEASE_ENV: preview
+          LOCKFILE_STATE: ${{ steps.install.outputs.lockfile }}
+        run: |
+          set -uo pipefail
+          failures=()
+
+          run_gate() {
+            local label="$1"
+            shift
+            echo "::group::$label"
+            "$@"
+            local status=$?
+            echo "::endgroup::"
+            if [[ $status -ne 0 ]]; then
+              failures+=("$label")
+            fi
+          }
+
+          run_gate 'release script tests' pnpm test:release-scripts
+          run_gate 'source security audits' pnpm verify:source
+          run_gate 'eslint' pnpm lint
+          run_gate 'typescript' pnpm typecheck
+          run_gate 'unit tests' pnpm test:run
+          run_gate 'static Pages build and artifact audits' pnpm build:pages
+
+          if [[ "$LOCKFILE_STATE" != 'present' ]]; then
+            failures+=("reproducible lockfile")
+          fi
+
+          if (( ${#failures[@]} > 0 )); then
+            printf 'Receitas CI failed gates:' >&2
+            printf ' %s;' "${failures[@]}" >&2
+            printf '\n' >&2
+            exit 1
+          fi
+
+          echo 'All non-E2E Receitas repository gates passed.'
+
+      - name: Remove private checkout and request copy
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source"
+          rm -rf "$GITHUB_WORKSPACE/request-source"
+
+      - name: Summarize sanitized result
+        if: always()
+        shell: bash
+        env:
+          RESULT: ${{ job.status }}
+          LOCKFILE_STATE: ${{ steps.install.outputs.lockfile }}
+        run: |
+          {
+            echo '## Receitas public-runner CI'
+            echo
+            echo "- Result: \`$RESULT\`"
+            echo "- Reproducible lockfile at checkout: \`${LOCKFILE_STATE:-unknown}\`"
+            echo '- Lint, typecheck, unit tests, release-script tests, source audits and a static Pages build were attempted.'
+            echo '- E2E/backend credentials were deliberately excluded from this public runner.'
+            echo '- Build outputs and private source were discarded; no artifact was uploaded.'
+          } >> "$GITHUB_STEP_SUMMARY"
