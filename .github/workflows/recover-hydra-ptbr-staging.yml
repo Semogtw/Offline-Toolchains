@@ -1,0 +1,125 @@
+name: Recover Hydra pt-BR staging
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/recover-hydra-ptbr-staging.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: recover-hydra-ptbr-staging
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      TARGET_BRANCH: fix/pt-br-default-and-fork-localization
+      EXPECTED_TIP: 4aa90bc2cb71d5e0143999ae8114b6008716a669
+      BASE_SHA: 9e53206dca4183753b0086e3ab0612810fcd8f8b
+      EXPECTED_TREE: a7c90f4aabfdddfbd80888e0c71ee325f6f187c5
+      PATCH_DIR: .hydra-patches/ptbr-audit-xz-20260810
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout exact staged Hydra branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/HydraPersonalizado
+          ref: ${{ env.TARGET_BRANCH }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: hydra
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Validate staging-only branch state
+        working-directory: hydra
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_TIP"
+          git merge-base --is-ancestor "$BASE_SHA" HEAD
+          mapfile -t changed < <(git diff --name-only "$BASE_SHA..HEAD")
+          test "${#changed[@]}" -eq 7
+          for path in "${changed[@]}"; do
+            [[ "$path" == "$PATCH_DIR"/part-* ]]
+            test -f "$path"
+            test ! -L "$path"
+          done
+
+      - name: Reconstruct audited patch without duplicate staging block
+        working-directory: hydra
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat \
+            "$PATCH_DIR/part-000" \
+            "$PATCH_DIR/part-001" \
+            "$PATCH_DIR/part-002" \
+            "$PATCH_DIR/part-0030" \
+            "$PATCH_DIR/part-004" \
+            "$PATCH_DIR/part-005" \
+            > /tmp/hydra-ptbr.patch.xz.b64
+          base64 --decode /tmp/hydra-ptbr.patch.xz.b64 > /tmp/hydra-ptbr.patch.xz
+          xz --decompress --stdout /tmp/hydra-ptbr.patch.xz > /tmp/hydra-ptbr.patch
+          test -s /tmp/hydra-ptbr.patch
+          git apply --check /tmp/hydra-ptbr.patch
+
+      - name: Build exact audited tree
+        working-directory: hydra
+        shell: bash
+        run: |
+          set -euo pipefail
+          git reset --hard "$BASE_SHA"
+          git clean -fdx
+          git apply /tmp/hydra-ptbr.patch
+          git diff --check
+          if git diff --name-only | grep -Eq '(^|/)(\.env|secrets?)(/|$)|^\.github/workflows/'; then
+            echo 'Patch touches a protected path.' >&2
+            exit 1
+          fi
+          git add -A
+          tree="$(git write-tree)"
+          test "$tree" = "$EXPECTED_TREE"
+
+      - name: Verify remote branch did not move
+        working-directory: hydra
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_sha="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/HydraPersonalizado.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_sha" = "$EXPECTED_TIP"
+
+      - name: Commit and replace staging with audited tree
+        working-directory: hydra
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name 'Arthur Almeida'
+          git config user.email 'arthurgva1602@gmail.com'
+          git commit -m 'fix(i18n): complete pt-BR fork localization audit'
+          git remote set-url origin "https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/HydraPersonalizado.git"
+          git push --force-with-lease="refs/heads/$TARGET_BRANCH:$EXPECTED_TIP" origin "HEAD:refs/heads/$TARGET_BRANCH"
+
+      - name: Remove private and transient data
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/hydra" /tmp/hydra-ptbr.patch /tmp/hydra-ptbr.patch.xz /tmp/hydra-ptbr.patch.xz.b64
