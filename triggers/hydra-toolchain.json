@@ -1,6 +1,6 @@
 {
   "profile": "hydra",
   "ref": "fix/pt-br-default-and-fork-localization",
-  "requested_at_utc": "2026-08-10T05:30:00Z",
-  "reason": "Validate final Hydra PT-BR default and fork localization head after Big Picture and desktop integration cleanup"
+  "requested_at_utc": "2026-08-10T05:33:00Z",
+  "reason": "Validate final Hydra PT-BR localization head including Drive preflight typecheck fix"
 }
