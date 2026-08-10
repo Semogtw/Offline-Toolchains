@@ -1,0 +1,172 @@
+name: Run GoAnime manga reviewed canonical candidate privately
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-reviewed-canonical/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-reviewed-canonical-private-ci
+  cancel-in-progress: false
+
+jobs:
+  reviewed-candidate:
+    name: GoAnime reviewed manga canonical candidate
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision once
+        id: request
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-reviewed-canonical/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch requested < "toolchain-control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          remote="https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git"
+          if [[ "$requested" == "latest" ]]; then
+            resolved="$(git ls-remote "$remote" refs/heads/feature/manga-platform | cut -f1)"
+          else
+            resolved="$requested"
+          fi
+          [[ "$resolved" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$resolved" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout resolved private revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Collect reviewed live evidence
+        working-directory: private-source
+        shell: bash
+        env:
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+          REVIEWED_DIR: ${{ runner.temp }}/goanime-reviewed-canonical
+        run: |
+          set -euo pipefail
+          rm -rf "$REVIEWED_DIR"
+          mkdir -p "$REVIEWED_DIR"
+          dart run tools/manga/collect_reviewed_manga_live_evidence.dart \
+            "$REVIEWED_DIR/evidence.json" \
+            "$REVIEWED_DIR/status.json" \
+            "$REVIEWED_SHA" >/tmp/goanime-reviewed-collect.log 2>&1
+          rm -f /tmp/goanime-reviewed-collect.log
+          echo "reviewed_collection=success"
+
+      - name: Build reviewed canonical candidate
+        working-directory: private-source
+        shell: bash
+        env:
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+          REVIEWED_DIR: ${{ runner.temp }}/goanime-reviewed-canonical
+        run: |
+          set -euo pipefail
+          cat > "$REVIEWED_DIR/ledger-in.json" <<'JSON'
+          {
+            "schemaVersion": 1,
+            "occurrenceMappings": [],
+            "externalMappings": []
+          }
+          JSON
+          dart run tools/manga/build_reviewed_manga_canonical_candidate.dart \
+            "$REVIEWED_DIR/evidence.json" \
+            "$REVIEWED_DIR/ledger-in.json" \
+            "$REVIEWED_SHA" \
+            "$REVIEWED_DIR/staging.json" \
+            "$REVIEWED_DIR/ledger-out.json" \
+            "$REVIEWED_DIR/report.json" \
+            --allow-new-identities >/tmp/goanime-reviewed-candidate.log 2>&1
+          rm -f /tmp/goanime-reviewed-candidate.log
+          echo "reviewed_candidate_build=success"
+
+      - name: Verify candidate invariants without exposing private content
+        shell: bash
+        env:
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+          REVIEWED_DIR: ${{ runner.temp }}/goanime-reviewed-canonical
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ['REVIEWED_DIR'])
+          reviewed = os.environ['REVIEWED_SHA']
+          evidence = json.loads((root / 'evidence.json').read_text())
+          status = json.loads((root / 'status.json').read_text())
+          staging = json.loads((root / 'staging.json').read_text())
+          ledger = json.loads((root / 'ledger-out.json').read_text())
+          report = json.loads((root / 'report.json').read_text())
+
+          assert evidence['providerSetVersion'] == reviewed
+          assert status['providerSetVersion'] == reviewed
+          assert staging['providerSetVersion'] == reviewed
+          assert report['providerSetVersion'] == reviewed
+          assert status['complete'] is True
+          assert len(status['successfulProviderIds']) == 5
+          assert len(status['failures']) == 0
+          assert len(evidence['evidence']) == 5
+          assert len(ledger['occurrenceMappings']) == 5
+          assert report['candidateComplete'] is True
+          assert report['productionReady'] is False
+          assert report['coverage']['providerCount'] == 5
+          assert report['coverage']['sourceOccurrences'] == 5
+          assert len(report['coverage']['contentKinds']) == 2
+          PY
+          echo "reviewed_candidate_invariants=success"
+
+      - name: Remove private checkout and plaintext candidate data
+        if: always()
+        run: |
+          rm -rf \
+            "$GITHUB_WORKSPACE/private-source" \
+            "$GITHUB_WORKSPACE/toolchain-control" \
+            "$RUNNER_TEMP/goanime-reviewed-canonical"
+          rm -f \
+            /tmp/goanime-reviewed-collect.log \
+            /tmp/goanime-reviewed-candidate.log
