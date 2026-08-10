@@ -56,7 +56,7 @@
       "central_ci": "run-receitas-ci",
       "source_export": "encrypted",
       "artifact_policy": "discard",
-      "token_access": "pending-secret-scope",
+      "token_access": "verified",
       "status": "active-runtime"
     },
     "fichario": {
