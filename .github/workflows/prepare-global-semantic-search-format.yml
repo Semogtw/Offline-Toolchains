@@ -1,9 +1,9 @@
-name: Prepare global semantic search formatting
+name: Prepare semantic production formatting
 
 on:
   push:
     branches: [tooling/validate-semantic-coverage-20260810]
-  workflow_dispatch:
+    paths: [.github/workflows/prepare-global-semantic-search-format.yml]
 
 permissions:
   contents: read
@@ -11,48 +11,61 @@ permissions:
 jobs:
   prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Checkout exact Fichario SHA
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: Semogtw/FicharioVirtual
-          ref: feature/unit-topic-coverage
-          path: public-source
+          ref: c0e42e94974c5649556928fd217f2b2345409043
+          path: app
+          fetch-depth: 1
           persist-credentials: false
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
           version: 10
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22.16.0
+
       - name: Install
-        working-directory: public-source
+        working-directory: app
         run: pnpm install --frozen-lockfile
-      - name: Format reviewed files
-        working-directory: public-source
+
+      - name: Format complete candidate
+        working-directory: app
+        run: pnpm exec prettier --write .
+
+      - name: Stage exact formatted files and patch
+        working-directory: app
+        shell: bash
         run: |
-          pnpm exec prettier --write \
-            src/lib/services/semantic-search.ts \
-            src/routes/search/+page.svelte \
-            supabase/functions/semantic-search/index.ts \
-            tests/unit/services/semantic-search.test.ts \
-            tests/unit/search/semantic-search-edge-contract.test.ts \
-            tests/unit/tooling/deployment-edge-functions.test.ts \
-            docs/SEARCH_OCR_MATCHING.md \
-            docs/README.md
-      - name: Stage exact files
-        run: |
-          mkdir -p exact/src/lib/services exact/src/routes/search exact/supabase/functions/semantic-search exact/tests/unit/services exact/tests/unit/search exact/tests/unit/tooling exact/docs
-          cp public-source/src/lib/services/semantic-search.ts exact/src/lib/services/
-          cp public-source/src/routes/search/+page.svelte exact/src/routes/search/
-          cp public-source/supabase/functions/semantic-search/index.ts exact/supabase/functions/semantic-search/
-          cp public-source/tests/unit/services/semantic-search.test.ts exact/tests/unit/services/
-          cp public-source/tests/unit/search/semantic-search-edge-contract.test.ts exact/tests/unit/search/
-          cp public-source/tests/unit/tooling/deployment-edge-functions.test.ts exact/tests/unit/tooling/
-          cp public-source/docs/SEARCH_OCR_MATCHING.md exact/docs/
-          cp public-source/docs/README.md exact/docs/
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/exact"
+          git diff --binary > "$RUNNER_TEMP/prettier.patch"
+          git diff --name-only -z | while IFS= read -r -d '' path; do
+            mkdir -p "$RUNNER_TEMP/exact/$(dirname "$path")"
+            cp "$path" "$RUNNER_TEMP/exact/$path"
+          done
+          git diff --name-only | tee "$RUNNER_TEMP/formatted-files.txt"
+          test -s "$RUNNER_TEMP/prettier.patch"
+
+      - name: Upload exact formatted files
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: global-semantic-search-formatted
-          path: exact
+          name: semantic-production-formatted-source
+          path: ${{ runner.temp }}/exact
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload formatting patch
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: semantic-production-prettier-patch
+          path: |
+            ${{ runner.temp }}/prettier.patch
+            ${{ runner.temp }}/formatted-files.txt
+          if-no-files-found: error
           retention-days: 1
