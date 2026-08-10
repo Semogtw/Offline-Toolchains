@@ -1,0 +1,58 @@
+name: Prepare global semantic search formatting
+
+on:
+  push:
+    branches: [tooling/validate-semantic-coverage-20260810]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: Semogtw/FicharioVirtual
+          ref: feature/unit-topic-coverage
+          path: public-source
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+        with:
+          version: 10
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 22.16.0
+      - name: Install
+        working-directory: public-source
+        run: pnpm install --frozen-lockfile
+      - name: Format reviewed files
+        working-directory: public-source
+        run: |
+          pnpm exec prettier --write \
+            src/lib/services/semantic-search.ts \
+            src/routes/search/+page.svelte \
+            supabase/functions/semantic-search/index.ts \
+            tests/unit/services/semantic-search.test.ts \
+            tests/unit/search/semantic-search-edge-contract.test.ts \
+            tests/unit/tooling/deployment-edge-functions.test.ts \
+            docs/SEARCH_OCR_MATCHING.md \
+            docs/README.md
+      - name: Stage exact files
+        run: |
+          mkdir -p exact/src/lib/services exact/src/routes/search exact/supabase/functions/semantic-search exact/tests/unit/services exact/tests/unit/search exact/tests/unit/tooling exact/docs
+          cp public-source/src/lib/services/semantic-search.ts exact/src/lib/services/
+          cp public-source/src/routes/search/+page.svelte exact/src/routes/search/
+          cp public-source/supabase/functions/semantic-search/index.ts exact/supabase/functions/semantic-search/
+          cp public-source/tests/unit/services/semantic-search.test.ts exact/tests/unit/services/
+          cp public-source/tests/unit/search/semantic-search-edge-contract.test.ts exact/tests/unit/search/
+          cp public-source/tests/unit/tooling/deployment-edge-functions.test.ts exact/tests/unit/tooling/
+          cp public-source/docs/SEARCH_OCR_MATCHING.md exact/docs/
+          cp public-source/docs/README.md exact/docs/
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: global-semantic-search-formatted
+          path: exact
+          retention-days: 1
