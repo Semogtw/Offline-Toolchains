@@ -36,7 +36,7 @@ jobs:
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: target
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
           lfs: false
           submodules: false
           show-progress: false
@@ -254,6 +254,8 @@ jobs:
       - name: Commit and push verified fixes
         working-directory: target
         shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
         run: |
           set -euo pipefail
           git config user.name 'Arthur Almeida'
@@ -265,4 +267,7 @@ jobs:
             infra/jikan/scripts/measure-rpm.sh \
             services/metadata-api/src/http_server.js
           git commit -m 'fix(jikan): close final code-only production gaps'
-          git push origin HEAD:"$TARGET_BRANCH"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" \
+            push origin HEAD:"$TARGET_BRANCH"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
