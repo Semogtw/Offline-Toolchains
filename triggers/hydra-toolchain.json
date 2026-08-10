@@ -1,6 +1,6 @@
 {
   "profile": "hydra",
   "ref": "fix/pt-br-default-and-fork-localization",
-  "requested_at_utc": "2026-08-10T05:39:00Z",
-  "reason": "Validate final frozen Hydra PT-BR localization head after local-source crawler cleanup"
+  "requested_at_utc": "2026-08-10T05:52:00Z",
+  "reason": "Validate current Hydra PT-BR localization head after achievements, debrid and emulation cleanup"
 }
