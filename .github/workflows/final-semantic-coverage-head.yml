@@ -1,0 +1,105 @@
+name: Final semantic coverage head
+
+on:
+  push:
+    branches: [tooling/validate-semantic-coverage-20260810]
+    paths: [.github/workflows/final-semantic-coverage-head.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      PUBLIC_SUPABASE_URL: https://playwright-fichario.supabase.co
+      PUBLIC_SUPABASE_PUBLISHABLE_KEY: sb_publishable_playwright_capture_1234567890
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: Semogtw/FicharioVirtual
+          ref: feature/unit-topic-coverage
+          path: app
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Source SHA
+        run: git -C app rev-parse HEAD
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+        with:
+          version: 10
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: "22.16.0"
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
+        with:
+          deno-version: 2.8.1
+      - uses: supabase/setup-cli@3c2f5e2ae34c34e428e8e206e2c4d21fa2d20fbf
+        with:
+          version: 2.111.0
+      - name: Install
+        working-directory: app
+        run: pnpm install --frozen-lockfile
+      - name: Chromium
+        working-directory: app
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Gates
+        id: gates
+        continue-on-error: true
+        working-directory: app
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          log="$RUNNER_TEMP/final.log"
+          : > "$log"
+          failures=0
+          gate() {
+            name="$1"; shift
+            echo "===== $name =====" | tee -a "$log"
+            "$@" 2>&1 | tee -a "$log"
+            code=${PIPESTATUS[0]}
+            echo "===== $name exit=$code =====" | tee -a "$log"
+            [ "$code" -eq 0 ] || failures=$((failures+1))
+          }
+          gate format pnpm exec prettier --check \
+            docs/README.md docs/UNIT_TOPIC_COVERAGE.md docs/SEMANTIC_COVERAGE.md \
+            src/lib/coverage/semantic-coverage.ts src/lib/services/semantic-coverage.ts \
+            src/lib/services/topic-coverage.ts src/routes/coverage/+page.svelte \
+            supabase/functions/_shared/gemini-embedding-client.ts \
+            supabase/functions/_shared/gemini-coverage-verifier.ts \
+            supabase/functions/_shared/semantic-chunks.ts \
+            supabase/functions/_shared/semantic-provider-telemetry.ts \
+            supabase/functions/semantic-coverage/index.ts \
+            tests/unit/coverage/semantic-coverage.test.ts \
+            tests/unit/coverage/semantic-service.test.ts \
+            tests/unit/coverage/semantic-chunks.test.ts \
+            tests/unit/coverage/gemini-semantic-clients.test.ts \
+            tests/unit/coverage/semantic-provider-telemetry.test.ts \
+            tests/unit/coverage/semantic-edge-contract.test.ts
+          gate typecheck pnpm check
+          gate semantic pnpm exec vitest run \
+            tests/unit/coverage/semantic-coverage.test.ts \
+            tests/unit/coverage/semantic-service.test.ts \
+            tests/unit/coverage/semantic-chunks.test.ts \
+            tests/unit/coverage/gemini-semantic-clients.test.ts \
+            tests/unit/coverage/semantic-provider-telemetry.test.ts \
+            tests/unit/coverage/semantic-edge-contract.test.ts
+          gate unit pnpm test
+          gate build pnpm build
+          gate e2e pnpm test:e2e
+          gate source pnpm test:source:offline
+          gate edge pnpm test:functions:check
+          gate db pnpm test:db:local
+          exit "$failures"
+      - name: Log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: final-semantic-coverage-log
+          path: ${{ runner.temp }}/final.log
+          if-no-files-found: warn
+          retention-days: 1
+      - name: Reject failed gates
+        if: steps.gates.outcome == 'failure'
+        run: exit 1
