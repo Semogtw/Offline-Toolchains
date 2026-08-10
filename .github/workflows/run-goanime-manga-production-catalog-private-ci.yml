@@ -74,9 +74,11 @@ jobs:
           run_gate seed_writer flutter test --no-pub test/tools/manga/manga_availability_seed_writer_test.dart
           run_gate seed_v2_writer flutter test --no-pub test/tools/manga/manga_availability_seed_v2_writer_test.dart
           run_gate seed_coverage flutter test --no-pub test/tools/manga/manga_availability_seed_coverage_test.dart
+          run_gate provider_revision flutter test --no-pub test/tools/manga/manga_provider_set_revision_test.dart
           run_gate production_policy flutter test --no-pub test/tools/manga/manga_production_catalog_policy_test.dart
           run_gate production_builder flutter test --no-pub test/tools/manga/build_manga_production_catalog_test.dart
           run_gate production_promotion flutter test --no-pub test/tools/manga/promote_manga_canonical_candidate_test.dart
+          run_gate production_fail_closed flutter test --no-pub test/architecture/manga_production_catalog_fail_closed_test.dart
           run_gate availability_builder flutter test --no-pub test/tools/manga_availability_builder_test.dart
           run_gate availability_v2_builder flutter test --no-pub test/tools/manga/manga_availability_v2_builder_test.dart
           run_gate manifest_validator flutter test --no-pub test/architecture/manga_provider_manifest_validator_test.dart
@@ -87,6 +89,7 @@ jobs:
             tools/manga/manga_availability_seed_v2_writer.dart
             tools/manga/manga_availability_seed_coverage.dart
             tools/manga/manga_availability_v2_builder.dart
+            tools/manga/manga_provider_set_revision.dart
             tools/manga/manga_production_catalog_policy.dart
             tools/manga/build_manga_production_catalog.dart
             tools/manga/promote_manga_canonical_candidate.dart
@@ -94,9 +97,11 @@ jobs:
             test/tools/manga/manga_availability_seed_v2_writer_test.dart
             test/tools/manga/manga_availability_seed_coverage_test.dart
             test/tools/manga/manga_availability_v2_builder_test.dart
+            test/tools/manga/manga_provider_set_revision_test.dart
             test/tools/manga/manga_production_catalog_policy_test.dart
             test/tools/manga/build_manga_production_catalog_test.dart
             test/tools/manga/promote_manga_canonical_candidate_test.dart
+            test/architecture/manga_production_catalog_fail_closed_test.dart
           )
           if dart format --output=none --set-exit-if-changed "${format_targets[@]}" >/dev/null 2>&1; then
             echo "format=success"
