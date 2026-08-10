@@ -20,10 +20,11 @@ jobs:
     timeout-minutes: 10
     env:
       TARGET_BRANCH: fix/pt-br-default-and-fork-localization
-      EXPECTED_TIP: 4aa90bc2cb71d5e0143999ae8114b6008716a669
       BASE_SHA: 9e53206dca4183753b0086e3ab0612810fcd8f8b
       EXPECTED_TREE: a7c90f4aabfdddfbd80888e0c71ee325f6f187c5
-      PATCH_DIR: .hydra-patches/ptbr-audit-xz-20260810
+      PATCH_DIR: .hydra-patches/ptbr-audit-fix-4k-20260810
+      EXPECTED_XZ_SHA256: 961765f8626b79e7ed07a33c30e5d51e616546ff80a5be81a22182ce4a4ba6eb
+      EXPECTED_PATCH_SHA256: 5acac42cb06037776d5583850420aceca903146a52e6c2cfc2bf4a0e32977c8f
 
     steps:
       - name: Require private repository token
@@ -32,7 +33,7 @@ jobs:
           PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
         run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
 
-      - name: Checkout exact staged Hydra branch
+      - name: Checkout staged Hydra branch
         uses: actions/checkout@v6
         with:
           repository: Semogtw/HydraPersonalizado
@@ -46,37 +47,70 @@ jobs:
           show-progress: false
 
       - name: Validate staging-only branch state
+        id: state
         working-directory: hydra
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$EXPECTED_TIP"
-          git merge-base --is-ancestor "$BASE_SHA" HEAD
-          mapfile -t changed < <(git diff --name-only "$BASE_SHA..HEAD")
-          test "${#changed[@]}" -eq 7
+          current_tip="$(git rev-parse HEAD)"
+          git merge-base --is-ancestor "$BASE_SHA" "$current_tip"
+          mapfile -t changed < <(git diff --name-only "$BASE_SHA..$current_tip")
+          test "${#changed[@]}" -ge 11
+          test "${#changed[@]}" -le 64
           for path in "${changed[@]}"; do
-            [[ "$path" == "$PATCH_DIR"/part-* ]]
+            [[ "$path" == .hydra-patches/* ]]
             test -f "$path"
             test ! -L "$path"
           done
+          echo "current_tip=$current_tip" >> "$GITHUB_OUTPUT"
 
-      - name: Reconstruct audited patch without duplicate staging block
+      - name: Verify every transported patch chunk
         working-directory: hydra
         shell: bash
         run: |
           set -euo pipefail
-          cat \
-            "$PATCH_DIR/part-000" \
-            "$PATCH_DIR/part-001" \
-            "$PATCH_DIR/part-002" \
-            "$PATCH_DIR/part-0030" \
-            "$PATCH_DIR/part-004" \
-            "$PATCH_DIR/part-005" \
-            > /tmp/hydra-ptbr.patch.xz.b64
+          expected_hashes=(
+            4f139f7c8f6fce85b90a2eff5e8d8feeff57a261
+            171ea9e9e49b710dc3058db84679e6e34b2659b1
+            45f0aae406a90513ce52d10e9208afb17860cc3d
+            4dfc44c124d5097c57e9c42c27bc3096d9a40d93
+            42aed0b460923e6fe70aaaa6a57ed8a508eb4727
+            b14e4552eaa2b4e810948fb0c005690da5bac116
+            f28e16b68686137359a837e00327b3e1e20e06fc
+            1cc4d91171b3bd4e8a288dda800ab35b213d0629
+            3e0dcee650b8b76b0484540f1a54db90649676f2
+            f8053821b7053173e82d030366b5268a2d051e33
+            9c9c3df1d0f4eff32d94e1fff7be495904f677ea
+          )
+          for index in $(seq 0 10); do
+            part="$(printf '%s/part-%03d' "$PATCH_DIR" "$index")"
+            test -f "$part"
+            test ! -L "$part"
+            actual_hash="$(git hash-object "$part")"
+            test "$actual_hash" = "${expected_hashes[$index]}"
+            if [ "$index" -lt 10 ]; then
+              test "$(wc -c < "$part")" -eq 4000
+            else
+              test "$(wc -c < "$part")" -eq 1488
+            fi
+          done
+
+      - name: Reconstruct and authenticate audited patch
+        working-directory: hydra
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > /tmp/hydra-ptbr.patch.xz.b64
+          for index in $(seq 0 10); do
+            cat "$(printf '%s/part-%03d' "$PATCH_DIR" "$index")" >> /tmp/hydra-ptbr.patch.xz.b64
+          done
+          test "$(wc -c < /tmp/hydra-ptbr.patch.xz.b64)" -eq 41488
           base64 --decode /tmp/hydra-ptbr.patch.xz.b64 > /tmp/hydra-ptbr.patch.xz
+          echo "$EXPECTED_XZ_SHA256  /tmp/hydra-ptbr.patch.xz" | sha256sum --check --strict
+          xz --test /tmp/hydra-ptbr.patch.xz
           xz --decompress --stdout /tmp/hydra-ptbr.patch.xz > /tmp/hydra-ptbr.patch
-          test -s /tmp/hydra-ptbr.patch
-          git apply --check /tmp/hydra-ptbr.patch
+          test "$(wc -c < /tmp/hydra-ptbr.patch)" -eq 161306
+          echo "$EXPECTED_PATCH_SHA256  /tmp/hydra-ptbr.patch" | sha256sum --check --strict
 
       - name: Build exact audited tree
         working-directory: hydra
@@ -85,6 +119,7 @@ jobs:
           set -euo pipefail
           git reset --hard "$BASE_SHA"
           git clean -fdx
+          git apply --check /tmp/hydra-ptbr.patch
           git apply /tmp/hydra-ptbr.patch
           git diff --check
           if git diff --name-only | grep -Eq '(^|/)(\.env|secrets?)(/|$)|^\.github/workflows/'; then
@@ -100,6 +135,7 @@ jobs:
         shell: bash
         env:
           PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_TIP: ${{ steps.state.outputs.current_tip }}
         run: |
           set -euo pipefail
           auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
@@ -111,11 +147,13 @@ jobs:
         shell: bash
         env:
           PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_TIP: ${{ steps.state.outputs.current_tip }}
         run: |
           set -euo pipefail
           git config user.name 'Arthur Almeida'
           git config user.email 'arthurgva1602@gmail.com'
           git commit -m 'fix(i18n): complete pt-BR fork localization audit'
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
           git remote set-url origin "https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/HydraPersonalizado.git"
           git push --force-with-lease="refs/heads/$TARGET_BRANCH:$EXPECTED_TIP" origin "HEAD:refs/heads/$TARGET_BRANCH"
 
