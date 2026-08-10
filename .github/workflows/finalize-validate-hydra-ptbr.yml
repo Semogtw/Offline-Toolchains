@@ -1,0 +1,220 @@
+name: Finalize and validate Hydra pt-BR audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/hydra-finalize-ptbr/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: finalize-validate-hydra-ptbr
+  cancel-in-progress: false
+
+jobs:
+  finalize-and-validate:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted control files
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: true
+          show-progress: false
+
+      - name: Resolve exact request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/hydra-finalize-ptbr/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch base_sha expected_tree patch_dir result_file < "control/$request"
+          test "$project" = "hydra"
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ ]]
+          [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$expected_tree" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$patch_dir" =~ ^\.hydra-patches/[A-Za-z0-9._-]+$ ]]
+          [[ "$result_file" =~ ^results/hydra-ptbr-[A-Za-z0-9._-]+\.txt$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+          echo "expected_tree=$expected_tree" >> "$GITHUB_OUTPUT"
+          echo "patch_dir=$patch_dir" >> "$GITHUB_OUTPUT"
+          echo "result_file=$result_file" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout private Hydra branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/HydraPersonalizado
+          ref: ${{ steps.request.outputs.branch }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: hydra
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Finalize exact audited tree if needed
+        id: finalize
+        working-directory: hydra
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          BASE_SHA: ${{ steps.request.outputs.base_sha }}
+          EXPECTED_TREE: ${{ steps.request.outputs.expected_tree }}
+          PATCH_DIR: ${{ steps.request.outputs.patch_dir }}
+        run: |
+          set -euo pipefail
+          current_tip="$(git rev-parse HEAD)"
+          current_tree="$(git rev-parse HEAD^{tree})"
+
+          if [ "$current_tree" != "$EXPECTED_TREE" ]; then
+            git merge-base --is-ancestor "$BASE_SHA" "$current_tip"
+            mapfile -t changed < <(git diff --name-only "$BASE_SHA..$current_tip")
+            test "${#changed[@]}" -ge 1
+            test "${#changed[@]}" -le 64
+            for path in "${changed[@]}"; do
+              [[ "$path" == "$PATCH_DIR"/part-* ]]
+              test -f "$path"
+              test ! -L "$path"
+            done
+
+            mapfile -t parts < <(find "$PATCH_DIR" -maxdepth 1 -type f -name 'part-*' -print | LC_ALL=C sort)
+            test "${#parts[@]}" -ge 1
+            test "${#parts[@]}" -le 64
+            cat "${parts[@]}" > /tmp/hydra-ptbr.patch.xz.b64
+            base64 --decode /tmp/hydra-ptbr.patch.xz.b64 > /tmp/hydra-ptbr.patch.xz
+            xz --decompress --stdout /tmp/hydra-ptbr.patch.xz > /tmp/hydra-ptbr.patch
+            test -s /tmp/hydra-ptbr.patch
+            test "$(wc -c < /tmp/hydra-ptbr.patch)" -le 4194304
+            git apply --check /tmp/hydra-ptbr.patch
+
+            git reset --hard "$BASE_SHA"
+            git clean -fdx
+            git apply /tmp/hydra-ptbr.patch
+            git diff --check
+            if git diff --name-only | grep -Eq '(^|/)(\.env|secrets?)(/|$)|^\.github/workflows/'; then
+              echo 'Patch touches a protected path.' >&2
+              exit 1
+            fi
+
+            git add -A
+            tree="$(git write-tree)"
+            test "$tree" = "$EXPECTED_TREE"
+
+            auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+            remote_sha="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/HydraPersonalizado.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+            test "$remote_sha" = "$current_tip"
+
+            git config user.name 'Arthur Almeida'
+            git config user.email 'arthurgva1602@gmail.com'
+            git commit -m 'fix(i18n): complete pt-BR fork localization audit'
+            git remote set-url origin "https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/HydraPersonalizado.git"
+            git push --force-with-lease="refs/heads/$TARGET_BRANCH:$current_tip" origin "HEAD:refs/heads/$TARGET_BRANCH"
+          fi
+
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "tree=$(git rev-parse HEAD^{tree})" >> "$GITHUB_OUTPUT"
+
+      - name: Set up pinned Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22.12.0'
+
+      - name: Install native prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential python3 pkg-config libarchive-tools zstd xz-utils
+          corepack enable
+
+      - name: Install JavaScript dependencies
+        id: install
+        working-directory: hydra
+        continue-on-error: true
+        shell: bash
+        run: yarn install --immutable
+
+      - name: Typecheck
+        id: typecheck
+        if: steps.install.outcome == 'success'
+        working-directory: hydra
+        continue-on-error: true
+        shell: bash
+        run: yarn typecheck
+
+      - name: Test
+        id: test
+        if: steps.install.outcome == 'success'
+        working-directory: hydra
+        continue-on-error: true
+        shell: bash
+        run: yarn test
+
+      - name: Publish sanitized validation result
+        if: always()
+        working-directory: control
+        shell: bash
+        env:
+          RESULT_FILE: ${{ steps.request.outputs.result_file }}
+          HYDRA_SHA: ${{ steps.finalize.outputs.sha }}
+          HYDRA_TREE: ${{ steps.finalize.outputs.tree }}
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
+          TYPECHECK_OUTCOME: ${{ steps.typecheck.outcome }}
+          TEST_OUTCOME: ${{ steps.test.outcome }}
+          EXPECTED_TREE: ${{ steps.request.outputs.expected_tree }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$RESULT_FILE")"
+          cat > "$RESULT_FILE" <<EOF
+          hydra_sha=$HYDRA_SHA
+          hydra_tree=$HYDRA_TREE
+          expected_tree=$EXPECTED_TREE
+          install=$INSTALL_OUTCOME
+          typecheck=$TYPECHECK_OUTCOME
+          test=$TEST_OUTCOME
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$RESULT_FILE"
+          if ! git diff --cached --quiet; then
+            git commit -m 'ci(hydra): record pt-BR audit validation result'
+            git push origin HEAD:main
+          fi
+
+      - name: Enforce validation gates
+        if: always()
+        shell: bash
+        env:
+          EXPECTED_TREE: ${{ steps.request.outputs.expected_tree }}
+          HYDRA_TREE: ${{ steps.finalize.outputs.tree }}
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
+          TYPECHECK_OUTCOME: ${{ steps.typecheck.outcome }}
+          TEST_OUTCOME: ${{ steps.test.outcome }}
+        run: |
+          set -euo pipefail
+          test "$HYDRA_TREE" = "$EXPECTED_TREE"
+          test "$INSTALL_OUTCOME" = success
+          test "$TYPECHECK_OUTCOME" = success
+          test "$TEST_OUTCOME" = success
+
+      - name: Remove private and transient data
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/hydra" /tmp/hydra-ptbr.patch /tmp/hydra-ptbr.patch.xz /tmp/hydra-ptbr.patch.xz.b64
