@@ -27,6 +27,7 @@ jobs:
     timeout-minutes: 60
     env:
       CI: 'true'
+      DENO_NO_UPDATE_CHECK: '1'
       VITE_SUPABASE_URL: https://receitas-ci.invalid
       VITE_SUPABASE_ANON_KEY: ci-public-placeholder-not-a-secret
       VITE_POWERSYNC_URL: https://powersync.receitas-ci.invalid
@@ -107,6 +108,11 @@ jobs:
           node --version
           pnpm --version
 
+      - name: Set up pinned Deno
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
+        with:
+          deno-version: 2.8.1
+
       - name: Install dependencies without persistent cache
         id: install
         working-directory: private-source
@@ -152,6 +158,19 @@ jobs:
         working-directory: private-source
         run: pnpm test:run
 
+      - name: Deno Edge Function tests
+        id: deno_tests
+        continue-on-error: true
+        working-directory: private-source
+        run: deno test supabase/functions
+
+      - name: Deno Edge Function typecheck
+        id: deno_check
+        continue-on-error: true
+        working-directory: private-source
+        shell: bash
+        run: deno check supabase/functions/*/index.ts
+
       - name: Static Pages build and artifact audits
         id: build_pages
         continue-on-error: true
@@ -168,6 +187,8 @@ jobs:
           LINT: ${{ steps.lint.outcome }}
           TYPECHECK: ${{ steps.typecheck.outcome }}
           UNIT: ${{ steps.unit.outcome }}
+          DENO_TESTS: ${{ steps.deno_tests.outcome }}
+          DENO_CHECK: ${{ steps.deno_check.outcome }}
           BUILD_PAGES: ${{ steps.build_pages.outcome }}
         run: |
           set -euo pipefail
@@ -177,6 +198,8 @@ jobs:
           [[ "$LINT" == 'success' ]] || failures+=('eslint')
           [[ "$TYPECHECK" == 'success' ]] || failures+=('typescript')
           [[ "$UNIT" == 'success' ]] || failures+=('unit tests')
+          [[ "$DENO_TESTS" == 'success' ]] || failures+=('Deno Edge Function tests')
+          [[ "$DENO_CHECK" == 'success' ]] || failures+=('Deno Edge Function typecheck')
           [[ "$BUILD_PAGES" == 'success' ]] || failures+=('static Pages build and artifact audits')
           [[ "$LOCKFILE_STATE" == 'present' ]] || failures+=('reproducible lockfile')
           if (( ${#failures[@]} > 0 )); then
@@ -206,7 +229,7 @@ jobs:
             echo
             echo "- Result: \`$RESULT\`"
             echo "- Reproducible lockfile at checkout: \`${LOCKFILE_STATE:-unknown}\`"
-            echo '- Lint, typecheck, unit tests, release-script tests, source audits and a static Pages build were attempted as independent steps.'
+            echo '- Lint, typecheck, unit tests, Edge Function Deno tests/typecheck, release-script tests, source audits and a static Pages build were attempted as independent steps.'
             echo '- E2E/backend credentials were deliberately excluded from this public runner.'
             echo '- Build outputs and private source were discarded; no artifact was uploaded.'
           } >> "$GITHUB_STEP_SUMMARY"
