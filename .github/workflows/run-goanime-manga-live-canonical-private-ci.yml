@@ -1,0 +1,292 @@
+name: Run GoAnime manga live canonical candidate privately
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-live-canonical/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-live-canonical-private-ci
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    name: GoAnime manga live canonical candidate
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision once
+        id: request
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-live-canonical/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch requested < "toolchain-control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          if [[ "$requested" == "latest" ]]; then
+            remote="https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git"
+            resolved="$(git ls-remote "$remote" refs/heads/feature/manga-platform | cut -f1)"
+          else
+            resolved="$requested"
+          fi
+          [[ "$resolved" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$resolved" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Prepare private staging area
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/goanime-manga-live-canonical"
+          rm -rf "$root"
+          mkdir -p "$root/plain" "$root/transfer" "$root/gpg"
+          chmod 700 "$root/gpg"
+
+      - name: Collect five-provider live evidence
+        id: collect
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          plain="$RUNNER_TEMP/goanime-manga-live-canonical/plain"
+          set +e
+          dart run tools/manga/collect_planned_manga_live_evidence.dart \
+            "$plain/evidence.json" "$plain/evidence-status.json" \
+            >"$plain/collector.log" 2>&1
+          status=$?
+          set -e
+          rm -f "$plain/collector.log"
+          case "$status" in
+            0) result=complete ;;
+            1) result=partial ;;
+            *) result=failed ;;
+          esac
+          echo "collection=$result"
+          echo "collection=$result" >> "$GITHUB_OUTPUT"
+          printf 'collector_exit=%s\n' "$status" > "$plain/COLLECT_STATUS.txt"
+
+      - name: Bootstrap candidate canonical IDs
+        id: bootstrap
+        if: steps.collect.outputs.collection == 'complete'
+        continue-on-error: true
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          plain="$RUNNER_TEMP/goanime-manga-live-canonical/plain"
+          cat >"$plain/ledger-empty.json" <<'JSON'
+          {
+            "schemaVersion": 1,
+            "occurrenceMappings": [],
+            "externalMappings": []
+          }
+          JSON
+          set +e
+          dart run tools/manga/bootstrap_manga_canonical_id_ledger.dart \
+            --allow-new-identities \
+            "$plain/evidence.json" \
+            "$plain/ledger-empty.json" \
+            "$plain/ledger-candidate.json" \
+            "$plain/bootstrap-report.json" \
+            >"$plain/bootstrap.log" 2>&1
+          status=$?
+          set -e
+          rm -f "$plain/bootstrap.log"
+          if [[ "$status" -eq 0 ]]; then
+            echo 'bootstrap=success'
+            exit 0
+          fi
+          echo 'bootstrap=failure'
+          exit 1
+
+      - name: Build safe canonical staging
+        id: canonical
+        if: steps.bootstrap.outcome == 'success'
+        continue-on-error: true
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          plain="$RUNNER_TEMP/goanime-manga-live-canonical/plain"
+          set +e
+          dart run tools/manga/build_safe_manga_canonical_staging.dart \
+            "$plain/evidence.json" \
+            "$plain/ledger-candidate.json" \
+            "$plain/canonical-staging.json" \
+            "$plain/ledger-after-staging.json" \
+            >"$plain/canonical.log" 2>&1
+          status=$?
+          set -e
+          rm -f "$plain/canonical.log"
+          if [[ "$status" -eq 0 ]]; then
+            echo 'canonical_staging=success'
+            exit 0
+          fi
+          echo 'canonical_staging=failure'
+          exit 1
+
+      - name: Evaluate candidate and production boundaries
+        id: evaluate
+        if: steps.canonical.outcome == 'success'
+        continue-on-error: true
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          plain="$RUNNER_TEMP/goanime-manga-live-canonical/plain"
+          set +e
+          dart run tools/manga/evaluate_manga_canonical_candidate.dart \
+            "$plain/canonical-staging.json" \
+            "$plain/candidate-report.json" \
+            >"$plain/evaluate.log" 2>&1
+          status=$?
+          set -e
+          rm -f "$plain/evaluate.log"
+          if [[ "$status" -ne 0 ]]; then
+            echo 'candidate_evaluation=failure'
+            exit 1
+          fi
+
+          python3 - "$plain/candidate-report.json" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          report_path, output_path = sys.argv[1], sys.argv[2]
+          with open(report_path, encoding='utf-8') as handle:
+              report = json.load(handle)
+          coverage = report['coverage']
+          values = {
+              'candidate_complete': str(bool(report['candidateComplete'])).lower(),
+              'production_ready': str(bool(report['productionReady'])).lower(),
+              'works': str(int(coverage['works'])),
+              'source_occurrences': str(int(coverage['sourceOccurrences'])),
+              'provider_count': str(int(coverage['providerCount'])),
+              'content_kind_count': str(len(coverage['contentKinds'])),
+          }
+          with open(output_path, 'a', encoding='utf-8') as output:
+              for key, value in values.items():
+                  output.write(f'{key}={value}\n')
+          if values['candidate_complete'] != 'true':
+              raise SystemExit(2)
+          if values['production_ready'] != 'false':
+              raise SystemExit(3)
+          PY
+          echo 'candidate_evaluation=success'
+
+      - name: Encrypt private candidate bundle
+        id: encrypt
+        if: always()
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/goanime-manga-live-canonical"
+          plain="$root/plain"
+          transfer="$root/transfer"
+          archive="$root/live-canonical.tar.zst"
+          gpg_home="$root/gpg"
+          test -d "$plain"
+          tar -C "$plain" -I 'zstd -T0 -6' -cf "$archive" .
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import "$GITHUB_WORKSPACE/toolchain-control/keys/source-bundles-public.asc" >/dev/null 2>&1
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" \
+            --output "$transfer/live-canonical.gpg" --encrypt "$archive"
+          sha256sum "$transfer/live-canonical.gpg" > "$transfer/SHA256SUMS"
+          rm -rf "$plain" "$archive" "$gpg_home" "$GITHUB_WORKSPACE/private-source"
+          echo "transfer=$transfer" >> "$GITHUB_OUTPUT"
+
+      - name: Upload ciphertext only
+        if: always() && steps.encrypt.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-manga-live-canonical-encrypted
+          path: ${{ steps.encrypt.outputs.transfer }}
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Report sanitized candidate outcome
+        if: always()
+        shell: bash
+        env:
+          COLLECTION: ${{ steps.collect.outputs.collection }}
+          BOOTSTRAP: ${{ steps.bootstrap.outcome }}
+          CANONICAL: ${{ steps.canonical.outcome }}
+          EVALUATE: ${{ steps.evaluate.outcome }}
+          CANDIDATE_COMPLETE: ${{ steps.evaluate.outputs.candidate_complete }}
+          PRODUCTION_READY: ${{ steps.evaluate.outputs.production_ready }}
+          WORKS: ${{ steps.evaluate.outputs.works }}
+          SOURCE_OCCURRENCES: ${{ steps.evaluate.outputs.source_occurrences }}
+          PROVIDER_COUNT: ${{ steps.evaluate.outputs.provider_count }}
+          CONTENT_KIND_COUNT: ${{ steps.evaluate.outputs.content_kind_count }}
+        run: |
+          echo "collection=${COLLECTION:-not-run}"
+          echo "bootstrap=${BOOTSTRAP:-not-run}"
+          echo "canonical_staging=${CANONICAL:-not-run}"
+          echo "candidate_evaluation=${EVALUATE:-not-run}"
+          echo "candidate_complete=${CANDIDATE_COMPLETE:-false}"
+          echo "production_ready=${PRODUCTION_READY:-false}"
+          echo "works=${WORKS:-0}"
+          echo "source_occurrences=${SOURCE_OCCURRENCES:-0}"
+          echo "provider_count=${PROVIDER_COUNT:-0}"
+          echo "content_kind_count=${CONTENT_KIND_COUNT:-0}"
+          test "${COLLECTION:-}" = complete
+          test "${BOOTSTRAP:-}" = success
+          test "${CANONICAL:-}" = success
+          test "${EVALUATE:-}" = success
+          test "${CANDIDATE_COMPLETE:-}" = true
+          test "${PRODUCTION_READY:-}" = false
+
+      - name: Remove private checkout and transient data
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control" "$RUNNER_TEMP/goanime-manga-live-canonical"
