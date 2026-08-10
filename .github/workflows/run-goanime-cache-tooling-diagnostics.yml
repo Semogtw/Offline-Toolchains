@@ -124,6 +124,59 @@ jobs:
           fi
           printf '%s\n' "$output" | tail -n 12
 
+      - name: Pinpoint live Goyabu parser failure
+        id: goyabu
+        continue-on-error: true
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > tool/_goyabu_catalog_probe.dart <<'DART'
+          import 'dart:io';
+
+          import 'package:http/http.dart' as http;
+
+          import '../tools/provider_catalog_cache.dart' as catalog;
+
+          Future<void> main() async {
+            final uri = Uri.parse('https://goyabu.io/lista-de-animes');
+            final response = await http.get(
+              uri,
+              headers: const <String, String>{
+                HttpHeaders.userAgentHeader:
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36',
+              },
+            );
+            stdout.writeln('HTTP ${response.statusCode}; bytes=${response.bodyBytes.length}');
+            try {
+              final parsed = catalog.parseGoyabuCatalogPage(
+                response.body,
+                pageUrl: uri,
+              );
+              stdout.writeln(
+                'parsed entries=${parsed.entries.length}; pages=${parsed.paginationPages.length}',
+              );
+            } catch (error, stackTrace) {
+              stderr.writeln('GOYABU_PARSE_ERROR=${error.runtimeType}: $error');
+              final lines = stackTrace.toString().split('\n').take(8);
+              for (final line in lines) {
+                stderr.writeln(line.replaceAll(RegExp(r'/[^ ]+/private-source/'), '<private-source>/'));
+              }
+              exitCode = 17;
+            }
+          }
+          DART
+          set +e
+          output="$(dart run tool/_goyabu_catalog_probe.dart 2>&1)"
+          status=$?
+          rm -f tool/_goyabu_catalog_probe.dart
+          printf '%s\n' "$output"
+          if [ "$status" -ne 0 ]; then
+            summary="$(printf '%s\n' "$output" | tail -n 10 | tr '\n' ' ' | sed -E 's#https?://[^ ]+#<url>#g' | cut -c1-1600)"
+            echo "::warning title=Goyabu parser trace::$summary"
+          fi
+          exit "$status"
+
       - name: Production provider catalog audit
         id: production
         working-directory: private-source
@@ -163,6 +216,7 @@ jobs:
           echo '- Full file attempt 2: `${{ steps.full2.outcome }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Randomized file: `${{ steps.randomized.outcome }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Live crawler: `${{ steps.crawl.outcome }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Goyabu parser probe: `${{ steps.goyabu.outcome }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Production provider audit: `${{ steps.production.outcome }}`' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove private checkout
