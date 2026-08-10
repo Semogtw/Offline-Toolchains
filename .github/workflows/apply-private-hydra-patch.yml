@@ -87,7 +87,10 @@ jobs:
           mapfile -t parts < <(find "$PATCH_DIR" -maxdepth 1 -type f -name 'part-*' -print | LC_ALL=C sort)
           test "${#parts[@]}" -ge 1
           test "${#parts[@]}" -le 64
-          cat "${parts[@]}" > /tmp/hydra-private.patch
+          cat "${parts[@]}" > /tmp/hydra-private.patch.b64
+          test -s /tmp/hydra-private.patch.b64
+          test "$(wc -c < /tmp/hydra-private.patch.b64)" -le 6291456
+          base64 --decode /tmp/hydra-private.patch.b64 > /tmp/hydra-private.patch
           test -s /tmp/hydra-private.patch
           test "$(wc -c < /tmp/hydra-private.patch)" -le 4194304
 
@@ -144,4 +147,4 @@ jobs:
       - name: Remove private and transient data
         if: always()
         shell: bash
-        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control" /tmp/hydra-private.patch
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control" /tmp/hydra-private.patch /tmp/hydra-private.patch.b64
