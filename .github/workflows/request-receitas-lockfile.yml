@@ -1,0 +1,71 @@
+name: Request Receitas lockfile handoff
+
+on:
+  push:
+    branches:
+      - build/receitas-lockfile
+    paths:
+      - triggers/receitas-lockfile.json
+      - triggers/receitas-lockfile-recipient.asc
+
+permissions:
+  contents: read
+
+concurrency:
+  group: receitas-lockfile-request-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate Receitas lockfile request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require an owner-authored push
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          test "$EVENT_NAME" = "push"
+          test "$ACTOR" = "$OWNER"
+
+      - name: Checkout request revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          path: request-source
+          persist-credentials: false
+          sparse-checkout: |
+            triggers/receitas-lockfile.json
+            triggers/receitas-lockfile-recipient.asc
+          sparse-checkout-cone-mode: false
+
+      - name: Validate ref and public encryption recipient
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          request = json.loads(Path('request-source/triggers/receitas-lockfile.json').read_text(encoding='utf-8'))
+          if set(request) != {'ref'}:
+              raise SystemExit('request must contain exactly the ref field')
+          ref = request['ref']
+          if not isinstance(ref, str) or not ref or len(ref) > 200 or ref.startswith('-') or '..' in ref or '@{' in ref:
+              raise SystemExit('unsafe git ref')
+          if not re.fullmatch(r'[A-Za-z0-9._/-]+', ref):
+              raise SystemExit('ref contains unsupported characters')
+
+          key = Path('request-source/triggers/receitas-lockfile-recipient.asc').read_text(encoding='utf-8')
+          if len(key.encode('utf-8')) > 16 * 1024:
+              raise SystemExit('recipient key is too large')
+          if 'BEGIN PGP PRIVATE KEY BLOCK' in key:
+              raise SystemExit('private key material is forbidden')
+          if 'BEGIN PGP PUBLIC KEY BLOCK' not in key or 'END PGP PUBLIC KEY BLOCK' not in key:
+              raise SystemExit('recipient must be an ASCII-armored OpenPGP public key')
+          PY
