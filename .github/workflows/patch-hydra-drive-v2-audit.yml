@@ -83,7 +83,7 @@ jobs:
             }
             return { status: "noop" };
           }
-'''
+          '''
           new = '''          if (plan.action === "none") {
             if (plan.state === "remote-ahead" && remote) {
               await this.notifyRemoteNewer(game).catch(() => undefined);
@@ -98,7 +98,7 @@ jobs:
             }
             return { status: "noop" };
           }
-'''
+          '''
           count = text.count(old)
           if count != 1:
               raise SystemExit(f'expected exactly one remote-ahead patch match, found {count}')
