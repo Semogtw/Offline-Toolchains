@@ -188,21 +188,35 @@ jobs:
           pnpm exec supabase start
           pnpm exec supabase db reset --local --no-seed
 
-          # config.toml does not override the standard local database port. Ask
-          # the CLI to prove the stack is healthy before using its documented
-          # local Postgres endpoint; never print status env because it also
-          # contains local JWT keys that need not appear in public logs.
+          # Prove the stack is healthy without printing status env, which also
+          # contains local JWT keys that need not appear in a public log.
           pnpm exec supabase status >/dev/null
           db_url='postgresql://postgres:postgres@127.0.0.1:54322/postgres'
 
           shopt -s nullglob
           sql_tests=(supabase/tests/*.sql)
           if (( ${#sql_tests[@]} == 0 )); then
-            echo 'No Supabase SQL contract tests found.' >&2
+            echo 'No Supabase SQL tests found.' >&2
             exit 1
           fi
+
+          pgtap_tests=()
+          contract_tests=()
           for test_file in "${sql_tests[@]}"; do
-            echo "Running SQL contract: $(basename "$test_file")"
+            if grep -Eiq 'select[[:space:]]+plan[[:space:]]*\(' "$test_file"; then
+              pgtap_tests+=("$test_file")
+            else
+              contract_tests+=("$test_file")
+            fi
+          done
+
+          if (( ${#pgtap_tests[@]} > 0 )); then
+            echo "Running ${#pgtap_tests[@]} pgTAP test file(s) through Supabase pg_prove."
+            pnpm exec supabase test db "${pgtap_tests[@]}" --local
+          fi
+
+          for test_file in "${contract_tests[@]}"; do
+            echo "Running SQL invariant contract: $(basename "$test_file")"
             psql "$db_url" -X -v ON_ERROR_STOP=1 -f "$test_file" >/dev/null
           done
 
@@ -272,7 +286,7 @@ jobs:
             echo
             echo "- Result: \`$RESULT\`"
             echo "- Reproducible lockfile at checkout: \`${LOCKFILE_STATE:-unknown}\`"
-            echo '- Lint, typecheck, unit tests, Edge Function Deno tests/typecheck, local Supabase migration/SQL contracts, release-script tests, source audits and a static Pages build were attempted as independent steps.'
+            echo '- Lint, typecheck, unit tests, Edge Function Deno tests/typecheck, local Supabase migration/pgTAP/contracts, release-script tests, source audits and a static Pages build were attempted as independent steps.'
             echo '- No remote Supabase/PowerSync/E2E/deploy credentials were provided to this public runner.'
             echo '- Build outputs, local database volumes and private source were discarded; no artifact was uploaded.'
           } >> "$GITHUB_STEP_SUMMARY"
