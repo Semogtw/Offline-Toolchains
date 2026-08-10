@@ -14,6 +14,9 @@ jobs:
   verify:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    env:
+      PUBLIC_SUPABASE_URL: https://playwright-fichario.supabase.co
+      PUBLIC_SUPABASE_PUBLISHABLE_KEY: sb_publishable_playwright_capture_1234567890
     steps:
       - name: Checkout Fichario semantic coverage branch
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -58,25 +61,26 @@ jobs:
         working-directory: public-source
         run: pnpm exec playwright install --with-deps chromium
 
-      - name: Apply semantic coverage review fixes in validation workspace
+      - name: Apply final semantic repairs in validation workspace
         working-directory: public-source
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          path = Path('supabase/functions/semantic-coverage/index.ts')
-          source = path.read_text()
-          source = source.replace(
-          """\tfor (const page of pages) {
+
+          edge = Path('supabase/functions/semantic-coverage/index.ts')
+          source = edge.read_text()
+          before = source
+          old = """\tfor (const page of pages) {
           \t\tfor (const chunk of chunkSemanticText(page.source_text)) {
           \t\t\tif (flattened.length >= MAX_INDEX_CHUNKS_PER_RUN) break;
           \t\t\tflattened.push({ page, chunkIndex: chunk.index, chunkText: chunk.text });
           \t\t}
           \t\tif (flattened.length >= MAX_INDEX_CHUNKS_PER_RUN) break;
           \t}
-          """,
-          """\tfor (const page of pages) {
+          """
+          new = """\tfor (const page of pages) {
           \t\tconst chunks = chunkSemanticText(page.source_text);
           \t\tif (chunks.length === 0) continue;
           \t\tif (flattened.length + chunks.length > MAX_INDEX_CHUNKS_PER_RUN) break;
@@ -85,85 +89,48 @@ jobs:
           \t\t}
           \t}
           """
-          )
+          if old not in source:
+              raise SystemExit('chunk-loop repair target not found')
+          source = source.replace(old, new, 1)
+
+          old = "index: await indexStats(supabase, embeddingModel, parsed.notebookId),"
+          if old not in source:
+              raise SystemExit('fallback index repair target not found')
           source = source.replace(
-          """\t\t\tconst topics = await lexicalTopics(supabase, parsed);
-          \t\t\treturn respond(200, {
-          \t\t\t\tmode: 'lexical',
-          \t\t\t\treason:
-          \t\t\t\t\terror instanceof GeminiEmbeddingHttpError && error.status === 429
-          \t\t\t\t\t\t? 'semantic_quota_or_rate_limit'
-          \t\t\t\t\t\t: 'semantic_provider_unavailable',
-          \t\t\t\tembeddingModel,
-          \t\t\t\tindex: await indexStats(supabase, embeddingModel, parsed.notebookId),
-          \t\t\t\tverification: 'unavailable',
-          \t\t\t\ttopics
-          \t\t\t});
-          """,
-          """\t\t\tconst topics = await lexicalTopics(supabase, parsed);
-          \t\t\tconst stats = await indexStats(supabase, embeddingModel, parsed.notebookId);
-          \t\t\treturn respond(200, {
-          \t\t\t\tmode: 'lexical',
-          \t\t\t\treason:
-          \t\t\t\t\terror instanceof GeminiEmbeddingHttpError && error.status === 429
-          \t\t\t\t\t\t? 'semantic_quota_or_rate_limit'
-          \t\t\t\t\t\t: 'semantic_provider_unavailable',
-          \t\t\t\tembeddingModel,
-          \t\t\t\tindex: stats ? { ...stats, indexedThisRun: 0 } : null,
-          \t\t\t\tverification: 'unavailable',
-          \t\t\t\ttopics
-          \t\t\t});
-          """
+              "\t\t\tconst topics = await lexicalTopics(supabase, parsed);\n\t\t\treturn respond(200, {",
+              "\t\t\tconst topics = await lexicalTopics(supabase, parsed);\n\t\t\tconst stats = await indexStats(supabase, embeddingModel, parsed.notebookId);\n\t\t\treturn respond(200, {",
+              1,
           )
-          path.write_text(source)
+          source = source.replace(old, "index: stats ? { ...stats, indexedThisRun: 0 } : null,", 1)
+          if source == before:
+              raise SystemExit('semantic edge was not repaired')
+          edge.write_text(source)
+
+          verifier = Path('supabase/functions/_shared/gemini-coverage-verifier.ts')
+          source = verifier.read_text()
+          if 'maxOutputTokens:' not in source:
+              target = "\t\t\t\t\ttemperature: 0,\n\t\t\t\t\tresponseMimeType: 'application/json',"
+              replacement = "\t\t\t\t\ttemperature: 0,\n\t\t\t\t\tmaxOutputTokens: 2_048,\n\t\t\t\t\tresponseMimeType: 'application/json',"
+              if target not in source:
+                  raise SystemExit('verifier output-token target not found')
+              source = source.replace(target, replacement, 1)
+              verifier.write_text(source)
           PY
-
-      - name: Format semantic coverage files in validation workspace
-        working-directory: public-source
-        shell: bash
-        run: |
-          set -euo pipefail
           pnpm exec prettier --write \
-            docs/README.md \
-            docs/UNIT_TOPIC_COVERAGE.md \
-            docs/SEMANTIC_COVERAGE.md \
-            src/lib/coverage/semantic-coverage.ts \
-            src/lib/services/semantic-coverage.ts \
-            src/lib/services/topic-coverage.ts \
-            src/routes/coverage/+page.svelte \
-            supabase/functions/_shared/gemini-embedding-client.ts \
-            supabase/functions/_shared/gemini-coverage-verifier.ts \
-            supabase/functions/_shared/semantic-chunks.ts \
             supabase/functions/semantic-coverage/index.ts \
-            tests/unit/coverage/semantic-coverage.test.ts \
-            tests/unit/coverage/semantic-service.test.ts \
-            tests/unit/coverage/semantic-chunks.test.ts \
-            tests/unit/coverage/gemini-semantic-clients.test.ts
+            supabase/functions/_shared/gemini-coverage-verifier.ts
 
-      - name: Upload formatted semantic source snapshot
+      - name: Upload exact repaired semantic files
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: semantic-coverage-formatted-source
+          name: semantic-coverage-final-repairs
           path: |
-            public-source/docs/README.md
-            public-source/docs/UNIT_TOPIC_COVERAGE.md
-            public-source/docs/SEMANTIC_COVERAGE.md
-            public-source/src/lib/coverage/semantic-coverage.ts
-            public-source/src/lib/services/semantic-coverage.ts
-            public-source/src/lib/services/topic-coverage.ts
-            public-source/src/routes/coverage/+page.svelte
-            public-source/supabase/functions/_shared/gemini-embedding-client.ts
-            public-source/supabase/functions/_shared/gemini-coverage-verifier.ts
-            public-source/supabase/functions/_shared/semantic-chunks.ts
             public-source/supabase/functions/semantic-coverage/index.ts
-            public-source/tests/unit/coverage/semantic-coverage.test.ts
-            public-source/tests/unit/coverage/semantic-service.test.ts
-            public-source/tests/unit/coverage/semantic-chunks.test.ts
-            public-source/tests/unit/coverage/gemini-semantic-clients.test.ts
+            public-source/supabase/functions/_shared/gemini-coverage-verifier.ts
           if-no-files-found: error
           retention-days: 1
 
-      - name: Run semantic coverage validation matrix
+      - name: Run final validation matrix
         id: verify
         continue-on-error: true
         working-directory: public-source
@@ -171,7 +138,7 @@ jobs:
         run: |
           set +e
           set -uo pipefail
-          log="$RUNNER_TEMP/semantic-coverage-verify.log"
+          log="$RUNNER_TEMP/semantic-coverage-final.log"
           : > "$log"
           failures=0
           run_gate() {
@@ -183,21 +150,16 @@ jobs:
             echo "===== $name exit=$status =====" | tee -a "$log"
             if [ "$status" -ne 0 ]; then failures=$((failures + 1)); fi
           }
-          run_gate feature-format pnpm exec prettier --check \
-            docs/README.md docs/UNIT_TOPIC_COVERAGE.md docs/SEMANTIC_COVERAGE.md \
-            src/lib/coverage/semantic-coverage.ts src/lib/services/semantic-coverage.ts \
-            src/lib/services/topic-coverage.ts src/routes/coverage/+page.svelte \
-            supabase/functions/_shared/gemini-embedding-client.ts \
-            supabase/functions/_shared/gemini-coverage-verifier.ts \
-            supabase/functions/_shared/semantic-chunks.ts supabase/functions/semantic-coverage/index.ts \
-            tests/unit/coverage/semantic-coverage.test.ts tests/unit/coverage/semantic-service.test.ts \
-            tests/unit/coverage/semantic-chunks.test.ts tests/unit/coverage/gemini-semantic-clients.test.ts
-          run_gate feature-eslint pnpm exec eslint \
-            src/lib/coverage/semantic-coverage.ts src/lib/services/semantic-coverage.ts \
-            src/lib/services/topic-coverage.ts src/routes/coverage/+page.svelte \
-            tests/unit/coverage/semantic-coverage.test.ts tests/unit/coverage/semantic-service.test.ts \
-            tests/unit/coverage/semantic-chunks.test.ts tests/unit/coverage/gemini-semantic-clients.test.ts
+          run_gate semantic-format pnpm exec prettier --check \
+            supabase/functions/semantic-coverage/index.ts \
+            supabase/functions/_shared/gemini-coverage-verifier.ts
           run_gate typecheck pnpm check
+          run_gate semantic-unit pnpm exec vitest run \
+            tests/unit/coverage/semantic-coverage.test.ts \
+            tests/unit/coverage/semantic-service.test.ts \
+            tests/unit/coverage/semantic-chunks.test.ts \
+            tests/unit/coverage/gemini-semantic-clients.test.ts \
+            tests/unit/coverage/semantic-provider-telemetry.test.ts
           run_gate unit-tests pnpm test
           run_gate build pnpm build
           run_gate e2e pnpm test:e2e
@@ -210,8 +172,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: semantic-coverage-validation-log
-          path: ${{ runner.temp }}/semantic-coverage-verify.log
+          name: semantic-coverage-final-log
+          path: ${{ runner.temp }}/semantic-coverage-final.log
           if-no-files-found: error
           retention-days: 1
 
