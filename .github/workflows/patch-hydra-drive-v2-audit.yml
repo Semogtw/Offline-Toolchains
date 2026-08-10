@@ -63,7 +63,7 @@ jobs:
           submodules: false
           show-progress: false
 
-      - name: Apply verified runtime patch
+      - name: Apply verified queue reconciliation patch
         working-directory: private-source
         shell: bash
         run: |
@@ -71,50 +71,81 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          target = Path('src/main/services/cloud-save/google-drive/google-drive-cloud-save-provider-v2-runtime.ts')
-          text = target.read_text()
-          old_lines = [
-              '          if (plan.action === "none") {',
-              '            if (remote) {',
-              '              await writeDriveV2SyncedState({',
-              '                game,',
-              '                backup: remote,',
-              '                manifest: archive.v2Manifest,',
-              '              });',
-              '            }',
-              '            return { status: "noop" };',
-              '          }',
-          ]
-          new_lines = [
-              '          if (plan.action === "none") {',
-              '            if (plan.state === "remote-ahead" && remote) {',
-              '              await this.notifyRemoteNewer(game).catch(() => undefined);',
-              '              return { status: "remote-newer", fileId: remote.id };',
-              '            }',
-              '            if (remote) {',
-              '              await writeDriveV2SyncedState({',
-              '                game,',
-              '                backup: remote,',
-              '                manifest: archive.v2Manifest,',
-              '              });',
-              '            }',
-              '            return { status: "noop" };',
-              '          }',
-          ]
-          old = '\n'.join(old_lines) + '\n'
-          new = '\n'.join(new_lines) + '\n'
-          count = text.count(old)
-          if count != 1:
-              raise SystemExit(f'expected exactly one remote-ahead patch match, found {count}')
-          target.write_text(text.replace(old, new, 1))
+          helper = Path('src/main/services/cloud-save/google-drive/google-drive-v2-queue-reconciliation.ts')
+          if helper.exists():
+              raise SystemExit('queue reconciliation helper already exists')
+          helper.write_text('''import type {\n  GoogleDriveBackup,\n  GoogleDriveCloudSaveV2ArchiveSummary,\n} from "@types";\n\nexport type DriveV2QueuedReconciliationDecision =\n  | { action: "upload" }\n  | { action: "same" }\n  | { action: "remote-newer" }\n  | { action: "conflict" }\n  | { action: "legacy" }\n  | { action: "blocked"; reason: string };\n\nexport const decideDriveV2QueuedReconciliation = ({\n  local,\n  remote,\n}: {\n  local: GoogleDriveCloudSaveV2ArchiveSummary;\n  remote: GoogleDriveBackup | null;\n}): DriveV2QueuedReconciliationDecision => {\n  if (!remote) return { action: "upload" };\n  if (!remote.v2ManifestPresent) return { action: "legacy" };\n\n  const remoteAggregateHash = remote.v2AggregateHash ?? null;\n  if (!remoteAggregateHash) {\n    return {\n      action: "blocked",\n      reason: "Drive V2 queued retry cannot trust remote metadata without an aggregate hash",\n    };\n  }\n\n  if (remoteAggregateHash === local.aggregateHash) {\n    return { action: "same" };\n  }\n\n  const ancestorAggregateHash = local.ancestorAggregateHash;\n  if (\n    ancestorAggregateHash &&\n    remoteAggregateHash === ancestorAggregateHash\n  ) {\n    return { action: "upload" };\n  }\n\n  if (\n    ancestorAggregateHash &&\n    local.aggregateHash === ancestorAggregateHash\n  ) {\n    return { action: "remote-newer" };\n  }\n\n  return { action: "conflict" };\n};\n''')
 
-          contract = Path('src/main/services/cloud-save/google-drive/google-drive-v2-remote-ahead-runtime-contract.test.ts')
-          contract.write_text('''import assert from "node:assert/strict";\nimport fs from "node:fs";\nimport test from "node:test";\n\nconst source = fs.readFileSync(\n  new URL("./google-drive-cloud-save-provider-v2-runtime.ts", import.meta.url),\n  "utf8"\n);\n\ntest("remote-ahead no-op does not advance the Drive V2 synced anchor", () => {\n  const noAction = source.indexOf('if (plan.action === "none")');\n  const remoteAhead = source.indexOf(\n    'if (plan.state === "remote-ahead" && remote)',\n    noAction\n  );\n  const syncedWrite = source.indexOf("await writeDriveV2SyncedState", noAction);\n\n  assert.ok(noAction >= 0);\n  assert.ok(remoteAhead > noAction);\n  assert.ok(syncedWrite > remoteAhead);\n\n  const remoteAheadBranch = source.slice(remoteAhead, syncedWrite);\n  assert.match(remoteAheadBranch, /notifyRemoteNewer/);\n  assert.match(\n    remoteAheadBranch,\n    /return \\{ status: "remote-newer", fileId: remote\\.id \\};/\n  );\n});\n''')
+          test_file = Path('src/main/services/cloud-save/google-drive/google-drive-v2-queue-reconciliation.test.ts')
+          if test_file.exists():
+              raise SystemExit('queue reconciliation test already exists')
+          test_file.write_text('''import assert from "node:assert/strict";\nimport test from "node:test";\n\nimport type {\n  GoogleDriveBackup,\n  GoogleDriveCloudSaveV2ArchiveSummary,\n} from "@types";\n\nimport { decideDriveV2QueuedReconciliation } from "./google-drive-v2-queue-reconciliation";\n\nconst summary = (\n  aggregateHash: string,\n  ancestorAggregateHash: string | null\n): GoogleDriveCloudSaveV2ArchiveSummary => ({\n  schemaVersion: 2,\n  aggregateHash,\n  ancestorAggregateHash,\n  fileCount: 1,\n  variantCount: 1,\n  manifestPresent: true,\n});\n\nconst remote = (\n  aggregateHash: string | null,\n  v2ManifestPresent = true\n): GoogleDriveBackup => ({\n  id: "remote-id",\n  name: "remote.tar",\n  artifactLengthInBytes: 1,\n  createdAt: "2026-08-10T00:00:00.000Z",\n  modifiedAt: "2026-08-10T00:00:00.000Z",\n  hostname: "test",\n  deviceId: "device",\n  contentHash: "content",\n  archiveHash: "archive",\n  parentHash: null,\n  conflict: false,\n  downloadCount: 0,\n  v2SchemaVersion: v2ManifestPresent ? 2 : null,\n  v2AggregateHash: aggregateHash,\n  v2AncestorAggregateHash: null,\n  v2ManifestPresent,\n});\n\ntest("Drive V2 queued retry uploads when no remote exists", () => {\n  assert.deepEqual(\n    decideDriveV2QueuedReconciliation({\n      local: summary("local", null),\n      remote: null,\n    }),\n    { action: "upload" }\n  );\n});\n\ntest("Drive V2 queued retry preserves legacy compatibility", () => {\n  assert.deepEqual(\n    decideDriveV2QueuedReconciliation({\n      local: summary("local", null),\n      remote: remote(null, false),\n    }),\n    { action: "legacy" }\n  );\n});\n\ntest("Drive V2 queued retry blocks untrusted V2 metadata", () => {\n  assert.equal(\n    decideDriveV2QueuedReconciliation({\n      local: summary("local", null),\n      remote: remote(null),\n    }).action,\n    "blocked"\n  );\n});\n\ntest("Drive V2 queued retry recognizes an already uploaded aggregate", () => {\n  assert.deepEqual(\n    decideDriveV2QueuedReconciliation({\n      local: summary("same", "ancestor"),\n      remote: remote("same"),\n    }),\n    { action: "same" }\n  );\n});\n\ntest("Drive V2 queued retry uploads when remote is still at the ancestor", () => {\n  assert.deepEqual(\n    decideDriveV2QueuedReconciliation({\n      local: summary("local-new", "ancestor"),\n      remote: remote("ancestor"),\n    }),\n    { action: "upload" }\n  );\n});\n\ntest("Drive V2 queued retry yields remote-newer when local stayed at the ancestor", () => {\n  assert.deepEqual(\n    decideDriveV2QueuedReconciliation({\n      local: summary("ancestor", "ancestor"),\n      remote: remote("remote-new"),\n    }),\n    { action: "remote-newer" }\n  );\n});\n\ntest("Drive V2 queued retry conflicts when both sides diverged", () => {\n  assert.deepEqual(\n    decideDriveV2QueuedReconciliation({\n      local: summary("local-new", "ancestor"),\n      remote: remote("remote-new"),\n    }),\n    { action: "conflict" }\n  );\n});\n''')
+
+          provider = Path('src/main/services/cloud-save/google-drive/google-drive-cloud-save-provider.ts')
+          text = provider.read_text()
+          import_anchor = '''import {\n  GoogleDriveQueuedSyncError,\n  isGoogleDriveQueuedSyncError,\n  type GoogleDriveSyncResult,\n} from "./google-drive-sync-result";\n'''
+          import_replacement = import_anchor + 'import { decideDriveV2QueuedReconciliation } from "./google-drive-v2-queue-reconciliation";\n'
+          if text.count(import_anchor) != 1:
+              raise SystemExit('expected exactly one queue helper import anchor')
+          text = text.replace(import_anchor, import_replacement, 1)
+
+          start = text.index('  private static async retryQueuedReconciliation(')
+          end = text.index('\n  private static async releaseQueuedArchive(', start)
+          segment = text[start:end]
+
+          decision_anchor = '''    const latestRemote = backups.find((backup) => !backup.conflict) ?? null;\n    const preferences = await this.getPreferences();\n    const decision = decideGoogleDriveSync({\n      localHash: item.contentHash,\n      remoteHash: latestRemote?.contentHash ?? null,\n      remoteFileId: latestRemote?.id ?? null,\n      lastSyncedHash: state.lastSyncedHash,\n      autoRestore: preferences?.googleDriveAutoRestore !== false,\n    });\n'''
+          decision_replacement = '''    const latestRemote = backups.find((backup) => !backup.conflict) ?? null;\n    const v2Decision = item.v2Summary\n      ? decideDriveV2QueuedReconciliation({\n          local: item.v2Summary,\n          remote: latestRemote,\n        })\n      : null;\n\n    if (v2Decision?.action === "blocked") {\n      throw new Error(v2Decision.reason);\n    }\n\n    if (v2Decision?.action === "same" && latestRemote) {\n      await this.writeState(game, {\n        lastSyncedHash: latestRemote.contentHash,\n        lastRemoteFileId: latestRemote.id,\n      });\n      await this.releaseQueuedArchive(queueId, item, true);\n      return "synced";\n    }\n\n    if (v2Decision?.action === "remote-newer") {\n      await this.releaseQueuedArchive(queueId, item, true);\n      return "remote-newer";\n    }\n\n    const preferences = await this.getPreferences();\n    const decision = decideGoogleDriveSync({\n      localHash: item.contentHash,\n      remoteHash: latestRemote?.contentHash ?? null,\n      remoteFileId: latestRemote?.id ?? null,\n      lastSyncedHash: state.lastSyncedHash,\n      autoRestore: preferences?.googleDriveAutoRestore !== false,\n    });\n    const forceV2Conflict =\n      v2Decision?.action === "conflict" ||\n      (v2Decision?.action === "legacy" &&\n        (decision.action === "restore-remote" ||\n          decision.action === "remote-newer"));\n'''
+          if segment.count(decision_anchor) != 1:
+              raise SystemExit('expected exactly one queued reconciliation decision anchor')
+          segment = segment.replace(decision_anchor, decision_replacement, 1)
+
+          same_anchor = '    if (decision.action === "same") {\n'
+          if segment.count(same_anchor) != 1:
+              raise SystemExit('expected exactly one queued same branch')
+          segment = segment.replace(
+              same_anchor,
+              '    if (decision.action === "same" && !v2Decision) {\n',
+              1,
+          )
+
+          upload_anchor = '    if (decision.action === "upload-local") {\n      const backup = await this.uploadArchive({\n'
+          upload_replacement = '''    if (\n      !forceV2Conflict &&\n      (decision.action === "upload-local" ||\n        v2Decision?.action === "upload" ||\n        (v2Decision?.action === "legacy" && decision.action === "same"))\n    ) {\n      const uploadParentHash =\n        decision.action === "upload-local"\n          ? decision.parentHash\n          : latestRemote?.contentHash ?? null;\n      const backup = await this.uploadArchive({\n'''
+          if segment.count(upload_anchor) != 1:
+              raise SystemExit('expected exactly one queued upload branch')
+          segment = segment.replace(upload_anchor, upload_replacement, 1)
+          segment = segment.replace(
+              '        parentHash: decision.parentHash,\n',
+              '        parentHash: uploadParentHash,\n',
+              1,
+          )
+
+          remote_anchor = '''    if (\n      decision.action === "restore-remote" ||\n      decision.action === "remote-newer"\n    ) {\n'''
+          remote_replacement = '''    if (\n      !forceV2Conflict &&\n      (decision.action === "restore-remote" ||\n        decision.action === "remote-newer")\n    ) {\n'''
+          if segment.count(remote_anchor) != 1:
+              raise SystemExit('expected exactly one queued remote branch')
+          segment = segment.replace(remote_anchor, remote_replacement, 1)
+
+          conflict_anchor = '''    const conflict = await this.upsertConflictSnapshot({\n      game,\n      archivePath: item.archivePath,\n      localHash: item.contentHash,\n      archiveHash:\n        item.archiveHash ?? (await hashArchiveFile(item.archivePath)),\n      localCreatedAt: item.createdAt,\n      remote: latestRemote,\n      parentHash: decision.parentHash,\n    });\n'''
+          conflict_replacement = '''    const conflictParentHash =\n      decision.action === "conflict" ? decision.parentHash : item.parentHash;\n    const conflict = await this.upsertConflictSnapshot({\n      game,\n      archivePath: item.archivePath,\n      localHash: item.contentHash,\n      archiveHash:\n        item.archiveHash ?? (await hashArchiveFile(item.archivePath)),\n      localCreatedAt: item.createdAt,\n      remote: latestRemote,\n      parentHash: conflictParentHash,\n    });\n'''
+          if segment.count(conflict_anchor) != 1:
+              raise SystemExit('expected exactly one queued conflict anchor')
+          segment = segment.replace(conflict_anchor, conflict_replacement, 1)
+          if segment.count('      parentHash: decision.parentHash,\n') != 1:
+              raise SystemExit('expected exactly one remaining conflict upload parent')
+          segment = segment.replace(
+              '      parentHash: decision.parentHash,\n',
+              '      parentHash: conflictParentHash,\n',
+              1,
+          )
+
+          text = text[:start] + segment + text[end:]
+          provider.write_text(text)
           PY
           git diff --check
           git diff -- \
-            src/main/services/cloud-save/google-drive/google-drive-cloud-save-provider-v2-runtime.ts \
-            src/main/services/cloud-save/google-drive/google-drive-v2-remote-ahead-runtime-contract.test.ts
+            src/main/services/cloud-save/google-drive/google-drive-cloud-save-provider.ts \
+            src/main/services/cloud-save/google-drive/google-drive-v2-queue-reconciliation.ts \
+            src/main/services/cloud-save/google-drive/google-drive-v2-queue-reconciliation.test.ts
 
       - name: Verify branch still points to requested SHA
         working-directory: private-source
@@ -139,10 +170,11 @@ jobs:
           git config user.name "Arthur Almeida"
           git config user.email "arthurgva1602@gmail.com"
           git add \
-            src/main/services/cloud-save/google-drive/google-drive-cloud-save-provider-v2-runtime.ts \
-            src/main/services/cloud-save/google-drive/google-drive-v2-remote-ahead-runtime-contract.test.ts
+            src/main/services/cloud-save/google-drive/google-drive-cloud-save-provider.ts \
+            src/main/services/cloud-save/google-drive/google-drive-v2-queue-reconciliation.ts \
+            src/main/services/cloud-save/google-drive/google-drive-v2-queue-reconciliation.test.ts
           git diff --cached --quiet && exit 1
-          git commit -m "fix(cloud-save): preserve anchor when Drive V2 remote is ahead"
+          git commit -m "fix(cloud-save): reconcile queued Drive V2 snapshots by aggregate hash"
           git remote set-url origin "https://x-access-token:${TOOLCHAIN_GH_TOKEN}@github.com/Semogtw/HydraPersonalizado.git"
           git push origin "HEAD:refs/heads/$TARGET_BRANCH"
 
