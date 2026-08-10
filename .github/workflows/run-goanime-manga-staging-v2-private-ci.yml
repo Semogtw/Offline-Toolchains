@@ -101,7 +101,7 @@ jobs:
           run_gate astratoons flutter test --no-pub test/services/manga/providers/astratoons_manga_provider_test.dart
           run_gate hqnow flutter test --no-pub test/services/manga/providers/hqnow_manga_provider_test.dart
           run_gate capitoons flutter test --no-pub test/services/manga/providers/capitoons_manga_provider_test.dart
-          run_gate mangaonline flutter test --no-pub test/services/manga/providers/mangaonline_manga_provider_test.dart
+          run_gate mangadash flutter test --no-pub test/services/manga/providers/mangadash_manga_provider_test.dart
           run_gate ninjascan flutter test --no-pub test/services/manga/providers/ninja_scan_manga_provider_test.dart
           run_gate readability flutter test --no-pub test/services/manga/manga_readability_verifier_test.dart
           run_gate manga_tooling flutter test --no-pub test/tools/manga
