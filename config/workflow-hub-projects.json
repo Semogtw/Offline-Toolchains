@@ -53,11 +53,11 @@
       "repository": "Semogtw/Receitas",
       "visibility": "private",
       "default_ref": "main",
-      "central_ci": "run-private-project-ci",
+      "central_ci": "run-receitas-ci",
       "source_export": "encrypted",
       "artifact_policy": "discard",
       "token_access": "pending-secret-scope",
-      "status": "active-planning"
+      "status": "active-runtime"
     },
     "fichario": {
       "repository": "Semogtw/FicharioVirtual",
