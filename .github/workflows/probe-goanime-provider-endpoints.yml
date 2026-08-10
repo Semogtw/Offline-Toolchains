@@ -1,0 +1,43 @@
+name: Probe GoAnime provider endpoints
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-provider-endpoint-probe/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Probe public catalog endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          probe() {
+            local name="$1"
+            local url="$2"
+            local result code type size
+            result="$(curl --silent --show-error --location --max-time 20 \
+              --user-agent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36' \
+              --output /tmp/provider-body \
+              --write-out '%{http_code}|%{content_type}|%{size_download}' \
+              "$url" 2>/dev/null || printf '000||0')"
+            IFS='|' read -r code type size <<< "$result"
+            echo "::notice title=GoAnime endpoint probe::$name status=$code type=${type:-unknown} bytes=${size:-0}"
+          }
+
+          probe 'animefire.io home' 'https://animefire.io/'
+          probe 'animefire.io sitemap' 'https://animefire.io/sitemap.xml'
+          probe 'animefire.plus home' 'https://animefire.plus/'
+          probe 'animefire.plus sitemap' 'https://animefire.plus/sitemap.xml'
+          probe 'animesonline home' 'https://animesonlinecc.to/'
+          probe 'animesonline sitemap-index' 'https://animesonlinecc.to/sitemap_index.xml'
+          probe 'animesonline wp-sitemap' 'https://animesonlinecc.to/wp-sitemap.xml'
+          probe 'goyabu catalog' 'https://goyabu.io/lista-de-animes'
+          probe 'anitube legendados' 'https://www.anitube.biz/categoria/animes-legendados'
