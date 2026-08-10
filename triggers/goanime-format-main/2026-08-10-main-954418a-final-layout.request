@@ -1,0 +1,1 @@
+Check GoAnime main at 954418a45cc9a2c7ccc1b6a2b71d635e707e1be3 after applying the exact Dart 3.12.1 formatter output to provider-search tests and removing the stale search-screen import.
