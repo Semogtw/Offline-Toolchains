@@ -1,0 +1,171 @@
+name: Run Receitas encrypted lockfile handoff
+
+on:
+  workflow_run:
+    workflows:
+      - Request Receitas lockfile handoff
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: receitas-lockfile-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  export:
+    name: Generate and encrypt Receitas pnpm lockfile
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'build/receitas-lockfile' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.actor.login == github.repository_owner &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout request revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          path: request-source
+          persist-credentials: false
+          sparse-checkout: |
+            triggers/receitas-lockfile.json
+            triggers/receitas-lockfile-recipient.asc
+          sparse-checkout-cone-mode: false
+
+      - name: Normalize trusted request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          request = json.loads(Path('request-source/triggers/receitas-lockfile.json').read_text(encoding='utf-8'))
+          if set(request) != {'ref'}:
+              raise SystemExit('request must contain exactly the ref field')
+          ref = request['ref']
+          if not isinstance(ref, str) or not ref or len(ref) > 200 or ref.startswith('-') or '..' in ref or '@{' in ref:
+              raise SystemExit('unsafe git ref')
+          if not re.fullmatch(r'[A-Za-z0-9._/-]+', ref):
+              raise SystemExit('ref contains unsupported characters')
+          key = Path('request-source/triggers/receitas-lockfile-recipient.asc').read_text(encoding='utf-8')
+          if 'BEGIN PGP PRIVATE KEY BLOCK' in key:
+              raise SystemExit('private key material is forbidden')
+          if 'BEGIN PGP PUBLIC KEY BLOCK' not in key or 'END PGP PUBLIC KEY BLOCK' not in key:
+              raise SystemExit('invalid public encryption recipient')
+          with open(sys.argv[1], 'a', encoding='utf-8') as stream:
+              stream.write(f'ref={ref}\n')
+          PY
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout private Receitas source read-only
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/Receitas
+          ref: ${{ steps.request.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Refuse to overwrite an existing lockfile
+        shell: bash
+        run: test ! -e "$GITHUB_WORKSPACE/private-source/pnpm-lock.yaml"
+
+      - name: Set up pinned Node.js without dependency cache
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24.18.0'
+          check-latest: false
+
+      - name: Activate repository-pinned pnpm
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_manager="$(node -p "JSON.parse(require('node:fs').readFileSync('package.json','utf8')).packageManager")"
+          case "$package_manager" in pnpm@*) ;; *) exit 1 ;; esac
+          corepack enable
+          corepack prepare "$package_manager" --activate
+
+      - name: Generate lockfile from current package manifest
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm install --lockfile-only --no-frozen-lockfile
+          test -s pnpm-lock.yaml
+
+      - name: Encrypt lockfile before leaving private workspace
+        id: transfer
+        shell: bash
+        run: |
+          set -euo pipefail
+          work_dir="$RUNNER_TEMP/receitas-lockfile-transfer"
+          transfer_dir="$work_dir/transfer"
+          gpg_home="$work_dir/gpg"
+          rm -rf "$work_dir"
+          mkdir -p "$transfer_dir" "$gpg_home"
+          chmod 700 "$gpg_home"
+
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import "$GITHUB_WORKSPACE/request-source/triggers/receitas-lockfile-recipient.asc"
+          fingerprint="$(gpg --batch --with-colons --fingerprint | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test -n "$fingerprint"
+          test -z "$(gpg --batch --with-colons --list-secret-keys 2>/dev/null | awk -F: '$1 == "sec" { print $1 }')"
+
+          plaintext="$GITHUB_WORKSPACE/private-source/pnpm-lock.yaml"
+          encrypted="$transfer_dir/pnpm-lock.yaml.gpg"
+          gpg --batch --yes --trust-model always --recipient "$fingerprint" --output "$encrypted" --encrypt "$plaintext"
+          test -s "$encrypted"
+
+          rm -rf "$GITHUB_WORKSPACE/private-source" "$gpg_home"
+          test ! -e "$GITHUB_WORKSPACE/private-source"
+          test -s "$encrypted"
+          echo "transfer_dir=$transfer_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Upload encrypted Receitas lockfile transfer
+        uses: actions/upload-artifact@v7
+        with:
+          name: receitas-pnpm-lock-encrypted
+          path: ${{ steps.transfer.outputs.transfer_dir }}/pnpm-lock.yaml.gpg
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Remove all private and transient data
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source"
+          rm -rf "$GITHUB_WORKSPACE/request-source"
+          rm -rf "$RUNNER_TEMP/receitas-lockfile-transfer"
+
+      - name: Summarize sanitized handoff
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## Receitas encrypted lockfile handoff'
+            echo
+            echo '- Only OpenPGP ciphertext is eligible for upload.'
+            echo '- Artifact retention is one day.'
+            echo '- The private checkout and plaintext lockfile are removed before upload.'
+          } >> "$GITHUB_STEP_SUMMARY"
