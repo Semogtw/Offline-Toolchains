@@ -1,0 +1,130 @@
+name: Run GoAnime manga reviewed live evidence privately
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-reviewed-live-evidence/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-reviewed-live-evidence-private-ci
+  cancel-in-progress: false
+
+jobs:
+  reviewed-live-evidence:
+    name: GoAnime reviewed manga live evidence
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-reviewed-live-evidence/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Collect reviewed live evidence
+        working-directory: private-source
+        shell: bash
+        env:
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+          REVIEWED_DIR: ${{ runner.temp }}/goanime-reviewed-live-evidence
+        run: |
+          set -euo pipefail
+          rm -rf "$REVIEWED_DIR"
+          mkdir -p "$REVIEWED_DIR"
+          if dart run tools/manga/collect_reviewed_manga_live_evidence.dart \
+            "$REVIEWED_DIR/evidence.json" \
+            "$REVIEWED_DIR/status.json" \
+            "$REVIEWED_SHA" >/tmp/goanime-reviewed-live.log 2>&1; then
+            echo "reviewed_collection=success"
+          else
+            echo "reviewed_collection=failure"
+            rm -f /tmp/goanime-reviewed-live.log
+            exit 1
+          fi
+          rm -f /tmp/goanime-reviewed-live.log
+
+      - name: Verify reviewed provenance without exposing evidence
+        shell: bash
+        env:
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+          REVIEWED_DIR: ${{ runner.temp }}/goanime-reviewed-live-evidence
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ['REVIEWED_DIR'])
+          reviewed = os.environ['REVIEWED_SHA']
+          status = json.loads((root / 'status.json').read_text())
+          evidence = json.loads((root / 'evidence.json').read_text())
+
+          assert status['providerSetVersion'] == reviewed
+          assert evidence['providerSetVersion'] == reviewed
+          assert status['complete'] is True
+          assert len(status['successfulProviderIds']) == 5
+          assert len(status['failures']) == 0
+          assert len(evidence['evidence']) == 5
+          PY
+          echo "reviewed_provenance=success"
+
+      - name: Remove private checkout and plaintext evidence
+        if: always()
+        run: |
+          rm -rf \
+            "$GITHUB_WORKSPACE/private-source" \
+            "$GITHUB_WORKSPACE/toolchain-control" \
+            "$RUNNER_TEMP/goanime-reviewed-live-evidence"
+          rm -f /tmp/goanime-reviewed-live.log
