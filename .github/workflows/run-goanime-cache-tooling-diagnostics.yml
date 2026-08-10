@@ -124,6 +124,32 @@ jobs:
           fi
           printf '%s\n' "$output" | tail -n 12
 
+      - name: Production provider catalog audit
+        id: production
+        working-directory: private-source
+        shell: bash
+        env:
+          CACHE_BUILDER_MAX_RUNTIME_MINUTES: '5'
+        run: |
+          set -euo pipefail
+          dart run tools/provider_catalog_cache.dart >/dev/null
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path('assets/data/anime_provider_catalog_manifest.json').read_text(encoding='utf-8'))
+          providers = manifest.get('providers') or {}
+          required = ('animefire', 'animesonline', 'goyabu', 'anitube')
+          for provider in required:
+              info = providers.get(provider) or {}
+              status = str(info.get('status') or 'missing')
+              count = int(info.get('count') or 0)
+              attempted = int(info.get('attemptedUrls') or 0)
+              successful = int(info.get('successfulUrls') or 0)
+              print(f'::notice title=GoAnime provider audit::{provider}: status={status}, titles={count}, urls={successful}/{attempted}')
+          print(f'::notice title=GoAnime catalog union::titles={int(manifest.get("availableTitleCount") or 0)}, allProvidersComplete={bool(manifest.get("allProvidersComplete"))}')
+          PY
+
       - name: Test MAL provider provenance tooling
         working-directory: private-source
         run: flutter test --no-pub --reporter expanded test/tools/build_mal_provider_availability_cache_test.dart
@@ -137,6 +163,7 @@ jobs:
           echo '- Full file attempt 2: `${{ steps.full2.outcome }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Randomized file: `${{ steps.randomized.outcome }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Live crawler: `${{ steps.crawl.outcome }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Production provider audit: `${{ steps.production.outcome }}`' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove private checkout
         if: always()
