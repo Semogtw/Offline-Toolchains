@@ -11,14 +11,14 @@ permissions:
   contents: read
 
 jobs:
-  finalize:
+  validate:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
       PUBLIC_SUPABASE_URL: https://playwright-fichario.supabase.co
       PUBLIC_SUPABASE_PUBLISHABLE_KEY: sb_publishable_playwright_capture_1234567890
     steps:
-      - name: Checkout Fichario feature
+      - name: Checkout final Fichario feature branch
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: Semogtw/FicharioVirtual
@@ -26,6 +26,9 @@ jobs:
           path: public-source
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Record source commit
+        run: git -C public-source rev-parse HEAD
 
       - name: Set up pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
@@ -55,75 +58,7 @@ jobs:
         working-directory: public-source
         run: pnpm exec playwright install --with-deps chromium
 
-      - name: Apply reviewed repairs
-        working-directory: public-source
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          edge = Path('supabase/functions/semantic-coverage/index.ts')
-          source = edge.read_text()
-          old_loop = """\tfor (const page of pages) {
-          \t\tfor (const chunk of chunkSemanticText(page.source_text)) {
-          \t\t\tif (flattened.length >= MAX_INDEX_CHUNKS_PER_RUN) break;
-          \t\t\tflattened.push({ page, chunkIndex: chunk.index, chunkText: chunk.text });
-          \t\t}
-          \t\tif (flattened.length >= MAX_INDEX_CHUNKS_PER_RUN) break;
-          \t}
-          """
-          new_loop = """\tfor (const page of pages) {
-          \t\tconst chunks = chunkSemanticText(page.source_text);
-          \t\tif (chunks.length === 0) continue;
-          \t\tif (flattened.length + chunks.length > MAX_INDEX_CHUNKS_PER_RUN) break;
-          \t\tfor (const chunk of chunks) {
-          \t\t\tflattened.push({ page, chunkIndex: chunk.index, chunkText: chunk.text });
-          \t\t}
-          \t}
-          """
-          if source.count(old_loop) != 1:
-              raise SystemExit(f'expected one chunk loop, found {source.count(old_loop)}')
-          source = source.replace(old_loop, new_loop, 1)
-
-          old_index = 'index: await indexStats(supabase, embeddingModel, parsed.notebookId),'
-          if source.count(old_index) != 1:
-              raise SystemExit(f'expected one fallback index, found {source.count(old_index)}')
-          marker = '\t\t\tconst topics = await lexicalTopics(supabase, parsed);\n\t\t\treturn respond(200, {'
-          if source.count(marker) != 1:
-              raise SystemExit(f'expected one fallback marker, found {source.count(marker)}')
-          source = source.replace(
-              marker,
-              '\t\t\tconst topics = await lexicalTopics(supabase, parsed);\n\t\t\tconst stats = await indexStats(supabase, embeddingModel, parsed.notebookId);\n\t\t\treturn respond(200, {',
-              1,
-          )
-          source = source.replace(old_index, 'index: stats ? { ...stats, indexedThisRun: 0 } : null,', 1)
-          edge.write_text(source)
-
-          verifier = Path('supabase/functions/_shared/gemini-coverage-verifier.ts')
-          source = verifier.read_text()
-          if 'maxOutputTokens:' not in source:
-              target = '\t\t\t\t\t\ttemperature: 0,'
-              if source.count(target) != 1:
-                  raise SystemExit(f'expected one verifier temperature field, found {source.count(target)}')
-              source = source.replace(target, target + '\n\t\t\t\t\t\tmaxOutputTokens: 2_048,', 1)
-              verifier.write_text(source)
-          PY
-          pnpm exec prettier --write \
-            supabase/functions/semantic-coverage/index.ts \
-            supabase/functions/_shared/gemini-coverage-verifier.ts
-
-      - name: Upload repaired files
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: semantic-coverage-reviewed-repairs
-          path: |
-            public-source/supabase/functions/semantic-coverage/index.ts
-            public-source/supabase/functions/_shared/gemini-coverage-verifier.ts
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Run validation matrix
+      - name: Run committed semantic validation matrix
         id: matrix
         continue-on-error: true
         working-directory: public-source
@@ -142,13 +77,38 @@ jobs:
             echo "===== $name exit=$code =====" | tee -a "$log"
             if [ "$code" -ne 0 ]; then failures=$((failures + 1)); fi
           }
+          gate feature-format pnpm exec prettier --check \
+            docs/README.md docs/UNIT_TOPIC_COVERAGE.md docs/SEMANTIC_COVERAGE.md \
+            src/lib/coverage/semantic-coverage.ts src/lib/services/semantic-coverage.ts \
+            src/lib/services/topic-coverage.ts src/routes/coverage/+page.svelte \
+            supabase/functions/_shared/gemini-embedding-client.ts \
+            supabase/functions/_shared/gemini-coverage-verifier.ts \
+            supabase/functions/_shared/semantic-chunks.ts \
+            supabase/functions/_shared/semantic-provider-telemetry.ts \
+            supabase/functions/semantic-coverage/index.ts \
+            tests/unit/coverage/semantic-coverage.test.ts \
+            tests/unit/coverage/semantic-service.test.ts \
+            tests/unit/coverage/semantic-chunks.test.ts \
+            tests/unit/coverage/gemini-semantic-clients.test.ts \
+            tests/unit/coverage/semantic-provider-telemetry.test.ts \
+            tests/unit/coverage/semantic-edge-contract.test.ts
+          gate feature-eslint pnpm exec eslint \
+            src/lib/coverage/semantic-coverage.ts src/lib/services/semantic-coverage.ts \
+            src/lib/services/topic-coverage.ts src/routes/coverage/+page.svelte \
+            tests/unit/coverage/semantic-coverage.test.ts \
+            tests/unit/coverage/semantic-service.test.ts \
+            tests/unit/coverage/semantic-chunks.test.ts \
+            tests/unit/coverage/gemini-semantic-clients.test.ts \
+            tests/unit/coverage/semantic-provider-telemetry.test.ts \
+            tests/unit/coverage/semantic-edge-contract.test.ts
           gate typecheck pnpm check
           gate semantic-tests pnpm exec vitest run \
             tests/unit/coverage/semantic-coverage.test.ts \
             tests/unit/coverage/semantic-service.test.ts \
             tests/unit/coverage/semantic-chunks.test.ts \
             tests/unit/coverage/gemini-semantic-clients.test.ts \
-            tests/unit/coverage/semantic-provider-telemetry.test.ts
+            tests/unit/coverage/semantic-provider-telemetry.test.ts \
+            tests/unit/coverage/semantic-edge-contract.test.ts
           gate unit pnpm test
           gate build pnpm build
           gate e2e pnpm test:e2e
@@ -157,7 +117,7 @@ jobs:
           gate db pnpm test:db:local
           exit "$failures"
 
-      - name: Upload matrix log
+      - name: Upload final validation log
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
