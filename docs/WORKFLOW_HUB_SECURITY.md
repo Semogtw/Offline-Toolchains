@@ -25,7 +25,7 @@ Current central coverage:
 - ZapZap: private Android CI, encrypted debug APK transfer and encrypted source export.
 - SemogSite: private checks/builds, public offline toolchain and encrypted source export. The CI default follows integrated `main`, not an old bootstrap branch.
 - Hydra: private validation, public offline toolchain and encrypted source export.
-- Receitas: repository is currently planning/documentation-first. It is registered now so source/export and CI policy are ready before executable code lands; its runtime gate must be promoted when the stack is committed.
+- Receitas: executable React/TypeScript PWA with a dedicated read-only private runner. The runner executes fixed Node/pnpm lint, typecheck, unit, source-security and static Pages build gates, discards all source/output, and deliberately receives no E2E/backend/deploy credentials.
 - Fichário Virtual: public source, so its full verification remains token-free in this repository.
 - Codex desktop/Gemini helper repositories: public toolchain workflows remain here and do not need the private token.
 
@@ -38,6 +38,17 @@ Historical or one-shot workflows may remain temporarily for compatibility, but n
 The GoAnime catalog refresh is the only current central workflow that needs to publish generated source data back to a private repository. It uses a separate secret named `GOANIME_CATALOG_WRITE_TOKEN`, which should be a fine-grained token scoped **only** to `Semogtw/goanime-mobile` with `Contents: Read and write`. The token is injected only into the publish step, used through a one-shot HTTP authorization header, and never persisted by `actions/checkout`.
 
 Any future private consumer that needs cross-repository writes must get its own narrowly scoped credential. Do not reuse the read-only checkout token for writes and do not create one organization-wide write token for convenience.
+
+## Receitas public-runner boundary
+
+Receitas uses two workflows so the untrusted request path never receives the private checkout token:
+
+- `Request Receitas CI` accepts only an owner-authored push to `build/receitas-ci` changing `triggers/receitas-ci.json`; the JSON contains exactly one validated Git `ref` field and the request workflow receives no secret.
+- trusted `Run Receitas CI` is launched through `workflow_run`, revalidates the request, hardcodes `Semogtw/Receitas`, checks out the private ref with `Contents: Read-only`, and executes only fixed repository gates.
+
+The Receitas runner never accepts repository names, shell commands, environment dumps, artifact destinations or credentials from the request. It does not run E2E requiring a staging password, service-role operations, Supabase/PowerSync provisioning or Cloudflare deployment. Synthetic `.invalid` public endpoints are used only to prove the static browser build.
+
+A missing `pnpm-lock.yaml` remains a failing reproducibility condition. Until the private repository gains one, the runner may resolve dependencies ephemerally to expose independent compile/test failures, but it must still fail the job for the absent lockfile and must not persist that resolution as an Actions cache or public artifact.
 
 ## APK and binary outputs
 
