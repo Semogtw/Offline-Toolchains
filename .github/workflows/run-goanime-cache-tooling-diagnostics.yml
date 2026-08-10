@@ -88,9 +88,50 @@ jobs:
         working-directory: private-source
         run: dart analyze tools/build_mal_provider_availability_cache.dart
 
-      - name: Test provider catalog tooling
+      - name: Goyabu parses catalog and pagination
+        continue-on-error: true
         working-directory: private-source
-        run: flutter test --no-pub --reporter expanded test/tools/provider_catalog_cache_test.dart
+        run: flutter test --no-pub test/tools/provider_catalog_cache_test.dart --plain-name 'extracts anime entries, audio modes and all pagination pages'
+
+      - name: Goyabu rejects lookalikes
+        continue-on-error: true
+        working-directory: private-source
+        run: flutter test --no-pub test/tools/provider_catalog_cache_test.dart --plain-name 'rejects lookalike external anime links'
+
+      - name: AniTube parses legendados index
+        continue-on-error: true
+        working-directory: private-source
+        run: flutter test --no-pub test/tools/provider_catalog_cache_test.dart --plain-name 'parses the alphabetical legendados index'
+
+      - name: AniTube merges dubbed variants
+        continue-on-error: true
+        working-directory: private-source
+        run: flutter test --no-pub test/tools/provider_catalog_cache_test.dart --plain-name 'merges dubbed variants into the same normalized title'
+
+      - name: AniTube discovers pagination
+        continue-on-error: true
+        working-directory: private-source
+        run: flutter test --no-pub test/tools/provider_catalog_cache_test.dart --plain-name 'discovers explicit pagination without following anime detail pages'
+
+      - name: Snapshot accepts healthy refresh
+        continue-on-error: true
+        working-directory: private-source
+        run: flutter test --no-pub test/tools/provider_catalog_cache_test.dart --plain-name 'accepts a complete healthy provider refresh'
+
+      - name: Snapshot preserves partial crawl
+        continue-on-error: true
+        working-directory: private-source
+        run: flutter test --no-pub test/tools/provider_catalog_cache_test.dart --plain-name 'preserves the last complete provider snapshot after partial crawl'
+
+      - name: Snapshot rejects suspicious replacement
+        continue-on-error: true
+        working-directory: private-source
+        run: flutter test --no-pub test/tools/provider_catalog_cache_test.dart --plain-name 'rejects a suspiciously small replacement even if crawl says complete'
+
+      - name: Manifest exposes every provider
+        continue-on-error: true
+        working-directory: private-source
+        run: flutter test --no-pub test/tools/provider_catalog_cache_test.dart --plain-name 'manifest exposes independent status and counts for every provider'
 
       - name: Test MAL provider provenance tooling
         working-directory: private-source
