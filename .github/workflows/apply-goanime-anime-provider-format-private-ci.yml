@@ -90,6 +90,39 @@ jobs:
           fi
           printf '%s\n' '${{ steps.request.outputs.sha }}' > "$work/source-ref.txt"
 
+      - name: Optionally commit formatter output to private main
+        id: persist
+        working-directory: private-source
+        shell: bash
+        env:
+          WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- lib test packages tools; then
+            echo 'status=no-changes' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "${WRITE_TOKEN:-}" ]; then
+            echo 'GOANIME_CATALOG_WRITE_TOKEN is not configured; encrypted handoff remains authoritative.'
+            echo 'status=handoff-only' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib test packages tools
+          git commit -m 'style: apply Dart formatter to anime provider cache'
+          auth="$(printf 'x-access-token:%s' "$WRITE_TOKEN" | base64 -w0)"
+          extraheader="AUTHORIZATION: basic $auth"
+          git -c http.https://github.com/.extraheader="$extraheader" fetch origin main
+          current="$(git rev-parse origin/main)"
+          if [ "$current" != '${{ steps.request.outputs.sha }}' ]; then
+            echo "Private main moved from requested SHA to $current; refusing formatter push." >&2
+            exit 1
+          fi
+          git -c http.https://github.com/.extraheader="$extraheader" push origin HEAD:main
+          unset auth extraheader WRITE_TOKEN
+          echo 'status=pushed' >> "$GITHUB_OUTPUT"
+
       - name: Encrypt formatted bundle
         shell: bash
         env:
@@ -107,6 +140,7 @@ jobs:
             --output "$work/out/formatted-files.tar.gz.gpg" --encrypt "$work/formatted-files.tar.gz"
           cp "$work/files.txt" "$work/out/files.txt"
           cp "$work/source-ref.txt" "$work/out/source-ref.txt"
+          printf '%s\n' '${{ steps.persist.outputs.status }}' > "$work/out/persist-status.txt"
           sha256sum "$work/formatted-files.tar.gz" > "$work/out/formatted-files.tar.gz.sha256"
 
       - name: Upload encrypted formatting handoff
