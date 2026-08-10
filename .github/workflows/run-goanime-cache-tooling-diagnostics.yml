@@ -88,54 +88,55 @@ jobs:
         working-directory: private-source
         run: dart analyze tools/build_mal_provider_availability_cache.dart
 
-      - name: Goyabu parses catalog and pagination
+      - name: Provider catalog full file attempt 1
+        id: full1
         continue-on-error: true
         working-directory: private-source
-        run: flutter test --no-pub test/tools/provider_catalog_cache_test.dart --plain-name 'extracts anime entries, audio modes and all pagination pages'
+        run: flutter test --no-pub --concurrency=1 --reporter expanded test/tools/provider_catalog_cache_test.dart
 
-      - name: Goyabu rejects lookalikes
+      - name: Provider catalog full file attempt 2
+        id: full2
         continue-on-error: true
         working-directory: private-source
-        run: flutter test --no-pub test/tools/provider_catalog_cache_test.dart --plain-name 'rejects lookalike external anime links'
+        run: flutter test --no-pub --concurrency=1 --reporter expanded test/tools/provider_catalog_cache_test.dart
 
-      - name: AniTube parses legendados index
+      - name: Provider catalog randomized file
+        id: randomized
         continue-on-error: true
         working-directory: private-source
-        run: flutter test --no-pub test/tools/provider_catalog_cache_test.dart --plain-name 'parses the alphabetical legendados index'
+        run: flutter test --no-pub --concurrency=1 --test-randomize-ordering-seed=1701 test/tools/provider_catalog_cache_test.dart
 
-      - name: AniTube merges dubbed variants
+      - name: Live crawler runtime diagnostic
+        id: crawl
         continue-on-error: true
         working-directory: private-source
-        run: flutter test --no-pub test/tools/provider_catalog_cache_test.dart --plain-name 'merges dubbed variants into the same normalized title'
-
-      - name: AniTube discovers pagination
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/tools/provider_catalog_cache_test.dart --plain-name 'discovers explicit pagination without following anime detail pages'
-
-      - name: Snapshot accepts healthy refresh
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/tools/provider_catalog_cache_test.dart --plain-name 'accepts a complete healthy provider refresh'
-
-      - name: Snapshot preserves partial crawl
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/tools/provider_catalog_cache_test.dart --plain-name 'preserves the last complete provider snapshot after partial crawl'
-
-      - name: Snapshot rejects suspicious replacement
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/tools/provider_catalog_cache_test.dart --plain-name 'rejects a suspiciously small replacement even if crawl says complete'
-
-      - name: Manifest exposes every provider
-        continue-on-error: true
-        working-directory: private-source
-        run: flutter test --no-pub test/tools/provider_catalog_cache_test.dart --plain-name 'manifest exposes independent status and counts for every provider'
+        shell: bash
+        env:
+          CACHE_BUILDER_MAX_RUNTIME_MINUTES: '5'
+        run: |
+          set +e
+          output="$(dart run tools/provider_catalog_cache.dart --minimum-provider-entries=1 2>&1)"
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            summary="$(printf '%s\n' "$output" | tail -n 8 | tr '\n' ' ' | sed -E 's#https?://[^ ]+#<url>#g; s#/[A-Za-z0-9_.@:+-]+/private-source/#<private-source>/#g' | cut -c1-1200)"
+            echo "::error title=GoAnime provider crawler runtime::exit=$status $summary"
+            exit "$status"
+          fi
+          printf '%s\n' "$output" | tail -n 12
 
       - name: Test MAL provider provenance tooling
         working-directory: private-source
         run: flutter test --no-pub --reporter expanded test/tools/build_mal_provider_availability_cache_test.dart
+
+      - name: Diagnostics summary
+        if: always()
+        shell: bash
+        run: |
+          echo '## GoAnime cache diagnostics' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Full file attempt 1: `${{ steps.full1.outcome }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Full file attempt 2: `${{ steps.full2.outcome }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Randomized file: `${{ steps.randomized.outcome }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Live crawler: `${{ steps.crawl.outcome }}`' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove private checkout
         if: always()
