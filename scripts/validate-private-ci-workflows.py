@@ -13,6 +13,9 @@ FICHARIO_WORKFLOW = ROOT / ".github/workflows/run-fichario-ci.yml"
 REQUEST_WORKFLOW = ROOT / ".github/workflows/request-private-project-ci.yml"
 REPORT_WORKFLOW = ROOT / ".github/workflows/report-private-project-ci-runs.yml"
 REQUEST_FILE = ROOT / "triggers/private-ci.json"
+RECEITAS_REQUEST_WORKFLOW = ROOT / ".github/workflows/request-receitas-ci.yml"
+RECEITAS_RUN_WORKFLOW = ROOT / ".github/workflows/run-receitas-ci.yml"
+RECEITAS_REQUEST_FILE = ROOT / "triggers/receitas-ci.json"
 INVENTORY = ROOT / "config/workflow-hub-projects.json"
 OPERATIONS = ROOT / "docs/private-project-ci.md"
 SECURITY = ROOT / "docs/WORKFLOW_HUB_SECURITY.md"
@@ -64,13 +67,22 @@ def validate_mappings() -> None:
         entry = inventory["projects"][project]
         if entry["repository"] != repository or entry["default_ref"] != default_ref:
             raise ContractError(f"inventory mapping mismatch for {project}")
-        expected_ci = "run-fichario-ci" if project == "fichario" else "run-private-project-ci"
+        if project == "fichario":
+            expected_ci = "run-fichario-ci"
+        elif project == "receitas":
+            expected_ci = "run-receitas-ci"
+        else:
+            expected_ci = "run-private-project-ci"
         if entry["central_ci"] != expected_ci:
             raise ContractError(f"central_ci mismatch for {project}")
 
     payload = json.loads(read(REQUEST_FILE))
     if normalize_request(payload)["project"] not in EXPECTED_PROJECTS:
         raise ContractError("trigger request normalized to an unsupported project")
+
+    receitas_payload = json.loads(read(RECEITAS_REQUEST_FILE))
+    if set(receitas_payload) != {"ref"} or not isinstance(receitas_payload["ref"], str) or not receitas_payload["ref"]:
+        raise ContractError("Receitas trigger must contain exactly one non-empty ref")
 
 
 def validate_request_workflow(text: str) -> None:
@@ -89,6 +101,29 @@ def validate_request_workflow(text: str) -> None:
         require(text, fragment, "request workflow")
     for fragment in ("secrets.", "PRIVATE_REPOSITORIES_TOKEN", "actions/upload-artifact", "client_payload"):
         forbid(text, fragment, "request workflow")
+
+
+def validate_receitas_request_workflow(text: str) -> None:
+    for fragment in (
+        "name: Request Receitas CI",
+        "- build/receitas-ci",
+        "- triggers/receitas-ci.json",
+        'test "$ACTOR" = "$OWNER"',
+        "persist-credentials: false",
+        "sparse-checkout: triggers/receitas-ci.json",
+        "request must contain exactly the ref field",
+        "unsafe git ref",
+    ):
+        require(text, fragment, "Receitas request workflow")
+    for fragment in (
+        "secrets.",
+        "PRIVATE_REPOSITORIES_TOKEN",
+        "actions/upload-artifact",
+        "repository:",
+        "client_payload",
+        "set -x",
+    ):
+        forbid(text, fragment, "Receitas request workflow")
 
 
 def validate_privileged_workflow(text: str) -> None:
@@ -129,6 +164,47 @@ def validate_privileged_workflow(text: str) -> None:
         forbid(text, fragment, "privileged workflow")
 
 
+def validate_receitas_run_workflow(text: str) -> None:
+    for fragment in (
+        "name: Run Receitas CI",
+        "workflow_run:",
+        "Request Receitas CI",
+        "github.event.workflow_run.actor.login == github.repository_owner",
+        "github.event.workflow_run.head_repository.full_name == github.repository",
+        "PRIVATE_REPOSITORIES_TOKEN",
+        "repository: Semogtw/Receitas",
+        "ref: ${{ steps.request.outputs.ref }}",
+        "persist-credentials: false",
+        "fetch-depth: 1",
+        "lfs: false",
+        "submodules: false",
+        "node-version: '24.18.0'",
+        "pnpm install --frozen-lockfile",
+        "pnpm install --no-frozen-lockfile",
+        "pnpm test:release-scripts",
+        "pnpm verify:source",
+        "pnpm lint",
+        "pnpm typecheck",
+        "pnpm test:run",
+        "pnpm build:pages",
+        "reproducible lockfile",
+        "rm -rf \"$GITHUB_WORKSPACE/private-source\"",
+        "no artifact was uploaded",
+    ):
+        require(text, fragment, "Receitas run workflow")
+    for fragment in (
+        "actions/upload-artifact",
+        "actions/cache",
+        "persist-credentials: true",
+        "secrets: inherit",
+        "pull_request_target",
+        "set -x",
+        "E2E_PASSWORD",
+        "SUPABASE_SERVICE_ROLE_KEY",
+    ):
+        forbid(text, fragment, "Receitas run workflow")
+
+
 def validate_fichario_workflow(text: str) -> None:
     for fragment in (
         "name: Run Fichario CI",
@@ -165,14 +241,18 @@ def validate_docs() -> None:
         require(operations, f"`{repository}`", "operations")
     require(operations, "issue #15", "operations")
     require(operations, "retention", "operations")
+    require(operations, "Run Receitas CI", "operations")
     require(security, "ciphertext-only", "security policy")
+    require(security, "Receitas", "security policy")
 
 
 def main() -> int:
     try:
         validate_mappings()
         validate_request_workflow(read(REQUEST_WORKFLOW))
+        validate_receitas_request_workflow(read(RECEITAS_REQUEST_WORKFLOW))
         validate_privileged_workflow(read(RUN_WORKFLOW))
+        validate_receitas_run_workflow(read(RECEITAS_RUN_WORKFLOW))
         validate_fichario_workflow(read(FICHARIO_WORKFLOW))
         validate_report(read(REPORT_WORKFLOW))
         validate_docs()
