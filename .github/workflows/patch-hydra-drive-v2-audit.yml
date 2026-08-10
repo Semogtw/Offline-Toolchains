@@ -22,11 +22,11 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Require private repository token
+      - name: Require Hydra write token
         shell: bash
         env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+          TOOLCHAIN_GH_TOKEN: ${{ secrets.TOOLCHAIN_GH_TOKEN }}
+        run: test -n "$TOOLCHAIN_GH_TOKEN"
 
       - name: Checkout toolchain control files
         uses: actions/checkout@v6
@@ -55,7 +55,7 @@ jobs:
         with:
           repository: Semogtw/HydraPersonalizado
           ref: ${{ steps.request.outputs.sha }}
-          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          token: ${{ secrets.TOOLCHAIN_GH_TOKEN }}
           path: private-source
           fetch-depth: 2
           persist-credentials: false
@@ -120,19 +120,19 @@ jobs:
         working-directory: private-source
         shell: bash
         env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TOOLCHAIN_GH_TOKEN: ${{ secrets.TOOLCHAIN_GH_TOKEN }}
           EXPECTED_SHA: ${{ steps.request.outputs.sha }}
           TARGET_BRANCH: ${{ steps.request.outputs.branch }}
         run: |
           set -euo pipefail
-          remote_sha="$(git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)" ls-remote https://github.com/Semogtw/HydraPersonalizado.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          remote_sha="$(git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOOLCHAIN_GH_TOKEN" | base64 -w0)" ls-remote https://github.com/Semogtw/HydraPersonalizado.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
           test "$remote_sha" = "$EXPECTED_SHA"
 
       - name: Commit and push exact patch
         working-directory: private-source
         shell: bash
         env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TOOLCHAIN_GH_TOKEN: ${{ secrets.TOOLCHAIN_GH_TOKEN }}
           TARGET_BRANCH: ${{ steps.request.outputs.branch }}
         run: |
           set -euo pipefail
@@ -143,7 +143,7 @@ jobs:
             src/main/services/cloud-save/google-drive/google-drive-v2-remote-ahead-runtime-contract.test.ts
           git diff --cached --quiet && exit 1
           git commit -m "fix(cloud-save): preserve anchor when Drive V2 remote is ahead"
-          git remote set-url origin "https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/HydraPersonalizado.git"
+          git remote set-url origin "https://x-access-token:${TOOLCHAIN_GH_TOKEN}@github.com/Semogtw/HydraPersonalizado.git"
           git push origin "HEAD:refs/heads/$TARGET_BRANCH"
 
       - name: Remove private checkout
