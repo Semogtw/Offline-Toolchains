@@ -1,0 +1,147 @@
+name: Apply private Hydra patch
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/hydra-private-patch/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apply-private-hydra-patch
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/hydra-private-patch/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch base_sha patch_dir < "toolchain-control/$request"
+          test "$project" = "hydra"
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ ]]
+          [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$patch_dir" =~ ^\.hydra-patches/[A-Za-z0-9._-]+$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+          echo "patch_dir=$patch_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout private Hydra branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/HydraPersonalizado
+          ref: ${{ steps.request.outputs.branch }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Validate and assemble private patch
+        id: patch
+        working-directory: private-source
+        shell: bash
+        env:
+          BASE_SHA: ${{ steps.request.outputs.base_sha }}
+          PATCH_DIR: ${{ steps.request.outputs.patch_dir }}
+        run: |
+          set -euo pipefail
+          current_tip="$(git rev-parse HEAD)"
+          git merge-base --is-ancestor "$BASE_SHA" "$current_tip"
+
+          mapfile -t changed < <(git diff --name-only "$BASE_SHA..$current_tip")
+          test "${#changed[@]}" -ge 1
+          test "${#changed[@]}" -le 64
+          for path in "${changed[@]}"; do
+            [[ "$path" == "$PATCH_DIR"/part-* ]]
+            test -f "$path"
+            test ! -L "$path"
+          done
+
+          mapfile -t parts < <(find "$PATCH_DIR" -maxdepth 1 -type f -name 'part-*' -print | LC_ALL=C sort)
+          test "${#parts[@]}" -ge 1
+          test "${#parts[@]}" -le 64
+          cat "${parts[@]}" > /tmp/hydra-private.patch
+          test -s /tmp/hydra-private.patch
+          test "$(wc -c < /tmp/hydra-private.patch)" -le 4194304
+
+          git apply --check /tmp/hydra-private.patch
+          echo "current_tip=$current_tip" >> "$GITHUB_OUTPUT"
+
+      - name: Apply patch on exact clean base
+        working-directory: private-source
+        shell: bash
+        env:
+          BASE_SHA: ${{ steps.request.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          git reset --hard "$BASE_SHA"
+          git clean -fdx
+          git apply /tmp/hydra-private.patch
+          git diff --check
+          test -n "$(git diff --name-only)"
+          if git diff --name-only | grep -Eq '(^|/)(\.env|secrets?)(/|$)|^\.github/workflows/'; then
+            echo 'Patch touches a protected path.' >&2
+            exit 1
+          fi
+
+      - name: Verify remote branch has not changed
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_TIP: ${{ steps.patch.outputs.current_tip }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_sha="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/HydraPersonalizado.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_sha" = "$EXPECTED_TIP"
+
+      - name: Commit and push private patch
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_TIP: ${{ steps.patch.outputs.current_tip }}
+        run: |
+          set -euo pipefail
+          git config user.name 'Arthur Almeida'
+          git config user.email 'arthurgva1602@gmail.com'
+          git add -A
+          git diff --cached --quiet && exit 1
+          git commit -m 'fix(i18n): complete pt-BR fork localization audit'
+          git remote set-url origin "https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/HydraPersonalizado.git"
+          git push --force-with-lease="refs/heads/$TARGET_BRANCH:$EXPECTED_TIP" origin "HEAD:refs/heads/$TARGET_BRANCH"
+
+      - name: Remove private and transient data
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control" /tmp/hydra-private.patch
