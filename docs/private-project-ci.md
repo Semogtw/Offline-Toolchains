@@ -11,11 +11,11 @@ The security invariants are defined in `docs/WORKFLOW_HUB_SECURITY.md` and machi
 | `goanime` | `Semogtw/goanime-mobile` | `main` | Flutter health, format, analysis, tests, release-workflow validation, debug APK build-and-discard |
 | `zapzap` | `Semogtw/Zapzap` | `development/android-build-recovery` | source/pure checks, Android baseline, unit tests, lint, debug APK build-and-discard |
 | `semogsite` | `Semogtw/SemogSite` | `main` | frozen pnpm install, confidentiality/boundary gates, focused orchestration tests, full monorepo check, build and isolated Playwright gate |
-| `hydra` | `Semogtw/HydraPersonalizado` | `main` | pinned Node/Yarn, native GTK dependency, Rust, typechecks, tests, format/ESLint, build-and-discard |
-| `receitas` | `Semogtw/Receitas` | `main` | planning/documentation repository guards; intentionally fails when an executable stack appears until the profile is promoted |
+| `hydra` | `Semogtw/HydraPersonalizado` | `main` | pinned Node/Yarn, GTK4 Layer Shell, Rust, typechecks, tests, format/ESLint and build |
+| `receitas` | `Semogtw/Receitas` | `main` | dedicated Node/pnpm source audits, lint, typecheck, unit tests and static Pages build via `Run Receitas CI` |
 | `fichario` | `Semogtw/FicharioVirtual` | `main` | token-free public checkout and `pnpm verify:full` in the dedicated Fichário workflow |
 
-Repository identity and commands are fixed in trusted code. Request payloads select only an allowlisted key and a validated Git ref; they cannot supply a repository, runner, command, script, secret, or output destination.
+Repository identity and commands are fixed in trusted code. Request payloads select only an allowlisted key/ref contract; they cannot supply a repository, runner, command, script, secret, or output destination.
 
 ## Private repository token
 
@@ -33,11 +33,17 @@ Every private checkout uses shallow fetches, `persist-credentials: false`, no LF
 
 ## Running the hub
 
-For private projects use `Actions → Run private project CI`; select a project and optional exact branch/tag/SHA. An empty ref uses the table default. Fichário remains a separate token-free `Run Fichario CI` workflow.
+For the shared private profiles use `Actions → Run private project CI`; select a project and optional exact branch/tag/SHA. An empty ref uses the table default. Fichário remains a separate token-free `Run Fichario CI` workflow.
 
-A `repository_dispatch` event of type `private-project-ci` is also supported for the private profiles, but direct dispatches are accepted only when GitHub reports the actor as the repository owner.
+Receitas now has a dedicated connector-friendly path because its executable release gates differ from the former planning guard:
 
-The connector-friendly branch remains `build/private-ci`: update only `triggers/private-ci.json`. `Request private project CI` validates the owner-authored request without secrets, then the trusted workflows normalize the same allowlist and execute only the matching project job.
+1. update only `triggers/receitas-ci.json` on branch `build/receitas-ci`;
+2. `Request Receitas CI` validates an owner-authored push and a single safe `ref` field without receiving secrets;
+3. trusted `Run Receitas CI` on `main` receives the read-only private checkout token and executes only fixed commands.
+
+A `repository_dispatch` event of type `private-project-ci` is also supported for the legacy/shared private profiles, but direct dispatches are accepted only when GitHub reports the actor as the repository owner.
+
+The connector-friendly shared branch remains `build/private-ci`: update only `triggers/private-ci.json`. `Request private project CI` validates the owner-authored request without secrets, then the trusted workflows normalize the same allowlist and execute only the matching project job.
 
 ## Public visibility and confidentiality
 
@@ -63,11 +69,28 @@ Hydra remains compatible with its dedicated validation/toolchain workflows, but 
 
 ## Receitas
 
-Receitas currently contains planning/documentation rather than an executable application. Its guard verifies the expected planning structure, tracked JSON, merge-conflict absence and suspicious secret-like filenames. If a runtime manifest such as `package.json`, `pubspec.yaml`, `Cargo.toml`, Gradle files, `go.mod` or `pyproject.toml` appears, the guard fails with an instruction to promote the CI profile instead of silently reporting incomplete coverage.
+Receitas is now an executable React/TypeScript PWA. `Run Receitas CI` uses Node 24.18.0 and the `packageManager` pinned by the private repository, then attempts these fixed, non-E2E gates:
+
+- release-script tests;
+- source/security/PWA/UI integration audits;
+- ESLint;
+- TypeScript;
+- unit tests;
+- static Cloudflare Pages build plus browser-artifact audits.
+
+The public runner uses only synthetic public `VITE_*` values ending in `.invalid`; it receives no E2E password, service-role key, Supabase project credential, PowerSync credential or deploy credential.
+
+A missing `pnpm-lock.yaml` is a release blocker. While that gap exists, the workflow deliberately performs an **ephemeral non-frozen dependency resolution** so independent compile/test failures can still be discovered, then marks the job failed for the missing reproducibility contract. Once the lockfile exists, install automatically switches to `pnpm install --frozen-lockfile`.
+
+E2E that requires the dedicated Receitas staging identity, real Supabase/PowerSync state or destructive restore opt-ins remains outside this public runner. Production deploy and privileged backend provisioning also remain outside it.
+
+The older `receitas` job inside `Run private project CI` remains only as a compatibility/planning guard while callers migrate to the dedicated trigger; the inventory's canonical `central_ci` is `run-receitas-ci`.
 
 ## Sanitized run receipts
 
-`Report private project CI runs` writes completed hub results to the open **Public private CI run receipts** issue #15. Receipts include public run metadata and the selected project job/result only. Private source, private commit/ref details, logs, artifacts, secrets and build outputs are intentionally omitted. The reporter has `actions: read` and `issues: write` only.
+`Report private project CI runs` writes completed shared-hub results to the open **Public private CI run receipts** issue #15. Receipts include public run metadata and the selected project job/result only. Private source, private commit/ref details, logs, artifacts, secrets and build outputs are intentionally omitted.
+
+The dedicated Receitas runner currently reports only through its sanitized GitHub Step Summary and does not upload an artifact or write private ref/SHA details to the public receipt issue.
 
 ## Validation
 
