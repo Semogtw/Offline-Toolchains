@@ -1,0 +1,118 @@
+name: Diagnose GoAnime manga format paths
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-format-diagnostic/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-format-path-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    name: GoAnime manga path-only format diagnostic
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-format-diagnostic/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private manga revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Dart 3.12.1
+        uses: dart-lang/setup-dart@v1
+        with:
+          sdk: 3.12.1
+
+      - name: Report only non-clean manga format paths
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          roots=(
+            lib/services/manga
+            lib/screens/manga
+            lib/widgets/manga
+            test/services/manga
+            test/widgets/manga
+            test/architecture
+            tools/manga
+          )
+          files=()
+          for root in "${roots[@]}"; do
+            if [[ -d "$root" ]]; then
+              while IFS= read -r -d '' file; do
+                files+=("$file")
+              done < <(find "$root" -type f -name '*.dart' -print0)
+            elif [[ -f "$root" ]]; then
+              files+=("$root")
+            fi
+          done
+          [[ -f lib/l10n/ui_manga_localizations.dart ]] && files+=(lib/l10n/ui_manga_localizations.dart)
+          printf 'MANGA_FORMAT_PATH_DIAGNOSTIC_BEGIN\n'
+          syntax_failures=0
+          drift=0
+          for file in "${files[@]}"; do
+            set +e
+            dart format --output=none --set-exit-if-changed "$file" >/dev/null 2>&1
+            status=$?
+            set -e
+            if [[ $status -ne 0 ]]; then
+              printf '%s status=%s\n' "$file" "$status"
+              if [[ $status -eq 65 ]]; then
+                syntax_failures=$((syntax_failures + 1))
+              else
+                drift=$((drift + 1))
+              fi
+            fi
+          done
+          printf 'summary syntax=%s drift=%s\n' "$syntax_failures" "$drift"
+          printf 'MANGA_FORMAT_PATH_DIAGNOSTIC_END\n'
+          test "$syntax_failures" -eq 0
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control"
