@@ -87,6 +87,7 @@ jobs:
           set -euo pipefail
           dart analyze tools/provider_catalog_cache.dart
           dart analyze tools/build_mal_provider_availability_cache.dart
+          dart analyze tools/super_animes_catalog_metadata.dart
 
       - name: Test provider catalog tooling
         working-directory: private-source
@@ -99,6 +100,11 @@ jobs:
       - name: Test MAL provider provenance tooling
         working-directory: private-source
         run: flutter test --no-pub --reporter expanded test/tools/build_mal_provider_availability_cache_test.dart
+
+      - name: Test Super Animes metadata tooling
+        working-directory: private-source
+        shell: bash
+        run: flutter test --no-pub --reporter expanded test/tools/super_animes_catalog_metadata_test.dart
 
       - name: Live crawler smoke audit
         working-directory: private-source
