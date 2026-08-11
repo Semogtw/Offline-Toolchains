@@ -73,26 +73,34 @@ jobs:
 
           manager = Path('lib/services/manga/download/manga_download_manager.dart')
           text = manager.read_text(encoding='utf-8')
-          replacements = [
-              (
-                  'onError: (Object _, StackTrace __) {',
-                  'onError: (Object _, StackTrace _) {',
-              ),
-              (
-                  '      queue.cancelPending(\n'
-                  '        downloadId: downloadId,\n'
-                  '        canonicalChapterId: chapter.canonicalChapterId,\n'
-                  '      );',
-                  '      await queue.cancelPending(\n'
-                  '        downloadId: downloadId,\n'
-                  '        canonicalChapterId: chapter.canonicalChapterId,\n'
-                  '      );',
-              ),
-          ]
-          for old, new in replacements:
-              if text.count(old) != 1:
-                  raise SystemExit('manager lint fix precondition failed')
-              text = text.replace(old, new)
+
+          old = 'onError: (Object _, StackTrace __) {'
+          if text.count(old) != 1:
+              raise SystemExit('observer lint fix precondition failed')
+          text = text.replace(old, 'onError: (Object _, StackTrace _) {')
+
+          one_line_unknown = (
+              "    if (parent == null) throw StateError('Unknown manga download: $downloadId.');"
+          )
+          if text.count(one_line_unknown) != 3:
+              raise SystemExit('parent guard lint fix precondition failed')
+          text = text.replace(
+              one_line_unknown,
+              "    if (parent == null) {\n"
+              "      throw StateError('Unknown manga download: $downloadId.');\n"
+              "    }",
+          )
+
+          remove_old = '    _activeRuns.remove(downloadId);'
+          if text.count(remove_old) != 1:
+              raise SystemExit('active future cleanup precondition failed')
+          text = text.replace(
+              remove_old,
+              '    final removed = _activeRuns.remove(downloadId);\n'
+              '    if (removed != null) {\n'
+              '      unawaited(_consumeCompletion(removed));\n'
+              '    }',
+          )
           manager.write_text(text, encoding='utf-8')
 
           test_file = Path('test/services/manga/download/manga_download_manager_test.dart')
