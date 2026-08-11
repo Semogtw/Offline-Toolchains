@@ -149,6 +149,7 @@ jobs:
           chmod 700 "$gpg_home"
           cp "$RUNNER_TEMP/analyze.log" "$payload/analyze.log"
           cp "$RUNNER_TEMP/analyze.status" "$payload/STATUS"
+          cp "$GITHUB_WORKSPACE/private-source/lib/services/manga/download/manga_download_manager.dart" "$payload/manga_download_manager.dart"
           printf '%s\n' '${{ steps.request.outputs.sha }}' > "$payload/BASE_SHA"
           tar -C "$payload" -I 'zstd -T0 -6' -cf "$archive" .
           export GNUPGHOME="$gpg_home"
