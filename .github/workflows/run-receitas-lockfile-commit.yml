@@ -1,0 +1,143 @@
+name: Commit Receitas lockfile safely
+
+on:
+  workflow_run:
+    workflows:
+      - Request Receitas lockfile handoff
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: receitas-lockfile-commit-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  commit-lockfile:
+    name: Generate and commit only Receitas pnpm lockfile
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'build/receitas-lockfile' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.actor.login == github.repository_owner &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout trusted request revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          path: request-source
+          persist-credentials: false
+          sparse-checkout: |
+            triggers/receitas-lockfile.json
+          sparse-checkout-cone-mode: false
+
+      - name: Normalize expected Receitas revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          request = json.loads(Path('request-source/triggers/receitas-lockfile.json').read_text(encoding='utf-8'))
+          if set(request) != {'ref'}:
+              raise SystemExit('request must contain exactly the ref field')
+          ref = request['ref']
+          if not isinstance(ref, str) or not re.fullmatch(r'[0-9a-f]{40}', ref):
+              raise SystemExit('lockfile commit requires an exact 40-character commit SHA')
+          with open(sys.argv[1], 'a', encoding='utf-8') as stream:
+              stream.write(f'ref={ref}\n')
+          PY
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout exact Receitas revision with push credential
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/Receitas
+          ref: ${{ steps.request.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Refuse pre-existing lockfile
+        shell: bash
+        run: test ! -e "$GITHUB_WORKSPACE/private-source/pnpm-lock.yaml"
+
+      - name: Set up pinned Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24.18.0'
+          check-latest: false
+
+      - name: Activate repository-pinned pnpm
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_manager="$(node -p "JSON.parse(require('node:fs').readFileSync('package.json','utf8')).packageManager")"
+          case "$package_manager" in pnpm@*) ;; *) exit 1 ;; esac
+          corepack enable
+          corepack prepare "$package_manager" --activate >/dev/null
+
+      - name: Generate deterministic lockfile
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm install --lockfile-only --no-frozen-lockfile --reporter=silent
+          test -s pnpm-lock.yaml
+
+      - name: Prove lockfile is the only worktree change
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import subprocess
+
+          status = subprocess.check_output(
+              ['git', 'status', '--porcelain=v1', '--untracked-files=all'],
+              text=True,
+          ).splitlines()
+          if status != ['?? pnpm-lock.yaml']:
+              raise SystemExit('unexpected worktree changes; refusing to push')
+          PY
+
+      - name: Commit lockfile and push with revision lease
+        working-directory: private-source
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ steps.request.outputs.ref }}
+        run: |
+          set -euo pipefail
+          git config user.name 'Receitas Toolchain'
+          git config user.email 'receitas-toolchain@users.noreply.github.com'
+          git add -- pnpm-lock.yaml
+          git commit -m 'chore: add reproducible pnpm lockfile'
+          git push origin HEAD:refs/heads/feat/hardening-deploy-release \
+            --force-with-lease=refs/heads/feat/hardening-deploy-release:${EXPECTED_SHA}
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source"
+          rm -rf "$GITHUB_WORKSPACE/request-source"
