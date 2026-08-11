@@ -171,6 +171,59 @@ jobs:
           print('reasons=' + (','.join(f'{k}:{reasons[k]}' for k in sorted(reasons)) if reasons else 'none'))
           PY
 
+      - name: Encrypt recoverable MAL checkpoint
+        id: checkpoint_package
+        if: always() && steps.newtitles.outputs.count != '0'
+        shell: bash
+        env:
+          WORK: ${{ steps.baseline.outputs.work }}
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          checkpoint="$WORK/mal_mapping_checkpoint.json"
+          if [ ! -s "$checkpoint" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          handoff="$RUNNER_TEMP/goanime-mal-checkpoint-handoff"
+          gpg_home="$handoff/gpg"
+          stage="$handoff/stage"
+          transfer="$handoff/transfer"
+          rm -rf "$handoff"
+          mkdir -p "$gpg_home" "$stage" "$transfer"
+          chmod 700 "$gpg_home"
+          cp "$checkpoint" "$stage/mal_mapping_checkpoint.json"
+          [ ! -s "$WORK/new_mal_map.json" ] || cp "$WORK/new_mal_map.json" "$stage/new_mal_map.json"
+          [ ! -s "$WORK/new_mal_unmatched.json" ] || cp "$WORK/new_mal_unmatched.json" "$stage/new_mal_unmatched.json"
+          archive="$handoff/goanime-mal-checkpoint.tar.gz"
+          tar -C "$stage" -czf "$archive" .
+          tar -tzf "$archive" >/dev/null
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import "$GITHUB_WORKSPACE/trusted-source/keys/source-bundles-public.asc"
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1=="fpr"{print $10;exit}')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          test -z "$(gpg --batch --with-colons --list-secret-keys 2>/dev/null | awk -F: '$1=="sec"{print $1}')"
+          encrypted="$transfer/GoAnime-mal-checkpoint.tar.gz.gpg"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" \
+            --output "$encrypted" --encrypt "$archive"
+          test -s "$encrypted"
+          sha="$(sha256sum "$archive" | awk '{print $1}')"
+          printf '{"schema_version":1,"project":"goanime","kind":"mal_mapping_checkpoint","archive_sha256":"%s","encryption":"OpenPGP","recipient_fingerprint":"%s","workflow_run_id":"%s","retention_days":1}\n' \
+            "$sha" "$EXPECTED_FINGERPRINT" "$GITHUB_RUN_ID" > "$transfer/manifest.json"
+          rm -rf "$gpg_home" "$stage" "$archive"
+          echo "available=true" >> "$GITHUB_OUTPUT"
+          echo "transfer_dir=$transfer" >> "$GITHUB_OUTPUT"
+
+      - name: Upload encrypted MAL checkpoint recovery
+        if: always() && steps.checkpoint_package.outputs.available == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-mal-checkpoint-encrypted
+          path: ${{ steps.checkpoint_package.outputs.transfer_dir }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
       - name: Prepare empty MAL delta
         if: steps.newtitles.outputs.count == '0'
         shell: bash
@@ -417,4 +470,4 @@ jobs:
         shell: bash
         run: |
           rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
-          rm -rf "$RUNNER_TEMP/goanime-multisource-v2" "$RUNNER_TEMP/goanime-multisource-v2-handoff"
+          rm -rf "$RUNNER_TEMP/goanime-multisource-v2" "$RUNNER_TEMP/goanime-multisource-v2-handoff" "$RUNNER_TEMP/goanime-mal-checkpoint-handoff"
