@@ -1,0 +1,175 @@
+name: Diagnose final GoAnime manga lints encrypted
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-lint-diagnose/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Diagnose patched manga analyzer privately
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact source revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-lint-diagnose/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Apply same candidate lint patch
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          manager = Path('lib/services/manga/download/manga_download_manager.dart')
+          text = manager.read_text(encoding='utf-8')
+          text = text.replace(
+              'onError: (Object _, StackTrace __) {',
+              'onError: (Object _, StackTrace _) {',
+              1,
+          )
+          text = text.replace(
+              '      queue.cancelPending(\n'
+              '        downloadId: downloadId,\n'
+              '        canonicalChapterId: chapter.canonicalChapterId,\n'
+              '      );',
+              '      await queue.cancelPending(\n'
+              '        downloadId: downloadId,\n'
+              '        canonicalChapterId: chapter.canonicalChapterId,\n'
+              '      );',
+              1,
+          )
+          manager.write_text(text, encoding='utf-8')
+
+          test_file = Path('test/services/manga/download/manga_download_manager_test.dart')
+          text = test_file.read_text(encoding='utf-8')
+          text, count = re.subn(
+              r"(controller\.addError\(StateError\('connection dropped'\)\);\n\s*)controller\.close\(\);",
+              r"\1unawaited(controller.close());",
+              text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit('partial stream patch failed')
+          pattern = re.compile(
+              r"(onCancel: \(\) \{\n)(\s*)(if \(!firstStreamCancelled\.isCompleted\) firstStreamCancelled\.complete\(\);\n)(\s*)(\},)"
+          )
+          match = pattern.search(text)
+          if match is None:
+              raise SystemExit('pause stream patch failed')
+          replacement = (
+              match.group(1) + match.group(2) + match.group(3)
+              + match.group(2) + 'unawaited(controller.close());\n'
+              + match.group(4) + match.group(5)
+          )
+          text = text[:match.start()] + replacement + text[match.end():]
+          test_file.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve and run analyzer
+        id: analyze
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -u
+          flutter pub get >/dev/null 2>&1
+          dart format lib/services/manga/download/manga_download_manager.dart test/services/manga/download/manga_download_manager_test.dart >/dev/null
+          set +e
+          flutter analyze --no-pub lib/services/manga lib/screens/manga test/services/manga test/widgets/manga test/architecture > "$RUNNER_TEMP/analyze.log" 2>&1
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "$code" > "$RUNNER_TEMP/analyze.status"
+
+      - name: Encrypt analyzer diagnosis
+        id: encrypted
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/manga-lint-diagnosis"
+          transfer="$work/transfer"
+          payload="$work/payload"
+          archive="$work/diagnosis.tar.zst"
+          gpg_home="$work/gpg"
+          mkdir -p "$transfer" "$payload" "$gpg_home"
+          chmod 700 "$gpg_home"
+          cp "$RUNNER_TEMP/analyze.log" "$payload/analyze.log"
+          cp "$RUNNER_TEMP/analyze.status" "$payload/STATUS"
+          printf '%s\n' '${{ steps.request.outputs.sha }}' > "$payload/BASE_SHA"
+          tar -C "$payload" -I 'zstd -T0 -6' -cf "$archive" .
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import "$GITHUB_WORKSPACE/control/keys/source-bundles-public.asc" >/dev/null 2>&1
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" --output "$transfer/diagnosis.gpg" --encrypt "$archive"
+          sha256sum "$transfer/diagnosis.gpg" > "$transfer/SHA256SUMS"
+          echo "transfer=$transfer" >> "$GITHUB_OUTPUT"
+          rm -rf "$payload" "$archive" "$gpg_home" "$GITHUB_WORKSPACE/private-source"
+
+      - name: Upload ciphertext-only diagnosis
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-manga-final-lint-diagnosis-encrypted
+          path: ${{ steps.encrypted.outputs.transfer }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Remove private data
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control" "$RUNNER_TEMP/manga-lint-diagnosis" "$RUNNER_TEMP/analyze.log" "$RUNNER_TEMP/analyze.status"
