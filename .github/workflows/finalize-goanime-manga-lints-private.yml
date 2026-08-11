@@ -169,6 +169,44 @@ jobs:
           flutter test --no-pub test/widgets/manga >/dev/null
           flutter test --no-pub test/architecture/manga_offline_persistence_boundary_test.dart >/dev/null
 
+      - name: Encrypt validated files for connector publication
+        id: encrypted
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/manga-lint-validated"
+          payload="$work/payload"
+          transfer="$work/transfer"
+          archive="$work/validated.tar.zst"
+          gpg_home="$work/gpg"
+          rm -rf "$work"
+          mkdir -p "$payload/lib/services/manga/download" "$payload/test/services/manga/download" "$transfer" "$gpg_home"
+          chmod 700 "$gpg_home"
+          cp "$GITHUB_WORKSPACE/private-source/lib/services/manga/download/manga_download_manager.dart" "$payload/lib/services/manga/download/"
+          cp "$GITHUB_WORKSPACE/private-source/test/services/manga/download/manga_download_manager_test.dart" "$payload/test/services/manga/download/"
+          printf '%s\n' '${{ steps.request.outputs.sha }}' > "$payload/BASE_SHA"
+          printf 'analyze=0\ndownload=0\noffline=0\narchive=0\nwidgets=0\narchitecture=0\n' > "$payload/STATUS.txt"
+          tar -C "$payload" -I 'zstd -T0 -6' -cf "$archive" .
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import "$GITHUB_WORKSPACE/control/keys/source-bundles-public.asc" >/dev/null 2>&1
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" --output "$transfer/validated.gpg" --encrypt "$archive"
+          sha256sum "$transfer/validated.gpg" > "$transfer/SHA256SUMS"
+          echo "transfer=$transfer" >> "$GITHUB_OUTPUT"
+          rm -rf "$payload" "$archive" "$gpg_home"
+
+      - name: Upload ciphertext-only validated files
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-manga-lint-validated-encrypted
+          path: ${{ steps.encrypted.outputs.transfer }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
       - name: Commit validated lint fixes
         id: commit
         working-directory: private-source
@@ -206,4 +244,4 @@ jobs:
       - name: Remove private checkout
         if: always()
         shell: bash
-        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control" "$RUNNER_TEMP/manga-lint-validated"
