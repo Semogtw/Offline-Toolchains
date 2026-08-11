@@ -7,7 +7,7 @@ on:
       - 'triggers/hydra-finalize-ptbr/*.request'
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: finalize-validate-hydra-ptbr
@@ -18,6 +18,14 @@ jobs:
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    outputs:
+      result_file: ${{ steps.request.outputs.result_file }}
+      expected_tree: ${{ steps.request.outputs.expected_tree }}
+      hydra_sha: ${{ steps.finalize.outputs.sha }}
+      hydra_tree: ${{ steps.finalize.outputs.tree }}
+      install_outcome: ${{ steps.install.outcome }}
+      typecheck_outcome: ${{ steps.typecheck.outcome }}
+      test_outcome: ${{ steps.test.outcome }}
 
     steps:
       - name: Require private repository token
@@ -167,40 +175,6 @@ jobs:
         shell: bash
         run: yarn test
 
-      - name: Publish sanitized validation result
-        if: always()
-        working-directory: control
-        shell: bash
-        env:
-          RESULT_FILE: ${{ steps.request.outputs.result_file }}
-          HYDRA_SHA: ${{ steps.finalize.outputs.sha }}
-          HYDRA_TREE: ${{ steps.finalize.outputs.tree }}
-          INSTALL_OUTCOME: ${{ steps.install.outcome }}
-          TYPECHECK_OUTCOME: ${{ steps.typecheck.outcome }}
-          TEST_OUTCOME: ${{ steps.test.outcome }}
-          EXPECTED_TREE: ${{ steps.request.outputs.expected_tree }}
-          TOOLCHAINS_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$(dirname "$RESULT_FILE")"
-          cat > "$RESULT_FILE" <<EOF
-          hydra_sha=$HYDRA_SHA
-          hydra_tree=$HYDRA_TREE
-          expected_tree=$EXPECTED_TREE
-          install=$INSTALL_OUTCOME
-          typecheck=$TYPECHECK_OUTCOME
-          test=$TEST_OUTCOME
-          EOF
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add "$RESULT_FILE"
-          if ! git diff --cached --quiet; then
-            git commit -m 'ci(hydra): record pt-BR audit validation result'
-            auth="$(printf 'x-access-token:%s' "$TOOLCHAINS_TOKEN" | base64 -w0)"
-            git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" push origin HEAD:main
-            unset auth TOOLCHAINS_TOKEN
-          fi
-
       - name: Enforce validation gates
         if: always()
         shell: bash
@@ -221,3 +195,51 @@ jobs:
         if: always()
         shell: bash
         run: rm -rf "$GITHUB_WORKSPACE/hydra" /tmp/hydra-ptbr.patch /tmp/hydra-ptbr.patch.xz /tmp/hydra-ptbr.patch.xz.b64
+
+  publish-sanitized-result:
+    name: Publish sanitized Hydra validation result
+    needs: finalize-and-validate
+    if: always() && github.actor == github.repository_owner && needs.finalize-and-validate.outputs.result_file != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout public Toolchains result branch
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Publish sanitized validation result
+        shell: bash
+        env:
+          RESULT_FILE: ${{ needs.finalize-and-validate.outputs.result_file }}
+          HYDRA_SHA: ${{ needs.finalize-and-validate.outputs.hydra_sha }}
+          HYDRA_TREE: ${{ needs.finalize-and-validate.outputs.hydra_tree }}
+          EXPECTED_TREE: ${{ needs.finalize-and-validate.outputs.expected_tree }}
+          INSTALL_OUTCOME: ${{ needs.finalize-and-validate.outputs.install_outcome }}
+          TYPECHECK_OUTCOME: ${{ needs.finalize-and-validate.outputs.typecheck_outcome }}
+          TEST_OUTCOME: ${{ needs.finalize-and-validate.outputs.test_outcome }}
+          TOOLCHAINS_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$RESULT_FILE" =~ ^results/hydra-ptbr-[A-Za-z0-9._-]+\.txt$ ]]
+          mkdir -p "$(dirname "$RESULT_FILE")"
+          cat > "$RESULT_FILE" <<EOF
+          hydra_sha=$HYDRA_SHA
+          hydra_tree=$HYDRA_TREE
+          expected_tree=$EXPECTED_TREE
+          install=$INSTALL_OUTCOME
+          typecheck=$TYPECHECK_OUTCOME
+          test=$TEST_OUTCOME
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$RESULT_FILE"
+          if ! git diff --cached --quiet; then
+            git commit -m 'ci(hydra): record pt-BR audit validation result'
+            auth="$(printf 'x-access-token:%s' "$TOOLCHAINS_TOKEN" | base64 -w0)"
+            git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" push origin HEAD:main
+            unset auth TOOLCHAINS_TOKEN
+          fi
