@@ -91,7 +91,8 @@ jobs:
             fi
           done
           [[ -f lib/l10n/ui_manga_localizations.dart ]] && files+=(lib/l10n/ui_manga_localizations.dart)
-          printf 'MANGA_FORMAT_PATH_DIAGNOSTIC_BEGIN\n'
+          report="$RUNNER_TEMP/manga-format-paths.txt"
+          : > "$report"
           syntax_failures=0
           drift=0
           for file in "${files[@]}"; do
@@ -100,7 +101,7 @@ jobs:
             status=$?
             set -e
             if [[ $status -ne 0 ]]; then
-              printf '%s status=%s\n' "$file" "$status"
+              printf '%s status=%s\n' "$file" "$status" >> "$report"
               if [[ $status -eq 65 ]]; then
                 syntax_failures=$((syntax_failures + 1))
               else
@@ -108,8 +109,14 @@ jobs:
               fi
             fi
           done
-          printf 'summary syntax=%s drift=%s\n' "$syntax_failures" "$drift"
-          printf 'MANGA_FORMAT_PATH_DIAGNOSTIC_END\n'
+          printf 'summary syntax=%s drift=%s\n' "$syntax_failures" "$drift" >> "$report"
+          {
+            echo '### Manga format path diagnostic'
+            echo '```text'
+            cat "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat "$report"
           test "$syntax_failures" -eq 0
 
       - name: Remove private checkout
