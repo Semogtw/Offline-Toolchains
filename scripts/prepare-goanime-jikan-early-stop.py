@@ -64,7 +64,7 @@ tool.write_text(text, encoding="utf-8")
 
 test = Path("test/tools/build_mal_availability_cache_test.dart")
 text = test.read_text(encoding="utf-8")
-marker = "  group('scoreJikanCandidate', () {\n"
+marker = "  test('exact title accepts', () {\n"
 inserted = '''  group('adaptive Jikan query plan', () {
     test('stops after an unequivocal exact normalized match', () async {
       final queries = <String>[];
@@ -73,7 +73,10 @@ inserted = '''  group('adaptive Jikan query plan', () {
         searcher: (query) async {
           queries.add(query);
           return <builder.JikanAnimeSearchCandidate>[
-            candidate(malId: 1535, title: 'Death Note'),
+            const builder.JikanAnimeSearchCandidate(
+              malId: 1535,
+              title: 'Death Note',
+            ),
           ];
         },
         searchCache: <String, List<builder.JikanAnimeSearchCandidate>>{},
@@ -91,11 +94,17 @@ inserted = '''  group('adaptive Jikan query plan', () {
           queries.add(query);
           if (query == 'deathnote') {
             return <builder.JikanAnimeSearchCandidate>[
-              candidate(malId: 1535, title: 'Death Note'),
+              const builder.JikanAnimeSearchCandidate(
+                malId: 1535,
+                title: 'Death Note',
+              ),
             ];
           }
           return <builder.JikanAnimeSearchCandidate>[
-            candidate(malId: 999, title: 'Death Note Extra'),
+            const builder.JikanAnimeSearchCandidate(
+              malId: 999,
+              title: 'Death Note Extra',
+            ),
           ];
         },
         searchCache: <String, List<builder.JikanAnimeSearchCandidate>>{},
@@ -107,5 +116,5 @@ inserted = '''  group('adaptive Jikan query plan', () {
   });
 
 '''
-text = replace_once(text, marker, inserted + marker, "scoreJikanCandidate group marker")
+text = replace_once(text, marker, inserted + marker, "exact title test marker")
 test.write_text(text, encoding="utf-8")
