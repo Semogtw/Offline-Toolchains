@@ -1,0 +1,241 @@
+name: Prepare GoAnime Jikan early-stop patch
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-jikan-early-stop/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-jikan-early-stop
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact GoAnime revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-jikan-early-stop/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          test "$branch" = main
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify exact source
+        working-directory: private-source
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = '${{ steps.request.outputs.sha }}'
+
+      - name: Apply deterministic Jikan early-stop patch
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          tool = Path('tools/build_mal_availability_cache.dart')
+          text = tool.read_text(encoding='utf-8')
+          old = '''Future<List<JikanAnimeSearchCandidate>> searchCandidatesForAvailableTitle(
+            String normalizedTitle, {
+            required JikanAnimeSearcher searcher,
+            required Map<String, List<JikanAnimeSearchCandidate>> searchCache,
+          }) async {
+            final candidatesByMalId = <int, JikanAnimeSearchCandidate>{};
+            for (final query in jikanSearchQueriesForAvailableTitle(normalizedTitle)) {
+              final candidates = searchCache[query] ??= (await searcher(
+                query,
+              )).take(_maxCandidates).toList();
+              for (final candidate in candidates) {
+                candidatesByMalId.putIfAbsent(candidate.malId, () => candidate);
+              }
+            }
+            return candidatesByMalId.values.take(_maxCandidates * 3).toList();
+          }
+          '''
+          new = '''Future<List<JikanAnimeSearchCandidate>> searchCandidatesForAvailableTitle(
+            String normalizedTitle, {
+            required JikanAnimeSearcher searcher,
+            required Map<String, List<JikanAnimeSearchCandidate>> searchCache,
+          }) async {
+            final candidatesByMalId = <int, JikanAnimeSearchCandidate>{};
+            for (final query in jikanSearchQueriesForAvailableTitle(normalizedTitle)) {
+              final candidates = searchCache[query] ??= (await searcher(
+                query,
+              )).take(_maxCandidates).toList();
+              for (final candidate in candidates) {
+                candidatesByMalId.putIfAbsent(candidate.malId, () => candidate);
+              }
+
+              final accumulated = candidatesByMalId.values
+                  .take(_maxCandidates * 3)
+                  .toList();
+              final decision = matchAvailableTitleToJikanCandidate(
+                availableTitle: normalizedTitle,
+                candidates: accumulated,
+              );
+              final accepted = decision.accepted;
+              if (accepted != null &&
+                  accepted.matchType == 'exact_normalized_title' &&
+                  accepted.confidence >= 0.98) {
+                break;
+              }
+            }
+            return candidatesByMalId.values.take(_maxCandidates * 3).toList();
+          }
+          '''
+          if text.count(old) != 1:
+              raise SystemExit('expected canonical searchCandidatesForAvailableTitle block exactly once')
+          tool.write_text(text.replace(old, new), encoding='utf-8')
+
+          test = Path('test/tools/build_mal_availability_cache_test.dart')
+          text = test.read_text(encoding='utf-8')
+          marker = "  group('scoreJikanCandidate', () {\n"
+          if text.count(marker) != 1:
+              raise SystemExit('expected scoreJikanCandidate group marker exactly once')
+          inserted = r'''  group('adaptive Jikan query plan', () {
+    test('stops after an unequivocal exact normalized match', () async {
+      final queries = <String>[];
+      final candidates = await builder.searchCandidatesForAvailableTitle(
+        'death note',
+        searcher: (query) async {
+          queries.add(query);
+          return <builder.JikanAnimeSearchCandidate>[
+            candidate(malId: 1535, title: 'Death Note'),
+          ];
+        },
+        searchCache: <String, List<builder.JikanAnimeSearchCandidate>>{},
+      );
+
+      expect(queries, <String>['death note']);
+      expect(candidates.single.malId, 1535);
+    });
+
+    test('keeps fallback queries for a non-exact first result', () async {
+      final queries = <String>[];
+      final candidates = await builder.searchCandidatesForAvailableTitle(
+        'death note',
+        searcher: (query) async {
+          queries.add(query);
+          if (query == 'deathnote') {
+            return <builder.JikanAnimeSearchCandidate>[
+              candidate(malId: 1535, title: 'Death Note'),
+            ];
+          }
+          return <builder.JikanAnimeSearchCandidate>[
+            candidate(malId: 999, title: 'Death Note Extra'),
+          ];
+        },
+        searchCache: <String, List<builder.JikanAnimeSearchCandidate>>{},
+      );
+
+      expect(queries, <String>['death note', 'deathnote']);
+      expect(candidates.map((item) => item.malId), contains(1535));
+    });
+  });
+
+'''
+          test.write_text(text.replace(marker, inserted + marker), encoding='utf-8')
+          PY
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: flutter pub get
+
+      - name: Format and validate focused patch
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format tools/build_mal_availability_cache.dart test/tools/build_mal_availability_cache_test.dart >/dev/null
+          git diff --check
+          dart analyze tools/build_mal_availability_cache.dart
+          flutter test --no-pub --reporter expanded test/tools/build_mal_availability_cache_test.dart
+          files="$(git diff --name-only)"
+          test "$files" = $'test/tools/build_mal_availability_cache_test.dart\ntools/build_mal_availability_cache.dart'
+
+      - name: Package and encrypt focused patch
+        id: package
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/goanime-jikan-early-stop"
+          mkdir -p "$work/out" "$work/gpg"
+          chmod 700 "$work/gpg"
+          printf '%s\n' \
+            'test/tools/build_mal_availability_cache_test.dart' \
+            'tools/build_mal_availability_cache.dart' > "$work/files.txt"
+          tar -C "$GITHUB_WORKSPACE/private-source" -czf "$work/patch.tar.gz" -T "$work/files.txt"
+          export GNUPGHOME="$work/gpg"
+          gpg --batch --import "$GITHUB_WORKSPACE/trusted-source/keys/source-bundles-public.asc"
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1=="fpr"{print $10;exit}')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          test -z "$(gpg --batch --with-colons --list-secret-keys 2>/dev/null | awk -F: '$1=="sec"{print $1}')"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" \
+            --output "$work/out/patch.tar.gz.gpg" --encrypt "$work/patch.tar.gz"
+          cp "$work/files.txt" "$work/out/files.txt"
+          printf '%s\n' '${{ steps.request.outputs.sha }}' > "$work/out/source-ref.txt"
+          sha256sum "$work/patch.tar.gz" > "$work/out/patch.tar.gz.sha256"
+          echo "out=$work/out" >> "$GITHUB_OUTPUT"
+
+      - name: Upload encrypted focused patch
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-jikan-early-stop-encrypted
+          path: ${{ steps.package.outputs.out }}
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source" "$RUNNER_TEMP/goanime-jikan-early-stop"
