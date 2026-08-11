@@ -1,0 +1,78 @@
+name: Compute validated GoAnime manga tree
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-tree/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  tree:
+    name: Compute private source tree from validated blob ids
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact source revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-tree/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source read-only
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Compute tree with already validated blobs
+        working-directory: private-source
+        shell: bash
+        env:
+          MANAGER_BLOB: 7fbfbab4ea6ea7908171bc2f03e293003220e0b0
+          TEST_BLOB: 65b7dcdfcb76ba28e5c80e2b12552c4c00530017
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = '${{ steps.request.outputs.sha }}'
+          git update-index --info-only --cacheinfo "100644,$MANAGER_BLOB,lib/services/manga/download/manga_download_manager.dart"
+          git update-index --info-only --cacheinfo "100644,$TEST_BLOB,test/services/manga/download/manga_download_manager_test.dart"
+          tree="$(git write-tree)"
+          [[ "$tree" =~ ^[0-9a-f]{40}$ ]]
+          echo "VALIDATED_TREE_SHA=$tree"
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
