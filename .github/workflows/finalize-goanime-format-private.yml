@@ -117,11 +117,14 @@ jobs:
         env:
           PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           TEMP_BRANCH: ${{ steps.request.outputs.temp_branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
         run: |
           set -euo pipefail
-          remote="https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git"
-          git push "$remote" "HEAD:refs/heads/$TEMP_BRANCH" >/dev/null 2>&1
-          unset remote PRIVATE_REPOSITORIES_TOKEN
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/GoAnime-Mobile.git refs/heads/feature/manga-platform | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/GoAnime-Mobile.git "HEAD:refs/heads/$TEMP_BRANCH" >/dev/null
+          unset auth PRIVATE_REPOSITORIES_TOKEN
 
       - name: Report validated formatter commit safely
         shell: bash
