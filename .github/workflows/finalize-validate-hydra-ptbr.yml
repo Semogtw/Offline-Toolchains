@@ -31,7 +31,7 @@ jobs:
         with:
           path: control
           fetch-depth: 2
-          persist-credentials: true
+          persist-credentials: false
           show-progress: false
 
       - name: Resolve exact request
@@ -123,8 +123,8 @@ jobs:
             git config user.name 'Arthur Almeida'
             git config user.email 'arthurgva1602@gmail.com'
             git commit -m 'fix(i18n): complete pt-BR fork localization audit'
-            git remote set-url origin "https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/HydraPersonalizado.git"
-            git push --force-with-lease="refs/heads/$TARGET_BRANCH:$current_tip" origin "HEAD:refs/heads/$TARGET_BRANCH"
+            git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" push --force-with-lease="refs/heads/$TARGET_BRANCH:$current_tip" origin "HEAD:refs/heads/$TARGET_BRANCH"
+            unset auth PRIVATE_REPOSITORIES_TOKEN
           fi
 
           test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
@@ -179,6 +179,7 @@ jobs:
           TYPECHECK_OUTCOME: ${{ steps.typecheck.outcome }}
           TEST_OUTCOME: ${{ steps.test.outcome }}
           EXPECTED_TREE: ${{ steps.request.outputs.expected_tree }}
+          TOOLCHAINS_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p "$(dirname "$RESULT_FILE")"
@@ -195,7 +196,9 @@ jobs:
           git add "$RESULT_FILE"
           if ! git diff --cached --quiet; then
             git commit -m 'ci(hydra): record pt-BR audit validation result'
-            git push origin HEAD:main
+            auth="$(printf 'x-access-token:%s' "$TOOLCHAINS_TOKEN" | base64 -w0)"
+            git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" push origin HEAD:main
+            unset auth TOOLCHAINS_TOKEN
           fi
 
       - name: Enforce validation gates
