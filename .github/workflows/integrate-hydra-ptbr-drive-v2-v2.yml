@@ -7,7 +7,7 @@ on:
       - '.github/workflows/integrate-hydra-ptbr-drive-v2-v2.yml'
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: integrate-hydra-ptbr-drive-v2-v2
@@ -18,6 +18,19 @@ jobs:
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    outputs:
+      status: ${{ steps.result.outputs.status }}
+      target_branch: ${{ steps.result.outputs.target_branch }}
+      base_sha: ${{ steps.result.outputs.base_sha }}
+      expected_tree: ${{ steps.result.outputs.expected_tree }}
+      published_sha: ${{ steps.result.outputs.published_sha }}
+      published_tree: ${{ steps.result.outputs.published_tree }}
+      patch_sha256: ${{ steps.result.outputs.patch_sha256 }}
+      install: ${{ steps.result.outputs.install }}
+      typecheck: ${{ steps.result.outputs.typecheck }}
+      test: ${{ steps.result.outputs.test }}
+      verify: ${{ steps.result.outputs.verify }}
+      run_id: ${{ steps.result.outputs.run_id }}
     env:
       SOURCE_BRANCH: fix/pt-br-default-and-fork-localization
       TARGET_BRANCH: feat/drive-cloud-saves-v2
@@ -154,13 +167,11 @@ jobs:
           test "$(git rev-parse HEAD^)" = "$EXPECTED_TARGET_SHA"
           test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
 
-      - name: Set up pinned Node.js
+      - name: Set up pinned Node.js without shared private-source cache
         id: node
         uses: actions/setup-node@v6
         with:
           node-version-file: hydra/.nvmrc
-          cache: yarn
-          cache-dependency-path: hydra/yarn.lock
 
       - name: Enable Corepack
         shell: bash
@@ -256,21 +267,23 @@ jobs:
           published_tree="$(git rev-parse FETCH_HEAD^{tree})"
           test "$published_tree" = "$EXPECTED_TREE"
           echo "published_sha=$published_sha" >> "$GITHUB_OUTPUT"
+          echo "published_tree=$published_tree" >> "$GITHUB_OUTPUT"
 
-      - name: Write sanitized integration result
+      - name: Collect sanitized integration result
+        id: result
         if: always()
+        working-directory: hydra
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
           PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
         run: |
           set -euo pipefail
           read_auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
-          published_sha="$(git -C hydra -c http.extraheader="AUTHORIZATION: basic $read_auth" ls-remote https://github.com/Semogtw/HydraPersonalizado.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}' || true)"
+          published_sha="$(git -c http.extraheader="AUTHORIZATION: basic $read_auth" ls-remote https://github.com/Semogtw/HydraPersonalizado.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}' || true)"
           published_tree=""
           if [ -n "$published_sha" ]; then
-            git -C hydra -c http.extraheader="AUTHORIZATION: basic $read_auth" fetch --quiet https://github.com/Semogtw/HydraPersonalizado.git "$published_sha" || true
-            published_tree="$(git -C hydra rev-parse FETCH_HEAD^{tree} 2>/dev/null || true)"
+            git -c http.extraheader="AUTHORIZATION: basic $read_auth" fetch --quiet https://github.com/Semogtw/HydraPersonalizado.git "$published_sha" || true
+            published_tree="$(git rev-parse FETCH_HEAD^{tree} 2>/dev/null || true)"
           fi
           status=failure
           if [ "$published_tree" = "$EXPECTED_TREE" ] && \
@@ -280,31 +293,20 @@ jobs:
              [ "${{ steps.test.outcome }}" = "success" ]; then
             status=success
           fi
-          mkdir -p /tmp/result
-          cat > /tmp/result/hydra-ptbr-drive-v2-integration.txt <<EOF
-          status=$status
-          target_branch=$TARGET_BRANCH
-          base_sha=$EXPECTED_TARGET_SHA
-          expected_tree=$EXPECTED_TREE
-          published_sha=$published_sha
-          published_tree=$published_tree
-          patch_sha256=$EXPECTED_PATCH_SHA256
-          install=${{ steps.install.outcome }}
-          typecheck=${{ steps.typecheck.outcome }}
-          test=${{ steps.test.outcome }}
-          verify=${{ steps.verify.outcome }}
-          run_id=$GITHUB_RUN_ID
-          EOF
-          sed -i 's/^          //' /tmp/result/hydra-ptbr-drive-v2-integration.txt
-          content="$(base64 -w0 /tmp/result/hydra-ptbr-drive-v2-integration.txt)"
-          path='results/hydra-ptbr-drive-v2-integration.txt'
-          existing_sha="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path?ref=main" --jq .sha 2>/dev/null || true)"
-          if [ -n "$existing_sha" ]; then
-            jq -n --arg message 'ci(hydra): record pt-BR Drive V2 integration result' --arg content "$content" --arg branch main --arg sha "$existing_sha" '{message:$message,content:$content,branch:$branch,sha:$sha}' > /tmp/result/payload.json
-          else
-            jq -n --arg message 'ci(hydra): record pt-BR Drive V2 integration result' --arg content "$content" --arg branch main '{message:$message,content:$content,branch:$branch}' > /tmp/result/payload.json
-          fi
-          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" --input /tmp/result/payload.json >/dev/null
+          {
+            echo "status=$status"
+            echo "target_branch=$TARGET_BRANCH"
+            echo "base_sha=$EXPECTED_TARGET_SHA"
+            echo "expected_tree=$EXPECTED_TREE"
+            echo "published_sha=$published_sha"
+            echo "published_tree=$published_tree"
+            echo "patch_sha256=$EXPECTED_PATCH_SHA256"
+            echo "install=${{ steps.install.outcome }}"
+            echo "typecheck=${{ steps.typecheck.outcome }}"
+            echo "test=${{ steps.test.outcome }}"
+            echo "verify=${{ steps.verify.outcome }}"
+            echo "run_id=$GITHUB_RUN_ID"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Remove temporary probe branch
         if: always() && steps.writer.outputs.probe_branch != ''
@@ -325,4 +327,63 @@ jobs:
       - name: Remove private and transient data
         if: always()
         shell: bash
-        run: rm -rf "$GITHUB_WORKSPACE/hydra" "$GITHUB_WORKSPACE/localization-source" /tmp/hydra-ptbr.patch /tmp/hydra-ptbr.patch.xz /tmp/hydra-ptbr.patch.xz.b64 /tmp/hydra-write-token /tmp/probe.out /tmp/probe.err /tmp/result
+        run: rm -rf "$GITHUB_WORKSPACE/hydra" "$GITHUB_WORKSPACE/localization-source" /tmp/hydra-ptbr.patch /tmp/hydra-ptbr.patch.xz /tmp/hydra-ptbr.patch.xz.b64 /tmp/hydra-write-token /tmp/probe.out /tmp/probe.err
+
+  publish-sanitized-result:
+    name: Publish sanitized Hydra Drive V2 integration result
+    needs: integrate
+    if: always() && github.actor == github.repository_owner && needs.integrate.outputs.target_branch != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout public Toolchains result branch
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Write sanitized integration result
+        shell: bash
+        env:
+          STATUS: ${{ needs.integrate.outputs.status }}
+          TARGET_BRANCH: ${{ needs.integrate.outputs.target_branch }}
+          BASE_SHA: ${{ needs.integrate.outputs.base_sha }}
+          EXPECTED_TREE: ${{ needs.integrate.outputs.expected_tree }}
+          PUBLISHED_SHA: ${{ needs.integrate.outputs.published_sha }}
+          PUBLISHED_TREE: ${{ needs.integrate.outputs.published_tree }}
+          PATCH_SHA256: ${{ needs.integrate.outputs.patch_sha256 }}
+          INSTALL: ${{ needs.integrate.outputs.install }}
+          TYPECHECK: ${{ needs.integrate.outputs.typecheck }}
+          TEST: ${{ needs.integrate.outputs.test }}
+          VERIFY: ${{ needs.integrate.outputs.verify }}
+          RUN_ID: ${{ needs.integrate.outputs.run_id }}
+          TOOLCHAINS_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          path='results/hydra-ptbr-drive-v2-integration.txt'
+          cat > "$path" <<EOF
+          status=$STATUS
+          target_branch=$TARGET_BRANCH
+          base_sha=$BASE_SHA
+          expected_tree=$EXPECTED_TREE
+          published_sha=$PUBLISHED_SHA
+          published_tree=$PUBLISHED_TREE
+          patch_sha256=$PATCH_SHA256
+          install=$INSTALL
+          typecheck=$TYPECHECK
+          test=$TEST
+          verify=$VERIFY
+          run_id=$RUN_ID
+          EOF
+          sed -i 's/^          //' "$path"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$path"
+          if ! git diff --cached --quiet; then
+            git commit -m 'ci(hydra): record pt-BR Drive V2 integration result'
+            auth="$(printf 'x-access-token:%s' "$TOOLCHAINS_TOKEN" | base64 -w0)"
+            git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" push origin HEAD:main
+            unset auth TOOLCHAINS_TOKEN
+          fi
