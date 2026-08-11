@@ -69,6 +69,7 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           manager = Path('lib/services/manga/download/manga_download_manager.dart')
           text = manager.read_text(encoding='utf-8')
@@ -96,30 +97,32 @@ jobs:
 
           test_file = Path('test/services/manga/download/manga_download_manager_test.dart')
           text = test_file.read_text(encoding='utf-8')
-          old = '''    scheduleMicrotask(() {
-              controller.add(firstChunk);
-              controller.addError(StateError('connection dropped'));
-              controller.close();
-            });'''
-          new = '''    scheduleMicrotask(() {
-              controller.add(firstChunk);
-              controller.addError(StateError('connection dropped'));
-              unawaited(controller.close());
-            });'''
-          if text.count(old) != 1:
-              raise SystemExit('partial-failure stream precondition failed')
-          text = text.replace(old, new)
 
-          old = '''      onCancel: () {
-                if (!firstStreamCancelled.isCompleted) firstStreamCancelled.complete();
-              },'''
-          new = '''      onCancel: () {
-                if (!firstStreamCancelled.isCompleted) firstStreamCancelled.complete();
-                unawaited(controller.close());
-              },'''
-          if text.count(old) != 1:
+          text, partial_count = re.subn(
+              r"(controller\.addError\(StateError\('connection dropped'\)\);\n\s*)controller\.close\(\);",
+              r"\1unawaited(controller.close());",
+              text,
+              count=1,
+          )
+          if partial_count != 1:
+              raise SystemExit('partial-failure stream precondition failed')
+
+          pause_pattern = re.compile(
+              r"(onCancel: \(\) \{\n)(\s*)(if \(!firstStreamCancelled\.isCompleted\) firstStreamCancelled\.complete\(\);\n)(\s*)(\},)"
+          )
+          match = pause_pattern.search(text)
+          if match is None:
               raise SystemExit('pause stream close precondition failed')
-          text = text.replace(old, new)
+          replacement = (
+              match.group(1)
+              + match.group(2)
+              + match.group(3)
+              + match.group(2)
+              + 'unawaited(controller.close());\n'
+              + match.group(4)
+              + match.group(5)
+          )
+          text = text[:match.start()] + replacement + text[match.end():]
           test_file.write_text(text, encoding='utf-8')
           PY
           dart format \
