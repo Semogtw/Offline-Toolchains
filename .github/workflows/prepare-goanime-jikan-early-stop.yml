@@ -67,114 +67,7 @@ jobs:
       - name: Apply deterministic Jikan early-stop patch
         working-directory: private-source
         shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          tool = Path('tools/build_mal_availability_cache.dart')
-          text = tool.read_text(encoding='utf-8')
-          old = '''Future<List<JikanAnimeSearchCandidate>> searchCandidatesForAvailableTitle(
-            String normalizedTitle, {
-            required JikanAnimeSearcher searcher,
-            required Map<String, List<JikanAnimeSearchCandidate>> searchCache,
-          }) async {
-            final candidatesByMalId = <int, JikanAnimeSearchCandidate>{};
-            for (final query in jikanSearchQueriesForAvailableTitle(normalizedTitle)) {
-              final candidates = searchCache[query] ??= (await searcher(
-                query,
-              )).take(_maxCandidates).toList();
-              for (final candidate in candidates) {
-                candidatesByMalId.putIfAbsent(candidate.malId, () => candidate);
-              }
-            }
-            return candidatesByMalId.values.take(_maxCandidates * 3).toList();
-          }
-          '''
-          new = '''Future<List<JikanAnimeSearchCandidate>> searchCandidatesForAvailableTitle(
-            String normalizedTitle, {
-            required JikanAnimeSearcher searcher,
-            required Map<String, List<JikanAnimeSearchCandidate>> searchCache,
-          }) async {
-            final candidatesByMalId = <int, JikanAnimeSearchCandidate>{};
-            for (final query in jikanSearchQueriesForAvailableTitle(normalizedTitle)) {
-              final candidates = searchCache[query] ??= (await searcher(
-                query,
-              )).take(_maxCandidates).toList();
-              for (final candidate in candidates) {
-                candidatesByMalId.putIfAbsent(candidate.malId, () => candidate);
-              }
-
-              final accumulated = candidatesByMalId.values
-                  .take(_maxCandidates * 3)
-                  .toList();
-              final decision = matchAvailableTitleToJikanCandidate(
-                availableTitle: normalizedTitle,
-                candidates: accumulated,
-              );
-              final accepted = decision.accepted;
-              if (accepted != null &&
-                  accepted.matchType == 'exact_normalized_title' &&
-                  accepted.confidence >= 0.98) {
-                break;
-              }
-            }
-            return candidatesByMalId.values.take(_maxCandidates * 3).toList();
-          }
-          '''
-          if text.count(old) != 1:
-              raise SystemExit('expected canonical searchCandidatesForAvailableTitle block exactly once')
-          tool.write_text(text.replace(old, new), encoding='utf-8')
-
-          test = Path('test/tools/build_mal_availability_cache_test.dart')
-          text = test.read_text(encoding='utf-8')
-          marker = "  group('scoreJikanCandidate', () {\n"
-          if text.count(marker) != 1:
-              raise SystemExit('expected scoreJikanCandidate group marker exactly once')
-          inserted = r'''  group('adaptive Jikan query plan', () {
-    test('stops after an unequivocal exact normalized match', () async {
-      final queries = <String>[];
-      final candidates = await builder.searchCandidatesForAvailableTitle(
-        'death note',
-        searcher: (query) async {
-          queries.add(query);
-          return <builder.JikanAnimeSearchCandidate>[
-            candidate(malId: 1535, title: 'Death Note'),
-          ];
-        },
-        searchCache: <String, List<builder.JikanAnimeSearchCandidate>>{},
-      );
-
-      expect(queries, <String>['death note']);
-      expect(candidates.single.malId, 1535);
-    });
-
-    test('keeps fallback queries for a non-exact first result', () async {
-      final queries = <String>[];
-      final candidates = await builder.searchCandidatesForAvailableTitle(
-        'death note',
-        searcher: (query) async {
-          queries.add(query);
-          if (query == 'deathnote') {
-            return <builder.JikanAnimeSearchCandidate>[
-              candidate(malId: 1535, title: 'Death Note'),
-            ];
-          }
-          return <builder.JikanAnimeSearchCandidate>[
-            candidate(malId: 999, title: 'Death Note Extra'),
-          ];
-        },
-        searchCache: <String, List<builder.JikanAnimeSearchCandidate>>{},
-      );
-
-      expect(queries, <String>['death note', 'deathnote']);
-      expect(candidates.map((item) => item.malId), contains(1535));
-    });
-  });
-
-'''
-          test.write_text(text.replace(marker, inserted + marker), encoding='utf-8')
-          PY
+        run: python3 "$GITHUB_WORKSPACE/trusted-source/scripts/prepare-goanime-jikan-early-stop.py"
 
       - name: Set up Flutter 3.44.1
         uses: subosito/flutter-action@v2
@@ -197,8 +90,10 @@ jobs:
           git diff --check
           dart analyze tools/build_mal_availability_cache.dart
           flutter test --no-pub --reporter expanded test/tools/build_mal_availability_cache_test.dart
-          files="$(git diff --name-only)"
-          test "$files" = $'test/tools/build_mal_availability_cache_test.dart\ntools/build_mal_availability_cache.dart'
+          mapfile -t changed < <(git diff --name-only)
+          test "${#changed[@]}" -eq 2
+          test "${changed[0]}" = 'test/tools/build_mal_availability_cache_test.dart'
+          test "${changed[1]}" = 'tools/build_mal_availability_cache.dart'
 
       - name: Package and encrypt focused patch
         id: package
