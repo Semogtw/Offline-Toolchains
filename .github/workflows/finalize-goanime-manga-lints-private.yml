@@ -1,0 +1,191 @@
+name: Finalize GoAnime manga lints privately
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-lint-finalize/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-lint-finalize
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    name: Fix and validate final manga lints privately
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact source revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-lint-finalize/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "temp_branch=toolchain/manga-lint-fix-${sha:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Apply exact lint fixes
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          manager = Path('lib/services/manga/download/manga_download_manager.dart')
+          text = manager.read_text(encoding='utf-8')
+          replacements = [
+              (
+                  'onError: (Object _, StackTrace __) {',
+                  'onError: (Object _, StackTrace _) {',
+              ),
+              (
+                  '      queue.cancelPending(\n'
+                  '        downloadId: downloadId,\n'
+                  '        canonicalChapterId: chapter.canonicalChapterId,\n'
+                  '      );',
+                  '      await queue.cancelPending(\n'
+                  '        downloadId: downloadId,\n'
+                  '        canonicalChapterId: chapter.canonicalChapterId,\n'
+                  '      );',
+              ),
+          ]
+          for old, new in replacements:
+              if text.count(old) != 1:
+                  raise SystemExit('manager lint fix precondition failed')
+              text = text.replace(old, new)
+          manager.write_text(text, encoding='utf-8')
+
+          test_file = Path('test/services/manga/download/manga_download_manager_test.dart')
+          text = test_file.read_text(encoding='utf-8')
+          old = '''    scheduleMicrotask(() {
+              controller.add(firstChunk);
+              controller.addError(StateError('connection dropped'));
+              controller.close();
+            });'''
+          new = '''    scheduleMicrotask(() {
+              controller.add(firstChunk);
+              controller.addError(StateError('connection dropped'));
+              unawaited(controller.close());
+            });'''
+          if text.count(old) != 1:
+              raise SystemExit('partial-failure stream precondition failed')
+          text = text.replace(old, new)
+
+          old = '''      onCancel: () {
+                if (!firstStreamCancelled.isCompleted) firstStreamCancelled.complete();
+              },'''
+          new = '''      onCancel: () {
+                if (!firstStreamCancelled.isCompleted) firstStreamCancelled.complete();
+                unawaited(controller.close());
+              },'''
+          if text.count(old) != 1:
+              raise SystemExit('pause stream close precondition failed')
+          text = text.replace(old, new)
+          test_file.write_text(text, encoding='utf-8')
+          PY
+          dart format \
+            lib/services/manga/download/manga_download_manager.dart \
+            test/services/manga/download/manga_download_manager_test.dart >/dev/null
+          git diff --check
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies privately
+        working-directory: private-source
+        shell: bash
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Validate analyzer and manga suites
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter analyze --no-pub lib/services/manga lib/screens/manga test/services/manga test/widgets/manga test/architecture >/dev/null
+          flutter test --no-pub test/services/manga/download >/dev/null
+          flutter test --no-pub test/services/manga/offline >/dev/null
+          flutter test --no-pub test/services/manga/archive >/dev/null
+          flutter test --no-pub test/widgets/manga >/dev/null
+          flutter test --no-pub test/architecture/manga_offline_persistence_boundary_test.dart >/dev/null
+
+      - name: Commit validated lint fixes
+        id: commit
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- \
+            lib/services/manga/download/manga_download_manager.dart \
+            test/services/manga/download/manga_download_manager_test.dart
+          git commit -m "fix(manga): close remaining analyzer lifecycle lints" >/dev/null
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Push validated commit to temporary private branch
+        id: publish
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TEMP_BRANCH: ${{ steps.request.outputs.temp_branch }}
+        run: |
+          set -euo pipefail
+          remote="https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git"
+          git push "$remote" "HEAD:refs/heads/$TEMP_BRANCH" >/dev/null 2>&1
+          unset remote PRIVATE_REPOSITORIES_TOKEN
+          echo "published=true" >> "$GITHUB_OUTPUT"
+
+      - name: Report validated commit safely
+        shell: bash
+        run: |
+          echo "Validated private commit: ${{ steps.commit.outputs.sha }}"
+          echo "Temporary private branch: ${{ steps.request.outputs.temp_branch }}"
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
