@@ -131,12 +131,10 @@ jobs:
           test "$(git rev-parse HEAD^)" = "$EXPECTED_TARGET_SHA"
           test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
 
-      - name: Set up pinned Node.js
+      - name: Set up pinned Node.js without shared private-source cache
         uses: actions/setup-node@v6
         with:
           node-version-file: hydra/.nvmrc
-          cache: yarn
-          cache-dependency-path: hydra/yarn.lock
 
       - name: Enable Corepack
         shell: bash
