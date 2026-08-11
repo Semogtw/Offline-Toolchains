@@ -125,9 +125,6 @@ jobs:
           text = text[:match.start()] + replacement + text[match.end():]
           test_file.write_text(text, encoding='utf-8')
           PY
-          dart format \
-            lib/services/manga/download/manga_download_manager.dart \
-            test/services/manga/download/manga_download_manager_test.dart >/dev/null
           git diff --check
 
       - name: Set up Flutter 3.44.1
@@ -136,6 +133,16 @@ jobs:
           channel: stable
           flutter-version: 3.44.1
           cache: true
+
+      - name: Format exact lint fixes
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format \
+            lib/services/manga/download/manga_download_manager.dart \
+            test/services/manga/download/manga_download_manager_test.dart >/dev/null
+          git diff --check
 
       - name: Resolve dependencies privately
         working-directory: private-source
