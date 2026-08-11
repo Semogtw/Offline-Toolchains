@@ -232,6 +232,20 @@ jobs:
         working-directory: private-source
         run: pnpm build:pages
 
+      - name: Install Playwright release browsers
+        id: playwright_install
+        if: always() && steps.install.outcome == 'success'
+        continue-on-error: true
+        working-directory: private-source
+        run: pnpm exec playwright install --with-deps chromium firefox webkit
+
+      - name: Credential-free PWA browser smoke
+        id: browser_smoke
+        if: always() && steps.build_pages.outcome == 'success' && steps.playwright_install.outcome == 'success'
+        continue-on-error: true
+        working-directory: private-source
+        run: pnpm test:e2e:smoke
+
       - name: Aggregate Receitas gate results
         if: always()
         shell: bash
@@ -246,6 +260,8 @@ jobs:
           DENO_CHECK: ${{ steps.deno_check.outcome }}
           SUPABASE_LOCAL: ${{ steps.supabase_local.outcome }}
           BUILD_PAGES: ${{ steps.build_pages.outcome }}
+          PLAYWRIGHT_INSTALL: ${{ steps.playwright_install.outcome }}
+          BROWSER_SMOKE: ${{ steps.browser_smoke.outcome }}
         run: |
           set -euo pipefail
           failures=()
@@ -258,6 +274,8 @@ jobs:
           [[ "$DENO_CHECK" == 'success' ]] || failures+=('Deno Edge Function typecheck')
           [[ "$SUPABASE_LOCAL" == 'success' ]] || failures+=('local Supabase migrations and SQL contracts')
           [[ "$BUILD_PAGES" == 'success' ]] || failures+=('static Pages build and artifact audits')
+          [[ "$PLAYWRIGHT_INSTALL" == 'success' ]] || failures+=('Playwright browser installation')
+          [[ "$BROWSER_SMOKE" == 'success' ]] || failures+=('credential-free PWA browser smoke')
           [[ "$LOCKFILE_STATE" == 'present' ]] || failures+=('reproducible lockfile')
           if (( ${#failures[@]} > 0 )); then
             printf 'Receitas CI failed gates:' >&2
@@ -265,7 +283,7 @@ jobs:
             printf '\n' >&2
             exit 1
           fi
-          echo 'All non-E2E Receitas repository gates passed.'
+          echo 'All credential-free Receitas repository gates passed.'
 
       - name: Remove private checkout and request copy
         if: always()
@@ -286,7 +304,7 @@ jobs:
             echo
             echo "- Result: \`$RESULT\`"
             echo "- Reproducible lockfile at checkout: \`${LOCKFILE_STATE:-unknown}\`"
-            echo '- Lint, typecheck, unit tests, Edge Function Deno tests/typecheck, local Supabase migration/pgTAP/contracts, release-script tests, source audits and a static Pages build were attempted as independent steps.'
-            echo '- No remote Supabase/PowerSync/E2E/deploy credentials were provided to this public runner.'
-            echo '- Build outputs, local database volumes and private source were discarded; no artifact was uploaded.'
+            echo '- Lint, typecheck, unit tests, Edge Function Deno tests/typecheck, local Supabase migration/pgTAP/contracts, release-script/source audits, static Pages build and credential-free Playwright PWA smoke were attempted as independent steps.'
+            echo '- No remote Supabase/PowerSync/authenticated-E2E/deploy credentials were provided to this public runner.'
+            echo '- Build outputs, local database volumes, browser traces and private source were discarded; no artifact was uploaded.'
           } >> "$GITHUB_STEP_SUMMARY"
