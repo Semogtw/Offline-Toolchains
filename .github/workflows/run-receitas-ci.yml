@@ -234,14 +234,14 @@ jobs:
 
       - name: Install Playwright release browsers
         id: playwright_install
-        if: always() && steps.install.outcome == 'success'
+        if: always()
         continue-on-error: true
         working-directory: private-source
         run: pnpm exec playwright install --with-deps chromium firefox webkit
 
       - name: Credential-free PWA browser smoke
         id: browser_smoke
-        if: always() && steps.build_pages.outcome == 'success' && steps.playwright_install.outcome == 'success'
+        if: always()
         continue-on-error: true
         working-directory: private-source
         run: pnpm test:e2e:smoke
