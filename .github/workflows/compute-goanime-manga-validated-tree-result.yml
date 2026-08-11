@@ -1,0 +1,94 @@
+name: Publish validated GoAnime manga tree hash
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-tree-result/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  tree:
+    name: Compute and publish private source tree hash
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain control repo
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          show-progress: false
+
+      - name: Resolve exact source revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-tree-result/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source read-only
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Compute tree with validated blob ids
+        id: tree
+        working-directory: private-source
+        shell: bash
+        env:
+          MANAGER_BLOB: 7fbfbab4ea6ea7908171bc2f03e293003220e0b0
+          TEST_BLOB: 65b7dcdfcb76ba28e5c80e2b12552c4c00530017
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = '${{ steps.request.outputs.sha }}'
+          git update-index --info-only --cacheinfo "100644,$MANAGER_BLOB,lib/services/manga/download/manga_download_manager.dart"
+          git update-index --info-only --cacheinfo "100644,$TEST_BLOB,test/services/manga/download/manga_download_manager_test.dart"
+          tree="$(git write-tree)"
+          [[ "$tree" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$tree" >> "$GITHUB_OUTPUT"
+
+      - name: Publish hash only to toolchain results
+        working-directory: control
+        shell: bash
+        env:
+          BASE_SHA: ${{ steps.request.outputs.sha }}
+          TREE_SHA: ${{ steps.tree.outputs.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p validation-results
+          printf 'base_sha=%s\ntree_sha=%s\nmanager_blob=7fbfbab4ea6ea7908171bc2f03e293003220e0b0\ntest_blob=65b7dcdfcb76ba28e5c80e2b12552c4c00530017\n' "$BASE_SHA" "$TREE_SHA" > validation-results/goanime-manga-validated-tree.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add validation-results/goanime-manga-validated-tree.txt
+          git commit -m "ci: record validated GoAnime manga tree hash" >/dev/null
+          git push origin HEAD:main >/dev/null
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
