@@ -1,0 +1,135 @@
+name: Apply validated GoAnime Jikan early-stop
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-jikan-early-stop-apply/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-jikan-early-stop-apply
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact GoAnime revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-jikan-early-stop-apply/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          test "$branch" = main
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify exact source and current remote head
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/GoAnime-Mobile.git refs/heads/main | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Apply deterministic validated patch
+        working-directory: private-source
+        shell: bash
+        run: python3 "$GITHUB_WORKSPACE/trusted-source/scripts/prepare-goanime-jikan-early-stop.py"
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: flutter pub get
+
+      - name: Revalidate focused patch
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format tools/build_mal_availability_cache.dart test/tools/build_mal_availability_cache_test.dart >/dev/null
+          git diff --check
+          dart analyze tools/build_mal_availability_cache.dart
+          flutter test --no-pub --reporter expanded test/tools/build_mal_availability_cache_test.dart
+          mapfile -t changed < <(git diff --name-only)
+          test "${#changed[@]}" -eq 2
+          test "${changed[0]}" = 'test/tools/build_mal_availability_cache_test.dart'
+          test "${changed[1]}" = 'tools/build_mal_availability_cache.dart'
+
+      - name: Commit and fast-forward private main
+        id: publish
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- tools/build_mal_availability_cache.dart test/tools/build_mal_availability_cache_test.dart
+          git commit -m 'perf(cache): stop redundant exact Jikan queries'
+          new_sha="$(git rev-parse HEAD)"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/GoAnime-Mobile.git refs/heads/main | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/GoAnime-Mobile.git HEAD:refs/heads/main
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+          echo "sha=$new_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        shell: bash
+        run: echo "Published GoAnime Jikan early-stop SHA ${{ steps.publish.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
