@@ -20,14 +20,14 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: Semogtw/FicharioVirtual
-          ref: 3ceb2239f38df97f8f9fbc19c54e42e85794db8a
+          ref: cafe97c779aa39ae958f50ced9db37539af5eeba
           path: app
           fetch-depth: 1
           persist-credentials: false
 
       - name: Assert source SHA
         working-directory: app
-        run: test "$(git rev-parse HEAD)" = "3ceb2239f38df97f8f9fbc19c54e42e85794db8a"
+        run: test "$(git rev-parse HEAD)" = "cafe97c779aa39ae958f50ced9db37539af5eeba"
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
