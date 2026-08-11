@@ -1,0 +1,184 @@
+name: Prepare GoAnime manga Dart fixes encrypted
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-dart-fix/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-dart-fix-encrypted
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare encrypted manga Dart fixes
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-dart-fix/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private manga revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies privately
+        working-directory: private-source
+        shell: bash
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Apply analyzer fixes inside manga scope only
+        id: fixes
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart fix --apply >/dev/null 2>&1 || true
+
+          mapfile -t changed_all < <(git diff --name-only)
+          for file in "${changed_all[@]}"; do
+            case "$file" in
+              lib/services/manga/*|lib/screens/manga/*|lib/l10n/ui_manga_localizations.dart|test/services/manga/*|test/widgets/manga/*|test/architecture/manga_*)
+                ;;
+              *)
+                git restore -- "$file"
+                ;;
+            esac
+          done
+
+          mapfile -t changed_dart < <(git diff --name-only -- '*.dart')
+          if ((${#changed_dart[@]})); then
+            dart format "${changed_dart[@]}" >/dev/null
+          fi
+
+          git diff --check
+          git diff --name-only | sort > "$RUNNER_TEMP/goanime-manga-dart-fix-changed.txt"
+          echo "changed_count=$(wc -l < "$RUNNER_TEMP/goanime-manga-dart-fix-changed.txt" | tr -d ' ')" >> "$GITHUB_OUTPUT"
+
+      - name: Validate fixed private source
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="$RUNNER_TEMP/goanime-manga-dart-fix-status.txt"
+          : > "$status"
+          capture() {
+            local label="$1"
+            shift
+            set +e
+            "$@" >/dev/null 2>&1
+            local code=$?
+            set -e
+            printf '%s=%s\n' "$label" "$code" >> "$status"
+          }
+          capture analyze flutter analyze --no-pub lib/services/manga lib/screens/manga test/services/manga test/widgets/manga test/architecture
+          capture download flutter test --no-pub test/services/manga/download
+          capture offline flutter test --no-pub test/services/manga/offline
+          capture archive flutter test --no-pub test/services/manga/archive
+          capture widgets flutter test --no-pub test/widgets/manga
+          capture architecture flutter test --no-pub test/architecture/manga_offline_persistence_boundary_test.dart
+
+      - name: Encrypt changed source bundle
+        id: bundle
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/goanime-manga-dart-fix"
+          payload="$work/payload"
+          transfer="$work/transfer"
+          archive="$work/manga-dart-fix.tar.zst"
+          encrypted="$transfer/manga-dart-fix.tar.zst.gpg"
+          gpg_home="$work/gpg"
+          rm -rf "$work"
+          mkdir -p "$payload/source" "$transfer" "$gpg_home"
+          chmod 700 "$gpg_home"
+
+          cp "$RUNNER_TEMP/goanime-manga-dart-fix-changed.txt" "$payload/CHANGED.txt"
+          cp "$RUNNER_TEMP/goanime-manga-dart-fix-status.txt" "$payload/STATUS.txt"
+          printf '%s\n' '${{ steps.request.outputs.sha }}' > "$payload/BASE_SHA"
+
+          cd "$GITHUB_WORKSPACE/private-source"
+          while IFS= read -r file; do
+            test -z "$file" && continue
+            mkdir -p "$payload/source/$(dirname "$file")"
+            cp "$file" "$payload/source/$file"
+          done < "$payload/CHANGED.txt"
+
+          tar -C "$payload" -I 'zstd -T0 -6' -cf "$archive" .
+
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import "$GITHUB_WORKSPACE/toolchain-control/keys/source-bundles-public.asc" >/dev/null 2>&1
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          test -z "$(gpg --batch --with-colons --list-secret-keys 2>/dev/null | awk -F: '$1 == "sec" { print $1 }')"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" --output "$encrypted" --encrypt "$archive"
+          sha256sum "$encrypted" > "$transfer/SHA256SUMS"
+          echo "transfer_dir=$transfer" >> "$GITHUB_OUTPUT"
+
+          rm -rf "$payload" "$archive" "$gpg_home" "$GITHUB_WORKSPACE/private-source"
+
+      - name: Upload ciphertext-only Dart fix bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-manga-dart-fix-encrypted
+          path: ${{ steps.bundle.outputs.transfer_dir }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Remove private and transient data
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source"
+          rm -rf "$GITHUB_WORKSPACE/toolchain-control"
+          rm -rf "$RUNNER_TEMP/goanime-manga-dart-fix"
+          rm -f "$RUNNER_TEMP/goanime-manga-dart-fix-changed.txt" "$RUNNER_TEMP/goanime-manga-dart-fix-status.txt"
