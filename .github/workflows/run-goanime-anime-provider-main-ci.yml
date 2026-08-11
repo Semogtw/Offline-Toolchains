@@ -28,6 +28,15 @@ jobs:
           PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
         run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
 
+      - name: Checkout trusted encryption key
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          persist-credentials: false
+          sparse-checkout: keys/source-bundles-public.asc
+          sparse-checkout-cone-mode: false
+          show-progress: false
+
       - name: Checkout GoAnime main once
         uses: actions/checkout@v6
         with:
@@ -111,14 +120,38 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/ci-logs"
           flutter test --no-pub --concurrency=1 > "$GITHUB_WORKSPACE/ci-logs/flutter-test.log" 2>&1
 
-      - name: Upload Flutter test diagnostics
+      - name: Encrypt Flutter test diagnostics
+        if: always()
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          source_log="$GITHUB_WORKSPACE/ci-logs/flutter-test.log"
+          [ -f "$source_log" ] || exit 0
+          gpg_home="$RUNNER_TEMP/goanime-ci-log-gpg"
+          rm -rf "$gpg_home"
+          mkdir -p "$gpg_home"
+          chmod 700 "$gpg_home"
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import "$GITHUB_WORKSPACE/trusted-source/keys/source-bundles-public.asc"
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1=="fpr"{print $10;exit}')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" \
+            --output "$GITHUB_WORKSPACE/ci-logs/flutter-test.log.gpg" --encrypt "$source_log"
+          test -s "$GITHUB_WORKSPACE/ci-logs/flutter-test.log.gpg"
+          rm -f "$source_log"
+          rm -rf "$gpg_home"
+
+      - name: Upload encrypted Flutter test diagnostics
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: goanime-flutter-test-${{ steps.pin.outputs.sha }}
-          path: ci-logs/flutter-test.log
+          name: goanime-flutter-test-encrypted-${{ steps.pin.outputs.sha }}
+          path: ci-logs/flutter-test.log.gpg
           if-no-files-found: ignore
           retention-days: 1
+          compression-level: 0
 
       - name: Run goanime_core tests
         id: core_tests
@@ -171,4 +204,4 @@ jobs:
       - name: Remove private checkout
         if: always()
         shell: bash
-        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/ci-logs"
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source" "$GITHUB_WORKSPACE/ci-logs"
