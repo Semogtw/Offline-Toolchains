@@ -1,0 +1,135 @@
+name: Build GoAnime format bundle encrypted
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-format-bundle/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-format-bundle-encrypted
+  cancel-in-progress: false
+
+jobs:
+  format:
+    name: GoAnime encrypted formatter bundle
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-format-bundle/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Format and encrypt changed files
+        id: bundle
+        working-directory: private-source
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+          BASE_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          work_dir="$RUNNER_TEMP/goanime-format-bundle"
+          transfer_dir="$work_dir/transfer"
+          bundle_dir="$work_dir/bundle"
+          archive="$work_dir/formatted-files.tar.zst"
+          encrypted="$transfer_dir/formatted-files.gpg"
+          gpg_home="$work_dir/gpg"
+          changed_list="$work_dir/changed-files.zlist"
+          rm -rf "$work_dir"
+          mkdir -p "$transfer_dir" "$bundle_dir" "$gpg_home"
+          chmod 700 "$gpg_home"
+
+          dart format lib test packages tools >/dev/null
+          git diff --name-only -z --diff-filter=M -- '*.dart' > "$changed_list"
+          count="$(tr -cd '\0' < "$changed_list" | wc -c | tr -d ' ')"
+          printf '%s\n' "$BASE_SHA" > "$bundle_dir/BASE_SHA"
+          printf '%s\n' "$count" > "$bundle_dir/FILE_COUNT"
+
+          if [[ "$count" -gt 0 ]]; then
+            tar --null -T "$changed_list" -cf "$work_dir/files.tar"
+            tar -C "$bundle_dir" -rf "$work_dir/files.tar" BASE_SHA FILE_COUNT
+            zstd -q -T0 -6 "$work_dir/files.tar" -o "$archive"
+          else
+            tar -C "$bundle_dir" -I 'zstd -T0 -6' -cf "$archive" BASE_SHA FILE_COUNT
+          fi
+
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import "$GITHUB_WORKSPACE/toolchain-control/keys/source-bundles-public.asc" >/dev/null 2>&1
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          test -z "$(gpg --batch --with-colons --list-secret-keys 2>/dev/null | awk -F: '$1 == "sec" { print $1 }')"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" --output "$encrypted" --encrypt "$archive"
+          test -s "$encrypted"
+          sha256sum "$encrypted" > "$transfer_dir/SHA256SUMS"
+
+          rm -rf "$gpg_home" "$archive" "$work_dir/files.tar" "$changed_list" "$bundle_dir" "$GITHUB_WORKSPACE/private-source"
+          echo "transfer_dir=$transfer_dir" >> "$GITHUB_OUTPUT"
+          echo "changed_count=$count" >> "$GITHUB_OUTPUT"
+          echo "format_bundle_encrypted=success"
+          echo "formatted_file_count=$count"
+
+      - name: Upload ciphertext-only formatter bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-format-bundle-encrypted
+          path: ${{ steps.bundle.outputs.transfer_dir }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Remove private and transient data
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source"
+          rm -rf "$GITHUB_WORKSPACE/toolchain-control"
+          rm -rf "$RUNNER_TEMP/goanime-format-bundle"
