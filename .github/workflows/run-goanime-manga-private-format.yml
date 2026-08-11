@@ -81,7 +81,7 @@ jobs:
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
           fetch-depth: 1
-          persist-credentials: true
+          persist-credentials: false
           lfs: false
           submodules: false
           show-progress: false
@@ -140,6 +140,8 @@ jobs:
         continue-on-error: true
         working-directory: private-source
         shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]" >/dev/null
@@ -148,7 +150,9 @@ jobs:
           [[ -f test/integration/manga_source_routing_test.dart ]] && git add -- test/integration/manga_source_routing_test.dart >/dev/null 2>&1
           [[ -f test/tools/manga_availability_builder_test.dart ]] && git add -- test/tools/manga_availability_builder_test.dart >/dev/null 2>&1
           git commit -m "style(manga): apply Dart formatter" >/dev/null 2>&1
-          git push origin HEAD:feature/manga-platform >/dev/null 2>&1
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" push origin HEAD:feature/manga-platform >/dev/null 2>&1
+          unset auth PRIVATE_REPOSITORIES_TOKEN
 
       - name: Report formatter publication result safely
         if: >-
