@@ -1,0 +1,199 @@
+name: Prepare GoAnime stable manga cohort encrypted
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-stable-cohort/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-stable-cohort-encrypted
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Validate and package stable manga cohort promotion
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control request
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-stable-cohort/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = goanime
+          test "$branch" = feature/manga-platform
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Promote only repeatedly stable providers
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          cohort = {
+              'ptbr.astratoons',
+              'ptbr.capitoons',
+              'ptbr.kivaratoons',
+              'ptbr.leituramanga',
+              'ptbr.maidscan',
+              'ptbr.mangadash',
+              'ptbr.mangaflix',
+              'ptbr.mangalivreblog',
+              'ptbr.ninjascan',
+          }
+
+          manifest_path = Path('docs/manga_sources_ptbr.json')
+          manifest = json.loads(manifest_path.read_text())
+          records = manifest.get('providerRecords', [])
+          seen = set()
+          for record in records:
+              source_id = record.get('goanimeSourceId')
+              if source_id not in cohort:
+                  continue
+              seen.add(source_id)
+              if record.get('policyState') != 'allowed':
+                  raise SystemExit(f'{source_id}: promotion requires allowed policy')
+              if record.get('requiresAuth') or record.get('requiresBrowser'):
+                  raise SystemExit(f'{source_id}: promotion requires headless provider')
+              audit = record.get('sourceSafetyAudit', {})
+              if audit.get('state') != 'reviewed' or audit.get('primaryPurposeExplicitAdult') is True:
+                  raise SystemExit(f'{source_id}: safety audit is not promotion-ready')
+              record['implementationState'] = 'enabled'
+              notes = record.setdefault('rolloutNotes', [])
+              note = 'Promoted after repeated clean live probes completed search, details, chapters and readable content on 2026-08-12; provider/manifest/runtime gates are required to remain green.'
+              if note not in notes:
+                  notes.append(note)
+          missing = cohort - seen
+          if missing:
+              raise SystemExit(f'manifest missing cohort records: {sorted(missing)}')
+          manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
+
+          default_path = Path('lib/services/manga/default_manga_source_providers.dart')
+          text = default_path.read_text()
+          old = 'const Set<String> defaultEnabledMangaSourceIds = <String>{};'
+          if old not in text:
+              raise SystemExit('default enabled set no longer matches expected fail-closed baseline')
+          lines = ['const Set<String> defaultEnabledMangaSourceIds = <String>{']
+          for source_id in sorted(cohort):
+              lines.append(f"  '{source_id}',")
+          lines.append('};')
+          default_path.write_text(text.replace(old, '\n'.join(lines)))
+          PY
+          dart format lib/services/manga/default_manga_source_providers.dart >/dev/null
+          git diff --check
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Validate provider surface
+        working-directory: private-source
+        run: |
+          flutter analyze --no-pub lib/services/manga/providers lib/services/manga/manga_provider_definitions.dart lib/services/manga/default_manga_source_providers.dart test/services/manga/providers
+          flutter test --no-pub test/services/manga/providers
+
+      - name: Validate manifest and enabled registry
+        working-directory: private-source
+        run: |
+          dart run tools/manga/validate_manga_provider_manifest.dart docs/manga_sources_ptbr.json
+          flutter test --no-pub test/architecture/manga_provider_manifest_validator_test.dart test/architecture/manga_provider_registry_manifest_test.dart
+
+      - name: Validate runtime v2
+        working-directory: private-source
+        run: |
+          flutter test --no-pub \
+            test/tools/manga/manga_availability_v2_builder_test.dart \
+            test/services/manga/manga_bundled_catalog_source_test.dart \
+            test/services/manga/manga_bundled_metadata_resolver_test.dart \
+            test/services/manga/manga_availability_database_service_test.dart \
+            test/services/manga/manga_search_catalog_persistence_test.dart \
+            test/services/manga/manga_runtime_availability_source_test.dart \
+            test/services/manga/manga_availability_service_test.dart \
+            test/services/manga/manga_platform_runtime_test.dart \
+            test/services/manga/manga_platform_runtime_service_test.dart \
+            test/widgets/manga/manga_platform_runtime_provider_test.dart
+
+      - name: Encrypt validated replacement files
+        id: encrypt
+        working-directory: private-source
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/goanime-manga-stable-cohort"
+          plain="$root/plain"
+          transfer="$root/transfer"
+          archive="$root/stable-cohort.tar.zst"
+          gpg_home="$root/gpg"
+          rm -rf "$root"
+          mkdir -p "$plain/docs" "$plain/lib/services/manga" "$transfer" "$gpg_home"
+          chmod 700 "$gpg_home"
+          cp docs/manga_sources_ptbr.json "$plain/docs/"
+          cp lib/services/manga/default_manga_source_providers.dart "$plain/lib/services/manga/"
+          printf '%s\n' '${{ steps.request.outputs.sha }}' > "$plain/BASE_SHA.txt"
+          tar -C "$plain" -I 'zstd -T0 -6' -cf "$archive" .
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import "$GITHUB_WORKSPACE/toolchain-control/keys/source-bundles-public.asc" >/dev/null 2>&1
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" --output "$transfer/stable-cohort.gpg" --encrypt "$archive"
+          sha256sum "$transfer/stable-cohort.gpg" > "$transfer/SHA256SUMS"
+          rm -rf "$plain" "$archive" "$gpg_home" "$GITHUB_WORKSPACE/private-source"
+          echo "transfer=$transfer" >> "$GITHUB_OUTPUT"
+
+      - name: Upload ciphertext only
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-manga-stable-cohort-encrypted
+          path: ${{ steps.encrypt.outputs.transfer }}
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Remove private checkout and transient data
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control" "$RUNNER_TEMP/goanime-manga-stable-cohort"
