@@ -1,0 +1,137 @@
+name: Test GoAnime private full suite encrypted
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-full-suite/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-full-suite-encrypted
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: GoAnime full test suite encrypted
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-full-suite/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies privately
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter pub get >/dev/null 2>&1
+          (cd packages/goanime_core && dart pub get >/dev/null 2>&1)
+
+      - name: Run and encrypt complete test diagnostics
+        id: diagnostic
+        working-directory: private-source
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          work_dir="$RUNNER_TEMP/goanime-full-suite"
+          logs_dir="$work_dir/logs"
+          transfer_dir="$work_dir/transfer"
+          archive="$work_dir/diagnostics.tar.zst"
+          encrypted="$transfer_dir/diagnostics.gpg"
+          gpg_home="$work_dir/gpg"
+          rm -rf "$work_dir"
+          mkdir -p "$logs_dir" "$transfer_dir" "$gpg_home"
+          chmod 700 "$gpg_home"
+
+          capture() {
+            local label="$1"
+            shift
+            set +e
+            "$@" >"$logs_dir/${label}.log" 2>&1
+            local status=$?
+            set -e
+            printf '%s=%s\n' "$label" "$status" >> "$logs_dir/STATUS.txt"
+          }
+
+          capture flutter_tests flutter test --no-pub
+          capture core_tests bash -lc 'cd packages/goanime_core && dart test'
+
+          tar -C "$logs_dir" -I 'zstd -T0 -6' -cf "$archive" .
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import "$GITHUB_WORKSPACE/toolchain-control/keys/source-bundles-public.asc" >/dev/null 2>&1
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          test -z "$(gpg --batch --with-colons --list-secret-keys 2>/dev/null | awk -F: '$1 == "sec" { print $1 }')"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" --output "$encrypted" --encrypt "$archive"
+          test -s "$encrypted"
+          sha256sum "$encrypted" > "$transfer_dir/SHA256SUMS"
+          rm -rf "$logs_dir" "$archive" "$gpg_home" "$GITHUB_WORKSPACE/private-source"
+          echo "transfer_dir=$transfer_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Upload ciphertext-only full test diagnostic
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-full-suite-diagnostic-encrypted
+          path: ${{ steps.diagnostic.outputs.transfer_dir }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Remove private and transient data
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source"
+          rm -rf "$GITHUB_WORKSPACE/toolchain-control"
+          rm -rf "$RUNNER_TEMP/goanime-full-suite"
