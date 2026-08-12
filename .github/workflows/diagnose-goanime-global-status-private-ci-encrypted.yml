@@ -71,7 +71,13 @@ jobs:
       - name: Resolve dependencies privately
         working-directory: private-source
         shell: bash
-        run: flutter pub get >/dev/null 2>&1
+        run: |
+          set -euo pipefail
+          flutter pub get >/dev/null 2>&1
+          (
+            cd packages/goanime_core
+            dart pub get >/dev/null 2>&1
+          )
 
       - name: Capture global status diagnostics
         id: diagnostics
