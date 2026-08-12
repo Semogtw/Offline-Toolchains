@@ -1,0 +1,102 @@
+name: List GoAnime manga runtime format drift privately
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-runtime-format-list/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  format-list:
+    name: List manga runtime format drift
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control request
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-runtime-format-list/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = goanime
+          test "$branch" = feature/manga-platform
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: List only changed file paths after formatter
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format \
+            lib/services/manga/manga_availability_database_service.dart \
+            lib/services/manga/manga_availability_service.dart \
+            lib/services/manga/manga_bundled_catalog_source.dart \
+            lib/services/manga/manga_browse_data_source.dart \
+            lib/services/manga/manga_runtime_availability_source.dart \
+            lib/services/manga/manga_search_catalog_persistence.dart \
+            lib/services/manga/manga_platform_runtime.dart \
+            lib/services/manga/manga_platform_runtime_service.dart \
+            lib/widgets/manga/manga_platform_runtime_provider.dart \
+            tools/manga/manga_availability_v2_builder.dart \
+            test/tools/manga/manga_availability_v2_builder_test.dart \
+            test/services/manga/manga_bundled_catalog_source_test.dart \
+            test/services/manga/manga_bundled_metadata_resolver_test.dart \
+            test/services/manga/manga_availability_database_service_test.dart \
+            test/services/manga/manga_search_catalog_persistence_test.dart \
+            test/services/manga/manga_runtime_availability_source_test.dart \
+            test/services/manga/manga_availability_service_test.dart \
+            test/services/manga/manga_platform_runtime_test.dart \
+            test/services/manga/manga_platform_runtime_service_test.dart \
+            test/widgets/manga/manga_platform_runtime_provider_test.dart >/dev/null
+          echo 'format_drift_begin'
+          git diff --name-only -- \
+            lib/services/manga \
+            lib/widgets/manga \
+            tools/manga \
+            test/tools/manga \
+            test/services/manga \
+            test/widgets/manga
+          echo 'format_drift_end'
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control"
