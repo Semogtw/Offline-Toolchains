@@ -1,0 +1,124 @@
+name: Run GoAnime current manga live stage privately
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-current-live-stage/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-current-live-stage-private-ci
+  cancel-in-progress: false
+
+jobs:
+  live-stage:
+    name: GoAnime current manga live stage
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control request
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-current-live-stage/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = goanime
+          test "$branch" = feature/manga-platform
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Audit current headless providers against live sources
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          sources=(
+            ptbr.arthurscan
+            ptbr.astratoons
+            ptbr.hqnow
+            ptbr.capitoons
+            ptbr.kamisamaexplorer
+            ptbr.kivaratoons
+            ptbr.leitordemangas
+            ptbr.leituramanga
+            ptbr.ler999
+            ptbr.lermangas
+            ptbr.littletyrant
+            ptbr.maidscan
+            ptbr.mangadash
+            ptbr.mangaflix
+            ptbr.mangalivreblog
+            ptbr.mangalivreorg
+            ptbr.ninjascan
+          )
+          failures=()
+          for source in "${sources[@]}"; do
+            log="/tmp/goanime-manga-live-${source//./_}.log"
+            echo "source=$source"
+            set +e
+            timeout 180s dart run tools/manga/audit_planned_provider_stage.dart "$source" >"$log" 2>&1
+            status=$?
+            set -e
+            grep -E '^(search_[0-9]+|search_[0-9]+_results|details|chapters|chapter_count|content_[0-9]+|content_[0-9]+_kind|verifier|terminal|[a-z0-9_]+_(type|kind|status|host))=' "$log" || true
+            if [ "$status" -eq 0 ] && grep -q '^terminal=readable$' "$log"; then
+              echo "result=readable"
+            else
+              echo "result=not_readable"
+              echo "exit_status=$status"
+              failures+=("$source")
+            fi
+            rm -f "$log"
+          done
+          if ((${#failures[@]} > 0)); then
+            printf 'live_stage_failures=%s\n' "${failures[*]}"
+            exit 1
+          fi
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control" /tmp/goanime-manga-live-*.log
