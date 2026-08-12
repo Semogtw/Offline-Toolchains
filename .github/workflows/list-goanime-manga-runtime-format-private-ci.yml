@@ -96,6 +96,13 @@ jobs:
             test/services/manga \
             test/widgets/manga
           echo 'format_drift_end'
+          echo 'format_numstat_begin'
+          git diff --numstat -- test/services/manga/manga_search_catalog_persistence_test.dart || true
+          echo 'format_numstat_end'
+          echo 'format_hunks_begin'
+          git diff --unified=0 -- test/services/manga/manga_search_catalog_persistence_test.dart \
+            | grep '^@@' || true
+          echo 'format_hunks_end'
 
       - name: Remove private checkout
         if: always()
