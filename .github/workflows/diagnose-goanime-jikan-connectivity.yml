@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - name: Probe Jikan search endpoint conservatively
+      - name: Compare Jikan and AniList public API connectivity
         shell: bash
         run: |
           set -euo pipefail
@@ -27,7 +27,7 @@ jobs:
           import json, time, urllib.error, urllib.parse, urllib.request
 
           queries = ['one piece', 'naruto', 'frieren', 'tokyo ghoul', 'bleach']
-          failures = []
+          jikan_failures = []
           for index, query in enumerate(queries):
               if index:
                   time.sleep(1.2)
@@ -35,18 +35,41 @@ jobs:
               request = urllib.request.Request(url, headers={'User-Agent': 'GoAnime-cache-diagnostic/1.0', 'Accept': 'application/json'})
               try:
                   with urllib.request.urlopen(request, timeout=20) as response:
-                      body = response.read().decode('utf-8')
-                      payload = json.loads(body)
+                      payload = json.loads(response.read().decode('utf-8'))
                       count = len(payload.get('data') or []) if isinstance(payload, dict) else -1
-                      print(f'probe={index + 1} status={response.status} results={count} retry_after={response.headers.get("Retry-After", "none")}')
+                      print(f'jikan probe={index + 1} status={response.status} results={count} retry_after={response.headers.get("Retry-After", "none")}')
               except urllib.error.HTTPError as error:
                   retry_after = error.headers.get('Retry-After', 'none') if error.headers else 'none'
-                  print(f'probe={index + 1} status={error.code} results=0 retry_after={retry_after}')
-                  failures.append(f'http_{error.code}')
+                  print(f'jikan probe={index + 1} status={error.code} results=0 retry_after={retry_after}')
+                  jikan_failures.append(f'http_{error.code}')
               except Exception as error:
-                  print(f'probe={index + 1} error={type(error).__name__}: {error}')
-                  failures.append(type(error).__name__)
+                  print(f'jikan probe={index + 1} error={type(error).__name__}: {error}')
+                  jikan_failures.append(type(error).__name__)
 
-          if failures:
-              raise SystemExit('Jikan connectivity failures: ' + ','.join(failures))
+          graphql = 'query ($search: String) { Media(search: $search, type: ANIME) { id idMal title { romaji english native } } }'
+          anilist_failures = []
+          for index, query in enumerate(queries):
+              body = json.dumps({'query': graphql, 'variables': {'search': query}}).encode('utf-8')
+              request = urllib.request.Request(
+                  'https://graphql.anilist.co', data=body, method='POST',
+                  headers={'User-Agent': 'GoAnime-cache-diagnostic/1.0', 'Accept': 'application/json', 'Content-Type': 'application/json'},
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=20) as response:
+                      payload = json.loads(response.read().decode('utf-8'))
+                      media = ((payload.get('data') or {}).get('Media') or {}) if isinstance(payload, dict) else {}
+                      print(f'anilist probe={index + 1} status={response.status} id={media.get("id")} idMal={media.get("idMal")}')
+                      if not media.get('id'):
+                          anilist_failures.append('empty_media')
+              except urllib.error.HTTPError as error:
+                  print(f'anilist probe={index + 1} status={error.code}')
+                  anilist_failures.append(f'http_{error.code}')
+              except Exception as error:
+                  print(f'anilist probe={index + 1} error={type(error).__name__}: {error}')
+                  anilist_failures.append(type(error).__name__)
+
+          print('summary jikan_failures=' + (','.join(jikan_failures) if jikan_failures else 'none'))
+          print('summary anilist_failures=' + (','.join(anilist_failures) if anilist_failures else 'none'))
+          if anilist_failures:
+              raise SystemExit('AniList fallback connectivity failures: ' + ','.join(anilist_failures))
           PY
