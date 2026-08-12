@@ -136,12 +136,19 @@ jobs:
               '.whereType<Map>()': '.whereType<Map<Object?, Object?>>()',
               'if (total is! Map) return null;': 'if (total is! Map<Object?, Object?>) return null;',
               'return value is Map ? _string(value[\'\\$t\']) : null;': 'return value is Map<Object?, Object?> ? _string(value[\'\\$t\']) : null;',
-              'return raw is List && raw.whereType<Map<Object?, Object?>>().any': 'return raw is List && raw.whereType<Map<Object?, Object?>>().any',
               'if (media is Map) return _string(media[\'url\']);': 'if (media is Map<Object?, Object?>) return _string(media[\'url\']);',
               'if (content is! Map) return null;': 'if (content is! Map<Object?, Object?>) return null;',
               'String? _nodeText(dynamic node)': 'String? _nodeText(Element? node)',
+              "if (profile == null) throw const FormatException('Ler 999 details profile is missing.');": "if (profile == null) {\n      throw const FormatException('Ler 999 details profile is missing.');\n    }",
+              "if (label == null || label.isEmpty) throw const FormatException('Ler 999 chapter feed is missing.');": "if (label == null || label.isEmpty) {\n      throw const FormatException('Ler 999 chapter feed is missing.');\n    }",
+              "if (pages.isEmpty) throw const FormatException('Ler 999 chapter has no readable image pages.');": "if (pages.isEmpty) {\n      throw const FormatException('Ler 999 chapter has no readable image pages.');\n    }",
+              "if (value == null || value < 1) throw ArgumentError.value(token, 'pageToken');": "if (value == null || value < 1) {\n    throw ArgumentError.value(token, 'pageToken');\n  }",
+              'if (raw == null) return const [];': 'if (raw == null) {\n    return const [];\n  }',
+              'final text = node?.text?.toString().trim();': 'final text = node?.text.trim();',
           }
           for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit(f"ler999: expected replacement target not found: {old!r}")
               text = text.replace(old, new)
           p.write_text(text)
           PY
