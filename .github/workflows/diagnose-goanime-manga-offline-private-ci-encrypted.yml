@@ -73,7 +73,7 @@ jobs:
         shell: bash
         run: flutter pub get >/dev/null 2>&1
 
-      - name: Capture offline and download diagnostics
+      - name: Capture offline, provider and download diagnostics
         id: diagnostics
         working-directory: private-source
         shell: bash
@@ -102,6 +102,7 @@ jobs:
           }
 
           capture analyze flutter analyze --no-pub lib/services/manga lib/screens/manga test/services/manga test/widgets/manga test/architecture test/integration/manga_offline_reading_test.dart
+          capture providers flutter test --no-pub test/services/manga/providers
           capture download flutter test --no-pub test/services/manga/download
           capture offline flutter test --no-pub test/services/manga/offline
           capture archive flutter test --no-pub test/services/manga/archive
