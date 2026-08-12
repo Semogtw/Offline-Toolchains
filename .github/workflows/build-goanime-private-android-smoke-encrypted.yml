@@ -1,0 +1,133 @@
+name: Build GoAnime private Android smoke encrypted
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-android-smoke/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-android-smoke-encrypted
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: GoAnime Android debug encrypted smoke
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-android-smoke/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies privately
+        working-directory: private-source
+        shell: bash
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Build and encrypt Android diagnostic
+        id: diagnostic
+        working-directory: private-source
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          work_dir="$RUNNER_TEMP/goanime-android-smoke"
+          logs_dir="$work_dir/logs"
+          transfer_dir="$work_dir/transfer"
+          archive="$work_dir/diagnostics.tar.zst"
+          encrypted="$transfer_dir/diagnostics.gpg"
+          gpg_home="$work_dir/gpg"
+          rm -rf "$work_dir"
+          mkdir -p "$logs_dir" "$transfer_dir" "$gpg_home"
+          chmod 700 "$gpg_home"
+
+          set +e
+          flutter build apk --debug --no-pub >"$logs_dir/android.log" 2>&1
+          status=$?
+          set -e
+          printf 'android=%s\n' "$status" > "$logs_dir/STATUS.txt"
+
+          tar -C "$logs_dir" -I 'zstd -T0 -6' -cf "$archive" .
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import "$GITHUB_WORKSPACE/toolchain-control/keys/source-bundles-public.asc" >/dev/null 2>&1
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          test -z "$(gpg --batch --with-colons --list-secret-keys 2>/dev/null | awk -F: '$1 == "sec" { print $1 }')"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" --output "$encrypted" --encrypt "$archive"
+          test -s "$encrypted"
+          sha256sum "$encrypted" > "$transfer_dir/SHA256SUMS"
+          rm -rf "$logs_dir" "$archive" "$gpg_home" "$GITHUB_WORKSPACE/private-source"
+          echo "transfer_dir=$transfer_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Upload ciphertext-only Android diagnostic
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-android-smoke-diagnostic-encrypted
+          path: ${{ steps.diagnostic.outputs.transfer_dir }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Remove private and transient data
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source"
+          rm -rf "$GITHUB_WORKSPACE/toolchain-control"
+          rm -rf "$RUNNER_TEMP/goanime-android-smoke"
