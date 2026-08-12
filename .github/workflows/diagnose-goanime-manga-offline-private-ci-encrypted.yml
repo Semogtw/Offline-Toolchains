@@ -101,12 +101,13 @@ jobs:
             printf '%s=%s\n' "$label" "$status" >> "$logs_dir/STATUS.txt"
           }
 
-          capture analyze flutter analyze --no-pub lib/services/manga lib/screens/manga test/services/manga test/widgets/manga test/architecture
+          capture analyze flutter analyze --no-pub lib/services/manga lib/screens/manga test/services/manga test/widgets/manga test/architecture test/integration/manga_offline_reading_test.dart
           capture download flutter test --no-pub test/services/manga/download
           capture offline flutter test --no-pub test/services/manga/offline
           capture archive flutter test --no-pub test/services/manga/archive
           capture widgets flutter test --no-pub test/widgets/manga
           capture architecture flutter test --no-pub test/architecture/manga_offline_persistence_boundary_test.dart
+          capture integration flutter test --no-pub test/integration/manga_offline_reading_test.dart
 
           tar -C "$logs_dir" -I 'zstd -T0 -6' -cf "$archive" .
 
