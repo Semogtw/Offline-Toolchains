@@ -80,6 +80,12 @@ jobs:
         working-directory: private-source
         run: flutter pub get >/dev/null 2>&1
 
+      - name: Diagnose Arthur Scan by sanitized stage
+        id: arthurscan
+        continue-on-error: true
+        working-directory: private-source
+        run: dart run tools/manga/audit_planned_provider_stage.dart ptbr.arthurscan
+
       - name: Diagnose Astratoons by sanitized stage
         id: astratoons
         continue-on-error: true
@@ -113,12 +119,14 @@ jobs:
       - name: Report aggregate stage audit outcome
         if: always()
         env:
+          ARTHURSCAN: ${{ steps.arthurscan.outcome }}
           ASTRATOONS: ${{ steps.astratoons.outcome }}
           HQNOW: ${{ steps.hqnow.outcome }}
           CAPITOONS: ${{ steps.capitoons.outcome }}
           MANGADASH: ${{ steps.mangadash.outcome }}
           NINJASCAN: ${{ steps.ninjascan.outcome }}
         run: |
+          echo "arthurscan_stage_audit=$ARTHURSCAN"
           echo "astratoons_stage_audit=$ASTRATOONS"
           echo "hqnow_stage_audit=$HQNOW"
           echo "capitoons_stage_audit=$CAPITOONS"
