@@ -1,0 +1,33 @@
+name: Export Dart SDK
+
+on:
+  push:
+    branches:
+      - build/dart-sdk-export
+    paths:
+      - 'triggers/dart-sdk-export/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Verify Dart version
+        run: dart --version
+
+      - name: Upload Dart SDK
+        uses: actions/upload-artifact@v4
+        with:
+          name: dart-sdk-3.12.1-linux-x64
+          path: ${{ env.FLUTTER_ROOT }}/bin/cache/dart-sdk
+          if-no-files-found: error
+          retention-days: 1
