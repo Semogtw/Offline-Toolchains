@@ -1,0 +1,87 @@
+name: Test GoAnime manga provider privately
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-provider-test/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-provider-test-private-ci
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: GoAnime focused manga provider test
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-provider-test/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = goanime
+          test "$branch" = feature/manga-platform
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Analyze manga provider scope
+        working-directory: private-source
+        run: flutter analyze --no-pub lib/services/manga/providers lib/services/manga/manga_provider_definitions.dart test/services/manga/providers
+
+      - name: Test Arthur Scan adapter
+        working-directory: private-source
+        run: flutter test --no-pub test/services/manga/providers/arthur_scan_manga_provider_test.dart
+
+      - name: Test all manga provider adapters
+        working-directory: private-source
+        run: flutter test --no-pub test/services/manga/providers
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
