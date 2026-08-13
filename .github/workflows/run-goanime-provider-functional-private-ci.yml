@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'triggers/goanime-provider-functional-ci/*.request'
+      - 'triggers/goanime-provider-functional-ci/latest.request'
 
 permissions:
   contents: read
@@ -36,8 +36,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          request="$(git show --pretty='' --name-only "$GITHUB_SHA" -- 'triggers/goanime-provider-functional-ci/*.request' | tail -n1)"
-          test -n "$request"
+          request='triggers/goanime-provider-functional-ci/latest.request'
+          test -f "$request"
           read -r project sha < "$request"
           test "$project" = 'goanime'
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
