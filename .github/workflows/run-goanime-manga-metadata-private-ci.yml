@@ -76,6 +76,7 @@ jobs:
           lib/services/manga/manga_availability_service.dart
           lib/services/manga/manga_search_catalog_persistence.dart
           lib/services/manga/manga_source_runtime.dart
+          lib/services/manga/storage/manga_catalog_repository.dart
           lib/services/manga/metadata
           test/services/manga/manga_availability_service_test.dart
           test/services/manga/manga_availability_work_merge_test.dart
@@ -100,6 +101,7 @@ jobs:
           lib/services/manga/manga_availability_service.dart
           lib/services/manga/manga_search_catalog_persistence.dart
           lib/services/manga/manga_source_runtime.dart
+          lib/services/manga/storage/manga_catalog_repository.dart
           lib/services/manga/metadata
           test/services/manga/manga_availability_service_test.dart
           test/services/manga/manga_availability_work_merge_test.dart
