@@ -1,0 +1,88 @@
+name: Validate GoAnime cache hardening
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-cache-hardening-validate/latest.request'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout target branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: codex/cache-provenance-hardening-20260813
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: goanime
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+
+      - name: Restore verified source files
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, gzip, hashlib, json, urllib.request
+          from pathlib import Path
+          specs = [
+              ('dcf780f427e00792b022708e10d6db8ff5cfa86b', '830132460c04738bec9b9ff49186733b1448bcc4761f8887908325de66af6bc3', 'goanime/tools/cache_builder.dart'),
+              ('315f963eb64a36131bb1f99eb08f1bdd8d2d579e', '87013e08aba5233aa56133486fe3043d04f685a2a85750f1cec7387149daf7cd', 'goanime/tools/provider_catalog_cache.dart'),
+          ]
+          for blob, expected, target in specs:
+              url = f'https://api.github.com/repos/Semogtw/Offline-Toolchains/git/blobs/{blob}'
+              with urllib.request.urlopen(url, timeout=30) as response:
+                  payload = json.load(response)
+              source = gzip.decompress(base64.b64decode(payload['content']))
+              actual = hashlib.sha256(source).hexdigest()
+              if actual != expected:
+                  raise SystemExit(f'{target}: checksum mismatch')
+              Path(target).write_bytes(source)
+              print(f'{target}: {actual}')
+          PY
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: goanime
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Validate focused cache suite
+        working-directory: goanime
+        run: |
+          set -euo pipefail
+          dart format --output=none --set-exit-if-changed tools/cache_builder.dart tools/provider_catalog_cache.dart test/tools/cache_builder_test.dart test/tools/provider_catalog_cache_test.dart test/tools/build_mal_provider_availability_cache_test.dart
+          dart analyze tools/cache_builder.dart tools/provider_catalog_cache.dart
+          flutter test --no-pub test/tools/cache_builder_test.dart test/tools/provider_catalog_cache_test.dart test/tools/build_mal_provider_availability_cache_test.dart
+          git diff --check
+
+      - name: Record reconstructed patch
+        working-directory: goanime
+        run: |
+          set -euo pipefail
+          git diff --binary -- tools/cache_builder.dart tools/provider_catalog_cache.dart > ../cache-hardening.patch
+          test -s ../cache-hardening.patch
+          git diff --stat
+
+      - name: Upload validated patch
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-cache-hardening-validated
+          path: cache-hardening.patch
+          if-no-files-found: error
+          retention-days: 7
