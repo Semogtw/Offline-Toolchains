@@ -68,18 +68,11 @@ jobs:
           flutter-version: 3.44.1
           cache: true
 
-      - name: Apply formatter and push only as fast-forward
+      - name: Emit formatter patch
         working-directory: private-source
         shell: bash
-        env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
         run: |
           set -euo pipefail
-          remote_url="https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git"
-          current_remote="$(git ls-remote "$remote_url" refs/heads/feature/manga-platform | cut -f1)"
-          test "$current_remote" = "$EXPECTED_SHA"
-
           dart format \
             lib/services/manga/manga_work_merger.dart \
             lib/services/manga/manga_availability_service.dart \
@@ -91,8 +84,8 @@ jobs:
             test/services/manga/manga_availability_work_merge_test.dart \
             test/services/manga/manga_search_metadata_preservation_test.dart \
             test/services/manga/metadata >/dev/null
-
-          git add \
+          echo 'BEGIN_FORMAT_PATCH'
+          git diff --no-ext-diff --unified=3 -- \
             lib/services/manga/manga_work_merger.dart \
             lib/services/manga/manga_availability_service.dart \
             lib/services/manga/manga_search_catalog_persistence.dart \
@@ -103,19 +96,7 @@ jobs:
             test/services/manga/manga_availability_work_merge_test.dart \
             test/services/manga/manga_search_metadata_preservation_test.dart \
             test/services/manga/metadata
-          if git diff --cached --quiet; then
-            echo "format_change=none"
-            exit 0
-          fi
-
-          git config user.name "GoAnime Toolchains"
-          git config user.email "actions@users.noreply.github.com"
-          git commit -m "style(manga): format metadata integration" >/dev/null
-
-          latest_remote="$(git ls-remote "$remote_url" refs/heads/feature/manga-platform | cut -f1)"
-          test "$latest_remote" = "$EXPECTED_SHA"
-          git push "$remote_url" HEAD:refs/heads/feature/manga-platform >/dev/null
-          echo "format_change=pushed"
+          echo 'END_FORMAT_PATCH'
 
       - name: Remove private checkout
         if: always()
