@@ -1,0 +1,136 @@
+name: Run GoAnime cache hardening exact CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-cache-hardening-exact-ci/latest.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-cache-hardening-exact-ci
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout toolchain request
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve exact GoAnime revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request='triggers/goanime-cache-hardening-exact-ci/latest.request'
+          test -f "$request"
+          read -r project sha < "$request"
+          test "$project" = 'goanime'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${PRIVATE_TOKEN:-}"
+
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify exact source SHA
+        working-directory: private-source
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = '${{ steps.request.outputs.sha }}'
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.1'
+          channel: stable
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Verify scoped formatting and whitespace
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format --output=none --set-exit-if-changed \
+            tools/cache_builder.dart \
+            tools/provider_catalog_cache*.dart \
+            test/tools/cache_builder_test.dart \
+            test/tools/provider_catalog_cache_test.dart \
+            test/tools/build_mal_provider_availability_cache_test.dart
+          git diff --check
+
+      - name: Analyze cache tools
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart analyze tools/cache_builder.dart tools/provider_catalog_cache.dart
+
+      - name: Run focused cache tests
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter test --no-pub \
+            test/tools/cache_builder_test.dart \
+            test/tools/provider_catalog_cache_test.dart \
+            test/tools/build_mal_provider_availability_cache_test.dart
+
+      - name: Analyze application and core
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter analyze --no-pub
+          (cd packages/goanime_core && dart analyze lib test)
+
+      - name: Run full Flutter test suite
+        working-directory: private-source
+        shell: bash
+        run: flutter test --no-pub
+
+      - name: Run goanime_core tests
+        working-directory: private-source/packages/goanime_core
+        shell: bash
+        run: dart test
+
+      - name: Build Android debug APK
+        working-directory: private-source
+        shell: bash
+        run: flutter build apk --debug --no-pub
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
