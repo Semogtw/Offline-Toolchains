@@ -1,0 +1,161 @@
++      <a href="/animes/relative-show-todos-os-episodios">Relative</a>
++      <a href="https://animefire.io.attacker.test/animes/spoofed-todos-os-episodios">Spoof</a>
+     ''';
+ 
+     final entries = cache_builder.parseAnimeFireSearchResults(page);
+ 
+-    expect(entries.map((entry) => entry.title), ['tamako market', 'naruto']);
+-    expect(entries.last.isDub, isTrue);
++    expect(entries.map((entry) => entry.title), [
++      'tamako market',
++      'naruto',
++      'relative show',
++    ]);
++    expect(entries[1].isDub, isTrue);
++    expect(entries.map((entry) => entry.title), isNot(contains('spoofed')));
+   });
+ 
+   test('AnimesOnline cache only includes anime from episode URLs', () {
+@@ -135,6 +176,9 @@ void main() {
+         <url>
+           <loc>https://animesonlinecc.to/episodio/one-piece-episodio-1158/</loc>
+         </url>
++        <url>
++          <loc>https://animesonlinecc.to.attacker.test/episodio/spoofed-episodio-1/</loc>
++        </url>
+       </urlset>
+     ''';
+ 
+@@ -172,12 +216,21 @@ void main() {
+         <url>
+           <loc>https://animesonlinecc.to/page/contato/</loc>
+         </url>
++        <url>
++          <loc>https://animesonlinecc.to.attacker.test/anime/spoofed/</loc>
++        </url>
+       </urlset>
+     ''';
+ 
+     final urls = cache_builder.parseAnimesOnlineTvshowPageUrls(sitemap);
+ 
+     expect(urls, {Uri.parse('https://animesonlinecc.to/anime/tamako-market/')});
++    expect(
++      urls,
++      isNot(
++        contains(Uri.parse('https://animesonlinecc.to.attacker.test/anime/spoofed/')),
++      ),
++    );
+   });
+ 
+   test('AnimesOnline anime page parser requires episode links', () {
+@@ -191,9 +244,14 @@ void main() {
+       pageUrl,
+       '<html></html>',
+     );
++    final spoofed = cache_builder.parseAnimesOnlineAnimePageEntries(
++      Uri.parse('https://animesonlinecc.to.attacker.test/anime/tamako-market/'),
++      '<a href="/episodio/tamako-market-episodio-1/">Ep 1</a>',
++    );
+ 
+     expect(valid.single.title, 'tamako market');
+     expect(invalid, isEmpty);
++    expect(spoofed, isEmpty);
+   });
+ 
+   test('AnimesOnline search parser accepts anime and episode result URLs', () {
+@@ -201,12 +259,19 @@ void main() {
+       <a href="https://animesonlinecc.to/anime/tamako-market/">Tamako</a>
+       <a href="https://animesonlinecc.to/episodio/naruto-dublado-episodio-1/">Naruto</a>
+       <a href="https://animesonlinecc.to/page/contato/">Contato</a>
++      <a href="/anime/relative-show/">Relative</a>
++      <a href="https://animesonlinecc.to.attacker.test/anime/spoofed/">Spoof</a>
+     ''';
+ 
+     final entries = cache_builder.parseAnimesOnlineSearchResults(page);
+ 
+-    expect(entries.map((entry) => entry.title), ['tamako market', 'naruto']);
+-    expect(entries.last.isDub, isTrue);
++    expect(entries.map((entry) => entry.title), [
++      'tamako market',
++      'naruto',
++      'relative show',
++    ]);
++    expect(entries[1].isDub, isTrue);
++    expect(entries.map((entry) => entry.title), isNot(contains('spoofed')));
+   });
+ 
+   test('availability seed targets load explicit audit seeds', () async {
+diff --git a/test/tools/provider_catalog_cache_test.dart b/test/tools/provider_catalog_cache_test.dart
+index 26743b72..b52192e0 100644
+--- a/test/tools/provider_catalog_cache_test.dart
++++ b/test/tools/provider_catalog_cache_test.dart
+@@ -136,6 +136,27 @@ void main() {
+     });
+   });
+ 
++  group('AnimeFire catalog corroboration', () {
++    test('derives current titles and modes from owned series links', () {
++      const html = '''
++        <a href="/animes/3-gatsu-no-lion-todos-os-episodios">3-gatsu no Lion</a>
++        <a href="/animes/naruto-todos-os-episodios">Naruto</a>
++        <a href="/animes/naruto-dublado-todos-os-episodios">Naruto Dublado</a>
++        <a href="https://animefire.io.attacker.test/animes/spoofed-todos-os-episodios">Spoof</a>
++      ''';
++
++      final entries = catalog.parseAnimeFireCatalogSeriesEntries(
++        html,
++        pageUrl: Uri.parse('https://animefire.io/lista-de-animes-legendados'),
++      );
++
++      expect(entries['3 gatsu no lion']?.hasSub, isTrue);
++      expect(entries['naruto']?.hasSub, isTrue);
++      expect(entries['naruto']?.hasDub, isTrue);
++      expect(entries, isNot(contains('spoofed')));
++    });
++  });
++
+   group('AnimesOnline sitemap ownership', () {
+     test('accepts owned catalog sitemaps and rejects spoofed hosts', () {
+       expect(
+@@ -393,20 +414,55 @@ void main() {
+           lastSuccessfulAt: '2026-08-10T00:00:00Z',
+         ),
+     };
++    providers['goyabu']!.entries['shared'] = catalog.ProviderCatalogEntry(
++      title: 'shared',
++      hasSub: true,
++    );
++    providers['animefire']!.entries['shared'] = catalog.ProviderCatalogEntry(
++      title: 'shared',
++      hasSub: true,
++    );
+     final cache = catalog.ProviderCatalogCache(
+       generatedAt: '2026-08-10T00:00:00Z',
+       providers: providers,
+-      legacyBaseline: <String, catalog.ProviderCatalogEntry>{},
++      legacyBaseline: <String, catalog.ProviderCatalogEntry>{
++        'legacy only': catalog.ProviderCatalogEntry(
++          title: 'legacy only',
++          hasSub: true,
++        ),
++        'shared': catalog.ProviderCatalogEntry(title: 'shared', hasSub: true),
++      },
+     );
+ 
+     final manifest = catalog.buildProviderCatalogManifest(
+       cache: cache,
+-      availableEntries: <String, catalog.ProviderCatalogEntry>{},
++      availableEntries: <String, catalog.ProviderCatalogEntry>{
++        'legacy only': catalog.ProviderCatalogEntry(
++          title: 'legacy only',
++          hasSub: true,
++        ),
++        'shared': catalog.ProviderCatalogEntry(title: 'shared', hasSub: true),
++        for (final provider in providers.keys)
++          provider: catalog.ProviderCatalogEntry(title: provider, hasSub: true),
++      },
+       allProvidersComplete: true,
+     );
+ 
+     expect(manifest['allProvidersComplete'], isTrue);
++    expect(manifest['providerUnionTitleCount'], 5);
