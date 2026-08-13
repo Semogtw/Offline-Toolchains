@@ -1,0 +1,81 @@
+name: Run GoAnime provider scoped live smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-provider-live-smoke/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  live-smoke:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${PRIVATE_TOKEN:-}" || {
+            echo 'PRIVATE_REPOSITORIES_TOKEN is required.' >&2
+            exit 1
+          }
+
+      - name: Checkout toolchain request
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Resolve exact GoAnime revision and sources
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git show --pretty='' --name-only "$GITHUB_SHA" -- 'triggers/goanime-provider-live-smoke/*.request' | tail -n1)"
+          test -n "$request"
+          read -r project sha sources < "$request"
+          test "$project" = 'goanime'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          test -n "$sources"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "sources=$sources" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v5
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.1'
+          channel: stable
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: flutter pub get
+
+      - name: Run selected providers against live sites
+        working-directory: private-source
+        shell: bash
+        env:
+          GOANIME_LIVE_PROVIDER_SMOKE: '1'
+          GOANIME_LIVE_PROVIDER_SOURCES: ${{ steps.request.outputs.sources }}
+        run: flutter test --no-pub test/services/providers/anime_provider_live_smoke_test.dart --reporter expanded
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
