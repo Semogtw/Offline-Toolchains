@@ -1,0 +1,123 @@
+name: Apply GoAnime manga metadata formatting privately
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-metadata-format/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-metadata-format-private-ci
+  cancel-in-progress: false
+
+jobs:
+  format:
+    name: GoAnime manga metadata formatter
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-metadata-format/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = "goanime"
+          test "$branch" = "feature/manga-platform"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Apply formatter and push only as fast-forward
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          remote_url="https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git"
+          current_remote="$(git ls-remote "$remote_url" refs/heads/feature/manga-platform | cut -f1)"
+          test "$current_remote" = "$EXPECTED_SHA"
+
+          dart format \
+            lib/services/manga/manga_work_merger.dart \
+            lib/services/manga/manga_availability_service.dart \
+            lib/services/manga/manga_search_catalog_persistence.dart \
+            lib/services/manga/manga_source_runtime.dart \
+            lib/services/manga/storage/manga_catalog_repository.dart \
+            lib/services/manga/metadata \
+            test/services/manga/manga_availability_service_test.dart \
+            test/services/manga/manga_availability_work_merge_test.dart \
+            test/services/manga/manga_search_metadata_preservation_test.dart \
+            test/services/manga/metadata >/dev/null
+
+          git add \
+            lib/services/manga/manga_work_merger.dart \
+            lib/services/manga/manga_availability_service.dart \
+            lib/services/manga/manga_search_catalog_persistence.dart \
+            lib/services/manga/manga_source_runtime.dart \
+            lib/services/manga/storage/manga_catalog_repository.dart \
+            lib/services/manga/metadata \
+            test/services/manga/manga_availability_service_test.dart \
+            test/services/manga/manga_availability_work_merge_test.dart \
+            test/services/manga/manga_search_metadata_preservation_test.dart \
+            test/services/manga/metadata
+          if git diff --cached --quiet; then
+            echo "format_change=none"
+            exit 0
+          fi
+
+          git config user.name "GoAnime Toolchains"
+          git config user.email "actions@users.noreply.github.com"
+          git commit -m "style(manga): format metadata integration" >/dev/null
+
+          latest_remote="$(git ls-remote "$remote_url" refs/heads/feature/manga-platform | cut -f1)"
+          test "$latest_remote" = "$EXPECTED_SHA"
+          git push "$remote_url" HEAD:refs/heads/feature/manga-platform >/dev/null
+          echo "format_change=pushed"
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control"
