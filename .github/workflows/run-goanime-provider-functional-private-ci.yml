@@ -1,0 +1,116 @@
+name: Run GoAnime provider functional private CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-provider-functional-ci/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${PRIVATE_TOKEN:-}" || {
+            echo 'PRIVATE_REPOSITORIES_TOKEN is required.' >&2
+            exit 1
+          }
+
+      - name: Checkout toolchain request
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Resolve exact GoAnime revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git show --pretty='' --name-only "$GITHUB_SHA" -- 'triggers/goanime-provider-functional-ci/*.request' | tail -n1)"
+          test -n "$request"
+          read -r project sha < "$request"
+          test "$project" = 'goanime'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v5
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.1'
+          channel: stable
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Verify patch whitespace
+        working-directory: private-source
+        shell: bash
+        run: git diff --check
+
+      - name: Analyze application and core libraries
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter analyze --no-pub
+          (cd packages/goanime_core && dart analyze lib test)
+
+      - name: Run focused four-provider contract tests
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter test --no-pub test/services/animefire_player_source_test.dart
+          flutter test --no-pub test/services/anitube_episode_list_ownership_test.dart
+          flutter test --no-pub test/services/providers/four_provider_native_flow_test.dart
+          flutter test --no-pub test/services/providers/anime_playback_provider_registry_test.dart
+          flutter test --no-pub test/services/animefire_service_test.dart
+          flutter test --no-pub test/services/animesonline_service_test.dart
+          flutter test --no-pub test/services/goyabu_service_test.dart
+          flutter test --no-pub test/services/anitube_service_test.dart
+
+      - name: Run full Flutter test suite
+        working-directory: private-source
+        shell: bash
+        run: flutter test --no-pub
+
+      - name: Run goanime_core tests
+        working-directory: private-source/packages/goanime_core
+        shell: bash
+        run: dart test
+
+      - name: Build Android debug APK
+        working-directory: private-source
+        shell: bash
+        run: flutter build apk --debug --no-pub
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
