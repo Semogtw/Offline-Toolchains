@@ -1,0 +1,85 @@
+name: Format GoAnime cache hardening
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-cache-hardening-format/latest.request'
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout request
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve exact GoAnime revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          read -r project sha < triggers/goanime-cache-hardening-format/latest.request
+          test "$project" = 'goanime'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.1'
+          channel: stable
+          cache: true
+
+      - name: Apply scoped formatter
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format \
+            tools/cache_builder.dart \
+            tools/provider_catalog_cache*.dart \
+            test/tools/cache_builder_test.dart \
+            test/tools/provider_catalog_cache_test.dart \
+            test/tools/build_mal_provider_availability_cache_test.dart
+          git diff --check
+          git diff --name-only > ../formatted-files.txt
+          cat ../formatted-files.txt
+
+      - name: Stage formatted handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p formatted
+          while IFS= read -r path; do
+            test -n "$path" || continue
+            mkdir -p "formatted/$(dirname "$path")"
+            cp "private-source/$path" "formatted/$path"
+          done < formatted-files.txt
+          cp formatted-files.txt formatted/
+
+      - name: Upload formatted files
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-cache-hardening-formatted
+          path: formatted
+          if-no-files-found: error
+          retention-days: 7
