@@ -1,0 +1,72 @@
+name: Check GoAnime provider scoped format
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-provider-format-check/latest.request'
+
+permissions:
+  contents: read
+
+jobs:
+  format-check:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "${PRIVATE_TOKEN:-}"
+
+      - name: Checkout toolchain request
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Resolve exact GoAnime revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          read -r project sha < triggers/goanime-provider-format-check/latest.request
+          test "$project" = 'goanime'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v5
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.1'
+          channel: stable
+          cache: true
+
+      - name: Check only four-provider audit files
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format --output=none --set-exit-if-changed \
+            lib/services/animefire_service.dart \
+            lib/services/anitube_service.dart \
+            test/services/animefire_player_source_test.dart \
+            test/services/anitube_episode_list_ownership_test.dart \
+            test/services/providers/four_provider_native_flow_test.dart \
+            test/services/providers/anime_provider_live_smoke_test.dart
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
