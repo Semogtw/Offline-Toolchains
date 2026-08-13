@@ -121,6 +121,15 @@ jobs:
               raise SystemExit('unexpected worktree changes; refusing to push')
           PY
 
+      - name: Upload lockfile-only handoff
+        uses: actions/upload-artifact@v7
+        with:
+          name: receitas-pnpm-lock
+          path: private-source/pnpm-lock.yaml
+          if-no-files-found: error
+          compression-level: 9
+          retention-days: 1
+
       - name: Commit lockfile and push with revision lease
         working-directory: private-source
         shell: bash
