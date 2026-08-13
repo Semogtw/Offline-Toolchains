@@ -73,7 +73,8 @@ jobs:
         working-directory: private-source
         run: flutter pub get >/dev/null 2>&1
 
-      - name: Validate enabled evidence collector
+      - name: Validate and normalize enabled evidence collector
+        id: format
         working-directory: private-source
         shell: bash
         run: |
@@ -82,9 +83,21 @@ jobs:
             tools/manga/collect_enabled_manga_live_evidence.dart \
             test/tools/manga/collect_enabled_manga_live_evidence_test.dart
           flutter test --no-pub test/tools/manga/collect_enabled_manga_live_evidence_test.dart
-          dart format --output=none --set-exit-if-changed \
+          dart format \
             tools/manga/collect_enabled_manga_live_evidence.dart \
-            test/tools/manga/collect_enabled_manga_live_evidence_test.dart
+            test/tools/manga/collect_enabled_manga_live_evidence_test.dart >/dev/null
+          if git diff --quiet -- \
+            tools/manga/collect_enabled_manga_live_evidence.dart \
+            test/tools/manga/collect_enabled_manga_live_evidence_test.dart; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+            echo 'BEGIN_FORMAT_PATCH'
+            git diff --no-ext-diff --unified=3 -- \
+              tools/manga/collect_enabled_manga_live_evidence.dart \
+              test/tools/manga/collect_enabled_manga_live_evidence_test.dart
+            echo 'END_FORMAT_PATCH'
+          fi
 
       - name: Collect enabled live evidence
         working-directory: private-source
@@ -139,6 +152,13 @@ jobs:
           assert {row['sourceId'] for row in rows} == expected
           PY
           echo "enabled_live_evidence=success"
+
+      - name: Reject repository formatting drift
+        if: steps.format.outputs.changed == 'true'
+        shell: bash
+        run: |
+          echo 'enabled_live_evidence_format_drift=true'
+          exit 1
 
       - name: Remove private checkout and plaintext evidence
         if: always()
