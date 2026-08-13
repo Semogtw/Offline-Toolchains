@@ -66,7 +66,9 @@ jobs:
         working-directory: goanime
         run: |
           set -euo pipefail
+          dart format tools/cache_builder.dart tools/provider_catalog_cache.dart test/tools/cache_builder_test.dart test/tools/provider_catalog_cache_test.dart test/tools/build_mal_provider_availability_cache_test.dart
           dart format --output=none --set-exit-if-changed tools/cache_builder.dart tools/provider_catalog_cache.dart test/tools/cache_builder_test.dart test/tools/provider_catalog_cache_test.dart test/tools/build_mal_provider_availability_cache_test.dart
+          sha256sum tools/cache_builder.dart tools/provider_catalog_cache.dart
           dart analyze tools/cache_builder.dart tools/provider_catalog_cache.dart
           flutter test --no-pub test/tools/cache_builder_test.dart test/tools/provider_catalog_cache_test.dart test/tools/build_mal_provider_availability_cache_test.dart
           git diff --check
@@ -75,7 +77,7 @@ jobs:
         working-directory: goanime
         run: |
           set -euo pipefail
-          git diff --binary -- tools/cache_builder.dart tools/provider_catalog_cache.dart > ../cache-hardening.patch
+          git diff --binary -- tools/cache_builder.dart tools/provider_catalog_cache.dart test/tools/cache_builder_test.dart test/tools/provider_catalog_cache_test.dart test/tools/build_mal_provider_availability_cache_test.dart > ../cache-hardening.patch
           test -s ../cache-hardening.patch
           git diff --stat
 
@@ -83,6 +85,12 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: goanime-cache-hardening-validated
-          path: cache-hardening.patch
+          path: |
+            cache-hardening.patch
+            goanime/tools/cache_builder.dart
+            goanime/tools/provider_catalog_cache.dart
+            goanime/test/tools/cache_builder_test.dart
+            goanime/test/tools/provider_catalog_cache_test.dart
+            goanime/test/tools/build_mal_provider_availability_cache_test.dart
           if-no-files-found: error
           retention-days: 7
