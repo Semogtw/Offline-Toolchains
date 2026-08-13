@@ -1,0 +1,106 @@
+name: Format private GoAnime branch
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-branch-format/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${PRIVATE_TOKEN:-}" || {
+            echo 'PRIVATE_REPOSITORIES_TOKEN is required.' >&2
+            exit 1
+          }
+
+      - name: Checkout toolchain request
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Parse exact GoAnime branch request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git show --pretty='' --name-only "$GITHUB_SHA" -- 'triggers/goanime-branch-format/*.request' | tail -n1)"
+          test -n "$request"
+          read -r project sha branch < "$request"
+          test "$project" = 'goanime'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private revision
+        uses: actions/checkout@v5
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.1'
+          channel: stable
+          cache: true
+
+      - name: Format exact private revision
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format lib test packages tools
+          git diff --check
+
+      - name: Commit and push formatted branch
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- lib test packages tools; then
+            echo 'No formatting changes required.'
+            exit 0
+          fi
+
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_TOKEN" | base64 -w0)"
+          extraheader="AUTHORIZATION: basic $auth"
+          git -c http.https://github.com/.extraheader="$extraheader" fetch origin "$TARGET_BRANCH"
+          current="$(git rev-parse FETCH_HEAD)"
+          if [ "$current" != "$TARGET_SHA" ]; then
+            echo "Target branch moved from $TARGET_SHA to $current; refusing push." >&2
+            exit 1
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib test packages tools
+          git commit -m 'style: apply Dart formatter'
+          git -c http.https://github.com/.extraheader="$extraheader" push origin "HEAD:$TARGET_BRANCH"
+          unset auth extraheader PRIVATE_TOKEN
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
