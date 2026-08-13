@@ -1,0 +1,173 @@
+From f7ee5bd641893cfb8da244d4fa03ec437e1cc0ca Mon Sep 17 00:00:00 2001
+From: Arthur Almeida <arthurgva1602@gmail.com>
+Date: Thu, 13 Aug 2026 15:31:36 +0000
+Subject: [PATCH] fix(cache): corroborate provider catalog coverage
+
+
+diff --git a/test/tools/build_mal_provider_availability_cache_test.dart b/test/tools/build_mal_provider_availability_cache_test.dart
+index a6aa4de6..97d64591 100644
+--- a/test/tools/build_mal_provider_availability_cache_test.dart
++++ b/test/tools/build_mal_provider_availability_cache_test.dart
+@@ -63,6 +63,68 @@ void main() {
+     },
+   );
+ 
++  test('reconciles legacy aliases without inventing provider ownership', () {
++    final providerRaw = <String, Object?>{
++      'schemaVersion': 1,
++      'generatedAt': '2026-08-10T00:00:00Z',
++      'legacyBaseline': <Object?>[
++        <String, Object?>{
++          'title': '3-gatsu no Lion',
++          'sub': true,
++          'dub': false,
++        },
++        <String, Object?>{
++          'title': 'Historical Only',
++          'sub': true,
++          'dub': false,
++        },
++      ],
++      'providers': <String, Object?>{
++        'animesonline': <String, Object?>{
++          'status': 'complete',
++          'lastAttemptAt': '2026-08-10T00:00:00Z',
++          'lastSuccessfulAt': '2026-08-10T00:00:00Z',
++          'entries': <Object?>[
++            <String, Object?>{
++              'title': 'Sangatsu no Lion',
++              'sub': true,
++              'dub': false,
++            },
++          ],
++        },
++      },
++    };
++    final malRaw = <String, Object?>{
++      'schemaVersion': 1,
++      'entries': <Object?>[
++        <String, Object?>{
++          'malId': 31646,
++          'canonicalTitle': '3-gatsu no Lion',
++          'matchedAvailableTitles': <String>[
++            '3 gatsu no lion',
++            'sangatsu no lion',
++          ],
++        },
++      ],
++    };
++
++    final document = builder.buildMalProviderAvailabilityDocument(
++      providerRaw: providerRaw,
++      malRaw: malRaw,
++      generatedAt: DateTime.utc(2026, 8, 10),
++    );
++
++    final reconciliation =
++        document['legacyBaselineReconciliation']! as Map<String, Object?>;
++    expect(reconciliation['baselineTitleCount'], 2);
++    expect(reconciliation['currentProviderUnionTitleCount'], 1);
++    expect(reconciliation['legacyOnlyTitleCount'], 2);
++    expect(reconciliation['legacyOnlyWithMalMatchCount'], 1);
++    expect(reconciliation['legacyOnlyAliasCoveredByCurrentTitleCount'], 1);
++    expect(reconciliation['legacyOnlyWithoutMalMatchCount'], 1);
++    expect(reconciliation['legacyOnlyAwaitingProviderRevalidationCount'], 1);
++  });
++
+   test('does not attribute legacy-only titles to a provider', () {
+     final providerRaw = <String, Object?>{
+       'schemaVersion': 1,
+diff --git a/test/tools/cache_builder_test.dart b/test/tools/cache_builder_test.dart
+index a66aee1c..00a653f1 100644
+--- a/test/tools/cache_builder_test.dart
++++ b/test/tools/cache_builder_test.dart
+@@ -20,6 +20,9 @@ void main() {
+         <url>
+           <loc>https://animefire.io/animes/one-piece-dublado/2</loc>
+         </url>
++        <url>
++          <loc>https://animefire.io.attacker.test/animes/spoofed/1</loc>
++        </url>
+       </urlset>
+     ''';
+ 
+@@ -28,6 +31,7 @@ void main() {
+     expect(titles, contains('naruto'));
+     expect(titles, contains('one piece'));
+     expect(titles, isNot(contains('tian guan cifu er')));
++    expect(titles, isNot(contains('spoofed')));
+   });
+ 
+   test('AnimeFire mode cache separates sub and dub by slug', () {
+@@ -69,9 +73,16 @@ void main() {
+       invalidUrl,
+       '<html></html>',
+     );
++    final spoofed = cache_builder.parseAnimeFireSeriesPageTitle(
++      Uri.parse(
++        'https://animefire.io.attacker.test/animes/tamako-market-todos-os-episodios',
++      ),
++      '<a href="/animes/tamako-market/1">1</a>',
++    );
+ 
+     expect(valid?.title, 'tamako market');
+     expect(invalid, isNull);
++    expect(spoofed, isNull);
+   });
+ 
+   test('AnimeFire catalog parsing finds genre pages and anime pages', () {
+@@ -85,13 +96,18 @@ void main() {
+       <a href="/lista-de-animes-dublados">Dublados</a>
+       <a href="https://animefire.io/animes/tamako-market-todos-os-episodios">Tamako</a>
+       <a href="https://animefire.io/animes/tamako-market/1">Ep</a>
++      <a href="/animes/relative-title-todos-os-episodios">Relative</a>
++      <a href="https://animefire.io.attacker.test/animes/spoofed-todos-os-episodios">Spoof</a>
+     ''';
+ 
+     final catalogPages = cache_builder.parseAnimeFireCatalogPageUrls(
+       Uri.parse('https://animefire.io/genero/acao'),
+       page,
+     );
+-    final seriesPages = cache_builder.parseAnimeFireSeriesPageUrls(page);
++    final seriesPages = cache_builder.parseAnimeFireSeriesPageUrls(
++      page,
++      baseUrl: Uri.parse('https://animefire.io/genero/acao'),
++    );
+ 
+     expect(
+       catalogPages,
+@@ -105,9 +121,27 @@ void main() {
+         Uri.parse('https://animefire.io/lista-de-animes-dublados'),
+       ]),
+     );
+-    expect(seriesPages, [
+-      Uri.parse('https://animefire.io/animes/tamako-market-todos-os-episodios'),
+-    ]);
++    expect(
++      seriesPages,
++      containsAll([
++        Uri.parse(
++          'https://animefire.io/animes/tamako-market-todos-os-episodios',
++        ),
++        Uri.parse(
++          'https://animefire.io/animes/relative-title-todos-os-episodios',
++        ),
++      ]),
++    );
++    expect(
++      seriesPages,
++      isNot(
++        contains(
++          Uri.parse(
++            'https://animefire.io.attacker.test/animes/spoofed-todos-os-episodios',
++          ),
++        ),
++      ),
++    );
+   });
+ 
+   test('AnimeFire search parser can audit provider-only cache misses', () {
+@@ -115,12 +149,19 @@ void main() {
+       <a href="https://animefire.io/animes/tamako-market-todos-os-episodios">Tamako</a>
+       <a href="https://animefire.io/animes/naruto-dublado-todos-os-episodios">Naruto</a>
+       <a href="https://animefire.io/genero/acao">Ação</a>
