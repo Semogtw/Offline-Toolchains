@@ -1,0 +1,70 @@
+name: Apply GoAnime cache hardening
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-cache-hardening-apply/latest.request'
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out target GoAnime branch
+        uses: actions/checkout@v4
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: codex/cache-provenance-hardening-20260813
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: goanime
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Restore verified source blobs
+        env:
+          CACHE_BUILDER_BLOB: dcf780f427e00792b022708e10d6db8ff5cfa86b
+          PROVIDER_CATALOG_BLOB: 315f963eb64a36131bb1f99eb08f1bdd8d2d579e
+          CACHE_BUILDER_SHA256: 830132460c04738bec9b9ff49186733b1448bcc4761f8887908325de66af6bc3
+          PROVIDER_CATALOG_SHA256: 87013e08aba5233aa56133486fe3043d04f685a2a85750f1cec7387149daf7cd
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, gzip, hashlib, json, os, urllib.request
+          from pathlib import Path
+
+          specs = [
+              ('CACHE_BUILDER_BLOB', 'CACHE_BUILDER_SHA256', 'goanime/tools/cache_builder.dart'),
+              ('PROVIDER_CATALOG_BLOB', 'PROVIDER_CATALOG_SHA256', 'goanime/tools/provider_catalog_cache.dart'),
+          ]
+          for blob_env, sha_env, target in specs:
+              url = f"https://api.github.com/repos/Semogtw/Offline-Toolchains/git/blobs/{os.environ[blob_env]}"
+              req = urllib.request.Request(url, headers={'Accept': 'application/vnd.github+json'})
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  payload = json.load(response)
+              compressed = base64.b64decode(payload['content'])
+              source = gzip.decompress(compressed)
+              actual = hashlib.sha256(source).hexdigest()
+              expected = os.environ[sha_env]
+              if actual != expected:
+                  raise SystemExit(f'{target}: sha256 mismatch {actual} != {expected}')
+              Path(target).write_bytes(source)
+              print(f'{target}: restored {len(source)} bytes sha256={actual}')
+          PY
+
+      - name: Verify diff and commit source changes
+        working-directory: goanime
+        run: |
+          set -euo pipefail
+          git diff --check
+          git status --short
+          git diff -- tools/cache_builder.dart tools/provider_catalog_cache.dart > /tmp/cache-hardening.diff
+          test -s /tmp/cache-hardening.diff
+          git config user.name 'GoAnime Toolchains'
+          git config user.email 'actions@users.noreply.github.com'
+          git add tools/cache_builder.dart tools/provider_catalog_cache.dart
+          git commit -m 'fix(cache): corroborate provider catalog coverage'
+          git push origin HEAD:codex/cache-provenance-hardening-20260813
