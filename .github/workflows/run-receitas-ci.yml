@@ -88,6 +88,40 @@ jobs:
           submodules: false
           show-progress: false
 
+      - name: Attest checked-out revision and Edge test manifest
+        id: source_attestation
+        working-directory: private-source
+        shell: bash
+        env:
+          REQUESTED_REF: ${{ steps.request.outputs.ref }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          if [[ "$REQUESTED_REF" =~ ^[0-9A-Fa-f]{40}$ ]] && [[ "${actual_sha,,}" != "${REQUESTED_REF,,}" ]]; then
+            echo "Receitas checkout mismatch: requested $REQUESTED_REF, resolved $actual_sha" >&2
+            exit 1
+          fi
+
+          manifest_file="$(mktemp)"
+          find supabase/functions -type f \( \
+            -name '*.test.ts' -o -name '*_test.ts' -o \
+            -name '*.test.tsx' -o -name '*_test.tsx' \
+          \) -print | LC_ALL=C sort > "$manifest_file"
+          edge_test_count="$(wc -l < "$manifest_file" | tr -d '[:space:]')"
+          if [[ ! "$edge_test_count" =~ ^[1-9][0-9]*$ ]]; then
+            echo 'No Edge Function Deno test modules were discovered in the checked-out source.' >&2
+            exit 1
+          fi
+          edge_manifest_sha="$(sha256sum "$manifest_file" | cut -d' ' -f1)"
+          rm -f "$manifest_file"
+
+          echo "revision=$actual_sha" >> "$GITHUB_OUTPUT"
+          echo "edge_test_count=$edge_test_count" >> "$GITHUB_OUTPUT"
+          echo "edge_manifest_sha=$edge_manifest_sha" >> "$GITHUB_OUTPUT"
+          echo "Receitas revision: ${actual_sha:0:12}"
+          echo "Edge test modules discovered: $edge_test_count"
+          echo "Edge test manifest sha256: $edge_manifest_sha"
+
       - name: Set up pinned Node.js without persistent dependency cache
         uses: actions/setup-node@v6
         with:
@@ -297,11 +331,17 @@ jobs:
         env:
           RESULT: ${{ job.status }}
           LOCKFILE_STATE: ${{ steps.install.outputs.lockfile }}
+          RECEITAS_REVISION: ${{ steps.source_attestation.outputs.revision }}
+          EDGE_TEST_COUNT: ${{ steps.source_attestation.outputs.edge_test_count }}
+          EDGE_MANIFEST_SHA: ${{ steps.source_attestation.outputs.edge_manifest_sha }}
         run: |
           {
             echo '## Receitas public-runner CI'
             echo
             echo "- Result: \`$RESULT\`"
+            echo "- Receitas revision: \`${RECEITAS_REVISION:-unknown}\`"
+            echo "- Edge test modules discovered: \`${EDGE_TEST_COUNT:-unknown}\`"
+            echo "- Edge test manifest SHA-256: \`${EDGE_MANIFEST_SHA:-unknown}\`"
             echo "- Reproducible lockfile at checkout: \`${LOCKFILE_STATE:-unknown}\`"
             echo '- Lint, typecheck, unit tests, Edge Function Deno tests/typecheck, local Supabase migration/pgTAP/contracts, release-script/source audits, static Pages build and credential-free Playwright PWA smoke were attempted as independent steps.'
             echo '- No remote Supabase/PowerSync/authenticated-E2E/deploy credentials were provided to this public runner.'
