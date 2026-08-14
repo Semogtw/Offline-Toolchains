@@ -163,14 +163,13 @@ jobs:
         id: deno_tests
         continue-on-error: true
         working-directory: private-source
-        run: deno test supabase/functions
+        run: pnpm test:edge
 
       - name: Deno Edge Function typecheck
         id: deno_check
         continue-on-error: true
         working-directory: private-source
-        shell: bash
-        run: deno check supabase/functions/*/index.ts
+        run: pnpm check:edge
 
       - name: Local Supabase migrations and SQL contracts
         id: supabase_local
