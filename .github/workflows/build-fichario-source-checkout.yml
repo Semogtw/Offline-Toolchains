@@ -1,0 +1,85 @@
+name: Build Fichario source checkout
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Exact Fichario commit SHA; empty uses the trusted request file
+        required: false
+        default: ""
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build-fichario-source-checkout.yml
+      - triggers/fichario-source-checkout.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fichario-source-checkout
+  cancel-in-progress: true
+
+jobs:
+  checkout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout trusted toolchain request
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: main
+          persist-credentials: false
+          sparse-checkout: triggers/fichario-source-checkout.json
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve immutable source request
+        id: request
+        shell: bash
+        env:
+          INPUT_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || '' }}
+        run: |
+          set -euo pipefail
+          repository="$(jq -r '.repository' triggers/fichario-source-checkout.json)"
+          test "$repository" = "Semogtw/FicharioVirtual"
+          ref="${INPUT_REF:-$(jq -r '.ref' triggers/fichario-source-checkout.json)}"
+          [[ "$ref" =~ ^[0-9a-f]{40}$ ]]
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact Fichario source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: ${{ steps.request.outputs.repository }}
+          ref: ${{ steps.request.outputs.ref }}
+          path: fichario-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify and prepare source snapshot
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          resolved="$(git -C fichario-source rev-parse HEAD)"
+          test "$resolved" = "${{ steps.request.outputs.ref }}"
+          {
+            echo "repository=Semogtw/FicharioVirtual"
+            echo "source_commit=$resolved"
+            echo "toolchain_commit=${{ github.sha }}"
+          } > fichario-source/CHECKOUT-MANIFEST.txt
+          rm -rf fichario-source/.git
+          echo "sha=$resolved" >> "$GITHUB_OUTPUT"
+
+      - name: Upload source checkout
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fichario-source-checkout-${{ steps.source.outputs.sha }}
+          path: fichario-source
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 1
