@@ -150,6 +150,17 @@ jobs:
           compression-level: 0
           retention-days: 1
 
+      - name: Emit ciphertext for connector recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          encrypted="${{ steps.transfer.outputs.transfer_dir }}/pnpm-lock.yaml.gpg"
+          test -s "$encrypted"
+          echo 'RECEITAS_LOCKFILE_CIPHERTEXT_BEGIN'
+          base64 --wrap=0 "$encrypted"
+          echo
+          echo 'RECEITAS_LOCKFILE_CIPHERTEXT_END'
+
       - name: Remove all private and transient data
         if: always()
         shell: bash
@@ -165,7 +176,7 @@ jobs:
           {
             echo '## Receitas encrypted lockfile handoff'
             echo
-            echo '- Only OpenPGP ciphertext is eligible for upload.'
+            echo '- Only OpenPGP ciphertext is eligible for upload or log transfer.'
             echo '- Artifact retention is one day.'
-            echo '- The private checkout and plaintext lockfile are removed before upload.'
+            echo '- The private checkout and plaintext lockfile are removed before transfer.'
           } >> "$GITHUB_STEP_SUMMARY"
