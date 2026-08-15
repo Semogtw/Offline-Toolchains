@@ -1,0 +1,3 @@
+Fichario branch: fix/visual-rrf-calibration
+Validated by Offline-Toolchains run: 31863518399
+Gates: focused Vitest, pnpm verify (1358 tests), build/PWA, all Edge Function deno checks
