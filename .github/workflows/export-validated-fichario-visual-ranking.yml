@@ -1,0 +1,117 @@
+name: Export validated Fichario visual ranking patch
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/export-validated-fichario-visual-ranking.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: export-validated-fichario-visual-ranking
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout trusted toolchains
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: true
+
+      - name: Require repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout Fichario calibration branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/FicharioVirtual
+          ref: fix/visual-rrf-calibration
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: fichario
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.16.0
+          cache: pnpm
+          cache-dependency-path: fichario/pnpm-lock.yaml
+
+      - name: Install frozen dependencies
+        working-directory: fichario
+        run: pnpm install --frozen-lockfile
+
+      - name: Reproduce the already validated patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          workflow = Path('.github/workflows/finalize-fichario-visual-ranking.yml').read_text(encoding='utf-8').splitlines()
+          start = next(i for i, line in enumerate(workflow) if line.strip() == '- name: Apply final ranking and benchmark corrections')
+          run_line = next(i for i in range(start, len(workflow)) if workflow[i].strip() == 'run: |')
+          end = next(i for i in range(run_line + 1, len(workflow)) if workflow[i].strip() == '- name: Format changed files')
+          block = workflow[run_line + 1:end]
+          indent = min(len(line) - len(line.lstrip()) for line in block if line.strip())
+          Path('/tmp/apply-validated-patch.sh').write_text('\n'.join(line[indent:] for line in block) + '\n', encoding='utf-8')
+          PY
+          cd fichario
+          bash /tmp/apply-validated-patch.sh
+          pnpm exec prettier --write \
+            supabase/functions/_shared/semantic-ranking.ts \
+            supabase/functions/semantic-search/index.ts \
+            tests/unit/search/visual-semantic-benchmark.test.ts \
+            tests/unit/tooling/visual-staging-benchmark-contract.test.ts \
+            tools/checks/check-visual-semantic-staging.mjs
+
+      - name: Export exact validated files
+        shell: bash
+        run: |
+          set -euo pipefail
+          export_root='validated/fichario-visual-ranking'
+          rm -rf "$export_root"
+          mkdir -p "$export_root"
+          while IFS= read -r path; do
+            mkdir -p "$export_root/$(dirname "$path")"
+            cp "fichario/$path" "$export_root/$path"
+          done <<'EOF'
+          supabase/functions/_shared/semantic-ranking.ts
+          supabase/functions/semantic-search/index.ts
+          tests/unit/search/visual-semantic-benchmark.test.ts
+          tests/unit/tooling/visual-staging-benchmark-contract.test.ts
+          tools/checks/check-visual-semantic-staging.mjs
+          EOF
+          cat > "$export_root/deletions.txt" <<'EOF'
+          .github/workflows/check-visual-rrf-calibration.yml
+          .github/workflows/cleanup-visual15-residue-now.yml
+          .github/workflows/diagnose-visual15-shadow-now.yml
+          .github/workflows/run-visual-staging-now.yml
+          EOF
+          cat > "$export_root/source.txt" <<'EOF'
+          Fichario branch: fix/visual-rrf-calibration
+          Validated by Offline-Toolchains run: 31863518399
+          Gates: focused Vitest, pnpm verify (1358 tests), build/PWA, all Edge Function deno checks
+          EOF
+
+      - name: Commit exported patch to toolchains
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'Arthur Almeida'
+          git config user.email 'arthurgva1602@gmail.com'
+          git add validated/fichario-visual-ranking
+          git commit -m 'ci: preserve validated Fichario visual patch'
+          git push origin HEAD:main
