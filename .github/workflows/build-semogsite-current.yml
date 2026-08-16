@@ -1,0 +1,379 @@
+name: Build current SemogSite offline toolchain
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-semogsite-current.yml
+      - triggers/semogsite-current-toolchain.json
+      - fixtures/semogsite/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: semogsite-current-toolchain-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22.23.1"
+  PNPM_VERSION: "10.14.0"
+
+jobs:
+  build:
+    name: Exact SemogSite lock, Node 22, pnpm store, Chromium and native SQLite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout trusted toolchain definitions
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Resolve exact SemogSite ref
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE' >> "$GITHUB_OUTPUT"
+          const fs = require('node:fs');
+          const request = JSON.parse(fs.readFileSync('triggers/semogsite-current-toolchain.json', 'utf8'));
+          if (
+            request?.project !== 'semogsite' ||
+            request?.mode !== 'ref' ||
+            typeof request?.ref !== 'string' ||
+            !/^[0-9a-f]{40}$/u.test(request.ref)
+          ) {
+            throw new Error('SemogSite current toolchain requires an exact 40-character commit SHA.');
+          }
+          process.stdout.write(`ref=${request.ref}\n`);
+          NODE
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPOSITORIES_TOKEN" || {
+            echo "Missing Actions secret PRIVATE_REPOSITORIES_TOKEN." >&2
+            exit 1
+          }
+
+      - name: Checkout exact private SemogSite dependency graph
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/SemogSite
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          ref: ${{ steps.target.outputs.ref }}
+          path: private-semogsite
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+
+      - name: Set up pinned Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          check-latest: false
+
+      - name: Install archive tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends zstd
+
+      - name: Build exact-lock portable dependency bundle
+        id: bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          source_dir="$GITHUB_WORKSPACE/private-semogsite"
+          fixture="$RUNNER_TEMP/semogsite-fixture"
+          bundle_root="$RUNNER_TEMP/semogsite-toolchain"
+          archive="$RUNNER_TEMP/semogsite-current-toolchain-linux-x64.tar.zst"
+          parts_dir="$RUNNER_TEMP/semogsite-current-toolchain-linux-x64-parts"
+          smoke_dir="$RUNNER_TEMP/semogsite-current-offline-smoke"
+          node_root="$(cd "$(dirname "$(dirname "$(readlink -f "$(command -v node)")")")" && pwd)"
+
+          resolved_commit="$(git -C "$source_dir" rev-parse --verify HEAD^{commit})"
+          test "$resolved_commit" = "${{ steps.target.outputs.ref }}"
+          source_lock_sha256="$(sha256sum "$source_dir/pnpm-lock.yaml" | cut -d' ' -f1)"
+          source_package_manager="$(node -p "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).packageManager" "$source_dir/package.json")"
+          test "$source_package_manager" = "pnpm@$PNPM_VERSION"
+
+          rm -rf \
+            "$fixture" \
+            "$bundle_root" \
+            "$archive" \
+            "$archive.sha256" \
+            "$parts_dir" \
+            "$smoke_dir"
+          mkdir -p \
+            "$fixture" \
+            "$bundle_root/node" \
+            "$bundle_root/pnpm" \
+            "$bundle_root/pnpm-store" \
+            "$bundle_root/cache" \
+            "$bundle_root/npm-cache" \
+            "$bundle_root/corepack" \
+            "$bundle_root/playwright-browsers" \
+            "$bundle_root/native-assets" \
+            "$bundle_root/native-libs" \
+            "$bundle_root/reference-workspace" \
+            "$bundle_root/scripts" \
+            "$bundle_root/bin" \
+            "$parts_dir" \
+            "$smoke_dir"
+
+          cp -a fixtures/semogsite/workspace/. "$fixture/"
+          cp -a "$node_root/." "$bundle_root/node/"
+
+          export PATH="$bundle_root/node/bin:$PATH"
+          "$bundle_root/node/bin/npm" install \
+            --global \
+            --prefix "$bundle_root/pnpm" \
+            "pnpm@$PNPM_VERSION"
+          export PATH="$bundle_root/pnpm/bin:$bundle_root/node/bin:$PATH"
+          export PNPM_STORE_DIR="$bundle_root/pnpm-store"
+          export PLAYWRIGHT_BROWSERS_PATH="$bundle_root/playwright-browsers"
+          export XDG_CACHE_HOME="$bundle_root/cache"
+          export npm_config_cache="$bundle_root/npm-cache"
+          export npm_config_audit=false
+          export npm_config_fund=false
+          export npm_config_update_notifier=false
+
+          node --version
+          pnpm --version
+
+          # Keep the public fixture in the store for offline self-tests, then add
+          # the exact private SemogSite graph. Only registry/store content is
+          # packaged; the private checkout itself is removed before archiving.
+          pnpm --dir "$fixture" install \
+            --store-dir "$PNPM_STORE_DIR" \
+            --no-frozen-lockfile
+          pnpm --dir "$source_dir" install \
+            --store-dir "$PNPM_STORE_DIR" \
+            --frozen-lockfile
+
+          pnpm --dir "$source_dir" exec playwright install-deps chromium
+          pnpm --dir "$source_dir" exec playwright install chromium
+
+          cp -a fixtures/semogsite/toolchain/. "$bundle_root/scripts/"
+          chmod +x "$bundle_root/scripts"/*.sh
+          cp -a "$fixture/package.json" "$bundle_root/reference-workspace/package.json"
+          cp -a "$fixture/pnpm-lock.yaml" "$bundle_root/reference-workspace/pnpm-lock.yaml"
+          cp -a "$fixture/smoke.mjs" "$bundle_root/reference-workspace/smoke.mjs"
+
+          better_package="$(
+            find "$source_dir/node_modules/.pnpm" \
+              -type d \
+              -path '*/node_modules/better-sqlite3' \
+              -print -quit
+          )"
+          test -n "$better_package"
+          better_version="$(
+            node -p \
+              "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).version" \
+              "$better_package/package.json"
+          )"
+          node_abi="$(node -p 'process.versions.modules')"
+          better_binary="$better_package/build/Release/better_sqlite3.node"
+          test -f "$better_binary"
+          better_asset_dir="$bundle_root/native-assets/better-sqlite3/$better_version/node-v$node_abi-linux-x64"
+          mkdir -p "$better_asset_dir"
+          install -m 0755 "$better_binary" "$better_asset_dir/better_sqlite3.node"
+          sha256sum "$better_asset_dir/better_sqlite3.node" \
+            > "$better_asset_dir/SHA256SUMS"
+
+          browser_executable="$(
+            find "$PLAYWRIGHT_BROWSERS_PATH" -type f \
+              \( -name chrome -o -name headless_shell -o -name chromium \) \
+              -perm -111 \
+              -print -quit
+          )"
+          test -n "$browser_executable"
+          while read -r library; do
+            test -n "$library" || continue
+            case "$(basename "$library")" in
+              libc.so.*|libm.so.*|libpthread.so.*|libdl.so.*|librt.so.*|ld-linux-*.so.*)
+                continue
+                ;;
+            esac
+            install -m 0755 "$library" "$bundle_root/native-libs/$(basename "$library")"
+          done < <(
+            ldd "$browser_executable" | awk '
+              /=> \// { print $3 }
+              /^\// { print $1 }
+            ' | sort -u
+          )
+
+          cat > "$bundle_root/bin/pnpm-offline" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          toolchain_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+          # shellcheck source=../scripts/activate.sh
+          source "$toolchain_root/scripts/activate.sh"
+          exec pnpm --store-dir "$PNPM_STORE_DIR" --offline "$@"
+          EOF
+          chmod +x "$bundle_root/bin/pnpm-offline"
+
+          fixture_lock_sha256="$(sha256sum "$fixture/pnpm-lock.yaml" | cut -d' ' -f1)"
+          fixture_package_sha256="$(sha256sum "$fixture/package.json" | cut -d' ' -f1)"
+
+          {
+            echo "schema_version=2"
+            echo "repository=$GITHUB_REPOSITORY"
+            echo "workflow_commit=$GITHUB_SHA"
+            echo "semogsite_repository=Semogtw/SemogSite"
+            echo "semogsite_commit=$resolved_commit"
+            echo "semogsite_lock_sha256=$source_lock_sha256"
+            echo "semogsite_package_manager=$source_package_manager"
+            echo "private_source_included=false"
+            echo "runner=$RUNNER_OS-$RUNNER_ARCH"
+            echo "created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "node_version=$(node --version)"
+            echo "node_modules_abi=$node_abi"
+            echo "pnpm_version=$(pnpm --version)"
+            echo "fixture_package_sha256=$fixture_package_sha256"
+            echo "fixture_lock_sha256=$fixture_lock_sha256"
+            echo "better_sqlite3_version=$better_version"
+            echo "playwright_browsers_path=playwright-browsers"
+            echo "pnpm_store_path=pnpm-store"
+            echo "offline_install=scripts/install-offline.sh"
+            echo "doctor=scripts/doctor.sh"
+          } > "$bundle_root/MANIFEST.txt"
+
+          pnpm --dir "$fixture" list --depth 0 --json \
+            > "$bundle_root/SOFTWARE-BOM.json"
+
+          # Remove the private checkout before any artifact/archive step. The
+          # bundle contains only public dependency/cache/runtime material.
+          rm -rf "$source_dir"
+          test ! -e "$source_dir"
+
+          cp -a "$bundle_root/reference-workspace/." "$smoke_dir/"
+          export npm_config_registry="http://127.0.0.1:9"
+          source "$bundle_root/scripts/activate.sh"
+          "$bundle_root/scripts/install-offline.sh" "$smoke_dir"
+          pnpm --dir "$smoke_dir" run smoke
+          pnpm --dir "$smoke_dir" exec vite --version
+          pnpm --dir "$smoke_dir" exec vitest --version
+          pnpm --dir "$smoke_dir" exec wrangler --version
+          pnpm --dir "$smoke_dir" exec node --input-type=module <<'NODE'
+          import { chromium } from '@playwright/test';
+          const browser = await chromium.launch({ headless: true });
+          const page = await browser.newPage();
+          await page.setContent('<main>SemogSite current offline Chromium</main>');
+          const text = await page.locator('main').textContent();
+          if (text !== 'SemogSite current offline Chromium') {
+            throw new Error(`unexpected Chromium smoke text: ${text}`);
+          }
+          await browser.close();
+          console.log('Playwright Chromium current offline smoke: PASS');
+          NODE
+          "$bundle_root/scripts/doctor.sh" "$smoke_dir"
+
+          tar -C "$RUNNER_TEMP" -I 'zstd -T0 -8' \
+            -cf "$archive" semogsite-toolchain
+          sha256sum "$archive" > "$archive.sha256"
+          split -b 300M -d -a 2 \
+            "$archive" \
+            "$parts_dir/semogsite-current-toolchain-linux-x64.part-"
+          (
+            cd "$parts_dir"
+            sha256sum semogsite-current-toolchain-linux-x64.part-* \
+              > SHA256SUMS.parts
+          )
+
+          part_count="$(
+            find "$parts_dir" -maxdepth 1 -type f \
+              -name 'semogsite-current-toolchain-linux-x64.part-*' | wc -l
+          )"
+          test "$part_count" -ge 1
+          test "$part_count" -le 4
+
+          {
+            echo "archive=$(basename "$archive")"
+            echo "archive_sha256=$(cut -d' ' -f1 "$archive.sha256")"
+            echo "part_count=$part_count"
+            echo "part_size=300M"
+            echo "semogsite_commit=$resolved_commit"
+            echo "semogsite_lock_sha256=$source_lock_sha256"
+            echo "reassemble=cat semogsite-current-toolchain-linux-x64.part-* > $(basename "$archive")"
+            echo "verify_parts=sha256sum -c SHA256SUMS.parts"
+            echo "extract=tar --zstd -xf $(basename "$archive")"
+            echo
+            ls -lh "$parts_dir"/semogsite-current-toolchain-linux-x64.part-*
+          } > "$parts_dir/PARTS.txt"
+
+          echo "parts_dir=$parts_dir" >> "$GITHUB_OUTPUT"
+          echo "archive_sha=$archive.sha256" >> "$GITHUB_OUTPUT"
+          echo "bundle_root=$bundle_root" >> "$GITHUB_OUTPUT"
+          for index in 00 01 02 03; do
+            if [[ -f "$parts_dir/semogsite-current-toolchain-linux-x64.part-$index" ]]; then
+              echo "part_$index=true" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
+          ls -lh "$archive" "$archive.sha256" "$parts_dir"/*
+
+      - name: Upload current SemogSite toolchain manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: semogsite-current-toolchain-linux-x64-manifest
+          path: |
+            ${{ steps.bundle.outputs.parts_dir }}/PARTS.txt
+            ${{ steps.bundle.outputs.parts_dir }}/SHA256SUMS.parts
+            ${{ steps.bundle.outputs.archive_sha }}
+            ${{ steps.bundle.outputs.bundle_root }}/MANIFEST.txt
+            ${{ steps.bundle.outputs.bundle_root }}/SOFTWARE-BOM.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload current SemogSite toolchain part 00
+        if: steps.bundle.outputs.part_00 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: semogsite-current-toolchain-linux-x64-part-00
+          path: ${{ steps.bundle.outputs.parts_dir }}/semogsite-current-toolchain-linux-x64.part-00
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload current SemogSite toolchain part 01
+        if: steps.bundle.outputs.part_01 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: semogsite-current-toolchain-linux-x64-part-01
+          path: ${{ steps.bundle.outputs.parts_dir }}/semogsite-current-toolchain-linux-x64.part-01
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload current SemogSite toolchain part 02
+        if: steps.bundle.outputs.part_02 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: semogsite-current-toolchain-linux-x64-part-02
+          path: ${{ steps.bundle.outputs.parts_dir }}/semogsite-current-toolchain-linux-x64.part-02
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload current SemogSite toolchain part 03
+        if: steps.bundle.outputs.part_03 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: semogsite-current-toolchain-linux-x64-part-03
+          path: ${{ steps.bundle.outputs.parts_dir }}/semogsite-current-toolchain-linux-x64.part-03
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
