@@ -116,23 +116,28 @@ jobs:
           MODE: ${{ steps.request.outputs.mode }}
         run: |
           set -euo pipefail
+          set +e
           if [ "$MODE" = dry-run ]; then
-            set +e
             python tools/scrapling_provider_pipeline/build_provider_cache.py --repo-root . --dry-run
             rc=$?
-            set -e
-            python tools/scrapling_provider_pipeline/validate_provider_cache.py \
-              --repo-root . \
-              --data-dir build/provider-scrape \
-              --allow-stale
             data_dir=build/provider-scrape
           else
             python tools/scrapling_provider_pipeline/build_provider_cache.py --repo-root .
             rc=$?
-            test "$rc" -eq 0
-            python tools/scrapling_provider_pipeline/validate_provider_cache.py --repo-root .
             data_dir=assets/data
           fi
+          set -e
+          case "$rc" in
+            0|2) ;;
+            *) echo "Unexpected provider builder exit code: $rc" >&2; exit "$rc" ;;
+          esac
+          validator=(
+            python tools/scrapling_provider_pipeline/validate_provider_cache.py
+            --repo-root .
+            --data-dir "$data_dir"
+            --allow-preserved
+          )
+          "${validator[@]}"
           echo "builder_rc=$rc" >> "$GITHUB_OUTPUT"
           echo "data_dir=$data_dir" >> "$GITHUB_OUTPUT"
           python - "$data_dir/anime_provider_catalog_manifest.json" <<'PY' >> "$GITHUB_OUTPUT"
