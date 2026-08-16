@@ -1,0 +1,135 @@
+name: Apply SemogSite D1 write guard refactor
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - triggers/semogsite-d1-write-guard-refactor.json
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout toolchain control repo
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout exact SemogSite main
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/SemogSite
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          ref: main
+          path: private-semogsite
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Apply deterministic shared D1 guard codemod
+        shell: bash
+        env:
+          EXPECTED_PARENT: a50c28064fb726f3007ccddcfe106f91ed154622
+          EXPECTED_COMMIT: 705c6752a9ab7e57b969271f2096c6070851e43c
+          COMMIT_DATE: 2026-08-16T22:54:05Z
+        run: |
+          set -euo pipefail
+          cd private-semogsite
+          test "$(git rev-parse HEAD)" = "$EXPECTED_PARENT"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path('packages/database/src/repositories')
+          files = {
+              'd1-attention-lifecycle-repository.ts': 'attention lifecycle',
+              'd1-branch-recommendation-acceptance-repository.ts': 'branch recommendation acceptance',
+              'd1-cooperative-run-registration-repository.ts': 'cooperative run registration',
+              'd1-cooperative-run-transition-repository.ts': 'cooperative run transition',
+              'd1-editorial-redirect-repository.ts': 'editorial redirect',
+              'd1-repository-target-lifecycle-repository.ts': 'repository target lifecycle',
+              'd1-repository-target-registration-repository.ts': 'repository target registration',
+              'd1-scope-reservation-repository.ts': 'scope reservation',
+          }
+          for name, label in files.items():
+              path = root / name
+              text = path.read_text()
+              marker = '} from "../adapters/d1";\n'
+              if marker not in text:
+                  raise SystemExit(f'missing adapter import: {name}')
+              text = text.replace(
+                  marker,
+                  marker + 'import {\n  assertD1BatchSucceeded,\n  readD1SingleRowChange,\n} from "./d1-write-result";\n',
+                  1,
+              )
+              pattern = r'\nfunction assertBatchSucceeded\(results: readonly D1QueryResult\[\]\): void \{.*?\n\}\n\nfunction readChangeCount\(result: D1QueryResult \| undefined(?:, operation: string)?\): number \{.*?\n  return changes;\n\}\n'
+              text, count = re.subn(pattern, '\n', text, count=1, flags=re.S)
+              if count != 1:
+                  raise SystemExit(f'helper removal failed: {name}')
+              text = text.replace(
+                  'assertBatchSucceeded(results);',
+                  f'assertD1BatchSucceeded(results, "{label}");',
+              )
+              text = text.replace(
+                  'readChangeCount(results[0])',
+                  f'readD1SingleRowChange(results[0], "{label}")',
+              )
+              text = text.replace(
+                  'readChangeCount(results[0], "acquire")',
+                  'readD1SingleRowChange(results[0], "scope reservation acquire")',
+              )
+              text = text.replace(
+                  'readChangeCount(results[0], "update")',
+                  'readD1SingleRowChange(results[0], "scope reservation update")',
+              )
+              text = text.replace(
+                  'readChangeCount(results[1], "event insert")',
+                  'readD1SingleRowChange(results[1], "scope reservation event insert")',
+              )
+              text = text.replace(
+                  'readChangeCount(results[2], "audit insert")',
+                  'readD1SingleRowChange(results[2], "scope reservation audit insert")',
+              )
+              text = text.replace(
+                  'readChangeCount(results[1])',
+                  'readD1SingleRowChange(results[1], "editorial redirect audit insert")',
+              )
+              text = re.sub(
+                  r'\n\s*if \(changed > 1\) \{\n\s*throw new Error\([^\n]+\);\n\s*\}',
+                  '',
+                  text,
+              )
+              text = re.sub(
+                  r'\n\s*if \(changed > 1\) throw new Error\([^\n]+\);',
+                  '',
+                  text,
+              )
+              path.write_text(text)
+          PY
+
+          git diff --check
+          test "$(git diff --name-only | wc -l)" -eq 8
+          git add packages/database/src/repositories/d1-*.ts
+          tree="$(git write-tree)"
+          export GIT_AUTHOR_NAME='Arthur Almeida'
+          export GIT_AUTHOR_EMAIL='arthurgva1602@gmail.com'
+          export GIT_AUTHOR_DATE="$COMMIT_DATE"
+          export GIT_COMMITTER_NAME='Arthur Almeida'
+          export GIT_COMMITTER_EMAIL='arthurgva1602@gmail.com'
+          export GIT_COMMITTER_DATE="$COMMIT_DATE"
+          commit="$(printf '%s\n' 'refactor(database): centralize D1 write result guards' | git commit-tree "$tree" -p "$EXPECTED_PARENT")"
+          test "$commit" = "$EXPECTED_COMMIT"
+          git push origin "$commit:refs/heads/main"
