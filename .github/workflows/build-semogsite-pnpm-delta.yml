@@ -1,0 +1,141 @@
+name: Build SemogSite pnpm delta
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-semogsite-pnpm-delta.yml
+      - triggers/semogsite-pnpm-delta.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: semogsite-pnpm-delta-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22.23.1"
+  PNPM_VERSION: "10.14.0"
+
+jobs:
+  build:
+    name: Exact SemogSite pnpm store delta
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout trusted toolchain definitions
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Resolve exact SemogSite ref
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE' >> "$GITHUB_OUTPUT"
+          const fs = require('node:fs');
+          const request = JSON.parse(fs.readFileSync('triggers/semogsite-pnpm-delta.json', 'utf8'));
+          if (
+            request?.project !== 'semogsite' ||
+            request?.mode !== 'ref' ||
+            typeof request?.ref !== 'string' ||
+            !/^[0-9a-f]{40}$/u.test(request.ref)
+          ) throw new Error('SemogSite pnpm delta requires an exact commit SHA.');
+          process.stdout.write(`ref=${request.ref}\n`);
+          NODE
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout exact private SemogSite lock
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/SemogSite
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          ref: ${{ steps.target.outputs.ref }}
+          path: private-semogsite
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+
+      - name: Set up pinned Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          check-latest: false
+
+      - name: Build dependency-only delta
+        id: delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_dir="$GITHUB_WORKSPACE/private-semogsite"
+          root="$RUNNER_TEMP/semogsite-pnpm-delta"
+          store="$root/pnpm-store"
+          pnpm_root="$root/pnpm"
+          transfer="$RUNNER_TEMP/semogsite-pnpm-delta-transfer"
+          archive="$transfer/semogsite-pnpm-delta-linux-x64.tar.zst"
+
+          rm -rf "$root" "$transfer"
+          mkdir -p "$store" "$pnpm_root" "$transfer"
+
+          resolved_commit="$(git -C "$source_dir" rev-parse --verify HEAD^{commit})"
+          test "$resolved_commit" = "${{ steps.target.outputs.ref }}"
+          lock_sha256="$(sha256sum "$source_dir/pnpm-lock.yaml" | cut -d' ' -f1)"
+          package_manager="$(node -p "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).packageManager" "$source_dir/package.json")"
+          test "$package_manager" = "pnpm@$PNPM_VERSION"
+
+          npm install --global --prefix "$pnpm_root" "pnpm@$PNPM_VERSION"
+          export PATH="$pnpm_root/bin:$PATH"
+          pnpm --version
+
+          # `fetch` populates the content-addressed store from the exact lock
+          # without running lifecycle scripts or requiring node_modules.
+          pnpm --dir "$source_dir" fetch \
+            --store-dir "$store" \
+            --frozen-lockfile
+
+          {
+            echo "schema_version=1"
+            echo "semogsite_repository=Semogtw/SemogSite"
+            echo "semogsite_commit=$resolved_commit"
+            echo "semogsite_lock_sha256=$lock_sha256"
+            echo "package_manager=$package_manager"
+            echo "node_version=$(node --version)"
+            echo "private_source_included=false"
+            echo "overlay_target=semogsite-toolchain"
+          } > "$root/MANIFEST.txt"
+
+          # Fail closed before packaging: no source checkout or repo metadata is
+          # copied into the delta. Only the registry store and pnpm runtime live
+          # under $root.
+          rm -rf "$source_dir"
+          test ! -e "$source_dir"
+          test ! -e "$root/.git"
+
+          tar -C "$RUNNER_TEMP" -I 'zstd -T0 -8' \
+            -cf "$archive" semogsite-pnpm-delta
+          sha256sum "$archive" > "$transfer/SHA256SUMS"
+
+          echo "transfer=$transfer" >> "$GITHUB_OUTPUT"
+          ls -lh "$archive" "$transfer/SHA256SUMS"
+
+      - name: Upload SemogSite pnpm delta
+        uses: actions/upload-artifact@v7
+        with:
+          name: semogsite-pnpm-delta-linux-x64
+          path: ${{ steps.delta.outputs.transfer }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
