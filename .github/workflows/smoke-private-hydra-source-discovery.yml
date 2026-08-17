@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: hydra-source-smoke-${{ github.ref }}
@@ -52,6 +52,7 @@ jobs:
           [[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]]
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
           echo "expected_sha=$expected_sha" >> "$GITHUB_OUTPUT"
+          echo "request_path=$request" >> "$GITHUB_OUTPUT"
 
       - name: Checkout exact private Hydra revision
         uses: actions/checkout@v6
@@ -100,14 +101,17 @@ jobs:
           cache-dependency-path: private-source/python_rpc/requirements-scrapling.txt
 
       - name: Install JavaScript dependencies without build side effects
+        id: deps
         working-directory: private-source
         run: yarn install --frozen-lockfile --ignore-scripts --non-interactive
 
       - name: Install Electron runtime only
+        id: electron
         working-directory: private-source
         run: node node_modules/electron/install.js
 
       - name: Install pinned Scrapling runtime
+        id: scrapling
         working-directory: private-source
         shell: bash
         env:
@@ -118,6 +122,7 @@ jobs:
           scrapling install --force
 
       - name: Smoke GameBounty through production discovery ladder
+        id: gamebounty
         working-directory: private-source
         shell: bash
         env:
@@ -128,10 +133,12 @@ jobs:
             scripts/run-universal-source-real-smoke.cjs
 
       - name: Smoke Ecológica Verde structured adapter
+        id: ecologica
         working-directory: private-source
         run: node scripts/run-ecologica-verde-adapter-smoke.mjs
 
       - name: Smoke AnkerGames allowlisted adapter
+        id: ankergames
         working-directory: private-source
         shell: bash
         env:
@@ -140,3 +147,48 @@ jobs:
           xvfb-run -a ./node_modules/.bin/electron \
             --no-sandbox --disable-gpu --disable-dev-shm-usage \
             scripts/run-ankergames-real-smoke.cjs
+
+      - name: Publish smoke status
+        if: ${{ always() && steps.request.outputs.expected_sha != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.expected_sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          REQUEST_PATH: ${{ steps.request.outputs.request_path }}
+          DEPS_OUTCOME: ${{ steps.deps.outcome }}
+          ELECTRON_OUTCOME: ${{ steps.electron.outcome }}
+          SCRAPLING_OUTCOME: ${{ steps.scrapling.outcome }}
+          GAMEBOUNTY_OUTCOME: ${{ steps.gamebounty.outcome }}
+          ECOLOGICA_OUTCOME: ${{ steps.ecologica.outcome }}
+          ANKERGAMES_OUTCOME: ${{ steps.ankergames.outcome }}
+        run: |
+          set -euo pipefail
+          status=success
+          for outcome in "$DEPS_OUTCOME" "$ELECTRON_OUTCOME" "$SCRAPLING_OUTCOME" "$GAMEBOUNTY_OUTCOME" "$ECOLOGICA_OUTCOME" "$ANKERGAMES_OUTCOME"; do
+            if [ "$outcome" != "success" ]; then
+              status=failure
+            fi
+          done
+          result="$(jq -n \
+            --arg status "$status" \
+            --arg targetSha "$TARGET_SHA" \
+            --arg targetBranch "$TARGET_BRANCH" \
+            --arg requestPath "$REQUEST_PATH" \
+            --arg runId "$GITHUB_RUN_ID" \
+            --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
+            --arg deps "$DEPS_OUTCOME" \
+            --arg electron "$ELECTRON_OUTCOME" \
+            --arg scrapling "$SCRAPLING_OUTCOME" \
+            --arg gamebounty "$GAMEBOUNTY_OUTCOME" \
+            --arg ecologica "$ECOLOGICA_OUTCOME" \
+            --arg ankergames "$ANKERGAMES_OUTCOME" \
+            '{status:$status,targetSha:$targetSha,targetBranch:$targetBranch,requestPath:$requestPath,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),steps:{deps:$deps,electron:$electron,scrapling:$scrapling,gamebounty:$gamebounty,ecologica:$ecologica,ankergames:$ankergames}}')"
+          path="hydra-smoke-results/${TARGET_SHA}.json"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          current_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=hydra-validation-results" --jq '.sha' 2>/dev/null || true)"
+          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/${path}" -f "message=test(hydra): record smoke ${TARGET_SHA}" -f "content=${encoded}" -f "branch=hydra-validation-results")
+          if [ -n "$current_sha" ]; then
+            args+=(-f "sha=${current_sha}")
+          fi
+          gh api "${args[@]}" >/dev/null
