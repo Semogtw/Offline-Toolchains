@@ -1,0 +1,176 @@
+diff --git a/src/main/services/local-download-sources/generic-json-extractor.ts b/src/main/services/local-download-sources/generic-json-extractor.ts
+index c336fc4..0000000 100644
+--- a/src/main/services/local-download-sources/generic-json-extractor.ts
++++ b/src/main/services/local-download-sources/generic-json-extractor.ts
+@@ -102,7 +102,7 @@ const NAVIGATION_FIELDS = new Set([
+   "nexturl",
+ ]);
+ const DOWNLOAD_CONTEXT =
+-  /^(?:download|downloads|mirror|mirrors|torrent|torrents|magnet|magnets|file|files|installer|installers|setup|setups|archive|archives)$/i;
++  /^(?:download|downloads|mirror|mirrors|attachment|attachments|torrent|torrents|magnet|magnets|file|files|installer|installers|setup|setups|archive|archives)$/i;
+ const DOWNLOAD_RELATION =
+   /\b(?:download|mirror|torrent|magnet|file|installer|setup|archive)\b/i;
+ const DOWNLOAD_EXTENSION =
+diff --git a/src/main/services/local-download-sources/generic-json-extractor.test.ts b/src/main/services/local-download-sources/generic-json-extractor.test.ts
+index f5f1a50..0000000 100644
+--- a/src/main/services/local-download-sources/generic-json-extractor.test.ts
++++ b/src/main/services/local-download-sources/generic-json-extractor.test.ts
+@@ -126,3 +126,39 @@ test("does not absorb child records into a titled parent", () => {
+     ["Game A", "Game B"]
+   );
+ });
++
++test("extracts JSON Feed attachments while keeping next_url as navigation", () => {
++  const result = extractGenericJsonCandidates({
++    pageUrl: "https://catalog.example/feed.json",
++    body: JSON.stringify({
++      version: "https://jsonfeed.org/version/1.1",
++      title: "Games Feed",
++      next_url: "/feed-2.json",
++      items: [
++        {
++          id: "game-1",
++          title: "JSON Feed Game",
++          attachments: [
++            {
++              url: "/files/json-feed-game.zip",
++              mime_type: "application/zip",
++              size_in_bytes: 123456,
++            },
++          ],
++        },
++      ],
++    }),
++  });
++
++  assert.equal(result.candidates.length, 1);
++  assert.equal(result.candidates[0].title, "JSON Feed Game");
++  assert.deepEqual(
++    result.candidates[0].uriCandidates.map((item) => item.uri),
++    ["https://catalog.example/files/json-feed-game.zip"]
++  );
++  assert.ok(
++    result.discoveredUrls.includes("https://catalog.example/feed-2.json")
++  );
++  assert.equal(
++    result.candidates[0].uriCandidates.some((item) => item.uri.endsWith("feed-2.json")),
++    false
++  );
++});
+diff --git a/src/main/services/local-download-sources/feed-link-discovery.ts b/src/main/services/local-download-sources/feed-link-discovery.ts
+index dcc3bf5..0000000 100644
+--- a/src/main/services/local-download-sources/feed-link-discovery.ts
++++ b/src/main/services/local-download-sources/feed-link-discovery.ts
+@@ -1,6 +1,6 @@
+ import { JSDOM } from "jsdom";
+ 
+-const FEED_CONTENT_TYPE = /(?:rss|atom|xml|csv)/i;
++const FEED_CONTENT_TYPE = /(?:rss|atom|xml|csv|feed\+json)/i;
+ const FEED_EXTENSION = /\.(?:rss|atom|xml|csv)(?:$|[?#])/i;
+ const MAX_FEED_LINKS = 64;
+ 
+diff --git a/src/main/services/local-download-sources/feed-link-discovery.test.ts b/src/main/services/local-download-sources/feed-link-discovery.test.ts
+index 9c58a53..0000000 100644
+--- a/src/main/services/local-download-sources/feed-link-discovery.test.ts
++++ b/src/main/services/local-download-sources/feed-link-discovery.test.ts
+@@ -7,6 +7,7 @@ test("discovers typed RSS, Atom and CSV alternate feeds", () => {
+       <link rel="alternate" type="application/rss+xml" href="/feed.xml">
+       <link rel="alternate" type="application/atom+xml" href="/atom">
+       <link rel="feed" type="text/csv" href="/catalog.csv">
++      <link rel="alternate" type="application/feed+json" href="/feed.json">
+     </head>`,
+     "https://games.example.test/catalog"
+   );
+@@ -15,6 +16,7 @@ test("discovers typed RSS, Atom and CSV alternate feeds", () => {
+     "https://games.example.test/feed.xml",
+     "https://games.example.test/atom",
+     "https://games.example.test/catalog.csv",
++    "https://games.example.test/feed.json",
+   ]);
+ });
+ 
+diff --git a/src/main/services/local-download-sources/http-crawler.ts b/src/main/services/local-download-sources/http-crawler.ts
+index 1b69851..0000000 100644
+--- a/src/main/services/local-download-sources/http-crawler.ts
++++ b/src/main/services/local-download-sources/http-crawler.ts
+@@ -26,6 +26,7 @@ const PAGE_CONTENT_TYPES = [
+   "text/html",
+   "application/xhtml+xml",
+   "application/json",
++  "application/feed+json",
+   "text/plain",
+   "text/csv",
+   "application/csv",
+diff --git a/src/main/services/local-download-sources/http-crawler.test.ts b/src/main/services/local-download-sources/http-crawler.test.ts
+index f8b497a..0000000 100644
+--- a/src/main/services/local-download-sources/http-crawler.test.ts
++++ b/src/main/services/local-download-sources/http-crawler.test.ts
+@@ -255,3 +255,64 @@ test("crawler resolves every AnkerGames ID from one page in one batch", async (
+     2
+   );
+ });
++
++test("crawler accepts JSON Feed transport, attachments and next_url pagination", async () => {
++  const origin = "https://example.com";
++  const source = {
++    ...(await makeSource(origin)),
++    startUrl: `${origin}/feed.json`,
++  };
++  const fetchImpl: typeof fetch = async (input) => {
++    const url = String(input);
++    if (url.endsWith("/robots.txt")) {
++      return new Response("User-agent: *\n", {
++        status: 200,
++        headers: { "content-type": "text/plain" },
++      });
++    }
++    if (url.endsWith("/feed.json")) {
++      return new Response(
++        JSON.stringify({
++          version: "https://jsonfeed.org/version/1.1",
++          title: "Games Feed",
++          next_url: `${origin}/feed-2.json`,
++          items: [
++            {
++              id: "game-1",
++              title: "HTTP JSON Feed Game",
++              attachments: [
++                {
++                  url: `${origin}/files/http-json-feed-game.zip`,
++                  mime_type: "application/zip",
++                },
++              ],
++            },
++          ],
++        }),
++        { status: 200, headers: { "content-type": "application/feed+json" } }
++      );
++    }
++    if (url.endsWith("/feed-2.json")) {
++      return new Response(
++        JSON.stringify({
++          version: "https://jsonfeed.org/version/1.1",
++          title: "Games Feed 2",
++          items: [],
++        }),
++        { status: 200, headers: { "content-type": "application/feed+json" } }
++      );
++    }
++    return new Response("not found", {
++      status: 404,
++      headers: { "content-type": "text/plain" },
++    });
++  };
++
++  const result = await crawlHttpSource({ source, fetchImpl });
++
++  assert.equal(result.errors.length, 0);
++  assert.ok(result.visitedUrls.includes(`${origin}/feed-2.json`));
++  const candidate = result.candidates.find(
++    (item) => item.title === "HTTP JSON Feed Game"
++  );
++  assert.ok(candidate);
++  assert.deepEqual(candidate.uriCandidates.map((item) => item.uri), [
++    `${origin}/files/http-json-feed-game.zip`,
++  ]);
++});
