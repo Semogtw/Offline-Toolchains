@@ -21,7 +21,6 @@ jobs:
     timeout-minutes: 30
     env:
       TARGET_REF: feat/universal-source-discovery
-      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/hydra-scrapling-browser
     steps:
       - name: Require private repository token
         shell: bash
@@ -61,6 +60,10 @@ jobs:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: private-source/python_rpc/requirements-scrapling.txt
+
+      - name: Configure isolated browser path
+        shell: bash
+        run: echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/hydra-scrapling-browser" >> "$GITHUB_ENV"
 
       - name: Install pinned discovery runtime
         working-directory: private-source
