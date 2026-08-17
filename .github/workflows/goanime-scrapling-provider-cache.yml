@@ -94,6 +94,12 @@ jobs:
           cache: pip
           cache-dependency-path: private-source/tools/scrapling_provider_pipeline/requirements.txt
 
+      - name: Restore browser binaries
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: goanime-scrapling-browsers-v1-${{ runner.os }}-${{ hashFiles('private-source/tools/scrapling_provider_pipeline/requirements.txt') }}
+
       - name: Restore adaptive selector state
         uses: actions/cache@v5
         with:
@@ -121,11 +127,16 @@ jobs:
           python -m patchright install chromium
           python - <<'PY'
           import importlib.metadata
-          expected = '0.4.14'
-          actual = importlib.metadata.version('scrapling')
-          if actual != expected:
-              raise SystemExit(f'expected Scrapling {expected}, got {actual}')
-          print(f'Scrapling {actual} ready')
+          expected = {
+              'scrapling': '0.4.14',
+              'playwright': '1.62.0',
+              'patchright': '1.61.2',
+          }
+          for package, wanted in expected.items():
+              actual = importlib.metadata.version(package)
+              if actual != wanted:
+                  raise SystemExit(f'expected {package} {wanted}, got {actual}')
+              print(f'{package} {actual} ready')
           PY
 
       - name: Run external pipeline unit tests
