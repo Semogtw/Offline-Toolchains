@@ -1,0 +1,16 @@
+{
+  "status": "success",
+  "targetSha": "97c39eccf44bfbed28c86e19969aecd36fe1a990",
+  "targetBranch": "feat/universal-source-discovery",
+  "requestPath": "triggers/hydra-validation/2026-08-17-2024-97c39ecc.request",
+  "runId": 32080016735,
+  "runAttempt": 1,
+  "steps": {
+    "deps": "success",
+    "electron": "success",
+    "compilePython": "success",
+    "pythonTests": "success",
+    "localTests": "success",
+    "typecheck": "success"
+  }
+}
