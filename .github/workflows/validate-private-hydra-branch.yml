@@ -1,0 +1,116 @@
+name: Validate private Hydra branch
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/hydra-validation/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-private-hydra-branch
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact validation request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/hydra-validation/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch expected_sha < "toolchain-control/$request"
+          test "$project" = "hydra"
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ ]]
+          [[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "expected_sha=$expected_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private Hydra revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/HydraPersonalizado
+          ref: ${{ steps.request.outputs.expected_sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify requested branch still points to revision
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_sha="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/HydraPersonalizado.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_sha" = "$EXPECTED_SHA"
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Activate Yarn 1
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare yarn@1.22.22 --activate
+          yarn --version
+
+      - name: Install JavaScript dependencies without build side effects
+        working-directory: private-source
+        shell: bash
+        run: yarn install --frozen-lockfile --ignore-scripts --non-interactive
+
+      - name: Compile Python helpers
+        working-directory: private-source
+        shell: bash
+        run: python3 -m compileall -q python_rpc
+
+      - name: Run Python source-discovery unit tests
+        working-directory: private-source
+        shell: bash
+        run: |
+          python3 -m unittest -v \
+            python_rpc/test_source_discovery.py \
+            python_rpc/test_source_discovery_batch.py
+
+      - name: Run local-source tests
+        working-directory: private-source
+        shell: bash
+        run: node --import ./scripts/register-ts-node.mjs --test "src/main/services/local-download-sources/*.test.ts"
+
+      - name: Typecheck Node process
+        working-directory: private-source
+        shell: bash
+        run: yarn typecheck:node
