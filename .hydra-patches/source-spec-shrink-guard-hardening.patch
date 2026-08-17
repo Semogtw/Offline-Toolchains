@@ -1,0 +1,51 @@
+diff --git a/src/main/services/local-download-sources/source-repository.ts b/src/main/services/local-download-sources/source-repository.ts
+--- a/src/main/services/local-download-sources/source-repository.ts
++++ b/src/main/services/local-download-sources/source-repository.ts
+@@ -18,6 +18,7 @@ import {
+   uriDecisionKey,
+ } from "./local-download-source-keys";
+ import { canonicalizePageUrl, getRegistrableDomain } from "./url-scope";
++import { classifySourceSpecDrift } from "./source-spec-drift";
+ 
+ const SOURCE_SPEC_HISTORY_LIMIT = 5;
+@@ -357,10 +358,12 @@ export function createLocalSourceRepository(
+       throw new Error(
+         "A zero results update cannot replace the active catalogue"
+       );
+-    const sourceSpecDrift = Boolean(
+-      source.sourceSpec &&
+-        source.sourceSpec.fingerprint !== sourceSpec?.fingerprint
++    const sourceSpecDrift = classifySourceSpecDrift(
++      source.sourceSpec ?? null,
++      sourceSpec
+     );
++    const hasStructuralDrift =
++      sourceSpecDrift === "changed" || sourceSpecDrift === "removed";
+     if (
+       source.activeRunId &&
+       source.stats.entries >= 20 &&
+-      sourceSpecDrift &&
++      hasStructuralDrift &&
+       report.entries * 4 < source.stats.entries
+     ) {
+       throw new Error(
+-        "SourceSpec drift caused a catastrophic catalogue shrink; active catalogue preserved"
++        "A estrutura da fonte mudou e o novo catálogo ficou pequeno demais; o catálogo anterior foi preservado"
+       );
+     }
+diff --git a/src/main/services/local-download-sources/source-repository.test.ts b/src/main/services/local-download-sources/source-repository.test.ts
+--- a/src/main/services/local-download-sources/source-repository.test.ts
++++ b/src/main/services/local-download-sources/source-repository.test.ts
+@@ -350,9 +350,13 @@ test("blocks catastrophic catalogue shrink when a learned SourceSpec drifts", async () => {
+ 
+   await assert.rejects(
+     () => activateWithCount(repository, "run-shrink", 24, changedSpec),
+-    /catastrophic catalogue shrink/
++    /catálogo anterior foi preservado/
++  );
++  await assert.rejects(
++    () => activateWithCount(repository, "run-removed", 24, null),
++    /catálogo anterior foi preservado/
+   );
+ 
+   const source = await repository.getSource("source-a");

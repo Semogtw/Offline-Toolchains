@@ -1,0 +1,1 @@
+hydra feat/universal-source-discovery 97c39eccf44bfbed28c86e19969aecd36fe1a990 .hydra-patches/source-spec-shrink-guard-hardening.patch
