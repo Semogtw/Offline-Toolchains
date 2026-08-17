@@ -1,0 +1,221 @@
+name: Hydra source extractor live smoke
+
+on:
+  push:
+    branches:
+      - build/hydra-source-smoke
+    paths:
+      - .github/workflows/hydra-source-extractor-live-smoke.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hydra-source-extractor-live-smoke
+  cancel-in-progress: true
+
+jobs:
+  extractor-smoke:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      TARGET_REF: 5fffeb203f381c75d23cc6cd65b31ed7c0a21818
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          READ_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$READ_TOKEN"
+
+      - name: Checkout exact Hydra revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/HydraPersonalizado
+          ref: ${{ env.TARGET_REF }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: private-source/python_rpc/requirements-scrapling.txt
+
+      - name: Install pinned discovery runtime
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/hydra-scrapling-browser" >> "$GITHUB_ENV"
+          export PLAYWRIGHT_BROWSERS_PATH="$RUNNER_TEMP/hydra-scrapling-browser"
+          python -m pip install --disable-pip-version-check --requirement python_rpc/requirements-scrapling.txt
+          python -m playwright install --with-deps chromium
+          python -m patchright install chromium
+
+      - name: Capture reference pages into ephemeral runner storage
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=python_rpc python - <<'PY'
+          import contextlib
+          import io
+          import json
+          import os
+          import urllib.parse
+          from pathlib import Path
+          from source_discovery import discover_source
+
+          targets = [
+              'https://ecologica2verde.online/',
+              'https://ankergames.net/',
+              'https://gamebounty.world/pt',
+          ]
+          blocked = [
+              'doubleclick.net', 'googlesyndication.com', 'googleadservices.com',
+              'adservice.google.com', 'popads.net', 'popcash.net',
+              'propellerads.com', 'adsterra.com', 'monetag.com', 'onclicka.com',
+              'exoclick.com', 'trafficstars.com',
+          ]
+          probes = []
+          for target in targets:
+              sink = io.StringIO()
+              with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+                  result = discover_source({
+                      'url': target,
+                      'timeout_ms': 60_000,
+                      'max_html_bytes': 1024 * 1024,
+                      'max_xhr_bytes': 128 * 1024,
+                      'max_xhr_responses': 12,
+                      'allow_stealth': True,
+                      'blocked_domains': blocked,
+                  })
+              probes.append({
+                  'site': urllib.parse.urlsplit(target).hostname,
+                  'finalUrl': result['finalUrl'],
+                  'mode': result['mode'],
+                  'status': result['status'],
+                  'html': result['html'],
+                  'capturedResponses': result['capturedResponses'],
+              })
+          output = Path(os.environ['RUNNER_TEMP']) / 'hydra-source-probes.json'
+          output.write_text(json.dumps(probes), encoding='utf-8')
+          print(json.dumps({'capturedSites': len(probes), 'probeFileBytes': output.stat().st_size}))
+          PY
+
+      - name: Install minimal extractor dependencies outside private checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/extractor-node"
+          cd "$RUNNER_TEMP/extractor-node"
+          npm init -y >/dev/null 2>&1
+          npm install --no-save --no-fund --no-audit --silent jsdom@24.1.3 tsx@4.20.6
+          ln -s "$RUNNER_TEMP/extractor-node/node_modules" "$GITHUB_WORKSPACE/private-source/node_modules"
+
+      - name: Run the real Hydra candidate extractor on live responses
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > .source-extractor-smoke.ts <<'TS'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { extractCandidates } from './src/main/services/local-download-sources/extract-candidates.ts';
+          import { discoverStructuredNavigationUrls } from './src/main/services/local-download-sources/structured-navigation.ts';
+
+          type Captured = { url: string; contentType: string; body: string };
+          type Probe = {
+            site: string;
+            finalUrl: string;
+            mode: string;
+            status: number | null;
+            html: string;
+            capturedResponses: Captured[];
+          };
+
+          const probes = JSON.parse(
+            fs.readFileSync(path.join(process.env.RUNNER_TEMP!, 'hydra-source-probes.json'), 'utf8')
+          ) as Probe[];
+          let failures = 0;
+
+          for (const probe of probes) {
+            const candidates = [] as ReturnType<typeof extractCandidates>['candidates'];
+            const discovered = new Set<string>();
+            const htmlResult = extractCandidates({
+              pageUrl: probe.finalUrl,
+              contentType: 'text/html',
+              body: probe.html,
+              frameOrigin: 'main-frame',
+            });
+            candidates.push(...htmlResult.candidates);
+            htmlResult.discoveredUrls.forEach((url) => discovered.add(url));
+
+            for (const response of probe.capturedResponses) {
+              if (!response.contentType.toLowerCase().includes('json')) continue;
+              try {
+                const result = extractCandidates({
+                  pageUrl: probe.finalUrl,
+                  contentType: response.contentType,
+                  body: response.body,
+                  frameOrigin: 'main-frame',
+                  discoveredFrom: 'observed-json',
+                });
+                candidates.push(...result.candidates);
+                discoverStructuredNavigationUrls(response.body, probe.finalUrl, {
+                  maxNodes: 20_000,
+                  maxUrls: 1_000,
+                }).forEach((url) => discovered.add(url));
+              } catch {}
+            }
+
+            const pageHost = new URL(probe.finalUrl).hostname;
+            const internalPages = [...discovered].filter((url) => {
+              try {
+                return new URL(url).hostname === pageHost;
+              } catch {
+                return false;
+              }
+            });
+            const uriCandidates = candidates.flatMap((candidate) => candidate.uriCandidates);
+            const safeUris = uriCandidates.filter(
+              (candidate) => candidate.mandatoryRejections.length === 0
+            ).length;
+            const rejectedUris = uriCandidates.length - safeUris;
+            const useful = candidates.length > 0 || internalPages.length > 0;
+            if (!useful) failures += 1;
+
+            console.log(JSON.stringify({
+              site: probe.site,
+              ok: useful,
+              mode: probe.mode,
+              status: probe.status,
+              candidates: candidates.length,
+              safeUriSignals: safeUris,
+              rejectedUriSignals: rejectedUris,
+              internalPages: internalPages.length,
+              xhrResponses: probe.capturedResponses.length,
+            }));
+          }
+
+          if (failures) process.exit(1);
+          TS
+          "$RUNNER_TEMP/extractor-node/node_modules/.bin/tsx" .source-extractor-smoke.ts
+          rm -f .source-extractor-smoke.ts
+
+      - name: Remove all probe material and private source
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/hydra-source-probes.json"
+          rm -rf "$RUNNER_TEMP/extractor-node" "$RUNNER_TEMP/hydra-scrapling-browser"
+          rm -rf private-source
