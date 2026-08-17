@@ -110,6 +110,8 @@ jobs:
       - name: Install pinned Scrapling runtime
         working-directory: private-source
         shell: bash
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/private-source/hydra-scrapling-browser
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r python_rpc/requirements-scrapling.txt
@@ -118,6 +120,8 @@ jobs:
       - name: Smoke GameBounty through production discovery ladder
         working-directory: private-source
         shell: bash
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/private-source/hydra-scrapling-browser
         run: |
           xvfb-run -a ./node_modules/.bin/electron \
             --no-sandbox --disable-gpu --disable-dev-shm-usage \
@@ -131,10 +135,8 @@ jobs:
         working-directory: private-source
         shell: bash
         env:
-          ANKER_SMOKE_MAX_PAGES: "6"
-          ANKER_SMOKE_MAX_MINUTES: "6"
-          ANKER_SMOKE_MIN_GENERATED: "1"
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/private-source/hydra-scrapling-browser
         run: |
           xvfb-run -a ./node_modules/.bin/electron \
             --no-sandbox --disable-gpu --disable-dev-shm-usage \
-            scripts/run-ankergames-throughput-smoke.cjs
+            scripts/run-ankergames-real-smoke.cjs
