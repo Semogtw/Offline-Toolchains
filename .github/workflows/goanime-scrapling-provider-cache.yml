@@ -118,6 +118,7 @@ jobs:
           set -euo pipefail
           python -m pip install --disable-pip-version-check --requirement tools/scrapling_provider_pipeline/requirements.txt
           scrapling install
+          python -m patchright install chromium
           python - <<'PY'
           import importlib.metadata
           expected = '0.4.14'
