@@ -1,0 +1,79 @@
+diff --git a/src/main/services/local-download-sources/source-repository.ts b/src/main/services/local-download-sources/source-repository.ts
+--- a/src/main/services/local-download-sources/source-repository.ts
++++ b/src/main/services/local-download-sources/source-repository.ts
+@@ -404,7 +404,8 @@ export function createLocalSourceRepository(
+   async function discardGeneration(
+     sourceId: string,
+     runId: string,
+-    reason: string
++    reason: string,
++    failureMessage?: string
+   ) {
+@@ -429,7 +430,7 @@ export function createLocalSourceRepository(
+           : "partial"
+         : "never-updated",
+-      lastError: reason === "cancelled" ? null : reason,
++      lastError: reason === "cancelled" ? null : (failureMessage ?? reason),
+       updatedAt: timestamp,
+     });
+   }
+diff --git a/src/main/services/local-download-sources/run-local-source-update.ts b/src/main/services/local-download-sources/run-local-source-update.ts
+--- a/src/main/services/local-download-sources/run-local-source-update.ts
++++ b/src/main/services/local-download-sources/run-local-source-update.ts
+@@ -676,10 +676,12 @@ export function createLocalSourceUpdateCoordinator(
+           : error instanceof Error
+             ? error.message
+             : String(error);
++      const outcome = run.timedOut
++        ? "max-duration"
++        : cancelled
++          ? "cancelled"
++          : "failed";
+       await deps.repository.discardGeneration(
+         sourceId,
+         runId,
+-        run.timedOut ? "max-duration" : cancelled ? "cancelled" : "failed"
++        outcome,
++        reason
+       );
+       emit(
+diff --git a/src/main/services/local-download-sources/source-repository.test.ts b/src/main/services/local-download-sources/source-repository.test.ts
+--- a/src/main/services/local-download-sources/source-repository.test.ts
++++ b/src/main/services/local-download-sources/source-repository.test.ts
+@@ -420,3 +420,31 @@ test("does not apply catastrophic shrink protection to small prior catalogues", async () => {
+   assert.equal(updated.activeRunId, "run-small");
+   assert.equal(updated.stats.entries, 1);
+ });
++
++test("preserves the specific failure message without changing the failed status", async () => {
++  const { repository } = createMemoryRepository();
++  await repository.createLocalSource({
++    name: "Example",
++    startUrl: "https://example.com/catalogue",
++  });
++  await repository.writeStagedEntries("source-a", "run-base", [
++    { ...entry, id: "entry-base", runId: "run-base" },
++  ]);
++  await repository.activateGeneration(
++    "source-a",
++    "run-base",
++    { ...report, runId: "run-base" },
++    sourceSpec
++  );
++  await repository.markRunStarted("source-a", "run-failed");
++
++  await repository.discardGeneration(
++    "source-a",
++    "run-failed",
++    "failed",
++    "A estrutura da fonte mudou e o catálogo anterior foi preservado"
++  );
++
++  const source = await repository.getSource("source-a");
++  assert.equal(source?.status, "failed");
++  assert.equal(source?.activeRunId, "run-base");
++  assert.equal(
++    source?.lastError,
++    "A estrutura da fonte mudou e o catálogo anterior foi preservado"
++  );
++});
