@@ -1,6 +1,10 @@
 name: GoAnime Scrapling provider cache
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-scrapling-provider-cache/*.request'
   workflow_dispatch:
     inputs:
       target_branch:
