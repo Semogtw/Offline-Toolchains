@@ -1,0 +1,125 @@
+diff --git a/src/main/services/local-download-sources/source-repository.ts b/src/main/services/local-download-sources/source-repository.ts
+--- a/src/main/services/local-download-sources/source-repository.ts
++++ b/src/main/services/local-download-sources/source-repository.ts
+@@ -357,6 +357,17 @@ export function createLocalSourceRepository(
+       throw new Error(
+         "A zero results update cannot replace the active catalogue"
+       );
++    const sourceSpecDrift = Boolean(
++      source.sourceSpec &&
++        source.sourceSpec.fingerprint !== sourceSpec?.fingerprint
++    );
++    if (
++      source.activeRunId &&
++      source.stats.entries >= 20 &&
++      sourceSpecDrift &&
++      report.entries * 4 < source.stats.entries
++    ) {
++      throw new Error(
++        "SourceSpec drift caused a catastrophic catalogue shrink; active catalogue preserved"
++      );
++    }
+     const timestamp = now();
+     const previousRunId = source.activeRunId;
+     const updated: LocalDownloadSource = {
+diff --git a/src/main/services/local-download-sources/source-repository.test.ts b/src/main/services/local-download-sources/source-repository.test.ts
+--- a/src/main/services/local-download-sources/source-repository.test.ts
++++ b/src/main/services/local-download-sources/source-repository.test.ts
+@@ -302,3 +302,116 @@ test("topology changes invalidate both the active SourceSpec and its history", async () => {
+   assert.equal(updated.sourceSpec, null);
+   assert.deepEqual(updated.sourceSpecHistory, []);
+ });
++
++async function activateWithCount(
++  repository: ReturnType<typeof createMemoryRepository>["repository"],
++  runId: string,
++  entries: number,
++  spec: LocalSourceSpecV1 | null
++) {
++  await repository.writeStagedEntries("source-a", runId, [
++    { ...entry, id: `entry-${runId}`, runId },
++  ]);
++  return repository.activateGeneration(
++    "source-a",
++    runId,
++    { ...report, runId, entries },
++    spec
++  );
++}
++
++test("blocks catastrophic catalogue shrink when a learned SourceSpec drifts", async () => {
++  const { repository } = createMemoryRepository();
++  await repository.createLocalSource({
++    name: "Example",
++    startUrl: "https://example.com/catalogue",
++  });
++  await activateWithCount(repository, "run-base", 100, sourceSpec);
++  const changedSpec = { ...sourceSpec, fingerprint: "spec-b" };
++
++  await assert.rejects(
++    () => activateWithCount(repository, "run-shrink", 24, changedSpec),
++    /catastrophic catalogue shrink/
++  );
++
++  const source = await repository.getSource("source-a");
++  assert.equal(source?.activeRunId, "run-base");
++  assert.equal(source?.sourceSpec?.fingerprint, "spec-a");
++  assert.equal(source?.stats.entries, 100);
++});
++
++test("allows exactly twenty-five percent after SourceSpec drift", async () => {
++  const { repository } = createMemoryRepository();
++  await repository.createLocalSource({
++    name: "Example",
++    startUrl: "https://example.com/catalogue",
++  });
++  await activateWithCount(repository, "run-base", 100, sourceSpec);
++  const changedSpec = { ...sourceSpec, fingerprint: "spec-b" };
++
++  const updated = await activateWithCount(
++    repository,
++    "run-quarter",
++    25,
++    changedSpec
++  );
++  assert.equal(updated.activeRunId, "run-quarter");
++  assert.equal(updated.stats.entries, 25);
++  assert.equal(updated.sourceSpec?.fingerprint, "spec-b");
++});
++
++test("does not block a catalogue shrink when SourceSpec is unchanged", async () => {
++  const { repository } = createMemoryRepository();
++  await repository.createLocalSource({
++    name: "Example",
++    startUrl: "https://example.com/catalogue",
++  });
++  await activateWithCount(repository, "run-base", 100, sourceSpec);
++
++  const updated = await activateWithCount(
++    repository,
++    "run-small",
++    1,
++    sourceSpec
++  );
++  assert.equal(updated.activeRunId, "run-small");
++  assert.equal(updated.stats.entries, 1);
++});
++
++test("does not apply catastrophic shrink protection to small prior catalogues", async () => {
++  const { repository } = createMemoryRepository();
++  await repository.createLocalSource({
++    name: "Example",
++    startUrl: "https://example.com/catalogue",
++  });
++  await activateWithCount(repository, "run-base", 19, sourceSpec);
++  const changedSpec = { ...sourceSpec, fingerprint: "spec-b" };
++
++  const updated = await activateWithCount(
++    repository,
++    "run-small",
++    1,
++    changedSpec
++  );
++  assert.equal(updated.activeRunId, "run-small");
++  assert.equal(updated.stats.entries, 1);
++});
