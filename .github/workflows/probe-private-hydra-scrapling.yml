@@ -1,0 +1,108 @@
+name: Probe private Hydra Scrapling runtime
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "triggers/hydra-scrapling-probe/*.request"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    if: github.repository_owner == 'Semogtw'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+    steps:
+      - name: Checkout trusted control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact probe request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/hydra-scrapling-probe/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch expected_sha < "toolchain-control/$request"
+          test "$project" = "hydra"
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ ]]
+          [[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "expected_sha=$expected_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private Hydra revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/HydraPersonalizado
+          ref: ${{ steps.request.outputs.expected_sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: private-source/python_rpc/requirements-scrapling.txt
+
+      - name: Install exact Scrapling runtime
+        working-directory: private-source
+        shell: bash
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/private-source/hydra-scrapling-browser
+        run: |
+          python -m pip install -r python_rpc/requirements-scrapling.txt
+          scrapling install --force
+
+      - name: Probe GameBounty directly
+        working-directory: private-source
+        shell: bash
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/private-source/hydra-scrapling-browser
+        run: |
+          python - <<'PY'
+          import json
+          import sys
+          sys.path.insert(0, "python_rpc")
+          from source_discovery import SourceDiscoveryError, discover_source
+
+          try:
+              result = discover_source({
+                  "url": "https://gamebounty.world/pt",
+                  "timeout_ms": 90000,
+                  "max_html_bytes": 2 * 1024 * 1024,
+                  "max_xhr_bytes": 256 * 1024,
+                  "max_xhr_responses": 16,
+                  "allow_stealth": True,
+                  "blocked_domains": [
+                      "doubleclick.net", "googlesyndication.com", "googleadservices.com",
+                      "popads.net", "popcash.net", "propellerads.com", "adsterra.com",
+                      "monetag.com", "onclicka.com", "exoclick.com", "trafficstars.com",
+                  ],
+              })
+              print(json.dumps({
+                  "ok": True,
+                  "mode": result.get("mode"),
+                  "status": result.get("status"),
+                  "finalHost": __import__("urllib.parse").parse.urlsplit(result.get("finalUrl", "")).hostname,
+                  "htmlBytes": len(result.get("html", "").encode("utf-8")),
+                  "capturedResponses": len(result.get("capturedResponses", [])),
+                  "truncated": result.get("truncated"),
+              }))
+          except SourceDiscoveryError as error:
+              print(json.dumps({"ok": False, "code": error.code, "message": error.message[:3000]}))
+              raise
+          PY
