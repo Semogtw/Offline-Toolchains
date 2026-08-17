@@ -78,7 +78,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: '22.12.0'
 
       - name: Activate Yarn 1
         shell: bash
@@ -100,10 +100,7 @@ jobs:
       - name: Run Python source-discovery unit tests
         working-directory: private-source
         shell: bash
-        run: |
-          python3 -m unittest -v \
-            python_rpc/test_source_discovery.py \
-            python_rpc/test_source_discovery_batch.py
+        run: python3 -m unittest discover -s python_rpc -p 'test_source_discovery*.py' -v
 
       - name: Run local-source tests
         working-directory: private-source
