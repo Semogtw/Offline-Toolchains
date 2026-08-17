@@ -42,7 +42,8 @@ jobs:
           persist-credentials: false
           show-progress: false
 
-      - name: Require private GoAnime credentials
+      - name: Validate request and credentials
+        id: credentials
         shell: bash
         env:
           READ_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
@@ -50,11 +51,16 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$READ_TOKEN"
-          test -n "$WRITE_TOKEN"
           [[ "$TARGET_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]]
           [[ "$SCRAPLING_WORKERS" =~ ^[0-9]+$ ]]
           test "$SCRAPLING_WORKERS" -ge 1
           test "$SCRAPLING_WORKERS" -le 16
+          if [ -n "$WRITE_TOKEN" ]; then
+            echo 'publish=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'publish=false' >> "$GITHUB_OUTPUT"
+            echo 'GOANIME_CATALOG_WRITE_TOKEN is not configured; this run will build, validate and archive caches without pushing.'
+          fi
 
       - name: Checkout private GoAnime source
         uses: actions/checkout@v6
@@ -192,7 +198,7 @@ jobs:
           fi
 
       - name: Commit validated external cache
-        if: steps.diff.outputs.changed == 'true'
+        if: steps.diff.outputs.changed == 'true' && steps.credentials.outputs.publish == 'true'
         id: commit
         working-directory: private-source
         shell: bash
@@ -221,7 +227,7 @@ jobs:
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           unset auth extraheader WRITE_TOKEN
 
-      - name: Upload scrape evidence
+      - name: Upload validated cache and evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -229,6 +235,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
           path: |
+            private-source/assets/data/anime_provider_catalogs.json
+            private-source/assets/data/anime_provider_catalog_manifest.json
+            private-source/assets/data/available_animes.json
+            private-source/assets/data/available_anime_modes.json
+            private-source/assets/data/mal_provider_availability_map.json
             private-source/assets/data/provider_scrape_evidence.json
             private-source/tools/scrapling_provider_pipeline/provider_source_hints.json
 
@@ -241,6 +252,7 @@ jobs:
           echo '- Source revision: `${{ steps.source.outputs.sha }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Crawler result: `${{ steps.crawl.outputs.code }}` (0=fresh complete, 2=preserved fallback present)' >> "$GITHUB_STEP_SUMMARY"
           echo '- Cache changed: `${{ steps.diff.outputs.changed }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Automatic publication enabled: `${{ steps.credentials.outputs.publish }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Published commit: `${{ steps.commit.outputs.sha }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Adaptive selector state survives runs through the Toolchains Actions cache without entering the APK/repository.' >> "$GITHUB_STEP_SUMMARY"
 
