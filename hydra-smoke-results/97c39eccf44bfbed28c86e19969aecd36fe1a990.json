@@ -1,0 +1,16 @@
+{
+  "status": "success",
+  "targetSha": "97c39eccf44bfbed28c86e19969aecd36fe1a990",
+  "targetBranch": "feat/universal-source-discovery",
+  "requestPath": "toolchain-control/triggers/hydra-source-smoke/2026-08-17-2027-97c39ecc.request",
+  "runId": 32080082248,
+  "runAttempt": 1,
+  "steps": {
+    "deps": "success",
+    "electron": "success",
+    "scrapling": "success",
+    "gamebounty": "success",
+    "ecologica": "success",
+    "ankergames": "success"
+  }
+}
