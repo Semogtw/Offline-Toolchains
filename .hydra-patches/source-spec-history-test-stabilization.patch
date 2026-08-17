@@ -1,0 +1,89 @@
+diff --git a/src/main/services/local-download-sources/source-repository.test.ts b/src/main/services/local-download-sources/source-repository.test.ts
+--- a/src/main/services/local-download-sources/source-repository.test.ts
++++ b/src/main/services/local-download-sources/source-repository.test.ts
+@@ -197,3 +197,101 @@ test("interrupted staging is cleaned and the prior catalogue becomes ready", async () => {
+     false
+   );
+ });
++
++function historySpec(index: number): LocalSourceSpecV1 {
++  return {
++    ...sourceSpec,
++    fingerprint: `spec-${index}`,
++    generatedAt: new Date(Date.UTC(2026, 6, 12, 0, 0, index)).toISOString(),
++  };
++}
++
++async function stageHistoryGeneration(
++  repository: ReturnType<typeof createMemoryRepository>["repository"],
++  index: number,
++  spec: LocalSourceSpecV1 | null
++) {
++  const runId = `run-${index}`;
++  await repository.writeStagedEntries("source-a", runId, [
++    { ...entry, id: `entry-${index}`, runId },
++  ]);
++  await repository.activateGeneration(
++    "source-a",
++    runId,
++    { ...report, runId },
++    spec
++  );
++}
++
++test("keeps five distinct SourceSpec snapshots and preserves them when the active spec is cleared", async () => {
++  const { repository } = createMemoryRepository();
++  await repository.createLocalSource({
++    name: "Example",
++    startUrl: "https://example.com/catalogue",
++  });
++
++  for (let index = 1; index <= 6; index += 1) {
++    await stageHistoryGeneration(repository, index, historySpec(index));
++  }
++
++  let source = await repository.getSource("source-a");
++  assert.deepEqual(
++    source?.sourceSpecHistory?.map((item) => item.fingerprint),
++    ["spec-2", "spec-3", "spec-4", "spec-5", "spec-6"]
++  );
++
++  await stageHistoryGeneration(repository, 7, null);
++  source = await repository.getSource("source-a");
++  assert.equal(source?.sourceSpec, null);
++  assert.deepEqual(
++    source?.sourceSpecHistory?.map((item) => item.fingerprint),
++    ["spec-2", "spec-3", "spec-4", "spec-5", "spec-6"]
++  );
++});
++
++test("restores a historical SourceSpec without changing the active catalogue pointer", async () => {
++  const { repository } = createMemoryRepository();
++  await repository.createLocalSource({
++    name: "Example",
++    startUrl: "https://example.com/catalogue",
++  });
++  await stageHistoryGeneration(repository, 1, historySpec(1));
++  await stageHistoryGeneration(repository, 2, historySpec(2));
++
++  const restored = await repository.restoreSourceSpec("source-a", "spec-1");
++  assert.equal(restored.sourceSpec?.fingerprint, "spec-1");
++  assert.equal(restored.activeRunId, "run-2");
++  assert.equal(restored.stats.entries, 1);
++});
++
++test("topology changes invalidate both the active SourceSpec and its history", async () => {
++  const { repository } = createMemoryRepository();
++  await repository.createLocalSource({
++    name: "Example",
++    startUrl: "https://example.com/catalogue",
++  });
++  await stageHistoryGeneration(repository, 1, historySpec(1));
++
++  const updated = await repository.updateLocalSourceConfig("source-a", {
++    startUrl: "https://example.com/other-catalogue",
++  });
++
++  assert.equal(updated.sourceSpec, null);
++  assert.deepEqual(updated.sourceSpecHistory, []);
++});
