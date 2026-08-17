@@ -1,0 +1,225 @@
+name: GoAnime Scrapling provider cache
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: GoAnime branch that owns the external Scrapling pipeline
+        required: true
+        default: feat/scrapling-provider-pipeline
+      workers:
+        description: Concurrent static fetch workers
+        required: true
+        default: '8'
+  schedule:
+    - cron: '23 07 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-scrapling-provider-cache
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    if: github.actor == github.repository_owner || github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      TARGET_BRANCH: ${{ github.event.inputs.target_branch || 'feat/scrapling-provider-pipeline' }}
+      SCRAPLING_WORKERS: ${{ github.event.inputs.workers || '8' }}
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Require private GoAnime credentials
+        shell: bash
+        env:
+          READ_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$READ_TOKEN"
+          test -n "$WRITE_TOKEN"
+          [[ "$TARGET_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]]
+          [[ "$SCRAPLING_WORKERS" =~ ^[0-9]+$ ]]
+          test "$SCRAPLING_WORKERS" -ge 1
+          test "$SCRAPLING_WORKERS" -le 16
+
+      - name: Checkout private GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.TARGET_BRANCH }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Record immutable source revision
+        id: source
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          test -f tools/scrapling_provider_pipeline/requirements.txt
+          test -f tools/scrapling_provider_pipeline/build_provider_cache.py
+          test -f tools/scrapling_provider_pipeline/validate_provider_cache.py
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: private-source/tools/scrapling_provider_pipeline/requirements.txt
+
+      - name: Restore adaptive selector state
+        uses: actions/cache@v5
+        with:
+          path: private-source/.cache/scrapling-provider-pipeline
+          key: goanime-scrapling-adaptive-v1-${{ runner.os }}-${{ env.TARGET_BRANCH }}-${{ github.run_id }}
+          restore-keys: |
+            goanime-scrapling-adaptive-v1-${{ runner.os }}-${{ env.TARGET_BRANCH }}-
+
+      - name: Install pinned Scrapling fetcher toolchain
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --requirement tools/scrapling_provider_pipeline/requirements.txt
+          scrapling install
+          python - <<'PY'
+          import importlib.metadata
+          expected = '0.4.14'
+          actual = importlib.metadata.version('scrapling')
+          if actual != expected:
+              raise SystemExit(f'expected Scrapling {expected}, got {actual}')
+          print(f'Scrapling {actual} ready')
+          PY
+
+      - name: Run external pipeline unit tests
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tools/scrapling_provider_pipeline/tests -p 'test_*.py'
+
+      - name: Crawl providers and build cache
+        id: crawl
+        working-directory: private-source
+        shell: bash
+        run: |
+          set +e
+          python tools/scrapling_provider_pipeline/build_provider_cache.py \
+            --repo-root . \
+            --state-dir .cache/scrapling-provider-pipeline \
+            --workers "$SCRAPLING_WORKERS"
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ] && [ "$code" -ne 2 ]; then
+            echo "Unexpected crawler exit code: $code" >&2
+            exit "$code"
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          if [ "$code" -eq 2 ]; then
+            echo 'Some fresh provider crawls were rejected; preserved snapshots will be validated before publication.'
+          fi
+
+      - name: Validate generated cache contract
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/scrapling_provider_pipeline/validate_provider_cache.py \
+            --repo-root . \
+            --allow-preserved
+          python -m json.tool assets/data/provider_scrape_evidence.json >/dev/null
+          python -m json.tool tools/scrapling_provider_pipeline/provider_source_hints.json >/dev/null
+
+      - name: Verify generated diff is cache-only
+        id: diff
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          allowed='^(assets/data/(anime_provider_catalogs\.json|anime_provider_catalog_manifest\.json|available_animes\.json|available_anime_modes\.json|mal_provider_availability_map\.json|provider_scrape_evidence\.json)|tools/scrapling_provider_pipeline/provider_source_hints\.json)$'
+          unexpected="$(git status --porcelain=v1 | sed -E 's/^.. //' | grep -Ev "$allowed" || true)"
+          if [ -n "$unexpected" ]; then
+            echo 'Unexpected generated files:' >&2
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          fi
+          if git diff --quiet -- . ':!/.cache'; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit validated external cache
+        if: steps.diff.outputs.changed == 'true'
+        id: commit
+        working-directory: private-source
+        shell: bash
+        env:
+          WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          EXPECTED_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '4189828+github-actions[bot]@users.noreply.github.com'
+          git add \
+            assets/data/anime_provider_catalogs.json \
+            assets/data/anime_provider_catalog_manifest.json \
+            assets/data/available_animes.json \
+            assets/data/available_anime_modes.json \
+            assets/data/mal_provider_availability_map.json \
+            assets/data/provider_scrape_evidence.json \
+            tools/scrapling_provider_pipeline/provider_source_hints.json
+          git diff --cached --check
+          git commit -m 'chore(cache): refresh providers with Scrapling'
+          auth="$(printf 'x-access-token:%s' "$WRITE_TOKEN" | base64 -w0)"
+          extraheader="AUTHORIZATION: basic $auth"
+          git -c http.https://github.com/.extraheader="$extraheader" fetch origin "$TARGET_BRANCH"
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_SHA"
+          git -c http.https://github.com/.extraheader="$extraheader" push origin "HEAD:$TARGET_BRANCH"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          unset auth extraheader WRITE_TOKEN
+
+      - name: Upload scrape evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-provider-scrape-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            private-source/assets/data/provider_scrape_evidence.json
+            private-source/tools/scrapling_provider_pipeline/provider_source_hints.json
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          echo '## GoAnime external Scrapling cache' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Target branch: `${{ env.TARGET_BRANCH }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Source revision: `${{ steps.source.outputs.sha }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Crawler result: `${{ steps.crawl.outputs.code }}` (0=fresh complete, 2=preserved fallback present)' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Cache changed: `${{ steps.diff.outputs.changed }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Published commit: `${{ steps.commit.outputs.sha }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Adaptive selector state is restored across runs through the Toolchains Actions cache.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
