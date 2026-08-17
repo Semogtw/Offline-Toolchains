@@ -88,9 +88,15 @@ jobs:
           yarn --version
 
       - name: Install JavaScript dependencies without build side effects
+        id: deps
         working-directory: private-source
         shell: bash
         run: yarn install --frozen-lockfile --ignore-scripts --non-interactive
+
+      - name: Install Electron runtime only
+        working-directory: private-source
+        shell: bash
+        run: node node_modules/electron/install.js
 
       - name: Compile Python helpers
         working-directory: private-source
@@ -108,6 +114,7 @@ jobs:
         run: node --import ./scripts/register-ts-node.mjs --test "src/main/services/local-download-sources/*.test.ts"
 
       - name: Typecheck Node process
+        if: ${{ always() && steps.deps.outcome == 'success' }}
         working-directory: private-source
         shell: bash
         run: yarn typecheck:node
