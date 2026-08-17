@@ -87,10 +87,19 @@ jobs:
       - name: Restore adaptive selector state
         uses: actions/cache@v5
         with:
-          path: private-source/.cache/scrapling-provider-pipeline
+          path: adaptive-state
           key: goanime-scrapling-adaptive-v1-${{ runner.os }}-${{ env.TARGET_BRANCH }}-${{ github.run_id }}
           restore-keys: |
             goanime-scrapling-adaptive-v1-${{ runner.os }}-${{ env.TARGET_BRANCH }}-
+
+      - name: Seed adaptive selector database
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p private-source/.cache/scrapling-provider-pipeline
+          if [ -d adaptive-state ]; then
+            cp -a adaptive-state/. private-source/.cache/scrapling-provider-pipeline/
+          fi
 
       - name: Install pinned Scrapling fetcher toolchain
         working-directory: private-source
@@ -136,6 +145,17 @@ jobs:
             echo 'Some fresh provider crawls were rejected; preserved snapshots will be validated before publication.'
           fi
 
+      - name: Preserve learned adaptive selector state
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf adaptive-state
+          mkdir -p adaptive-state
+          if [ -d private-source/.cache/scrapling-provider-pipeline ]; then
+            cp -a private-source/.cache/scrapling-provider-pipeline/. adaptive-state/
+          fi
+
       - name: Validate generated cache contract
         working-directory: private-source
         shell: bash
@@ -154,13 +174,14 @@ jobs:
         run: |
           set -euo pipefail
           allowed='^(assets/data/(anime_provider_catalogs\.json|anime_provider_catalog_manifest\.json|available_animes\.json|available_anime_modes\.json|mal_provider_availability_map\.json|provider_scrape_evidence\.json)|tools/scrapling_provider_pipeline/provider_source_hints\.json)$'
-          unexpected="$(git status --porcelain=v1 | sed -E 's/^.. //' | grep -Ev "$allowed" || true)"
+          changed_paths="$(git status --porcelain=v1 | sed -E 's/^.. //' | grep -Ev '^\.cache/scrapling-provider-pipeline(/|$)' || true)"
+          unexpected="$(printf '%s\n' "$changed_paths" | sed '/^$/d' | grep -Ev "$allowed" || true)"
           if [ -n "$unexpected" ]; then
             echo 'Unexpected generated files:' >&2
             printf '%s\n' "$unexpected" >&2
             exit 1
           fi
-          if git diff --quiet -- . ':!/.cache'; then
+          if [ -z "$changed_paths" ]; then
             echo 'changed=false' >> "$GITHUB_OUTPUT"
           else
             echo 'changed=true' >> "$GITHUB_OUTPUT"
@@ -217,7 +238,7 @@ jobs:
           echo '- Crawler result: `${{ steps.crawl.outputs.code }}` (0=fresh complete, 2=preserved fallback present)' >> "$GITHUB_STEP_SUMMARY"
           echo '- Cache changed: `${{ steps.diff.outputs.changed }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Published commit: `${{ steps.commit.outputs.sha }}`' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Adaptive selector state is restored across runs through the Toolchains Actions cache.' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Adaptive selector state survives runs through the Toolchains Actions cache without entering the APK/repository.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove private checkout
         if: always()
