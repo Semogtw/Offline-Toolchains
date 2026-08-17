@@ -33,6 +33,8 @@ jobs:
     env:
       TARGET_BRANCH: ${{ github.event.inputs.target_branch || 'feat/scrapling-provider-pipeline' }}
       SCRAPLING_WORKERS: ${{ github.event.inputs.workers || '8' }}
+      SCRAPLING_PROXY_URL: ${{ secrets.GOANIME_SCRAPLING_PROXY_URL }}
+      SCRAPLING_PROXY_PROVIDERS: animefire,animesonline
     steps:
       - name: Checkout trusted Toolchains source
         uses: actions/checkout@v6
@@ -61,6 +63,11 @@ jobs:
             echo 'publish=false' >> "$GITHUB_OUTPUT"
             echo 'GOANIME_CATALOG_WRITE_TOKEN is not configured; this run will build, validate and archive caches without pushing.'
           fi
+          if [ -n "$SCRAPLING_PROXY_URL" ]; then
+            echo 'proxy=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'proxy=false' >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Checkout private GoAnime source
         uses: actions/checkout@v6
@@ -69,7 +76,7 @@ jobs:
           ref: ${{ env.TARGET_BRANCH }}
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
           lfs: false
           submodules: false
@@ -265,6 +272,7 @@ jobs:
           echo '- Crawler result: `${{ steps.crawl.outputs.code }}` (0=fresh complete, 2=preserved fallback present)' >> "$GITHUB_STEP_SUMMARY"
           echo '- Cache changed: `${{ steps.diff.outputs.changed }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Automatic publication enabled: `${{ steps.credentials.outputs.publish }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Optional proxy configured: `${{ steps.credentials.outputs.proxy }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Published commit: `${{ steps.commit.outputs.sha }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Adaptive selector state survives runs through the Toolchains Actions cache without entering the APK/repository.' >> "$GITHUB_STEP_SUMMARY"
 
