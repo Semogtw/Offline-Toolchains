@@ -1,0 +1,127 @@
+name: Validate private Hydra source packaging
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "triggers/hydra-source-package/*.request"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hydra-source-package-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    if: github.repository_owner == 'Semogtw'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+    steps:
+      - name: Require private repository token
+        shell: bash
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact packaging request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            request="$(find toolchain-control/triggers/hydra-source-package -maxdepth 1 -type f -name '*.request' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n 1 | cut -d' ' -f2-)"
+          else
+            request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/hydra-source-package/*.request' | head -n 1)"
+            request="toolchain-control/$request"
+          fi
+          test -n "$request"
+          read -r project branch expected_sha < "$request"
+          test "$project" = "hydra"
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ ]]
+          [[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "expected_sha=$expected_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private Hydra revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/HydraPersonalizado
+          ref: ${{ steps.request.outputs.expected_sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify requested branch still points to revision
+        working-directory: private-source
+        shell: bash
+        env:
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_sha="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/HydraPersonalizado.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_sha" = "$EXPECTED_SHA"
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.12.0
+          check-latest: false
+
+      - name: Activate Yarn 1
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare yarn@1.22.22 --activate
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: private-source/python_rpc/requirements-scrapling.txt
+
+      - name: Install Python build dependencies
+        working-directory: private-source
+        shell: bash
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/private-source/hydra-scrapling-browser
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r python_rpc/requirements-scrapling.txt
+          python -m pip install cx_Freeze libtorrent
+
+      - name: Build packaged Python RPC and discovery CLI
+        working-directory: private-source
+        shell: bash
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/private-source/hydra-scrapling-browser
+        run: node scripts/build-python-rpc.cjs
+
+      - name: Verify packaged discovery artifacts
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x hydra-python-rpc/hydra-python-rpc
+          test -x hydra-python-rpc/hydra-source-discovery
+          test -d hydra-scrapling-browser
+          test -n "$(find hydra-scrapling-browser -type f -print -quit)"
+          ./hydra-python-rpc/hydra-source-discovery </dev/null >/dev/null 2>&1 || test "$?" -ne 126
