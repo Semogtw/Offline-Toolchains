@@ -1,0 +1,239 @@
+diff --git a/src/main/services/local-download-sources/electron-passive-scroll.ts b/src/main/services/local-download-sources/electron-passive-scroll.ts
+new file mode 100644
+--- /dev/null
++++ b/src/main/services/local-download-sources/electron-passive-scroll.ts
+@@ -0,0 +1,123 @@
++export const ELECTRON_PASSIVE_SCROLL_MAX_STEPS = 8;
++export const ELECTRON_PASSIVE_SCROLL_WAIT_MS = 250;
++
++interface ScriptExecutor {
++  executeJavaScript(script: string, userGesture?: boolean): Promise<unknown>;
++}
++
++interface PassiveScrollMetrics {
++  y: number;
++  viewport: number;
++  height: number;
++}
++
++export interface ElectronPassiveScrollOptions {
++  signal?: AbortSignal;
++  maxSteps?: number;
++  waitMs?: number;
++  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
++}
++
++function abortError() {
++  return new DOMException("Electron passive scroll was cancelled", "AbortError");
++}
++
++function parseMetrics(value: unknown): PassiveScrollMetrics | null {
++  if (!value || typeof value !== "object") return null;
++  const record = value as Record<string, unknown>;
++  const y = Number(record.y);
++  const viewport = Number(record.viewport);
++  const height = Number(record.height);
++  if (![y, viewport, height].every(Number.isFinite)) return null;
++  if (viewport <= 0 || height <= 0) return null;
++  return {
++    y: Math.max(0, y),
++    viewport: Math.max(1, viewport),
++    height: Math.max(0, height),
++  };
++}
++
++function defaultSleep(ms: number, signal?: AbortSignal) {
++  return new Promise<void>((resolve, reject) => {
++    if (signal?.aborted) {
++      reject(abortError());
++      return;
++    }
++
++    let timer: NodeJS.Timeout;
++    const onAbort = () => {
++      clearTimeout(timer);
++      signal?.removeEventListener("abort", onAbort);
++      reject(abortError());
++    };
++    timer = setTimeout(() => {
++      signal?.removeEventListener("abort", onAbort);
++      resolve();
++    }, ms);
++    signal?.addEventListener("abort", onAbort, { once: true });
++  });
++}
++
++export async function runElectronPassiveScroll(
++  executor: ScriptExecutor,
++  options: ElectronPassiveScrollOptions = {}
++) {
++  const maxSteps = Math.max(
++    1,
++    Math.min(
++      options.maxSteps ?? ELECTRON_PASSIVE_SCROLL_MAX_STEPS,
++      ELECTRON_PASSIVE_SCROLL_MAX_STEPS
++    )
++  );
++  const waitMs = Math.max(
++    0,
++    Math.min(options.waitMs ?? ELECTRON_PASSIVE_SCROLL_WAIT_MS, 1_000)
++  );
++  const sleep = options.sleep ?? defaultSleep;
++  let lastHeight = -1;
++  let stagnantBottoms = 0;
++  let steps = 0;
++  let grew = false;
++
++  try {
++    for (let index = 0; index < maxSteps; index += 1) {
++      if (options.signal?.aborted) throw abortError();
++      const metrics = parseMetrics(
++        await executor.executeJavaScript(
++          `(() => ({
++            y: Math.max(window.scrollY || 0, document.documentElement.scrollTop || 0),
++            viewport: Math.max(window.innerHeight || 0, 1),
++            height: Math.max(
++              document.body ? document.body.scrollHeight : 0,
++              document.documentElement ? document.documentElement.scrollHeight : 0
++            )
++          }))()`,
++          false
++        )
++      );
++      if (!metrics) break;
++
++      if (lastHeight >= 0 && metrics.height > lastHeight) grew = true;
++      const atBottom = metrics.y + metrics.viewport >= metrics.height - 4;
++      if (atBottom && metrics.height <= lastHeight) {
++        stagnantBottoms += 1;
++        if (stagnantBottoms >= 2) break;
++      } else {
++        stagnantBottoms = 0;
++      }
++
++      await executor.executeJavaScript(
++        "window.scrollBy(0, Math.max(window.innerHeight * 0.9, 600))",
++        false
++      );
++      steps += 1;
++      await sleep(waitMs, options.signal);
++      lastHeight = Math.max(lastHeight, metrics.height);
++    }
++  } finally {
++    await executor
++      .executeJavaScript("window.scrollTo(0, 0)", false)
++      .catch(() => undefined);
++  }
++
++  return { steps, grew };
++}
+diff --git a/src/main/services/local-download-sources/electron-passive-scroll.test.ts b/src/main/services/local-download-sources/electron-passive-scroll.test.ts
+new file mode 100644
+--- /dev/null
++++ b/src/main/services/local-download-sources/electron-passive-scroll.test.ts
+@@ -0,0 +1,75 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++import {
++  ELECTRON_PASSIVE_SCROLL_MAX_STEPS,
++  ELECTRON_PASSIVE_SCROLL_WAIT_MS,
++  runElectronPassiveScroll,
++} from "./electron-passive-scroll";
++
++class FakeExecutor {
++  private metrics = [
++    { y: 0, viewport: 800, height: 2400 },
++    { y: 720, viewport: 800, height: 3200 },
++    { y: 1440, viewport: 800, height: 3200 },
++    { y: 2400, viewport: 800, height: 3200 },
++    { y: 2400, viewport: 800, height: 3200 },
++  ];
++
++  scrollCalls = 0;
++  resetCalls = 0;
++
++  async executeJavaScript(script: string) {
++    if (script.includes("scrollHeight")) {
++      return (
++        this.metrics.shift() ?? {
++          y: 2400,
++          viewport: 800,
++          height: 3200,
++        }
++      );
++    }
++    if (script.includes("scrollBy")) {
++      this.scrollCalls += 1;
++      return undefined;
++    }
++    if (script.includes("scrollTo")) {
++      this.resetCalls += 1;
++      return undefined;
++    }
++    throw new Error(`Unexpected script: ${script}`);
++  }
++}
++
++test("Electron passive scroll is bounded and stops after a stagnant bottom", async () => {
++  const executor = new FakeExecutor();
++  const waits: number[] = [];
++
++  const result = await runElectronPassiveScroll(executor, {
++    sleep: async (ms) => {
++      waits.push(ms);
++    },
++  });
++
++  assert.ok(result.steps > 0);
++  assert.ok(result.steps <= ELECTRON_PASSIVE_SCROLL_MAX_STEPS);
++  assert.equal(executor.scrollCalls, result.steps);
++  assert.equal(executor.resetCalls, 1);
++  assert.equal(result.grew, true);
++  assert.ok(waits.every((value) => value === ELECTRON_PASSIVE_SCROLL_WAIT_MS));
++});
++
++test("Electron passive scroll resets the page when cancelled", async () => {
++  const executor = new FakeExecutor();
++  const controller = new AbortController();
++  controller.abort();
++
++  await assert.rejects(
++    runElectronPassiveScroll(executor, {
++      signal: controller.signal,
++      sleep: async () => undefined,
++    }),
++    (error: unknown) =>
++      error instanceof DOMException && error.name === "AbortError"
++  );
++  assert.equal(executor.resetCalls, 1);
++});
+diff --git a/src/main/services/local-download-sources/dynamic-page-loader.ts b/src/main/services/local-download-sources/dynamic-page-loader.ts
+--- a/src/main/services/local-download-sources/dynamic-page-loader.ts
++++ b/src/main/services/local-download-sources/dynamic-page-loader.ts
+@@ -18,6 +18,7 @@ import type { LocalSourceCandidate } from "./types";
+ import { canonicalizePageUrl } from "./url-scope";
+ import { discoverStructuredNavigationUrls } from "./structured-navigation";
+ import { shouldExpandRenderedCatalog } from "./rendered-catalog-expansion-policy";
++import { runElectronPassiveScroll } from "./electron-passive-scroll";
+ 
+ export interface DynamicJsonResponse {
+   url: string;
+@@ -488,6 +489,18 @@ async function loadElectronDynamicPage(
+     );
+     if (input.signal?.aborted || window.isDestroyed()) throw abortError();
+ 
++    try {
++      await runElectronPassiveScroll(webContents, {
++        signal: input.signal,
++      });
++    } catch {
++      if (input.signal?.aborted || window.isDestroyed()) {
++        throw abortError();
++      }
++      // Passive scrolling is additive. A site that rejects scripted scrolling
++      // should still fall back to the rendered DOM already available.
++    }
++
+     const html = await webContents.executeJavaScript(
+       "document.documentElement.outerHTML",
+       true
