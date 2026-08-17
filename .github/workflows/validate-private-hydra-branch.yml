@@ -7,7 +7,7 @@ on:
       - 'triggers/hydra-validation/*.request'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: validate-private-hydra-branch
@@ -47,6 +47,7 @@ jobs:
           [[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]]
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
           echo "expected_sha=$expected_sha" >> "$GITHUB_OUTPUT"
+          echo "request_path=$request" >> "$GITHUB_OUTPUT"
 
       - name: Checkout exact private Hydra revision
         uses: actions/checkout@v6
@@ -94,27 +95,77 @@ jobs:
         run: yarn install --frozen-lockfile --ignore-scripts --non-interactive
 
       - name: Install Electron runtime only
+        id: electron
         working-directory: private-source
         shell: bash
         run: node node_modules/electron/install.js
 
       - name: Compile Python helpers
+        id: compile_python
         working-directory: private-source
         shell: bash
         run: python3 -m compileall -q python_rpc
 
       - name: Run Python source-discovery unit tests
+        id: python_tests
         working-directory: private-source
         shell: bash
         run: python3 -m unittest discover -s python_rpc -p 'test_source_discovery*.py' -v
 
       - name: Run local-source tests
+        id: local_tests
         working-directory: private-source
         shell: bash
         run: node --import ./scripts/register-ts-node.mjs --test "src/main/services/local-download-sources/*.test.ts"
 
       - name: Typecheck Node process
+        id: typecheck
         if: ${{ always() && steps.deps.outcome == 'success' }}
         working-directory: private-source
         shell: bash
         run: yarn typecheck:node
+
+      - name: Publish validation status
+        if: ${{ always() && steps.request.outputs.expected_sha != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.expected_sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          REQUEST_PATH: ${{ steps.request.outputs.request_path }}
+          DEPS_OUTCOME: ${{ steps.deps.outcome }}
+          ELECTRON_OUTCOME: ${{ steps.electron.outcome }}
+          COMPILE_PYTHON_OUTCOME: ${{ steps.compile_python.outcome }}
+          PYTHON_TESTS_OUTCOME: ${{ steps.python_tests.outcome }}
+          LOCAL_TESTS_OUTCOME: ${{ steps.local_tests.outcome }}
+          TYPECHECK_OUTCOME: ${{ steps.typecheck.outcome }}
+        run: |
+          set -euo pipefail
+          status=success
+          for outcome in "$DEPS_OUTCOME" "$ELECTRON_OUTCOME" "$COMPILE_PYTHON_OUTCOME" "$PYTHON_TESTS_OUTCOME" "$LOCAL_TESTS_OUTCOME" "$TYPECHECK_OUTCOME"; do
+            if [ "$outcome" != "success" ]; then
+              status=failure
+            fi
+          done
+          result="$(jq -n \
+            --arg status "$status" \
+            --arg targetSha "$TARGET_SHA" \
+            --arg targetBranch "$TARGET_BRANCH" \
+            --arg requestPath "$REQUEST_PATH" \
+            --arg runId "$GITHUB_RUN_ID" \
+            --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
+            --arg deps "$DEPS_OUTCOME" \
+            --arg electron "$ELECTRON_OUTCOME" \
+            --arg compilePython "$COMPILE_PYTHON_OUTCOME" \
+            --arg pythonTests "$PYTHON_TESTS_OUTCOME" \
+            --arg localTests "$LOCAL_TESTS_OUTCOME" \
+            --arg typecheck "$TYPECHECK_OUTCOME" \
+            '{status:$status,targetSha:$targetSha,targetBranch:$targetBranch,requestPath:$requestPath,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),steps:{deps:$deps,electron:$electron,compilePython:$compilePython,pythonTests:$pythonTests,localTests:$localTests,typecheck:$typecheck}}')"
+          path="hydra-validation-results/${TARGET_SHA}.json"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          current_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=hydra-validation-results" --jq '.sha' 2>/dev/null || true)"
+          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/${path}" -f "message=ci(hydra): record validation ${TARGET_SHA}" -f "content=${encoded}" -f "branch=hydra-validation-results")
+          if [ -n "$current_sha" ]; then
+            args+=(-f "sha=${current_sha}")
+          fi
+          gh api "${args[@]}" >/dev/null
