@@ -186,8 +186,50 @@ jobs:
             echo 'Some fresh provider crawls were rejected; optional residential fallback will be considered.'
           fi
 
-      - name: Check phone fallback configuration
+      - name: Select preserved providers eligible for phone retry
         if: steps.crawl.outputs.code == '2'
+        id: residential_targets
+        working-directory: private-source
+        shell: bash
+        env:
+          ELIGIBLE_PROVIDERS: ${{ env.SCRAPLING_PROXY_PROVIDERS }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          manifest = json.loads(
+              Path('assets/data/anime_provider_catalog_manifest.json').read_text(
+                  encoding='utf-8'
+              )
+          )
+          providers = manifest.get('providers')
+          if not isinstance(providers, dict):
+              raise SystemExit('provider manifest has no provider map')
+          eligible = [
+              provider.strip().lower()
+              for provider in os.environ.get('ELIGIBLE_PROVIDERS', '').split(',')
+              if provider.strip()
+          ]
+          selected = [
+              provider
+              for provider in eligible
+              if isinstance(providers.get(provider), dict)
+              and providers[provider].get('status') == 'preserved'
+          ]
+          joined = ','.join(selected)
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'providers={joined}\n')
+              output.write(f'count={len(selected)}\n')
+          print(
+              'Phone retry targets: ' + (joined if joined else 'none')
+          )
+          PY
+
+      - name: Check phone fallback configuration
+        if: steps.crawl.outputs.code == '2' && steps.residential_targets.outputs.providers != ''
         id: phone
         shell: bash
         run: |
@@ -200,7 +242,7 @@ jobs:
           fi
 
       - name: Connect optional phone exit node
-        if: steps.crawl.outputs.code == '2' && steps.phone.outputs.configured == 'true'
+        if: steps.crawl.outputs.code == '2' && steps.residential_targets.outputs.providers != '' && steps.phone.outputs.configured == 'true'
         id: tailscale
         continue-on-error: true
         uses: tailscale/github-action@v4
@@ -224,21 +266,22 @@ jobs:
             --output /dev/null
           echo 'ready=true' >> "$GITHUB_OUTPUT"
 
-      - name: Retry only blocked providers through phone egress
+      - name: Retry only preserved providers through phone egress
         if: steps.tailscale.outcome == 'success' && steps.residential_route.outputs.ready == 'true'
         id: residential
         working-directory: private-source
         shell: bash
         env:
           SCRAPLING_PROXY_URL: http://127.0.0.1:1055
-          SCRAPLING_PROXY_PROVIDERS: animefire,animesonline
+          SCRAPLING_PROXY_PROVIDERS: ${{ steps.residential_targets.outputs.providers }}
+          RESIDENTIAL_PROVIDERS: ${{ steps.residential_targets.outputs.providers }}
         run: |
           set +e
           python tools/scrapling_provider_pipeline/build_provider_cache.py \
             --repo-root . \
             --state-dir .cache/scrapling-provider-pipeline \
             --workers "$SCRAPLING_WORKERS" \
-            --only-providers animefire,animesonline
+            --only-providers "$RESIDENTIAL_PROVIDERS"
           code=$?
           set -e
           if [ "$code" -ne 0 ] && [ "$code" -ne 2 ]; then
@@ -346,6 +389,7 @@ jobs:
           echo '- Target branch: `${{ env.TARGET_BRANCH }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Source revision: `${{ steps.source.outputs.sha }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Initial crawler result: `${{ steps.crawl.outputs.code }}` (0=fresh complete, 2=preserved fallback present)' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Phone retry targets: `${{ steps.residential_targets.outputs.providers }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Phone fallback configured: `${{ steps.phone.outputs.configured }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Tailnet connection: `${{ steps.tailscale.outcome }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Residential route ready: `${{ steps.residential_route.outputs.ready }}`' >> "$GITHUB_STEP_SUMMARY"
