@@ -133,7 +133,7 @@ jobs:
 
       - name: Collect enabled live evidence
         id: collect
-        if: steps.analyze.outcome == 'success' && steps.tests.outcome == 'success'
+        if: always() && steps.analyze.outcome == 'success' && steps.tests.outcome == 'success'
         working-directory: private-source
         env:
           REVIEWED_SHA: ${{ steps.request.outputs.sha }}
@@ -149,7 +149,7 @@ jobs:
 
       - name: Verify exact enabled cohort coverage
         id: coverage
-        if: steps.collect.outcome == 'success'
+        if: always() && steps.collect.outcome == 'success'
         shell: bash
         env:
           REVIEWED_SHA: ${{ steps.request.outputs.sha }}
