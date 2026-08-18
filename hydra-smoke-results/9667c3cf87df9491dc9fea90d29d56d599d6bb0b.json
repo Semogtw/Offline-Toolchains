@@ -1,19 +1,9 @@
 {
-  "status": "failure",
+  "status": "running",
   "targetSha": "9667c3cf87df9491dc9fea90d29d56d599d6bb0b",
   "targetBranch": "test/real-source-download-e2e",
-  "requestPath": "toolchain-control/triggers/hydra-source-smoke/universal-source-download-resume-latest-20260818.request",
-  "runId": 32164094745,
+  "requestPath": "toolchain-control/triggers/hydra-source-smoke/universal-source-download-observed-final-20260818.request",
+  "runId": 32165008981,
   "runAttempt": 1,
-  "steps": {
-    "deps": "success",
-    "electron": "success",
-    "scrapling": "success",
-    "gamebounty": "success",
-    "ecologica": "success",
-    "ankergames": "failure",
-    "trustPipeline": "skipped",
-    "downloadE2e": "skipped",
-    "directHttpManager": "skipped"
-  }
+  "steps": {}
 }
