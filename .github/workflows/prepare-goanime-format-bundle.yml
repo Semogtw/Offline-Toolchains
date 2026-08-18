@@ -1,0 +1,324 @@
+name: Prepare encrypted GoAnime formatting bundle
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/prepare-goanime-format-bundle.yml'
+      - 'scripts/private_ci_request.py'
+      - 'triggers/goanime-format/*.request'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Exact GoAnime branch, tag, or commit
+        required: false
+        default: feat/scrapling-provider-pipeline
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-format-bundle
+  cancel-in-progress: true
+
+env:
+  FLUTTER_CHANNEL: stable
+  FLUTTER_VERSION: 3.44.1
+
+jobs:
+  normalize:
+    name: Normalize GoAnime formatting request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      ref: ${{ steps.request.outputs.ref }}
+
+    steps:
+      - name: Checkout trusted request validator
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: trusted-source
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/private_ci_request.py
+            triggers/goanime-format
+          sparse-checkout-cone-mode: false
+
+      - name: Normalize fixed repository and ref
+        id: request
+        shell: bash
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          request="$RUNNER_TEMP/goanime-format-request.json"
+          python3 - "$request" "$INPUT_REF" "$EVENT_NAME" "$GITHUB_EVENT_PATH" <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          request_path = Path(sys.argv[1])
+          input_ref = sys.argv[2].strip()
+          event_name = sys.argv[3]
+          event_path = Path(sys.argv[4])
+          requested_ref = input_ref or "feat/scrapling-provider-pipeline"
+
+          if event_name == "push":
+              event = json.loads(event_path.read_text(encoding="utf-8"))
+              commits = event.get("commits") or []
+              if not commits and event.get("head_commit"):
+                  commits = [event["head_commit"]]
+              changed = []
+              for commit in commits:
+                  changed.extend(commit.get("added", []))
+                  changed.extend(commit.get("modified", []))
+              pattern = re.compile(
+                  r"^triggers/goanime-format/[A-Za-z0-9._-]+\.request$"
+              )
+              trigger_paths = sorted(
+                  {
+                      path
+                      for path in changed
+                      if pattern.fullmatch(path)
+                      and (Path("trusted-source") / path).is_file()
+                  }
+              )
+              if len(trigger_paths) > 1:
+                  raise SystemExit("push must modify at most one GoAnime format request")
+              if trigger_paths:
+                  requested_ref = (
+                      Path("trusted-source") / trigger_paths[0]
+                  ).read_text(encoding="utf-8").strip()
+                  if not requested_ref:
+                      raise SystemExit("GoAnime format request ref is empty")
+
+          request_path.write_text(
+              json.dumps({"project": "goanime", "ref": requested_ref}),
+              encoding="utf-8",
+          )
+          PY
+          normalized="$(python3 trusted-source/scripts/private_ci_request.py "$request")"
+          python3 - "$normalized" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          request = json.loads(sys.argv[1])
+          if request["repository"] != "Semogtw/goanime-mobile":
+              raise SystemExit("unexpected GoAnime repository mapping")
+          with open(sys.argv[2], "a", encoding="utf-8") as stream:
+              stream.write(f"ref={request['ref']}\n")
+          PY
+
+  prepare:
+    name: Format exact private source and encrypt bundle
+    needs: normalize
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_name: ${{ steps.meta.outputs.artifact_name }}
+      changed_count: ${{ steps.bundle.outputs.changed_count }}
+
+    steps:
+      - name: Checkout trusted encryption key
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: trusted-source
+          persist-credentials: false
+          sparse-checkout: keys/source-bundles-public.asc
+          sparse-checkout-cone-mode: false
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout exact private GoAnime source read-only
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ needs.normalize.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up pinned Flutter formatter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: false
+
+      - name: Resolve root dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+
+      - name: Format source and build private bundle
+        id: bundle
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format lib test packages tools
+          git diff --check
+          out="$RUNNER_TEMP/goanime-format-bundle"
+          rm -rf "$out"
+          mkdir -p "$out/bundle/formatted" "$out/encrypted"
+          python3 - "$PWD" "$out/bundle" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import shutil
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          bundle = Path(sys.argv[2]).resolve()
+          output = Path(sys.argv[3])
+          raw = subprocess.check_output(
+              ["git", "diff", "--name-only", "--diff-filter=ACMRT"],
+              cwd=root,
+              text=True,
+          )
+          changed = [line.strip() for line in raw.splitlines() if line.strip()]
+          allowed_roots = ("lib/", "test/", "packages/", "tools/")
+          for relative in changed:
+              if not relative.startswith(allowed_roots) or not relative.endswith(".dart"):
+                  raise SystemExit(f"unexpected formatted path: {relative}")
+              source = (root / relative).resolve()
+              if root not in source.parents:
+                  raise SystemExit(f"formatted path escapes checkout: {relative}")
+              target = bundle / "formatted" / relative
+              target.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(source, target)
+
+          source_commit = subprocess.check_output(
+              ["git", "rev-parse", "HEAD"], cwd=root, text=True
+          ).strip()
+          manifest = {
+              "schemaVersion": 1,
+              "sourceCommit": source_commit,
+              "formatter": "Flutter 3.44.1 bundled dart format",
+              "changedFiles": changed,
+          }
+          (bundle / "manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          with output.open("a", encoding="utf-8") as stream:
+              stream.write(f"changed_count={len(changed)}\n")
+          PY
+          tar -C "$out/bundle" -czf "$out/goanime-format-bundle.tar.gz" .
+
+      - name: Encrypt formatted bundle
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/goanime-format-bundle"
+          gnupg="$work/gnupg"
+          mkdir -p "$gnupg"
+          chmod 700 "$gnupg"
+          export GNUPGHOME="$gnupg"
+          gpg --batch --import "$GITHUB_WORKSPACE/trusted-source/keys/source-bundles-public.asc"
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1=="fpr"{print $10;exit}')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          gpg --batch --yes --trust-model always \
+            --recipient "$EXPECTED_FINGERPRINT" \
+            --output "$work/encrypted/goanime-format-bundle.tar.gz.gpg" \
+            --encrypt "$work/goanime-format-bundle.tar.gz"
+
+      - name: Set artifact metadata
+        id: meta
+        shell: bash
+        run: echo "artifact_name=goanime-format-bundle-${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload encrypted formatting bundle
+        id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.meta.outputs.artifact_name }}
+          path: ${{ runner.temp }}/goanime-format-bundle/encrypted/goanime-format-bundle.tar.gz.gpg
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Cleanup private material
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source"
+          rm -rf "$GITHUB_WORKSPACE/trusted-source"
+          rm -rf "$RUNNER_TEMP/goanime-format-bundle"
+          rm -f "$RUNNER_TEMP/goanime-format-request.json"
+
+  report:
+    name: Publish sanitized formatting result
+    if: always()
+    needs: [normalize, prepare]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+
+    steps:
+      - name: Publish result without private source access
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NORMALIZE_RESULT: ${{ needs.normalize.result }}
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          ARTIFACT_ID: ${{ needs.prepare.outputs.artifact_id }}
+          ARTIFACT_NAME: ${{ needs.prepare.outputs.artifact_name }}
+          CHANGED_COUNT: ${{ needs.prepare.outputs.changed_count }}
+          TOOLCHAINS_TRIGGER_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/goanime-format-report.json"
+          python3 - "$report" <<'PY'
+          import json
+          import os
+          import sys
+          from datetime import datetime, timezone
+
+          payload = {
+              "schemaVersion": 1,
+              "runId": int(os.environ["RUN_ID"]),
+              "runAttempt": int(os.environ["RUN_ATTEMPT"]),
+              "toolchainsTriggerSha": os.environ["TOOLCHAINS_TRIGGER_SHA"],
+              "normalizeResult": os.environ["NORMALIZE_RESULT"],
+              "prepareResult": os.environ["PREPARE_RESULT"],
+              "artifactId": os.environ.get("ARTIFACT_ID") or None,
+              "artifactName": os.environ.get("ARTIFACT_NAME") or None,
+              "changedCount": int(os.environ.get("CHANGED_COUNT") or 0),
+              "finishedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+          }
+          with open(sys.argv[1], "w", encoding="utf-8") as stream:
+              json.dump(payload, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          PY
+          encoded="$(base64 -w0 < "$report")"
+          path="reports/goanime-format/${RUN_ID}.json"
+          gh api \
+            --method PUT \
+            "repos/${GITHUB_REPOSITORY}/contents/${path}" \
+            -f "message=ci(goanime): report format bundle run ${RUN_ID}" \
+            -f "content=${encoded}" \
+            >/dev/null
