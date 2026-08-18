@@ -1,0 +1,3 @@
+target_branch=feat/scrapling-provider-pipeline
+source_hint=a74ff4616ffde32faffc7e0ac1ac6372a4881aaa
+reason=validate current provider hardening, MAL preflight, and residential evidence semantics
