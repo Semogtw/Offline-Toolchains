@@ -74,9 +74,11 @@ jobs:
       - name: Run MAL input preflight
         id: preflight
         continue-on-error: true
-        working-directory: private-source
+        working-directory: trusted-source
         shell: bash
-        run: python3 tools/scrapling_provider_pipeline/mal_input_preflight.py --repo-root .
+        run: |
+          python3 scripts/goanime_probe_mal_preflight.py \
+            --repo-root ../private-source
 
       - name: Report preflight status
         if: always() && steps.preflight.outcome != 'skipped'
@@ -84,12 +86,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           OUTCOME: ${{ steps.preflight.outcome }}
+          CATEGORY: ${{ steps.preflight.outputs.category }}
         run: |
           state=failure
           [ "$OUTCOME" = success ] && state=success
           python3 scripts/goanime_post_status.py \
             --state "$state" \
             --context goanime-scrapling/preflight
+          if [ "$state" = failure ] && [ -n "$CATEGORY" ]; then
+            python3 scripts/goanime_post_status.py \
+              --state failure \
+              --context "goanime-scrapling/preflight-$CATEGORY"
+          fi
 
       - name: Stop after preflight failure
         if: steps.preflight.outcome == 'failure'
