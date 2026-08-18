@@ -74,6 +74,7 @@ jobs:
         run: flutter pub get >/dev/null 2>&1
 
       - name: Analyze reader contract surface
+        id: analyze
         working-directory: private-source
         run: |
           flutter analyze --no-pub \
@@ -96,6 +97,8 @@ jobs:
             test/tools/manga/audit_planned_provider_stage_test.dart
 
       - name: Run reader contract tests
+        id: tests
+        if: always()
         working-directory: private-source
         run: |
           flutter test --no-pub \
@@ -111,6 +114,8 @@ jobs:
             test/architecture/manga_planned_provider_definitions_test.dart
 
       - name: Reject formatting drift in reader contract surface
+        id: format
+        if: always()
         working-directory: private-source
         run: |
           dart format --output=none --set-exit-if-changed \
@@ -142,11 +147,22 @@ jobs:
           CONTROL_SHA: ${{ github.sha }}
           REVIEWED_SHA: ${{ steps.request.outputs.sha }}
           JOB_STATUS: ${{ job.status }}
+          ANALYZE_OUTCOME: ${{ steps.analyze.outcome }}
+          TESTS_OUTCOME: ${{ steps.tests.outcome }}
+          FORMAT_OUTCOME: ${{ steps.format.outcome }}
         run: |
           set -euo pipefail
           state=failure
           if [ "$JOB_STATUS" = success ]; then
             state=success
+          fi
+          failed_stage=none
+          if [ "$ANALYZE_OUTCOME" != success ]; then
+            failed_stage=analyze
+          elif [ "$TESTS_OUTCOME" != success ]; then
+            failed_stage=tests
+          elif [ "$FORMAT_OUTCOME" != success ]; then
+            failed_stage=format
           fi
           gh api --method POST \
             "repos/$GITHUB_REPOSITORY/statuses/$CONTROL_SHA" \
@@ -158,7 +174,11 @@ jobs:
             --arg controlSha "$CONTROL_SHA" \
             --arg reviewedSha "$REVIEWED_SHA" \
             --arg state "$state" \
-            '{schemaVersion:1,controlSha:$controlSha,reviewedSha:$reviewedSha,state:$state}')"
+            --arg failedStage "$failed_stage" \
+            --arg analyze "$ANALYZE_OUTCOME" \
+            --arg tests "$TESTS_OUTCOME" \
+            --arg format "$FORMAT_OUTCOME" \
+            '{schemaVersion:2,controlSha:$controlSha,reviewedSha:$reviewedSha,state:$state,failedStage:$failedStage,stages:{analyze:$analyze,tests:$tests,format:$format}}')"
           encoded="$(printf '%s\n' "$result" | base64 -w0)"
           gh api --method PUT \
             "repos/$GITHUB_REPOSITORY/contents/results/goanime-manga-reader-contract/$CONTROL_SHA.json" \
