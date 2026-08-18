@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 concurrency:
   group: goanime-manga-enabled-live-evidence-private-ci
@@ -178,3 +179,22 @@ jobs:
             "$GITHUB_WORKSPACE/private-source" \
             "$GITHUB_WORKSPACE/control" \
             "$RUNNER_TEMP/goanime-enabled-manga-evidence"
+
+      - name: Publish sanitized gate status
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTROL_SHA: ${{ github.sha }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          state=failure
+          if [ "$JOB_STATUS" = success ]; then
+            state=success
+          fi
+          gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/statuses/$CONTROL_SHA" \
+            -f state="$state" \
+            -f context='goanime/manga-enabled-reader-transport' \
+            -f description="Enabled manga reader transport gate: $JOB_STATUS"
