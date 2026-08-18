@@ -8,7 +8,7 @@ on:
       - 'triggers/goanime-manga-current-live-matrix/*.request'
 
 permissions:
-  contents: read
+  contents: write
   statuses: write
 
 concurrency:
@@ -195,6 +195,7 @@ jobs:
         run: flutter pub get >/dev/null 2>&1
 
       - name: Probe live provider
+        id: probe
         working-directory: private-source
         shell: bash
         env:
@@ -207,6 +208,13 @@ jobs:
           status=$?
           set -e
           grep -E '^(search_[0-9]+|search_[0-9]+_results|details|chapters|chapter_count|content_[0-9]+|content_[0-9]+_kind|transport_[0-9]+|verifier|terminal|[a-z0-9_]+_(type|kind|status|host))=' "$log" || true
+
+          terminal="$(grep -E '^terminal=' "$log" | tail -n 1 | cut -d= -f2- || true)"
+          problem="$(grep -E '^(search_[0-9]+|details|chapters|content_[0-9]+|transport_[0-9]+)=(failure|unreadable)$' "$log" | tail -n 1 || true)"
+          problem="${problem/=/:}"
+          echo "terminal=${terminal:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "problem=${problem:-none}" >> "$GITHUB_OUTPUT"
+
           if [ "$status" -eq 0 ] && grep -q '^terminal=readable$' "$log"; then
             echo 'live_result=readable'
             rm -f "$log"
@@ -222,7 +230,7 @@ jobs:
         if: always()
         run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control" /tmp/goanime-manga-live.log
 
-      - name: Publish sanitized provider status
+      - name: Publish sanitized provider result
         if: always()
         shell: bash
         env:
@@ -230,6 +238,9 @@ jobs:
           CONTROL_SHA: ${{ github.sha }}
           JOB_STATUS: ${{ job.status }}
           SOURCE_ID: ${{ matrix.source }}
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+          TERMINAL: ${{ steps.probe.outputs.terminal }}
+          PROBLEM: ${{ steps.probe.outputs.problem }}
         run: |
           set -euo pipefail
           state=failure
@@ -241,3 +252,24 @@ jobs:
             -f state="$state" \
             -f context="goanime/manga-live/$SOURCE_ID" \
             -f description="Manga live provider gate: $JOB_STATUS"
+
+          result="$(jq -cn \
+            --arg controlSha "$CONTROL_SHA" \
+            --arg reviewedSha "$REVIEWED_SHA" \
+            --arg sourceId "$SOURCE_ID" \
+            --arg state "$state" \
+            --arg terminal "${TERMINAL:-unknown}" \
+            --arg problem "${PROBLEM:-none}" \
+            '{schemaVersion:1,controlSha:$controlSha,reviewedSha:$reviewedSha,sourceId:$sourceId,state:$state,terminal:$terminal,problem:$problem}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          path="results/goanime-manga-live/$CONTROL_SHA/$SOURCE_ID.json"
+          for attempt in 1 2 3 4 5; do
+            if gh api --method PUT \
+              "repos/$GITHUB_REPOSITORY/contents/$path" \
+              -f message="ci(result): record manga live $SOURCE_ID" \
+              -f content="$encoded"; then
+              exit 0
+            fi
+            sleep "$attempt"
+          done
+          exit 1
