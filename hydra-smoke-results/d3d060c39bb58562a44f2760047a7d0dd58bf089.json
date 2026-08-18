@@ -1,0 +1,19 @@
+{
+  "status": "failure",
+  "targetSha": "d3d060c39bb58562a44f2760047a7d0dd58bf089",
+  "targetBranch": "test/real-source-download-e2e",
+  "requestPath": "toolchain-control/triggers/hydra-source-smoke/universal-source-download-routable-final-20260818.request",
+  "runId": 32162254707,
+  "runAttempt": 1,
+  "steps": {
+    "deps": "skipped",
+    "electron": "skipped",
+    "scrapling": "skipped",
+    "gamebounty": "skipped",
+    "ecologica": "skipped",
+    "ankergames": "skipped",
+    "trustPipeline": "skipped",
+    "downloadE2e": "skipped",
+    "directHttpManager": "skipped"
+  }
+}
