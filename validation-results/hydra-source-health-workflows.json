@@ -1,0 +1,9 @@
+{
+  "status": "success",
+  "runId": 32191236035,
+  "runAttempt": 1,
+  "steps": {
+    "guards": "success",
+    "yaml": "success"
+  }
+}
