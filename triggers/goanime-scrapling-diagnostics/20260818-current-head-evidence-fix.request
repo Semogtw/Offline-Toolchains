@@ -1,0 +1,2 @@
+target_branch=feat/scrapling-provider-pipeline
+reason=read-only current-head diagnostic after evidence attribution sanitization and strict fetch ownership separation
