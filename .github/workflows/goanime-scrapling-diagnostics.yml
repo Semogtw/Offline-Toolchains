@@ -71,14 +71,20 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
-      - name: Run MAL input preflight
-        id: preflight
-        continue-on-error: true
+      - name: Classify MAL input structure
+        id: mal_shape
         working-directory: trusted-source
         shell: bash
         run: |
           python3 scripts/goanime_probe_mal_preflight.py \
             --repo-root ../private-source
+
+      - name: Run MAL input preflight
+        id: preflight
+        continue-on-error: true
+        working-directory: private-source
+        shell: bash
+        run: python3 tools/scrapling_provider_pipeline/mal_input_preflight.py --repo-root .
 
       - name: Report preflight status
         if: always() && steps.preflight.outcome != 'skipped'
@@ -86,7 +92,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           OUTCOME: ${{ steps.preflight.outcome }}
-          CATEGORY: ${{ steps.preflight.outputs.category }}
+          CATEGORY: ${{ steps.mal_shape.outputs.category }}
         run: |
           state=failure
           [ "$OUTCOME" = success ] && state=success
