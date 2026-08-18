@@ -1,0 +1,17 @@
+{
+  "status": "success",
+  "targetSha": "d3d060c39bb58562a44f2760047a7d0dd58bf089",
+  "targetBranch": "test/real-source-download-e2e",
+  "requestPath": "triggers/hydra-validation/universal-source-download-routable-final-20260818.request",
+  "runId": 32162243775,
+  "runAttempt": 1,
+  "steps": {
+    "deps": "success",
+    "electron": "success",
+    "compilePython": "success",
+    "pythonTests": "success",
+    "localTests": "success",
+    "downloaderTests": "success",
+    "typecheck": "success"
+  }
+}
