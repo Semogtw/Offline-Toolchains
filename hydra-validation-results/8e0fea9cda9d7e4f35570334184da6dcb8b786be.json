@@ -1,0 +1,16 @@
+{
+  "status": "failure",
+  "targetSha": "8e0fea9cda9d7e4f35570334184da6dcb8b786be",
+  "targetBranch": "fix/gamebounty-mirror-trust",
+  "requestPath": "triggers/hydra-validation/2026-08-18-0149-gamebounty-8e0fea9c.request",
+  "runId": 32089680227,
+  "runAttempt": 1,
+  "steps": {
+    "deps": "success",
+    "electron": "success",
+    "compilePython": "success",
+    "pythonTests": "success",
+    "localTests": "failure",
+    "typecheck": "failure"
+  }
+}
