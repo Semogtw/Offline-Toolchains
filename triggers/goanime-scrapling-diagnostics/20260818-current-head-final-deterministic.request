@@ -1,0 +1,2 @@
+target_branch=feat/scrapling-provider-pipeline
+reason=final read-only deterministic check before canonical crawl after evidence ownership and workflow unification
