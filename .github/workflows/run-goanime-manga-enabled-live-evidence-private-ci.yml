@@ -133,7 +133,7 @@ jobs:
 
       - name: Collect enabled live evidence
         id: collect
-        if: steps.analyze.outcome == 'success' && steps.tests.outcome == 'success' && steps.format.outcome == 'success'
+        if: steps.analyze.outcome == 'success' && steps.tests.outcome == 'success'
         working-directory: private-source
         env:
           REVIEWED_SHA: ${{ steps.request.outputs.sha }}
@@ -203,9 +203,9 @@ jobs:
           failed_stage=none
           if [ "$ANALYZE" != success ]; then failed_stage=analyze
           elif [ "$TESTS" != success ]; then failed_stage=tests
-          elif [ "$FORMAT" != success ]; then failed_stage=format
           elif [ "$COLLECT" != success ]; then failed_stage=collect
           elif [ "$COVERAGE" != success ]; then failed_stage=coverage
+          elif [ "$FORMAT" != success ]; then failed_stage=format
           fi
           gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$CONTROL_SHA" \
             -f state="$state" -f context='goanime/manga-enabled-reader-transport' \
