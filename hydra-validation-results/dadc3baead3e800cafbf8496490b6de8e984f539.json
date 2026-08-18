@@ -1,0 +1,16 @@
+{
+  "status": "failure",
+  "targetSha": "dadc3baead3e800cafbf8496490b6de8e984f539",
+  "targetBranch": "perf/local-source-validation-concurrency",
+  "requestPath": "triggers/hydra-validation/2026-08-18-0333-validation-concurrency-dadc3bae.request",
+  "runId": 32094027920,
+  "runAttempt": 1,
+  "steps": {
+    "deps": "success",
+    "electron": "success",
+    "compilePython": "success",
+    "pythonTests": "success",
+    "localTests": "failure",
+    "typecheck": "success"
+  }
+}
