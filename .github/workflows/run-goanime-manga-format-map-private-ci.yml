@@ -1,0 +1,104 @@
+name: Map GoAnime manga format drift privately
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-format-map/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  format-map:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - name: Checkout control
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+      - name: Resolve revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-format-map/*.request' | head -n 1)"
+          read -r project branch sha < "control/$request"
+          test "$project" = goanime
+          test "$branch" = feature/manga-platform
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Checkout private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - name: Map drift
+        id: map
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          paths=(
+            lib/services/manga/manga_provider_policy.dart
+            lib/services/manga/manga_remote_content_probe.dart
+            lib/services/manga/manga_remote_manifest_validator.dart
+            lib/services/manga/manga_content_resolver.dart
+            lib/services/manga/manga_readability_verifier.dart
+            lib/services/manga/manga_source_discovery_service.dart
+            lib/services/manga/manga_search_coordinator.dart
+            tools/manga/collect_enabled_manga_live_evidence.dart
+            tools/manga/audit_planned_provider_stage.dart
+            test/services/manga/manga_http_stream_cancellation_test.dart
+            test/services/manga/manga_remote_content_probe_test.dart
+            test/services/manga/manga_content_resolver_test.dart
+            test/services/manga/manga_readability_verifier_test.dart
+            test/services/manga/manga_source_discovery_service_test.dart
+            test/tools/manga/audit_planned_provider_stage_test.dart
+            test/helpers/manga_provider_contract_harness.dart
+            test/helpers/manga_provider_contract_harness_test.dart
+            test/architecture/manga_planned_provider_definitions_test.dart
+          )
+          : >/tmp/drift
+          for path in "${paths[@]}"; do
+            dart format --output=none --set-exit-if-changed "$path" >/dev/null 2>&1 || echo "$path" >>/tmp/drift
+          done
+          echo "files=$(jq -Rsc 'split("\n")|map(select(length>0))' </tmp/drift)" >> "$GITHUB_OUTPUT"
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control" /tmp/drift
+      - name: Publish sanitized map
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTROL_SHA: ${{ github.sha }}
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+          FILES: ${{ steps.map.outputs.files }}
+        run: |
+          set -euo pipefail
+          files="${FILES:-[]}"
+          result="$(jq -cn --arg controlSha "$CONTROL_SHA" --arg reviewedSha "$REVIEWED_SHA" --argjson files "$files" '{schemaVersion:1,controlSha:$controlSha,reviewedSha:$reviewedSha,files:$files,count:($files|length)}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/results/goanime-manga-format-map/$CONTROL_SHA.json" -f message="ci(result): map manga format drift $CONTROL_SHA" -f content="$encoded"
