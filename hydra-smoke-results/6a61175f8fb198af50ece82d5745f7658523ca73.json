@@ -1,9 +1,19 @@
 {
-  "status": "running",
+  "status": "success",
   "targetSha": "6a61175f8fb198af50ece82d5745f7658523ca73",
   "targetBranch": "test/real-source-download-e2e",
   "requestPath": "toolchain-control/triggers/hydra-source-smoke/universal-source-anker-challenge-fix-20260818.request",
   "runId": 32166257765,
   "runAttempt": 1,
-  "steps": {}
+  "steps": {
+    "deps": "success",
+    "electron": "success",
+    "scrapling": "success",
+    "gamebounty": "success",
+    "ecologica": "success",
+    "ankergames": "success",
+    "trustPipeline": "success",
+    "downloadE2e": "success",
+    "directHttpManager": "success"
+  }
 }
