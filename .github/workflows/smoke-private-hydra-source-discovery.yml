@@ -243,7 +243,7 @@ jobs:
             --arg trustPipeline "$TRUST_PIPELINE_OUTCOME" \
             --arg downloadE2e "$DOWNLOAD_E2E_OUTCOME" \
             --arg directHttpManager "$DIRECT_HTTP_MANAGER_OUTCOME" \
-            '{status:$status,targetSha:$targetSha,targetBranch:$targetBranch,requestPath:$requestPath,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),steps:{deps:$deps,electron:$electron,scrapling:$scrapling,gamebounty:$gamebounty,ecologica:$ecologica,ankergames:$ankergames,trustPipeline:$trustPipeline,downloadE2e:$downloadE2E,directHttpManager:$directHttpManager}}')"
+            '{status:$status,targetSha:$targetSha,targetBranch:$targetBranch,requestPath:$requestPath,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),steps:{deps:$deps,electron:$electron,scrapling:$scrapling,gamebounty:$gamebounty,ecologica:$ecologica,ankergames:$ankergames,trustPipeline:$trustPipeline,downloadE2e:$downloadE2e,directHttpManager:$directHttpManager}}')"
           path="hydra-smoke-results/${TARGET_SHA}.json"
           encoded="$(printf '%s\n' "$result" | base64 -w0)"
           current_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=hydra-validation-results" --jq '.sha' 2>/dev/null || true)"
