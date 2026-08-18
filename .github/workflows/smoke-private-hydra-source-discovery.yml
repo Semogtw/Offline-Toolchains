@@ -168,6 +168,15 @@ jobs:
             src/main/services/local-download-sources/local-source-download-e2e.test.ts \
             src/shared/downloaders.test.ts
 
+      - name: Smoke DirectHttp through DownloadManager
+        id: direct_http_manager
+        working-directory: private-source
+        shell: bash
+        run: |
+          xvfb-run -a ./node_modules/.bin/electron \
+            --no-sandbox --disable-gpu --disable-dev-shm-usage \
+            scripts/run-direct-http-download-real-smoke.cjs
+
       - name: Publish smoke status
         if: ${{ always() && steps.request.outputs.expected_sha != '' }}
         shell: bash
@@ -184,10 +193,11 @@ jobs:
           ANKERGAMES_OUTCOME: ${{ steps.ankergames.outcome }}
           TRUST_PIPELINE_OUTCOME: ${{ steps.trust_pipeline.outcome }}
           DOWNLOAD_E2E_OUTCOME: ${{ steps.download_e2e.outcome }}
+          DIRECT_HTTP_MANAGER_OUTCOME: ${{ steps.direct_http_manager.outcome }}
         run: |
           set -euo pipefail
           status=success
-          for outcome in "$DEPS_OUTCOME" "$ELECTRON_OUTCOME" "$SCRAPLING_OUTCOME" "$GAMEBOUNTY_OUTCOME" "$ECOLOGICA_OUTCOME" "$ANKERGAMES_OUTCOME" "$TRUST_PIPELINE_OUTCOME" "$DOWNLOAD_E2E_OUTCOME"; do
+          for outcome in "$DEPS_OUTCOME" "$ELECTRON_OUTCOME" "$SCRAPLING_OUTCOME" "$GAMEBOUNTY_OUTCOME" "$ECOLOGICA_OUTCOME" "$ANKERGAMES_OUTCOME" "$TRUST_PIPELINE_OUTCOME" "$DOWNLOAD_E2E_OUTCOME" "$DIRECT_HTTP_MANAGER_OUTCOME"; do
             if [ "$outcome" != "success" ]; then
               status=failure
             fi
@@ -207,7 +217,8 @@ jobs:
             --arg ankergames "$ANKERGAMES_OUTCOME" \
             --arg trustPipeline "$TRUST_PIPELINE_OUTCOME" \
             --arg downloadE2e "$DOWNLOAD_E2E_OUTCOME" \
-            '{status:$status,targetSha:$targetSha,targetBranch:$targetBranch,requestPath:$requestPath,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),steps:{deps:$deps,electron:$electron,scrapling:$scrapling,gamebounty:$gamebounty,ecologica:$ecologica,ankergames:$ankergames,trustPipeline:$trustPipeline,downloadE2e:$downloadE2e}}')"
+            --arg directHttpManager "$DIRECT_HTTP_MANAGER_OUTCOME" \
+            '{status:$status,targetSha:$targetSha,targetBranch:$targetBranch,requestPath:$requestPath,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),steps:{deps:$deps,electron:$electron,scrapling:$scrapling,gamebounty:$gamebounty,ecologica:$ecologica,ankergames:$ankergames,trustPipeline:$trustPipeline,downloadE2e:$downloadE2e,directHttpManager:$directHttpManager}}')"
           path="hydra-smoke-results/${TARGET_SHA}.json"
           encoded="$(printf '%s\n' "$result" | base64 -w0)"
           current_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=hydra-validation-results" --jq '.sha' 2>/dev/null || true)"
