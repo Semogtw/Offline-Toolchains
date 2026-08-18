@@ -44,12 +44,7 @@ def _changed_paths(event: dict[str, object]) -> tuple[set[str], set[str]]:
 
 
 def _git_changed_paths(workspace: Path) -> tuple[set[str], set[str]]:
-    """Read the triggering commit's path changes from the trusted checkout.
-
-    GitHub push payloads can omit or truncate the useful per-commit path lists.
-    The checked-out Toolchains commit is the stronger source of truth whenever
-    its parent is available (workflows using this helper fetch depth >= 2).
-    """
+    """Read the triggering commit's path changes from the trusted checkout."""
     result = subprocess.run(
         [
             "git",
@@ -124,6 +119,13 @@ def _validate_branch(branch: str) -> None:
         raise SystemExit("refresh request target_branch is invalid")
 
 
+def _validate_optional_sha(value: str, *, source: str) -> str:
+    sha = value.strip().lower()
+    if sha and not _SHA40.fullmatch(sha):
+        raise SystemExit(f"{source} must be a full 40-character SHA")
+    return sha
+
+
 def _write_outputs(values: Iterable[tuple[str, str]]) -> None:
     output_path = os.environ.get("GITHUB_OUTPUT", "")
     if not output_path:
@@ -161,9 +163,11 @@ def resolve_push_request(
     request_path = workspace / request_paths[0]
     values = _parse_request(request_path)
     target_branch = values.get("target_branch", "")
-    source_hint = values.get("source_hint", "").lower()
+    source_hint = _validate_optional_sha(
+        values.get("source_hint", ""), source="refresh request source_hint"
+    )
     _validate_branch(target_branch)
-    if not _SHA40.fullmatch(source_hint):
+    if not source_hint:
         raise SystemExit("refresh request source_hint must be a full 40-character SHA")
     return target_branch, source_hint
 
@@ -174,6 +178,7 @@ def main() -> int:
     parser.add_argument("--workspace", type=Path, default=Path("."))
     parser.add_argument("--default-branch", default="feat/scrapling-provider-pipeline")
     parser.add_argument("--dispatch-target", default="")
+    parser.add_argument("--dispatch-source-hint", default="")
     args = parser.parse_args()
 
     event_name = os.environ.get("GITHUB_EVENT_NAME", "")
@@ -192,7 +197,10 @@ def main() -> int:
     else:
         target_branch = args.dispatch_target.strip() or args.default_branch
         _validate_branch(target_branch)
-        source_hint = ""
+        source_hint = _validate_optional_sha(
+            args.dispatch_source_hint,
+            source="workflow dispatch source_hint",
+        )
 
     _write_outputs(
         (
@@ -202,7 +210,7 @@ def main() -> int:
     )
     print(f"Refresh target resolved: {target_branch}")
     print(
-        "Source revision is pinned by request."
+        "Source revision is pinned by request/dispatch."
         if source_hint
         else "Source revision will be pinned after checkout."
     )
