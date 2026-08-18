@@ -16,9 +16,109 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate-auditor:
+    name: Validate manga live auditor
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control request
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-current-live-matrix/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = goanime
+          test "$branch" = feature/manga-platform
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Validate byte-aware live auditor
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter analyze --no-pub \
+            tools/manga/audit_planned_provider_stage.dart \
+            test/tools/manga/audit_planned_provider_stage_test.dart \
+            lib/services/manga/manga_remote_content_probe.dart \
+            test/services/manga/manga_remote_content_probe_test.dart
+          flutter test --no-pub \
+            test/tools/manga/audit_planned_provider_stage_test.dart \
+            test/services/manga/manga_remote_content_probe_test.dart
+          dart format --output=none --set-exit-if-changed \
+            tools/manga/audit_planned_provider_stage.dart \
+            test/tools/manga/audit_planned_provider_stage_test.dart \
+            lib/services/manga/manga_remote_content_probe.dart \
+            test/services/manga/manga_remote_content_probe_test.dart
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control"
+
+      - name: Publish sanitized auditor validation status
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTROL_SHA: ${{ github.sha }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          state=failure
+          if [ "$JOB_STATUS" = success ]; then
+            state=success
+          fi
+          gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/statuses/$CONTROL_SHA" \
+            -f state="$state" \
+            -f context='goanime/manga-live-auditor-validation' \
+            -f description="Manga live auditor validation: $JOB_STATUS"
+
   live-source:
     name: Live ${{ matrix.source }}
-    if: github.actor == github.repository_owner
+    needs: validate-auditor
+    if: github.actor == github.repository_owner && needs.validate-auditor.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     strategy:
@@ -106,7 +206,7 @@ jobs:
           timeout 240s dart run tools/manga/audit_planned_provider_stage.dart "$SOURCE_ID" >"$log" 2>&1
           status=$?
           set -e
-          grep -E '^(search_[0-9]+|search_[0-9]+_results|details|chapters|chapter_count|content_[0-9]+|content_[0-9]+_kind|verifier|terminal|[a-z0-9_]+_(type|kind|status|host))=' "$log" || true
+          grep -E '^(search_[0-9]+|search_[0-9]+_results|details|chapters|chapter_count|content_[0-9]+|content_[0-9]+_kind|transport_[0-9]+|verifier|terminal|[a-z0-9_]+_(type|kind|status|host))=' "$log" || true
           if [ "$status" -eq 0 ] && grep -q '^terminal=readable$' "$log"; then
             echo 'live_result=readable'
             rm -f "$log"
