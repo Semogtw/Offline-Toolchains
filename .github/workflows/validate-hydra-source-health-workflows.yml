@@ -1,0 +1,74 @@
+name: Validate Hydra source health workflows
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/smoke-private-hydra-source-discovery.yml"
+      - ".github/workflows/validate-private-hydra-branch.yml"
+      - ".github/workflows/validate-private-hydra-source-packaging.yml"
+      - ".github/workflows/validate-hydra-source-health-workflows.yml"
+      - "scripts/validate-hydra-source-health-workflows.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: validate-hydra-source-health-workflows
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    if: github.repository_owner == 'Semogtw'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Toolchains
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          show-progress: false
+
+      - name: Validate scheduled Hydra guards
+        id: guards
+        run: python3 scripts/validate-hydra-source-health-workflows.py
+
+      - name: Parse workflow YAML
+        id: yaml
+        shell: bash
+        run: |
+          ruby -e 'require "yaml"; ARGV.each { |path| YAML.load_file(path, aliases: true) }' \
+            .github/workflows/smoke-private-hydra-source-discovery.yml \
+            .github/workflows/validate-private-hydra-branch.yml \
+            .github/workflows/validate-private-hydra-source-packaging.yml \
+            .github/workflows/validate-hydra-source-health-workflows.yml
+
+      - name: Publish validation receipt
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GUARDS_OUTCOME: ${{ steps.guards.outcome }}
+          YAML_OUTCOME: ${{ steps.yaml.outcome }}
+        run: |
+          set -euo pipefail
+          status=success
+          if [ "$GUARDS_OUTCOME" != "success" ] || [ "$YAML_OUTCOME" != "success" ]; then
+            status=failure
+          fi
+          result="$(jq -n \
+            --arg status "$status" \
+            --arg runId "$GITHUB_RUN_ID" \
+            --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
+            --arg guards "$GUARDS_OUTCOME" \
+            --arg yaml "$YAML_OUTCOME" \
+            '{status:$status,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),steps:{guards:$guards,yaml:$yaml}}')"
+          path="validation-results/hydra-source-health-workflows.json"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          current_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=main" --jq '.sha' 2>/dev/null || true)"
+          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/${path}" -f "message=ci(hydra): record source health workflow validation" -f "content=${encoded}" -f "branch=main")
+          if [ -n "$current_sha" ]; then
+            args+=(-f "sha=${current_sha}")
+          fi
+          gh api "${args[@]}" >/dev/null
