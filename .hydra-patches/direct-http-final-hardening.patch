@@ -1,0 +1,74 @@
+diff --git a/src/main/services/download/download-manager.ts b/src/main/services/download/download-manager.ts
+--- a/src/main/services/download/download-manager.ts
++++ b/src/main/services/download/download-manager.ts
+@@ -42,4 +42,5 @@ import {
+ import { shouldFinalizeDownload } from "./download-completion";
+ import { normalizeDownloadRelativePath } from "./download-path-policy";
+ import { resolveExtractionSourcePath } from "./extraction-target-policy";
++import { validateDirectHttpDownloadUri } from "./validate-direct-http-download-uri";
+ 
+@@ -1123,32 +1124,20 @@ export class DownloadManager {
+       case Downloader.Rootz:
+         return this.getRootzDownloadOptions(download, resumingFilename);
+       case Downloader.DirectHttp: {
+-        let parsed: URL;
+-        try {
+-          parsed = new URL(download.uri);
+-        } catch {
+-          throw new Error("Invalid direct HTTP download URL");
+-        }
+-
+-        if (
+-          !["http:", "https:"].includes(parsed.protocol) ||
+-          parsed.username ||
+-          parsed.password
+-        ) {
+-          throw new Error("Invalid direct HTTP download URL");
+-        }
+-
+-        const directUrl = parsed.toString();
++        const directUrl = await validateDirectHttpDownloadUri(
++          download.downloader,
++          download.uri
++        );
+         const filename = this.resolveFilename(
+           resumingFilename,
+           download.uri,
+           directUrl
+         );
+         return this.buildDownloadOptions(
+           directUrl,
+           download.downloadPath,
+           filename
+         );
+       }
+       default:
+         return null;
+diff --git a/src/renderer/src/pages/game-details/modals/download-settings-modal-base.tsx b/src/renderer/src/pages/game-details/modals/download-settings-modal-base.tsx
+--- a/src/renderer/src/pages/game-details/modals/download-settings-modal-base.tsx
++++ b/src/renderer/src/pages/game-details/modals/download-settings-modal-base.tsx
+@@ -300,9 +300,11 @@ export function DownloadSettingsModal({
+ 
+     return (
+       repack.uris.find((uri) =>
+-        getDownloadersForUri(uri).includes(selectedDownloader)
++        getDownloadersForUri(uri, {
++          allowDirectHttp: repack.id.startsWith("local:"),
++        }).includes(selectedDownloader)
+       ) ?? null
+     );
+   }, [repack, selectedDownloader]);
+@@ -349,8 +351,11 @@ export function DownloadSettingsModal({
+     >();
+ 
+     if (repack) {
++      const allowDirectHttp = repack.id.startsWith("local:");
++
+       for (const uri of repack.uris) {
+-        const uriDownloaders = getDownloadersForUri(uri);
++        const uriDownloaders = getDownloadersForUri(uri, {
++          allowDirectHttp,
++        });
+         const isAvailable = !unavailableUrisSet.has(uri);
+ 
+         for (const downloader of uriDownloaders) {
