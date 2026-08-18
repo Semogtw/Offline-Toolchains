@@ -1,0 +1,211 @@
+name: Format private Hydra file
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "triggers/hydra-format/*.request"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: format-private-hydra-file
+  cancel-in-progress: false
+
+jobs:
+  format:
+    if: github.repository_owner == 'Semogtw'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact formatting request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/hydra-format/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch expected_sha target_path < "toolchain-control/$request"
+          test "$project" = "hydra"
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ ]]
+          [[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$target_path" =~ ^src/[A-Za-z0-9._/-]+\.(js|jsx|cjs|mjs|ts|tsx|cts|mts)$ ]]
+          [[ "$target_path" != *".."* ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "expected_sha=$expected_sha" >> "$GITHUB_OUTPUT"
+          echo "target_path=$target_path" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private Hydra revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/HydraPersonalizado
+          ref: ${{ steps.request.outputs.expected_sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify requested branch still points to revision
+        working-directory: private-source
+        shell: bash
+        env:
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_sha="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/HydraPersonalizado.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_sha" = "$EXPECTED_SHA"
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22.23.1"
+          check-latest: false
+
+      - name: Activate Yarn 1
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare yarn@1.22.22 --activate
+
+      - name: Install exact JavaScript dependencies
+        working-directory: private-source
+        shell: bash
+        env:
+          CI: "true"
+        run: yarn install --frozen-lockfile --ignore-scripts --non-interactive
+
+      - name: Format only requested file
+        id: formatted
+        working-directory: private-source
+        shell: bash
+        env:
+          TARGET_PATH: ${{ steps.request.outputs.target_path }}
+        run: |
+          set -euo pipefail
+          test -f "$TARGET_PATH"
+          ./node_modules/.bin/prettier --write "$TARGET_PATH" >/dev/null
+          git diff --check
+          mapfile -t changed < <(git diff --name-only)
+          test "${#changed[@]}" -eq 1
+          test "${changed[0]}" = "$TARGET_PATH"
+          echo "blob=$(git hash-object "$TARGET_PATH")" >> "$GITHUB_OUTPUT"
+
+      - name: Encrypt formatted file
+        id: encrypted
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+          TARGET_PATH: ${{ steps.request.outputs.target_path }}
+          TARGET_SHA: ${{ steps.request.outputs.expected_sha }}
+          FORMATTED_BLOB: ${{ steps.formatted.outputs.blob }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/hydra-format"
+          package="$work/package"
+          transfer="$work/transfer"
+          gpg_home="$work/gpg"
+          plaintext="$work/formatted.tar.zst"
+          rm -rf "$work"
+          mkdir -p "$package/formatted/$(dirname "$TARGET_PATH")" "$transfer" "$gpg_home"
+          chmod 700 "$gpg_home"
+          cp "private-source/$TARGET_PATH" "$package/formatted/$TARGET_PATH"
+          jq -n \
+            --arg targetSha "$TARGET_SHA" \
+            --arg targetPath "$TARGET_PATH" \
+            --arg formattedBlob "$FORMATTED_BLOB" \
+            '{schemaVersion:1,project:"hydra",targetSha:$targetSha,targetPath:$targetPath,formattedBlob:$formattedBlob}' \
+            > "$package/MANIFEST.json"
+          tar -C "$package" -I 'zstd -T0 -6' -cf "$plaintext" .
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import toolchain-control/keys/source-bundles-public.asc >/dev/null
+          fingerprint="$({ gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT"; } | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          gpg --batch --yes --trust-model always \
+            --recipient "$EXPECTED_FINGERPRINT" \
+            --output "$transfer/formatted.gpg" \
+            --encrypt "$plaintext"
+          (cd "$transfer" && sha256sum formatted.gpg > ENCRYPTED.sha256)
+          rm -rf "$package" "$plaintext" "$gpg_home" "$GITHUB_WORKSPACE/private-source"
+          echo "transfer=$transfer" >> "$GITHUB_OUTPUT"
+
+      - name: Upload encrypted formatted file
+        uses: actions/upload-artifact@v7
+        with:
+          name: private-hydra-formatted-file
+          path: ${{ steps.encrypted.outputs.transfer }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Remove private transient data
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$RUNNER_TEMP/hydra-format"
+
+  report:
+    name: Publish sanitized formatting receipt
+    needs: format
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Publish sanitized receipt
+        uses: actions/github-script@v8
+        env:
+          FORMAT_RESULT: ${{ needs.format.result }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const artifacts = await github.paginate(
+              github.rest.actions.listWorkflowRunArtifacts,
+              { owner, repo, run_id: context.runId, per_page: 100 },
+            );
+            const selected = artifacts.filter(
+              (artifact) => artifact.name === 'private-hydra-formatted-file',
+            );
+            const artifactLines = selected.length === 0
+              ? '- Artifacts: none'
+              : [
+                  '- Artifacts:',
+                  ...selected.map((artifact) =>
+                    `  - \`${artifact.name}\` — ID \`${artifact.id}\` — ${artifact.size_in_bytes} bytes — expires ${artifact.expires_at}`
+                  ),
+                ].join('\n');
+            const body = [
+              `<!-- private-hydra-format-run:${context.runId} -->`,
+              '### Format private Hydra file',
+              '',
+              `- Run: [${context.runId}](https://github.com/${owner}/${repo}/actions/runs/${context.runId})`,
+              `- Conclusion: \`${process.env.FORMAT_RESULT}\``,
+              artifactLines,
+              '- Private source contents and target path are intentionally omitted.',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: 4,
+              body,
+            });
