@@ -41,18 +41,17 @@ jobs:
           set -euo pipefail
           request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/hydra-private-patch/*.request' | head -n 1)"
           test -n "$request"
-          read -r project branch base_sha patch_path < "toolchain-control/$request"
+          read -r project branch base_sha patch_path patch_sha256 < "toolchain-control/$request"
           test "$project" = "hydra"
           [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ ]]
           [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]]
           [[ "$patch_path" =~ ^\.hydra-patches/[A-Za-z0-9._/-]+\.patch$ ]]
+          [[ "$patch_sha256" =~ ^[0-9a-f]{64}$ ]]
           test -f "toolchain-control/$patch_path"
           test ! -L "toolchain-control/$patch_path"
           test "$(wc -c < "toolchain-control/$patch_path")" -le 4194304
-          git -C toolchain-control diff --quiet HEAD^ HEAD -- "$patch_path" && {
-            echo 'Patch file must be added or changed in the same control commit.' >&2
-            exit 1
-          }
+          actual_patch_sha256="$(sha256sum "toolchain-control/$patch_path" | awk '{print $1}')"
+          test "$actual_patch_sha256" = "$patch_sha256"
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
           echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
           echo "patch_path=$patch_path" >> "$GITHUB_OUTPUT"
