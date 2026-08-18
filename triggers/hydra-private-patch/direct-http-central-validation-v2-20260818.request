@@ -1,0 +1,1 @@
+hydra test/real-source-download-e2e d3d060c39bb58562a44f2760047a7d0dd58bf089 .hydra-patches/direct-http-central-validation.patch fdb7f8e33c19017b10a7b2df8ac48cc6003780932cae351a231b6bd33f44e2c8
