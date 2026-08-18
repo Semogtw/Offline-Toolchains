@@ -227,3 +227,56 @@ jobs:
             echo '- Private repository/ref/commit details are intentionally omitted.'
             echo '- Debug APK and private checkout were verification-only and discarded.'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  report:
+    name: Publish sanitized GoAnime CI result
+    if: always()
+    needs: [normalize, verify]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+
+    steps:
+      - name: Publish result without private source access
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NORMALIZE_RESULT: ${{ needs.normalize.result }}
+          VERIFY_RESULT: ${{ needs.verify.result }}
+          TOOLCHAINS_TRIGGER_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/goanime-full-ci-report.json"
+          python3 - "$report" <<'PY'
+          import json
+          import os
+          import sys
+          from datetime import datetime, timezone
+
+          payload = {
+              "schemaVersion": 1,
+              "runId": int(os.environ["RUN_ID"]),
+              "runAttempt": int(os.environ["RUN_ATTEMPT"]),
+              "toolchainsTriggerSha": os.environ["TOOLCHAINS_TRIGGER_SHA"],
+              "event": os.environ["EVENT_NAME"],
+              "normalizeResult": os.environ["NORMALIZE_RESULT"],
+              "verifyResult": os.environ["VERIFY_RESULT"],
+              "finishedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+          }
+          with open(sys.argv[1], "w", encoding="utf-8") as stream:
+              json.dump(payload, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          PY
+          encoded="$(base64 -w0 < "$report")"
+          path="reports/goanime-full-ci/${RUN_ID}.json"
+          gh api \
+            --method PUT \
+            "repos/${GITHUB_REPOSITORY}/contents/${path}" \
+            -f "message=ci(goanime): report full CI run ${RUN_ID}" \
+            -f "content=${encoded}" \
+            >/dev/null
