@@ -39,62 +39,13 @@ jobs:
 
       - name: Resolve source-bound request
         id: request
+        working-directory: trusted-source
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import json
-          import os
-          import re
-          import subprocess
-          from pathlib import Path
-
-          event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text(encoding='utf-8'))
-          changed = set()
-          removed = set()
-          for commit in event.get('commits') or []:
-              for key in ('added', 'modified'):
-                  changed.update(commit.get(key) or [])
-              removed.update(commit.get('removed') or [])
-          pattern = re.compile(r'^triggers/goanime-scrapling-diagnostics/[^/]+\.request$')
-          requests = sorted(path for path in changed if pattern.fullmatch(path))
-          if any(pattern.fullmatch(path) for path in removed):
-              raise SystemExit('Deleting a diagnostic request cannot trigger a run')
-          if len(requests) != 1:
-              raise SystemExit(f'Expected exactly one diagnostic request, got {len(requests)}')
-
-          values = {}
-          path = Path('trusted-source') / requests[0]
-          for raw_line in path.read_text(encoding='utf-8').splitlines():
-              line = raw_line.strip()
-              if not line or line.startswith('#'):
-                  continue
-              if '=' not in line:
-                  raise SystemExit(f'Malformed diagnostic request line: {line!r}')
-              key, value = line.split('=', 1)
-              key = key.strip()
-              value = value.strip()
-              if key not in {'target_branch', 'source_hint', 'reason'}:
-                  raise SystemExit(f'Unknown diagnostic request key: {key}')
-              if key in values:
-                  raise SystemExit(f'Duplicate diagnostic request key: {key}')
-              values[key] = value
-
-          branch = values.get('target_branch', '')
-          sha = values.get('source_hint', '').lower()
-          if subprocess.run(
-              ['git', 'check-ref-format', '--branch', branch],
-              stdout=subprocess.DEVNULL,
-              stderr=subprocess.DEVNULL,
-              check=False,
-          ).returncode != 0:
-              raise SystemExit(f'Invalid target branch: {branch!r}')
-          if not re.fullmatch(r'[0-9a-f]{40}', sha):
-              raise SystemExit('source_hint must be a full 40-character SHA')
-          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-              output.write(f'target_branch={branch}\n')
-              output.write(f'source_hint={sha}\n')
-          PY
+          python3 scripts/goanime_resolve_request.py \
+            --request-dir triggers/goanime-scrapling-diagnostics \
+            --workspace .
 
       - name: Checkout exact private GoAnime source
         id: source_checkout
@@ -173,7 +124,9 @@ jobs:
           set -euo pipefail
           python -m pip install --disable-pip-version-check --requirement tools/scrapling_provider_pipeline/requirements.txt
           scrapling install
-          python -m patchright install chromium
+          python ../trusted-source/scripts/goanime_install_patchright.py \
+            --browser chromium \
+            --attempts 3
           python - <<'PY'
           import importlib.metadata
           expected = {
