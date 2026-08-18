@@ -42,7 +42,7 @@ jobs:
       - name: Checkout trusted request validator
         uses: actions/checkout@v6
         with:
-          ref: main
+          ref: ${{ github.sha }}
           path: trusted-source
           persist-credentials: false
           sparse-checkout: |
