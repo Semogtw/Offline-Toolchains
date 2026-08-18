@@ -97,6 +97,7 @@ jobs:
           PY
 
       - name: Checkout exact private GoAnime source
+        id: source_checkout
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
@@ -110,6 +111,7 @@ jobs:
           show-progress: false
 
       - name: Verify exact GoAnime revision
+        id: source_verify
         working-directory: private-source
         shell: bash
         env:
@@ -240,13 +242,35 @@ jobs:
             --state success \
             --context goanime-scrapling/diagnostics
 
-      - name: Mark diagnostics failed
+      - name: Classify early diagnostic failure
         if: failure()
         continue-on-error: true
         working-directory: trusted-source
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          REQUEST_OUTCOME: ${{ steps.request.outcome }}
+          CHECKOUT_OUTCOME: ${{ steps.source_checkout.outcome }}
+          VERIFY_OUTCOME: ${{ steps.source_verify.outcome }}
+          PREFLIGHT_OUTCOME: ${{ steps.preflight.outcome }}
+          SETUP_OUTCOME: ${{ steps.setup_python.outcome }}
+          TOOLCHAIN_OUTCOME: ${{ steps.toolchain.outcome }}
+          TESTS_OUTCOME: ${{ steps.tests.outcome }}
         run: |
+          context=diagnostics
+          if [ "$REQUEST_OUTCOME" != success ]; then
+            context=request
+          elif [ "$CHECKOUT_OUTCOME" != success ] || [ "$VERIFY_OUTCOME" != success ]; then
+            context=source
+          elif [ "$PREFLIGHT_OUTCOME" != success ]; then
+            context=preflight
+          elif [ "$SETUP_OUTCOME" != success ] || [ "$TOOLCHAIN_OUTCOME" != success ]; then
+            context=toolchain
+          elif [ "$TESTS_OUTCOME" != success ]; then
+            context=tests
+          fi
+          python3 scripts/goanime_post_status.py \
+            --state failure \
+            --context "goanime-scrapling/$context"
           python3 scripts/goanime_post_status.py \
             --state failure \
             --context goanime-scrapling/diagnostics
