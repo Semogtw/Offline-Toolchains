@@ -24,7 +24,7 @@ permissions:
 
 concurrency:
   group: goanime-scrapling-provider-cache
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   refresh:
