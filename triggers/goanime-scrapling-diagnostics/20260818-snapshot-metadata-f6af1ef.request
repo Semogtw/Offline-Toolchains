@@ -1,0 +1,3 @@
+target_branch=feat/scrapling-provider-pipeline
+source_hint=f6af1ef001c74033c44da3b0488ea84bb74920f5
+reason=validate snapshot counters UTC timestamps and generation coherence
