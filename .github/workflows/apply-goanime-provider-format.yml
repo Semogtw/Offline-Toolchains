@@ -1,0 +1,118 @@
+name: Apply GoAnime provider branch formatting
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-goanime-provider-format.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-provider-format-apply
+  cancel-in-progress: false
+
+env:
+  TARGET_BRANCH: feat/scrapling-provider-pipeline
+  EXPECTED_HEAD: c376f6168be5daf884d99c5ca922252d2e200b05
+  FLUTTER_VERSION: 3.44.1
+
+jobs:
+  format:
+    name: Format exact provider branch and publish atomic commit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Require read and write credentials
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          GOANIME_CATALOG_WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: |
+          test -n "$PRIVATE_REPOSITORIES_TOKEN"
+          test -n "$GOANIME_CATALOG_WRITE_TOKEN"
+
+      - name: Checkout exact expected private source read-only
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.EXPECTED_HEAD }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up pinned Flutter formatter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: false
+
+      - name: Format and enforce narrow diff
+        id: format
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          dart format lib test packages tools
+          git diff --check
+          mapfile -t changed < <(git diff --name-only --diff-filter=ACMRT)
+          test "${#changed[@]}" -gt 0 || { echo 'No formatting changes required.'; echo 'changed=false' >> "$GITHUB_OUTPUT"; exit 0; }
+          for path in "${changed[@]}"; do
+            case "$path" in
+              lib/*.dart|lib/**/*.dart|test/*.dart|test/**/*.dart|packages/*.dart|packages/**/*.dart|tools/*.dart|tools/**/*.dart) ;;
+              *) echo "Unexpected formatter change: $path" >&2; exit 1 ;;
+            esac
+          done
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+          printf 'Formatted %d Dart files.\n' "${#changed[@]}"
+
+      - name: Verify remote branch did not move
+        if: steps.format.outputs.changed == 'true'
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          remote_head="$(git ls-remote "https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git" "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_HEAD" || {
+            echo "Target branch moved; refusing stale formatting publish." >&2
+            exit 1
+          }
+
+      - name: Commit formatting locally
+        if: steps.format.outputs.changed == 'true'
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- lib test packages tools
+          git commit -m 'style: apply pinned Dart formatting'
+
+      - name: Publish formatting commit
+        if: steps.format.outputs.changed == 'true'
+        working-directory: private-source
+        shell: bash
+        env:
+          GOANIME_CATALOG_WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          git remote set-url origin "https://x-access-token:${GOANIME_CATALOG_WRITE_TOKEN}@github.com/Semogtw/goanime-mobile.git"
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          git remote set-url origin 'https://github.com/Semogtw/goanime-mobile.git'
+
+      - name: Cleanup private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
