@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - 'triggers/hydra-validation/*.request'
+  schedule:
+    - cron: '17 10 * * 0'
 
 permissions:
   contents: write
@@ -15,15 +17,15 @@ concurrency:
 
 jobs:
   validate:
-    if: github.actor == github.repository_owner
+    if: github.repository_owner == 'Semogtw'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    env:
+      PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
 
     steps:
       - name: Require private repository token
         shell: bash
-        env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
         run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
 
       - name: Checkout trusted control files
@@ -39,10 +41,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/hydra-validation/*.request' | head -n 1)"
-          test -n "$request"
-          read -r project branch expected_sha < "toolchain-control/$request"
-          test "$project" = "hydra"
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            branch="main"
+            auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+            expected_sha="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/HydraPersonalizado.git refs/heads/main | awk '{print $1}')"
+            request="schedule:hydra-main"
+          else
+            request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/hydra-validation/*.request' | head -n 1)"
+            test -n "$request"
+            read -r project branch expected_sha < "toolchain-control/$request"
+            test "$project" = "hydra"
+          fi
           [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ ]]
           [[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]]
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
@@ -66,7 +75,6 @@ jobs:
         working-directory: private-source
         shell: bash
         env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           TARGET_BRANCH: ${{ steps.request.outputs.branch }}
           EXPECTED_SHA: ${{ steps.request.outputs.expected_sha }}
         run: |
