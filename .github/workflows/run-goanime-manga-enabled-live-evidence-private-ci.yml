@@ -24,7 +24,6 @@ jobs:
 
     steps:
       - name: Require private repository token
-        shell: bash
         env:
           PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
         run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
@@ -74,45 +73,68 @@ jobs:
         working-directory: private-source
         run: flutter pub get >/dev/null 2>&1
 
-      - name: Validate and normalize enabled evidence transport
-        id: format
+      - name: Analyze enabled reader evidence surface
+        id: analyze
         working-directory: private-source
-        shell: bash
         run: |
-          set -euo pipefail
           flutter analyze --no-pub \
+            lib/services/manga/manga_provider_policy.dart \
+            lib/services/manga/manga_http_client.dart \
+            lib/services/manga/manga_remote_content_probe.dart \
+            lib/services/manga/manga_remote_manifest_validator.dart \
+            lib/services/manga/manga_readability_verifier.dart \
+            lib/services/manga/manga_source_discovery_service.dart \
+            lib/services/manga/manga_search_coordinator.dart \
+            lib/services/manga/manga_content_resolver.dart \
             tools/manga/collect_enabled_manga_live_evidence.dart \
             test/tools/manga/collect_enabled_manga_live_evidence_test.dart \
-            lib/services/manga/manga_remote_content_probe.dart \
-            test/services/manga/manga_remote_content_probe_test.dart
+            test/services/manga/manga_remote_content_probe_test.dart \
+            test/services/manga/manga_http_stream_cancellation_test.dart \
+            test/services/manga/manga_readability_verifier_test.dart \
+            test/services/manga/manga_source_discovery_service_test.dart \
+            test/services/manga/manga_content_resolver_test.dart
+
+      - name: Run enabled reader evidence tests
+        id: tests
+        if: always()
+        working-directory: private-source
+        run: |
           flutter test --no-pub \
             test/tools/manga/collect_enabled_manga_live_evidence_test.dart \
-            test/services/manga/manga_remote_content_probe_test.dart
-          dart format \
+            test/services/manga/manga_remote_content_probe_test.dart \
+            test/services/manga/manga_http_stream_cancellation_test.dart \
+            test/services/manga/manga_readability_verifier_test.dart \
+            test/services/manga/manga_source_discovery_service_test.dart \
+            test/services/manga/manga_content_resolver_test.dart \
+            test/services/manga/manga_search_coordinator_test.dart \
+            test/architecture/manga_provider_registry_manifest_test.dart \
+            test/architecture/manga_planned_provider_definitions_test.dart
+
+      - name: Check formatting
+        id: format
+        if: always()
+        working-directory: private-source
+        run: |
+          dart format --output=none --set-exit-if-changed \
+            lib/services/manga/manga_provider_policy.dart \
+            lib/services/manga/manga_remote_content_probe.dart \
+            lib/services/manga/manga_remote_manifest_validator.dart \
+            lib/services/manga/manga_readability_verifier.dart \
+            lib/services/manga/manga_source_discovery_service.dart \
+            lib/services/manga/manga_search_coordinator.dart \
+            lib/services/manga/manga_content_resolver.dart \
             tools/manga/collect_enabled_manga_live_evidence.dart \
             test/tools/manga/collect_enabled_manga_live_evidence_test.dart \
-            lib/services/manga/manga_remote_content_probe.dart \
-            test/services/manga/manga_remote_content_probe_test.dart >/dev/null
-          if git diff --quiet -- \
-            tools/manga/collect_enabled_manga_live_evidence.dart \
-            test/tools/manga/collect_enabled_manga_live_evidence_test.dart \
-            lib/services/manga/manga_remote_content_probe.dart \
-            test/services/manga/manga_remote_content_probe_test.dart; then
-            echo 'changed=false' >> "$GITHUB_OUTPUT"
-          else
-            echo 'changed=true' >> "$GITHUB_OUTPUT"
-            echo 'BEGIN_FORMAT_PATCH'
-            git diff --no-ext-diff --unified=3 -- \
-              tools/manga/collect_enabled_manga_live_evidence.dart \
-              test/tools/manga/collect_enabled_manga_live_evidence_test.dart \
-              lib/services/manga/manga_remote_content_probe.dart \
-              test/services/manga/manga_remote_content_probe_test.dart
-            echo 'END_FORMAT_PATCH'
-          fi
+            test/services/manga/manga_remote_content_probe_test.dart \
+            test/services/manga/manga_http_stream_cancellation_test.dart \
+            test/services/manga/manga_readability_verifier_test.dart \
+            test/services/manga/manga_source_discovery_service_test.dart \
+            test/services/manga/manga_content_resolver_test.dart
 
       - name: Collect enabled live evidence
+        id: collect
+        if: steps.analyze.outcome == 'success' && steps.tests.outcome == 'success' && steps.format.outcome == 'success'
         working-directory: private-source
-        shell: bash
         env:
           REVIEWED_SHA: ${{ steps.request.outputs.sha }}
           EVIDENCE_DIR: ${{ runner.temp }}/goanime-enabled-manga-evidence
@@ -126,6 +148,8 @@ jobs:
             "$REVIEWED_SHA"
 
       - name: Verify exact enabled cohort coverage
+        id: coverage
+        if: steps.collect.outcome == 'success'
         shell: bash
         env:
           REVIEWED_SHA: ${{ steps.request.outputs.sha }}
@@ -136,23 +160,15 @@ jobs:
           import json
           import os
           from pathlib import Path
-
           expected = {
-              'ptbr.astratoons',
-              'ptbr.capitoons',
-              'ptbr.kivaratoons',
-              'ptbr.leituramanga',
-              'ptbr.maidscan',
-              'ptbr.mangadash',
-              'ptbr.mangaflix',
-              'ptbr.mangalivreblog',
-              'ptbr.ninjascan',
+              'ptbr.astratoons', 'ptbr.capitoons', 'ptbr.kivaratoons',
+              'ptbr.leituramanga', 'ptbr.maidscan', 'ptbr.mangadash',
+              'ptbr.mangaflix', 'ptbr.mangalivreblog', 'ptbr.ninjascan',
           }
           root = Path(os.environ['EVIDENCE_DIR'])
           reviewed = os.environ['REVIEWED_SHA']
           status = json.loads((root / 'status.json').read_text())
           evidence = json.loads((root / 'evidence.json').read_text())
-
           assert status['providerSetVersion'] == reviewed
           assert evidence['providerSetVersion'] == reviewed
           assert status['complete'] is True
@@ -162,51 +178,39 @@ jobs:
           assert len(rows) == len(expected)
           assert {row['sourceId'] for row in rows} == expected
           PY
-          echo "enabled_live_evidence=success"
-
-      - name: Reject repository formatting drift
-        if: steps.format.outputs.changed == 'true'
-        shell: bash
-        run: |
-          echo 'enabled_live_evidence_format_drift=true'
-          exit 1
 
       - name: Remove private checkout and plaintext evidence
         if: always()
-        shell: bash
-        run: |
-          rm -rf \
-            "$GITHUB_WORKSPACE/private-source" \
-            "$GITHUB_WORKSPACE/control" \
-            "$RUNNER_TEMP/goanime-enabled-manga-evidence"
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control" "$RUNNER_TEMP/goanime-enabled-manga-evidence"
 
-      - name: Publish sanitized gate status
+      - name: Publish sanitized gate result
         if: always()
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           CONTROL_SHA: ${{ github.sha }}
-          JOB_STATUS: ${{ job.status }}
           REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+          JOB_STATUS: ${{ job.status }}
+          ANALYZE: ${{ steps.analyze.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+          FORMAT: ${{ steps.format.outcome }}
+          COLLECT: ${{ steps.collect.outcome }}
+          COVERAGE: ${{ steps.coverage.outcome }}
         run: |
           set -euo pipefail
           state=failure
-          if [ "$JOB_STATUS" = success ]; then
-            state=success
+          [ "$JOB_STATUS" = success ] && state=success
+          failed_stage=none
+          if [ "$ANALYZE" != success ]; then failed_stage=analyze
+          elif [ "$TESTS" != success ]; then failed_stage=tests
+          elif [ "$FORMAT" != success ]; then failed_stage=format
+          elif [ "$COLLECT" != success ]; then failed_stage=collect
+          elif [ "$COVERAGE" != success ]; then failed_stage=coverage
           fi
-          gh api --method POST \
-            "repos/$GITHUB_REPOSITORY/statuses/$CONTROL_SHA" \
-            -f state="$state" \
-            -f context='goanime/manga-enabled-reader-transport' \
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$CONTROL_SHA" \
+            -f state="$state" -f context='goanime/manga-enabled-reader-transport' \
             -f description="Enabled manga reader transport gate: $JOB_STATUS"
-
-          result="$(jq -cn \
-            --arg controlSha "$CONTROL_SHA" \
-            --arg reviewedSha "$REVIEWED_SHA" \
-            --arg state "$state" \
-            '{schemaVersion:1,controlSha:$controlSha,reviewedSha:$reviewedSha,state:$state}')"
+          result="$(jq -cn --arg controlSha "$CONTROL_SHA" --arg reviewedSha "$REVIEWED_SHA" --arg state "$state" --arg failedStage "$failed_stage" --arg analyze "$ANALYZE" --arg tests "$TESTS" --arg format "$FORMAT" --arg collect "$COLLECT" --arg coverage "$COVERAGE" '{schemaVersion:2,controlSha:$controlSha,reviewedSha:$reviewedSha,state:$state,failedStage:$failedStage,stages:{analyze:$analyze,tests:$tests,format:$format,collect:$collect,coverage:$coverage}}')"
           encoded="$(printf '%s\n' "$result" | base64 -w0)"
-          gh api --method PUT \
-            "repos/$GITHUB_REPOSITORY/contents/results/goanime-manga-enabled-reader-transport/$CONTROL_SHA.json" \
-            -f message="ci(result): record enabled manga transport $CONTROL_SHA" \
-            -f content="$encoded"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/results/goanime-manga-enabled-reader-transport/$CONTROL_SHA.json" \
+            -f message="ci(result): record enabled manga transport $CONTROL_SHA" -f content="$encoded"
