@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/apply-goanime-provider-format.yml'
+      - 'triggers/goanime-provider-format/*.request'
   workflow_dispatch:
 
 permissions:
