@@ -1,0 +1,17 @@
+{
+  "status": "success",
+  "targetSha": "265e0c9ce89aac17472a43038cec869458e10020",
+  "targetBranch": "test/real-source-download-e2e",
+  "requestPath": "triggers/hydra-validation/ankergames-browser-recovery-265e0c9-20260818.request",
+  "runId": 32189436461,
+  "runAttempt": 1,
+  "steps": {
+    "deps": "success",
+    "electron": "success",
+    "compilePython": "success",
+    "pythonTests": "success",
+    "localTests": "success",
+    "downloaderTests": "success",
+    "typecheck": "success"
+  }
+}
