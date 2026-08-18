@@ -1,0 +1,10 @@
+{
+  "event": "workflow_dispatch",
+  "finishedAt": "2026-08-18T05:54:10.713278Z",
+  "normalizeResult": "success",
+  "runAttempt": 1,
+  "runId": 32104251889,
+  "schemaVersion": 1,
+  "toolchainsTriggerSha": "06be4973015b9a0edb667ee304a699a12e1e18ed",
+  "verifyResult": "failure"
+}
