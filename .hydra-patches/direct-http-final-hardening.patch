@@ -47,7 +47,7 @@ diff --git a/src/main/services/download/download-manager.ts b/src/main/services/
 diff --git a/src/renderer/src/pages/game-details/modals/download-settings-modal-base.tsx b/src/renderer/src/pages/game-details/modals/download-settings-modal-base.tsx
 --- a/src/renderer/src/pages/game-details/modals/download-settings-modal-base.tsx
 +++ b/src/renderer/src/pages/game-details/modals/download-settings-modal-base.tsx
-@@ -300,9 +300,11 @@ export function DownloadSettingsModal({
+@@ -300,7 +300,9 @@ export function DownloadSettingsModal({
  
      return (
        repack.uris.find((uri) =>
@@ -58,7 +58,7 @@ diff --git a/src/renderer/src/pages/game-details/modals/download-settings-modal-
        ) ?? null
      );
    }, [repack, selectedDownloader]);
-@@ -349,8 +351,11 @@ export function DownloadSettingsModal({
+@@ -349,8 +351,12 @@ export function DownloadSettingsModal({
      >();
  
      if (repack) {
