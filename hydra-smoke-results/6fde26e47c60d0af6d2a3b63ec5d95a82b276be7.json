@@ -1,0 +1,16 @@
+{
+  "status": "failure",
+  "targetSha": "6fde26e47c60d0af6d2a3b63ec5d95a82b276be7",
+  "targetBranch": "fix/ankergames-root-source",
+  "requestPath": "toolchain-control/triggers/hydra-source-smoke/2026-08-17-anker-root-6fde26e4.request",
+  "runId": 32087401509,
+  "runAttempt": 1,
+  "steps": {
+    "deps": "success",
+    "electron": "success",
+    "scrapling": "success",
+    "gamebounty": "success",
+    "ecologica": "success",
+    "ankergames": "cancelled"
+  }
+}
