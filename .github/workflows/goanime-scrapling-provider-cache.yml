@@ -97,6 +97,14 @@ jobs:
           test -f tools/scrapling_provider_pipeline/requirements.txt
           test -f tools/scrapling_provider_pipeline/build_provider_cache.py
           test -f tools/scrapling_provider_pipeline/validate_provider_cache.py
+          test -f tools/scrapling_provider_pipeline/mal_input_preflight.py
+
+      - name: Preflight provider pipeline inputs
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/scrapling_provider_pipeline/mal_input_preflight.py --repo-root .
 
       - name: Set up Python
         uses: actions/setup-python@v6
