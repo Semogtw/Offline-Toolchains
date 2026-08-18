@@ -32,7 +32,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
-      TARGET_BRANCH: ${{ github.event.inputs.target_branch || 'feat/scrapling-provider-pipeline' }}
       SCRAPLING_WORKERS: ${{ github.event.inputs.workers || '8' }}
       SCRAPLING_PROXY_PROVIDERS: animefire,animesonline
       TAILSCALE_EXIT_NODE: ${{ vars.GOANIME_TAILSCALE_EXIT_NODE }}
@@ -45,6 +44,82 @@ jobs:
           persist-credentials: false
           show-progress: false
 
+      - name: Resolve trusted refresh request
+        id: request
+        shell: bash
+        env:
+          DISPATCH_TARGET_BRANCH: ${{ github.event.inputs.target_branch || '' }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          default_branch = 'feat/scrapling-provider-pipeline'
+          event_name = os.environ['GITHUB_EVENT_NAME']
+          target_branch = os.environ.get('DISPATCH_TARGET_BRANCH', '').strip() or default_branch
+          source_hint = ''
+
+          if event_name == 'push':
+              event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text(encoding='utf-8'))
+              changed = set()
+              removed = set()
+              for commit in event.get('commits') or []:
+                  for key in ('added', 'modified'):
+                      changed.update(commit.get(key) or [])
+                  removed.update(commit.get('removed') or [])
+              pattern = re.compile(r'^triggers/goanime-scrapling-provider-cache/[^/]+\.request$')
+              request_paths = sorted(path for path in changed if pattern.fullmatch(path))
+              removed_requests = sorted(path for path in removed if pattern.fullmatch(path))
+              if removed_requests:
+                  raise SystemExit('Deleting a refresh request cannot trigger a provider crawl')
+              if len(request_paths) != 1:
+                  raise SystemExit(
+                      f'Expected exactly one added/modified refresh request, got {len(request_paths)}'
+                  )
+
+              request_path = Path('trusted-source') / request_paths[0]
+              values = {}
+              for raw_line in request_path.read_text(encoding='utf-8').splitlines():
+                  line = raw_line.strip()
+                  if not line or line.startswith('#'):
+                      continue
+                  if '=' not in line:
+                      raise SystemExit(f'Malformed refresh request line: {line!r}')
+                  key, value = line.split('=', 1)
+                  key = key.strip()
+                  value = value.strip()
+                  if key not in {'target_branch', 'source_hint', 'reason'}:
+                      raise SystemExit(f'Unknown refresh request key: {key}')
+                  if key in values:
+                      raise SystemExit(f'Duplicate refresh request key: {key}')
+                  values[key] = value
+
+              target_branch = values.get('target_branch', '')
+              source_hint = values.get('source_hint', '').lower()
+              if not target_branch:
+                  raise SystemExit('Refresh request is missing target_branch')
+              if not re.fullmatch(r'[0-9a-f]{40}', source_hint):
+                  raise SystemExit('Refresh request source_hint must be a full 40-character SHA')
+
+          if subprocess.run(
+              ['git', 'check-ref-format', '--branch', target_branch],
+              stdout=subprocess.DEVNULL,
+              stderr=subprocess.DEVNULL,
+              check=False,
+          ).returncode != 0:
+              raise SystemExit(f'Invalid target branch: {target_branch!r}')
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'target_branch={target_branch}\n')
+              output.write(f'source_hint={source_hint}\n')
+          print(f'Refresh target resolved: {target_branch}')
+          print('Source revision is pinned by request.' if source_hint else 'Source revision will be pinned after checkout.')
+          PY
+
       - name: Validate request and credentials
         id: credentials
         shell: bash
@@ -55,7 +130,6 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$READ_TOKEN"
-          [[ "$TARGET_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]]
           [[ "$SCRAPLING_WORKERS" =~ ^[0-9]+$ ]]
           test "$SCRAPLING_WORKERS" -ge 1
           test "$SCRAPLING_WORKERS" -le 16
@@ -75,7 +149,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
-          ref: ${{ env.TARGET_BRANCH }}
+          ref: ${{ steps.request.outputs.target_branch }}
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
           fetch-depth: 1
@@ -88,9 +162,15 @@ jobs:
         id: source
         working-directory: private-source
         shell: bash
+        env:
+          EXPECTED_SOURCE_HINT: ${{ steps.request.outputs.source_hint }}
         run: |
           set -euo pipefail
           sha="$(git rev-parse HEAD)"
+          if [ -n "$EXPECTED_SOURCE_HINT" ] && [ "$sha" != "$EXPECTED_SOURCE_HINT" ]; then
+            echo 'Checked-out GoAnime revision does not match the trusted request source_hint.' >&2
+            exit 1
+          fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           test -f tools/scrapling_provider_pipeline/requirements.txt
           test -f tools/scrapling_provider_pipeline/build_provider_cache.py
@@ -121,9 +201,9 @@ jobs:
         uses: actions/cache@v5
         with:
           path: adaptive-state
-          key: goanime-scrapling-adaptive-v1-${{ runner.os }}-${{ env.TARGET_BRANCH }}-${{ github.run_id }}
+          key: goanime-scrapling-adaptive-v1-${{ runner.os }}-${{ steps.request.outputs.target_branch }}-${{ github.run_id }}
           restore-keys: |
-            goanime-scrapling-adaptive-v1-${{ runner.os }}-${{ env.TARGET_BRANCH }}-
+            goanime-scrapling-adaptive-v1-${{ runner.os }}-${{ steps.request.outputs.target_branch }}-
 
       - name: Seed adaptive selector database
         shell: bash
@@ -261,7 +341,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          direct_ip="$(curl --fail --silent --show-error --max-time 20 https://checkip.amazonaws.com | tr -d '[:space:]')"
+          direct_ip="$(curl --fail --silent --show-error --max-time 20 \
+            --noproxy '*' \
+            https://checkip.amazonaws.com | tr -d '[:space:]')"
           proxy_ip="$(curl --fail --silent --show-error --max-time 20 \
             --proxy http://127.0.0.1:1055 \
             https://checkip.amazonaws.com | tr -d '[:space:]')"
@@ -355,6 +437,7 @@ jobs:
         env:
           WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
           EXPECTED_SHA: ${{ steps.source.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.target_branch }}
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
@@ -398,7 +481,8 @@ jobs:
         shell: bash
         run: |
           echo '## GoAnime external Scrapling cache' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Target branch: `${{ env.TARGET_BRANCH }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Target branch: `${{ steps.request.outputs.target_branch }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Requested source revision: `${{ steps.request.outputs.source_hint }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Source revision: `${{ steps.source.outputs.sha }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Initial crawler result: `${{ steps.crawl.outputs.code }}` (0=fresh complete, 2=safe fallback present)' >> "$GITHUB_STEP_SUMMARY"
           echo '- Phone retry targets: `${{ steps.residential_targets.outputs.providers }}`' >> "$GITHUB_STEP_SUMMARY"
