@@ -1,0 +1,3 @@
+target_branch=feat/scrapling-provider-pipeline
+source_hint=4582b46d1ca9068bd3204b96fba7604f35d07256
+reason=identify exact setup, pip, Scrapling browser, Patchright browser, version, or unit-test failure
