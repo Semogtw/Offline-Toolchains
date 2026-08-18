@@ -28,6 +28,15 @@ jobs:
           persist-credentials: false
           show-progress: false
 
+      - name: Mark diagnostics pending
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/goanime_post_status.py \
+            --state pending \
+            --context goanime-scrapling/diagnostics
+
       - name: Resolve source-bound request
         id: request
         shell: bash
@@ -109,62 +118,57 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
+      - name: Run MAL input preflight
+        id: preflight
+        continue-on-error: true
+        working-directory: private-source
+        shell: bash
+        run: python3 tools/scrapling_provider_pipeline/mal_input_preflight.py --repo-root .
+
+      - name: Report preflight status
+        if: always() && steps.preflight.outcome != 'skipped'
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.preflight.outcome }}
+        run: |
+          state=failure
+          [ "$OUTCOME" = success ] && state=success
+          python3 scripts/goanime_post_status.py \
+            --state "$state" \
+            --context goanime-scrapling/preflight
+
+      - name: Stop after preflight failure
+        if: steps.preflight.outcome == 'failure'
+        run: exit 1
+
+      - name: Mark toolchain pending
+        if: steps.preflight.outcome == 'success'
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/goanime_post_status.py \
+            --state pending \
+            --context goanime-scrapling/toolchain
+
       - name: Set up Python 3.12
+        if: steps.preflight.outcome == 'success'
+        id: setup_python
         uses: actions/setup-python@v6
         with:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: private-source/tools/scrapling_provider_pipeline/requirements.txt
 
-      - name: Run deterministic phases with sanitized statuses
+      - name: Install and verify pinned toolchain
+        if: steps.setup_python.outcome == 'success'
+        id: toolchain
+        continue-on-error: true
         working-directory: private-source
         shell: bash
-        env:
-          STATUS_TOKEN: ${{ github.token }}
         run: |
-          set -Eeuo pipefail
-          phase=preflight
-
-          post_status() {
-            local context="$1"
-            local state="$2"
-            CONTEXT="$context" STATE="$state" python3 - <<'PY' > "$RUNNER_TEMP/goanime-diagnostic-status.json"
-          import json
-          import os
-          print(json.dumps({
-              'state': os.environ['STATE'],
-              'context': os.environ['CONTEXT'],
-              'description': 'Sanitized GoAnime Scrapling diagnostic status',
-          }))
-          PY
-            curl --fail --silent --show-error \
-              --request POST \
-              --header "Authorization: Bearer $STATUS_TOKEN" \
-              --header 'Accept: application/vnd.github+json' \
-              --header 'X-GitHub-Api-Version: 2022-11-28' \
-              --data-binary @"$RUNNER_TEMP/goanime-diagnostic-status.json" \
-              "https://api.github.com/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
-              >/dev/null
-          }
-
-          on_exit() {
-            code=$?
-            if [ "$code" -ne 0 ]; then
-              post_status "goanime-scrapling/$phase" failure || true
-              post_status 'goanime-scrapling/diagnostics' failure || true
-            fi
-            rm -f "$RUNNER_TEMP/goanime-diagnostic-status.json"
-            unset STATUS_TOKEN
-            exit "$code"
-          }
-          trap on_exit EXIT
-
-          post_status 'goanime-scrapling/preflight' pending
-          python tools/scrapling_provider_pipeline/mal_input_preflight.py --repo-root .
-          post_status 'goanime-scrapling/preflight' success
-
-          phase=toolchain
-          post_status 'goanime-scrapling/toolchain' pending
+          set -euo pipefail
           python -m pip install --disable-pip-version-check --requirement tools/scrapling_provider_pipeline/requirements.txt
           scrapling install
           python -m patchright install chromium
@@ -180,13 +184,72 @@ jobs:
               if actual != wanted:
                   raise SystemExit(f'expected {package} {wanted}, got {actual}')
           PY
-          post_status 'goanime-scrapling/toolchain' success
 
-          phase=tests
-          post_status 'goanime-scrapling/tests' pending
-          python -m unittest discover -s tools/scrapling_provider_pipeline/tests -p 'test_*.py'
-          post_status 'goanime-scrapling/tests' success
-          post_status 'goanime-scrapling/diagnostics' success
+      - name: Report toolchain status
+        if: always() && steps.preflight.outcome == 'success'
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SETUP_OUTCOME: ${{ steps.setup_python.outcome }}
+          TOOLCHAIN_OUTCOME: ${{ steps.toolchain.outcome }}
+        run: |
+          state=failure
+          if [ "$SETUP_OUTCOME" = success ] && [ "$TOOLCHAIN_OUTCOME" = success ]; then
+            state=success
+          fi
+          python3 scripts/goanime_post_status.py \
+            --state "$state" \
+            --context goanime-scrapling/toolchain
+
+      - name: Stop after toolchain failure
+        if: steps.preflight.outcome == 'success' && (steps.setup_python.outcome != 'success' || steps.toolchain.outcome != 'success')
+        run: exit 1
+
+      - name: Run external pipeline unit tests
+        if: steps.toolchain.outcome == 'success'
+        id: tests
+        continue-on-error: true
+        working-directory: private-source
+        shell: bash
+        run: python -m unittest discover -s tools/scrapling_provider_pipeline/tests -p 'test_*.py'
+
+      - name: Report test status
+        if: always() && steps.toolchain.outcome == 'success'
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.tests.outcome }}
+        run: |
+          state=failure
+          [ "$OUTCOME" = success ] && state=success
+          python3 scripts/goanime_post_status.py \
+            --state "$state" \
+            --context goanime-scrapling/tests
+
+      - name: Stop after test failure
+        if: steps.tests.outcome == 'failure'
+        run: exit 1
+
+      - name: Mark diagnostics successful
+        if: steps.tests.outcome == 'success'
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/goanime_post_status.py \
+            --state success \
+            --context goanime-scrapling/diagnostics
+
+      - name: Mark diagnostics failed
+        if: failure()
+        continue-on-error: true
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/goanime_post_status.py \
+            --state failure \
+            --context goanime-scrapling/diagnostics
 
       - name: Remove private checkout
         if: always()
