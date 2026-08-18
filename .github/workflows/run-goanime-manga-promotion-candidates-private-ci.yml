@@ -1,0 +1,156 @@
+name: Run GoAnime manga promotion candidates privately
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-promotion-candidates/*.request'
+
+permissions:
+  contents: write
+  statuses: write
+
+concurrency:
+  group: goanime-manga-promotion-candidates-private-ci
+  cancel-in-progress: false
+
+jobs:
+  candidates:
+    name: Manga promotion candidates
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-promotion-candidates/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = goanime
+          test "$branch" = feature/manga-platform
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Analyze candidate surface
+        working-directory: private-source
+        run: |
+          flutter analyze --no-pub \
+            lib/services/manga/manga_provider_definitions.dart \
+            lib/services/manga/default_manga_source_providers.dart \
+            lib/services/manga/providers/arthur_scan_manga_provider.dart \
+            lib/services/manga/providers/hqnow_manga_provider.dart \
+            lib/services/manga/providers/kami_sama_explorer_manga_provider.dart \
+            lib/services/manga/manga_remote_content_probe.dart \
+            tools/manga/audit_planned_provider_stage.dart \
+            test/services/manga/providers/arthur_scan_manga_provider_test.dart \
+            test/services/manga/providers/hqnow_manga_provider_test.dart \
+            test/services/manga/providers/kami_sama_explorer_manga_provider_test.dart \
+            test/services/manga/manga_remote_content_probe_test.dart \
+            test/tools/manga/audit_planned_provider_stage_test.dart
+
+      - name: Run deterministic candidate contracts
+        working-directory: private-source
+        run: |
+          flutter test --no-pub \
+            test/services/manga/providers/arthur_scan_manga_provider_test.dart \
+            test/services/manga/providers/hqnow_manga_provider_test.dart \
+            test/services/manga/providers/kami_sama_explorer_manga_provider_test.dart \
+            test/services/manga/manga_remote_content_probe_test.dart \
+            test/tools/manga/audit_planned_provider_stage_test.dart \
+            test/architecture/manga_provider_manifest_validator_test.dart \
+            test/architecture/manga_provider_registry_manifest_test.dart \
+            test/architecture/manga_planned_provider_definitions_test.dart
+
+      - name: Reject formatting drift in touched candidate surface
+        working-directory: private-source
+        run: |
+          dart format --output=none --set-exit-if-changed \
+            lib/services/manga/manga_provider_definitions.dart \
+            lib/services/manga/default_manga_source_providers.dart \
+            lib/services/manga/providers/arthur_scan_manga_provider.dart \
+            lib/services/manga/providers/hqnow_manga_provider.dart \
+            lib/services/manga/providers/kami_sama_explorer_manga_provider.dart \
+            lib/services/manga/manga_remote_content_probe.dart \
+            tools/manga/audit_planned_provider_stage.dart \
+            test/services/manga/providers/arthur_scan_manga_provider_test.dart \
+            test/services/manga/providers/hqnow_manga_provider_test.dart \
+            test/services/manga/providers/kami_sama_explorer_manga_provider_test.dart \
+            test/services/manga/manga_remote_content_probe_test.dart \
+            test/tools/manga/audit_planned_provider_stage_test.dart
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
+
+      - name: Publish sanitized candidate result
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTROL_SHA: ${{ github.sha }}
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          state=failure
+          if [ "$JOB_STATUS" = success ]; then
+            state=success
+          fi
+          gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/statuses/$CONTROL_SHA" \
+            -f state="$state" \
+            -f context='goanime/manga-promotion-candidates' \
+            -f description="Manga promotion candidate gate: $JOB_STATUS"
+
+          result="$(jq -cn \
+            --arg controlSha "$CONTROL_SHA" \
+            --arg reviewedSha "$REVIEWED_SHA" \
+            --arg state "$state" \
+            '{schemaVersion:1,controlSha:$controlSha,reviewedSha:$reviewedSha,state:$state,candidates:["ptbr.arthurscan","ptbr.hqnow","ptbr.kamisamaexplorer"]}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          gh api --method PUT \
+            "repos/$GITHUB_REPOSITORY/contents/results/goanime-manga-promotion-candidates/$CONTROL_SHA.json" \
+            -f message="ci(result): record manga promotion candidates $CONTROL_SHA" \
+            -f content="$encoded"
