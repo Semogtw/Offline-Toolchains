@@ -34,10 +34,7 @@ jobs:
     env:
       TARGET_BRANCH: ${{ github.event.inputs.target_branch || 'feat/scrapling-provider-pipeline' }}
       SCRAPLING_WORKERS: ${{ github.event.inputs.workers || '8' }}
-      SCRAPLING_PROXY_URL: ${{ secrets.GOANIME_SCRAPLING_PROXY_URL }}
       SCRAPLING_PROXY_PROVIDERS: animefire,animesonline
-      TAILSCALE_OAUTH_CLIENT_ID: ${{ secrets.GOANIME_TAILSCALE_CLIENT_ID }}
-      TAILSCALE_AUDIENCE: ${{ secrets.GOANIME_TAILSCALE_AUDIENCE }}
       TAILSCALE_EXIT_NODE: ${{ vars.GOANIME_TAILSCALE_EXIT_NODE }}
     steps:
       - name: Checkout trusted Toolchains source
@@ -54,6 +51,7 @@ jobs:
         env:
           READ_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          PROXY_URL: ${{ secrets.GOANIME_SCRAPLING_PROXY_URL }}
         run: |
           set -euo pipefail
           test -n "$READ_TOKEN"
@@ -67,7 +65,7 @@ jobs:
             echo 'publish=false' >> "$GITHUB_OUTPUT"
             echo 'GOANIME_CATALOG_WRITE_TOKEN is not configured; this run will build, validate and archive caches without pushing.'
           fi
-          if [ -n "$SCRAPLING_PROXY_URL" ]; then
+          if [ -n "$PROXY_URL" ]; then
             echo 'proxy=true' >> "$GITHUB_OUTPUT"
           else
             echo 'proxy=false' >> "$GITHUB_OUTPUT"
@@ -104,7 +102,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python tools/scrapling_provider_pipeline/mal_input_preflight.py --repo-root .
+          python3 tools/scrapling_provider_pipeline/mal_input_preflight.py --repo-root .
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -169,6 +167,8 @@ jobs:
         id: crawl
         working-directory: private-source
         shell: bash
+        env:
+          SCRAPLING_PROXY_URL: ${{ secrets.GOANIME_SCRAPLING_PROXY_URL }}
         run: |
           set +e
           python tools/scrapling_provider_pipeline/build_provider_cache.py \
@@ -186,7 +186,7 @@ jobs:
             echo 'Some fresh provider crawls were rejected; optional residential fallback will be considered.'
           fi
 
-      - name: Select preserved providers eligible for phone retry
+      - name: Select failed providers eligible for phone retry
         if: steps.crawl.outputs.code == '2'
         id: residential_targets
         working-directory: private-source
@@ -208,37 +208,38 @@ jobs:
           providers = manifest.get('providers')
           if not isinstance(providers, dict):
               raise SystemExit('provider manifest has no provider map')
-          eligible = [
+          eligible = list(dict.fromkeys(
               provider.strip().lower()
               for provider in os.environ.get('ELIGIBLE_PROVIDERS', '').split(',')
               if provider.strip()
-          ]
+          ))
           selected = [
               provider
               for provider in eligible
               if isinstance(providers.get(provider), dict)
-              and providers[provider].get('status') == 'preserved'
+              and providers[provider].get('status') in {'preserved', 'unavailable'}
           ]
           joined = ','.join(selected)
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write(f'providers={joined}\n')
               output.write(f'count={len(selected)}\n')
-          print(
-              'Phone retry targets: ' + (joined if joined else 'none')
-          )
+          print('Phone retry targets: ' + (joined if joined else 'none'))
           PY
 
       - name: Check phone fallback configuration
         if: steps.crawl.outputs.code == '2' && steps.residential_targets.outputs.providers != ''
         id: phone
         shell: bash
+        env:
+          TAILSCALE_OAUTH_CLIENT_ID: ${{ secrets.GOANIME_TAILSCALE_CLIENT_ID }}
+          TAILSCALE_AUDIENCE: ${{ secrets.GOANIME_TAILSCALE_AUDIENCE }}
         run: |
           set -euo pipefail
           if [ -n "$TAILSCALE_OAUTH_CLIENT_ID" ] && [ -n "$TAILSCALE_AUDIENCE" ] && [ -n "$TAILSCALE_EXIT_NODE" ]; then
             echo 'configured=true' >> "$GITHUB_OUTPUT"
           else
             echo 'configured=false' >> "$GITHUB_OUTPUT"
-            echo 'Phone residential fallback is not fully configured; preserved provider snapshots remain in use.'
+            echo 'Phone residential fallback is not fully configured; failed provider snapshots remain in their safe fallback state.'
           fi
 
       - name: Connect optional phone exit node
@@ -247,8 +248,8 @@ jobs:
         continue-on-error: true
         uses: tailscale/github-action@v4
         with:
-          oauth-client-id: ${{ env.TAILSCALE_OAUTH_CLIENT_ID }}
-          audience: ${{ env.TAILSCALE_AUDIENCE }}
+          oauth-client-id: ${{ secrets.GOANIME_TAILSCALE_CLIENT_ID }}
+          audience: ${{ secrets.GOANIME_TAILSCALE_AUDIENCE }}
           tags: tag:goanime-scraper
           tailscaled-args: --tun=userspace-networking --socks5-server=127.0.0.1:1055 --outbound-http-proxy-listen=127.0.0.1:1055
           args: --exit-node=${{ env.TAILSCALE_EXIT_NODE }}
@@ -266,7 +267,7 @@ jobs:
             --output /dev/null
           echo 'ready=true' >> "$GITHUB_OUTPUT"
 
-      - name: Retry only preserved providers through phone egress
+      - name: Retry only failed providers through phone egress
         if: steps.tailscale.outcome == 'success' && steps.residential_route.outputs.ready == 'true'
         id: residential
         working-directory: private-source
@@ -290,7 +291,7 @@ jobs:
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
           if [ "$code" -eq 2 ]; then
-            echo 'Residential retry still left at least one preserved provider snapshot.'
+            echo 'Residential retry still left at least one provider in a preserved/unavailable state.'
           fi
 
       - name: Preserve learned adaptive selector state
@@ -388,7 +389,7 @@ jobs:
           echo '## GoAnime external Scrapling cache' >> "$GITHUB_STEP_SUMMARY"
           echo '- Target branch: `${{ env.TARGET_BRANCH }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Source revision: `${{ steps.source.outputs.sha }}`' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Initial crawler result: `${{ steps.crawl.outputs.code }}` (0=fresh complete, 2=preserved fallback present)' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Initial crawler result: `${{ steps.crawl.outputs.code }}` (0=fresh complete, 2=safe fallback present)' >> "$GITHUB_STEP_SUMMARY"
           echo '- Phone retry targets: `${{ steps.residential_targets.outputs.providers }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Phone fallback configured: `${{ steps.phone.outputs.configured }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Tailnet connection: `${{ steps.tailscale.outcome }}`' >> "$GITHUB_STEP_SUMMARY"
