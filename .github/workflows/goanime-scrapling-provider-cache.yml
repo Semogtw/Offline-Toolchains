@@ -261,11 +261,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          direct_ip="$(curl --fail --silent --show-error --max-time 20 https://checkip.amazonaws.com | tr -d '[:space:]')"
+          proxy_ip="$(curl --fail --silent --show-error --max-time 20 \
+            --proxy http://127.0.0.1:1055 \
+            https://checkip.amazonaws.com | tr -d '[:space:]')"
+          test -n "$direct_ip"
+          test -n "$proxy_ip"
+          if [ "$direct_ip" = "$proxy_ip" ]; then
+            echo 'Phone proxy is reachable but did not change public egress.' >&2
+            exit 1
+          fi
           curl --fail --silent --show-error --max-time 20 \
             --proxy http://127.0.0.1:1055 \
             https://www.google.com/generate_204 \
             --output /dev/null
           echo 'ready=true' >> "$GITHUB_OUTPUT"
+          unset direct_ip proxy_ip
 
       - name: Retry only failed providers through phone egress
         if: steps.tailscale.outcome == 'success' && steps.residential_route.outputs.ready == 'true'
