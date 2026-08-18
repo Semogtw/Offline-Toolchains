@@ -1,0 +1,3 @@
+target_branch=feat/scrapling-provider-pipeline
+source_hint=ca385ef9e8dd17970883d53903b1bd78e25dabb5
+reason=validate MAL preflight, fail-closed proxy scope, reachable egress parity, and selective phone retry
