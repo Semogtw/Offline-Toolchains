@@ -8,7 +8,7 @@ on:
       - 'triggers/goanime-format-bundle/*.request'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: goanime-format-bundle-encrypted
@@ -125,6 +125,28 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
+
+      - name: Publish ciphertext receipt
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTROL_SHA: ${{ github.sha }}
+          BASE_SHA: ${{ steps.request.outputs.sha }}
+          RUN_ID: ${{ github.run_id }}
+          CHANGED_COUNT: ${{ steps.bundle.outputs.changed_count }}
+        run: |
+          set -euo pipefail
+          result="$(jq -cn \
+            --arg controlSha "$CONTROL_SHA" \
+            --arg baseSha "$BASE_SHA" \
+            --argjson runId "$RUN_ID" \
+            --argjson changedCount "$CHANGED_COUNT" \
+            '{schemaVersion:1,controlSha:$controlSha,baseSha:$baseSha,runId:$runId,artifactName:"goanime-format-bundle-encrypted",changedCount:$changedCount}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          gh api --method PUT \
+            "repos/$GITHUB_REPOSITORY/contents/results/goanime-format-bundle/$CONTROL_SHA.json" \
+            -f message="ci(result): record GoAnime format bundle $CONTROL_SHA" \
+            -f content="$encoded"
 
       - name: Remove private and transient data
         if: always()
