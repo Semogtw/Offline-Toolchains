@@ -1,0 +1,3 @@
+target_branch=feat/scrapling-provider-pipeline
+source_hint=22b99e67608ad6664264419896d242afa3b3509b
+reason=rerun dependency-free MAL structural probe before enforcing preflight
