@@ -1,0 +1,3 @@
+target_branch=feat/scrapling-provider-pipeline
+source_hint=c58a363e525358a68380a7ad6e48fb973fb5c4ad
+reason=validate snapshot metadata source-hints parity and public evidence structure
