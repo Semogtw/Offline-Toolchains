@@ -1,0 +1,59 @@
+name: Dispatch exact GoAnime full CI request
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/dispatch-goanime-full-ci-exact.yml'
+      - 'scripts/private_ci_request.py'
+      - 'triggers/goanime-full-ci-exact/*.request'
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: dispatch-goanime-full-ci-exact
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact trusted trigger commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/private_ci_request.py
+            triggers/goanime-full-ci-exact
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve and dispatch exact private ref
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(
+            git show --pretty='' --name-only HEAD -- \
+              'triggers/goanime-full-ci-exact/*.request' \
+              | sed '/^$/d' | sort -u
+          )
+          test "${#changed[@]}" -eq 1 || {
+            echo "Expected exactly one full-CI request in trigger commit; got ${#changed[@]}." >&2
+            exit 1
+          }
+          request_path="${changed[0]}"
+          test -f "$request_path"
+          ref="$(tr -d '\r\n' < "$request_path")"
+          test -n "$ref"
+          normalized="$(python3 scripts/private_ci_request.py <(printf '{\"project\":\"goanime\",\"ref\":\"%s\"}\n' "$ref"))"
+          ref="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["ref"])' "$normalized")"
+          gh workflow run run-private-goanime-ci.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f "ref=$ref"
