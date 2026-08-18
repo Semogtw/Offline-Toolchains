@@ -73,15 +73,24 @@ jobs:
 
           if event_name == "push":
               event = json.loads(event_path.read_text(encoding="utf-8"))
-              head_commit = event.get("head_commit") or {}
-              changed = [
-                  *head_commit.get("added", []),
-                  *head_commit.get("modified", []),
-              ]
+              commits = event.get("commits") or []
+              if not commits and event.get("head_commit"):
+                  commits = [event["head_commit"]]
+              changed = []
+              for commit in commits:
+                  changed.extend(commit.get("added", []))
+                  changed.extend(commit.get("modified", []))
               pattern = re.compile(
                   r"^triggers/goanime-full-ci/[A-Za-z0-9._-]+\.request$"
               )
-              trigger_paths = sorted({path for path in changed if pattern.fullmatch(path)})
+              trigger_paths = sorted(
+                  {
+                      path
+                      for path in changed
+                      if pattern.fullmatch(path)
+                      and (Path("trusted-source") / path).is_file()
+                  }
+              )
               if len(trigger_paths) > 1:
                   raise SystemExit(
                       "push must modify at most one GoAnime full-CI request file"
