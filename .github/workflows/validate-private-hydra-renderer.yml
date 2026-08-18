@@ -62,7 +62,7 @@ jobs:
           ref: ${{ steps.request.outputs.expected_sha }}
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
-          fetch-depth: 1
+          fetch-depth: 100
           persist-credentials: false
           lfs: false
           submodules: false
@@ -80,6 +80,24 @@ jobs:
           auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
           remote_sha="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/HydraPersonalizado.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
           test "$remote_sha" = "$EXPECTED_SHA"
+
+      - name: Resolve merge base and new code files
+        id: diff
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" fetch \
+            --no-tags --depth=100 origin \
+            refs/heads/main:refs/remotes/origin/main
+          base_sha="$(git merge-base HEAD refs/remotes/origin/main)"
+          [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]]
+          git diff --check "$base_sha"...HEAD
+          git diff --name-only --diff-filter=A "$base_sha"...HEAD -- \
+            '*.js' '*.jsx' '*.cjs' '*.mjs' '*.ts' '*.tsx' '*.cts' '*.mts' \
+            > "$RUNNER_TEMP/hydra-new-code-files.txt"
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -108,19 +126,31 @@ jobs:
         shell: bash
         run: yarn typecheck:web
 
-      - name: Check formatting
+      - name: Check new code formatting
         id: format
         working-directory: private-source
         shell: bash
-        run: yarn format-check
+        run: |
+          set -euo pipefail
+          mapfile -t files < "$RUNNER_TEMP/hydra-new-code-files.txt"
+          if (( ${#files[@]} == 0 )); then
+            echo "No new code files require a Prettier check."
+            exit 0
+          fi
+          ./node_modules/.bin/prettier --check "${files[@]}"
 
-      - name: Run ESLint without modifying checkout
+      - name: Lint new code without modifying checkout
         id: lint
         working-directory: private-source
         shell: bash
-        run: >-
-          yarn eslint .
-          --ext .js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts
+        run: |
+          set -euo pipefail
+          mapfile -t files < "$RUNNER_TEMP/hydra-new-code-files.txt"
+          if (( ${#files[@]} == 0 )); then
+            echo "No new code files require ESLint."
+            exit 0
+          fi
+          ./node_modules/.bin/eslint "${files[@]}"
 
       - name: Publish renderer validation status
         if: ${{ always() && steps.request.outputs.expected_sha != '' }}
@@ -130,6 +160,7 @@ jobs:
           TARGET_SHA: ${{ steps.request.outputs.expected_sha }}
           TARGET_BRANCH: ${{ steps.request.outputs.branch }}
           REQUEST_PATH: ${{ steps.request.outputs.request_path }}
+          BASE_SHA: ${{ steps.diff.outputs.base_sha }}
           DEPS_OUTCOME: ${{ steps.deps.outcome }}
           TYPECHECK_WEB_OUTCOME: ${{ steps.typecheck_web.outcome }}
           FORMAT_OUTCOME: ${{ steps.format.outcome }}
@@ -147,13 +178,14 @@ jobs:
             --arg targetSha "$TARGET_SHA" \
             --arg targetBranch "$TARGET_BRANCH" \
             --arg requestPath "$REQUEST_PATH" \
+            --arg baseSha "$BASE_SHA" \
             --arg runId "$GITHUB_RUN_ID" \
             --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
             --arg deps "$DEPS_OUTCOME" \
             --arg typecheckWeb "$TYPECHECK_WEB_OUTCOME" \
             --arg format "$FORMAT_OUTCOME" \
             --arg lint "$LINT_OUTCOME" \
-            '{status:$status,targetSha:$targetSha,targetBranch:$targetBranch,requestPath:$requestPath,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),steps:{deps:$deps,typecheckWeb:$typecheckWeb,format:$format,lint:$lint}}')"
+            '{status:$status,targetSha:$targetSha,targetBranch:$targetBranch,requestPath:$requestPath,baseSha:$baseSha,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),steps:{deps:$deps,typecheckWeb:$typecheckWeb,format:$format,lint:$lint}}')"
           path="hydra-renderer-results/${TARGET_SHA}.json"
           encoded="$(printf '%s\n' "$result" | base64 -w0)"
           current_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=hydra-validation-results" --jq '.sha' 2>/dev/null || true)"
