@@ -1,0 +1,305 @@
+name: GoAnime Super Animes bounded audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/goanime-super-animes-bounded-audit.yml'
+      - 'scripts/private_ci_request.py'
+      - 'triggers/goanime-super-animes-audit/*.request'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Exact GoAnime branch, tag, or commit
+        required: false
+        default: feat/scrapling-provider-pipeline
+        type: string
+      catalog_pages:
+        description: Maximum catalog pages for this bounded run
+        required: false
+        default: '4'
+        type: string
+      anime_pages:
+        description: Maximum anime metadata pages for this bounded run
+        required: false
+        default: '25'
+        type: string
+  schedule:
+    - cron: '17 08 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-super-animes-bounded-audit
+  cancel-in-progress: false
+
+env:
+  FLUTTER_CHANNEL: stable
+  FLUTTER_VERSION: 3.44.1
+
+jobs:
+  normalize:
+    name: Normalize bounded audit request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      ref: ${{ steps.request.outputs.ref }}
+      catalog_pages: ${{ steps.request.outputs.catalog_pages }}
+      anime_pages: ${{ steps.request.outputs.anime_pages }}
+
+    steps:
+      - name: Checkout trusted request validator
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: trusted-source
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/private_ci_request.py
+            triggers/goanime-super-animes-audit
+          sparse-checkout-cone-mode: false
+
+      - name: Normalize fixed repository, ref and budgets
+        id: request
+        shell: bash
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          INPUT_CATALOG_PAGES: ${{ inputs.catalog_pages }}
+          INPUT_ANIME_PAGES: ${{ inputs.anime_pages }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          request="$RUNNER_TEMP/goanime-super-animes-request.json"
+          python3 - "$request" "$INPUT_REF" "$EVENT_NAME" "$GITHUB_EVENT_PATH" <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          request_path = Path(sys.argv[1])
+          input_ref = sys.argv[2].strip()
+          event_name = sys.argv[3]
+          event_path = Path(sys.argv[4])
+          requested_ref = input_ref or "feat/scrapling-provider-pipeline"
+
+          if event_name == "push":
+              event = json.loads(event_path.read_text(encoding="utf-8"))
+              commits = event.get("commits") or []
+              if not commits and event.get("head_commit"):
+                  commits = [event["head_commit"]]
+              changed = []
+              for commit in commits:
+                  changed.extend(commit.get("added", []))
+                  changed.extend(commit.get("modified", []))
+              pattern = re.compile(
+                  r"^triggers/goanime-super-animes-audit/[A-Za-z0-9._-]+\.request$"
+              )
+              trigger_paths = sorted(
+                  {
+                      path
+                      for path in changed
+                      if pattern.fullmatch(path)
+                      and (Path("trusted-source") / path).is_file()
+                  }
+              )
+              if len(trigger_paths) > 1:
+                  raise SystemExit("push must modify at most one Super Animes audit request")
+              if trigger_paths:
+                  requested_ref = (
+                      Path("trusted-source") / trigger_paths[0]
+                  ).read_text(encoding="utf-8").strip()
+                  if not requested_ref:
+                      raise SystemExit("Super Animes audit request ref is empty")
+
+          request_path.write_text(
+              json.dumps({"project": "goanime", "ref": requested_ref}),
+              encoding="utf-8",
+          )
+          PY
+          normalized="$(python3 trusted-source/scripts/private_ci_request.py "$request")"
+          python3 - "$normalized" "$INPUT_CATALOG_PAGES" "$INPUT_ANIME_PAGES" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          request = json.loads(sys.argv[1])
+          if request["repository"] != "Semogtw/goanime-mobile":
+              raise SystemExit("unexpected GoAnime repository mapping")
+
+          def bounded(raw, default, maximum, name):
+              raw = raw.strip()
+              if not raw:
+                  return default
+              try:
+                  value = int(raw)
+              except ValueError as exc:
+                  raise SystemExit(f"{name} must be an integer") from exc
+              if value < 0 or value > maximum:
+                  raise SystemExit(f"{name} must be between 0 and {maximum}")
+              return value
+
+          catalog_pages = bounded(sys.argv[2], 4, 16, "catalog_pages")
+          anime_pages = bounded(sys.argv[3], 25, 100, "anime_pages")
+          with open(sys.argv[4], "a", encoding="utf-8") as stream:
+              stream.write(f"ref={request['ref']}\n")
+              stream.write(f"catalog_pages={catalog_pages}\n")
+              stream.write(f"anime_pages={anime_pages}\n")
+          PY
+
+  audit:
+    name: Run bounded Super Animes catalog audit
+    needs: normalize
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      audit_status: ${{ steps.audit.outputs.audit_status }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_name: ${{ steps.meta.outputs.artifact_name }}
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout exact private GoAnime source read-only
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ needs.normalize.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up pinned Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: false
+
+      - name: Resolve root dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+
+      - name: Restore prior bounded audit state
+        uses: actions/cache@v5
+        with:
+          path: private-source/.goanime-super-animes-state
+          key: goanime-super-animes-state-v1-${{ github.run_id }}
+          restore-keys: |
+            goanime-super-animes-state-v1-
+
+      - name: Run bounded audit and preserve partial progress
+        id: audit
+        working-directory: private-source
+        shell: bash
+        env:
+          CATALOG_PAGES: ${{ needs.normalize.outputs.catalog_pages }}
+          ANIME_PAGES: ${{ needs.normalize.outputs.anime_pages }}
+        run: |
+          set -euo pipefail
+          state='.goanime-super-animes-state'
+          mkdir -p "$state"
+          set +e
+          dart run tools/run_super_animes_catalog_pipeline.dart \
+            --crawl-checkpoint="$state/crawl.json" \
+            --harvest-checkpoint="$state/harvest.json" \
+            --crosswalk="$state/crosswalk.json" \
+            --catalog-pages="$CATALOG_PAGES" \
+            --anime-pages="$ANIME_PAGES" \
+            --retry-deferred
+          code=$?
+          set -e
+          case "$code" in
+            0) status='complete' ;;
+            2) status='partial' ;;
+            *) echo "Unexpected Super Animes audit exit code: $code" >&2; exit "$code" ;;
+          esac
+          echo "audit_status=$status" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$status" > "$state/audit-status.txt"
+
+      - name: Set artifact metadata
+        id: meta
+        shell: bash
+        run: echo "artifact_name=goanime-super-animes-audit-${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload bounded audit state
+        id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.meta.outputs.artifact_name }}
+          path: private-source/.goanime-super-animes-state
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Cleanup private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
+
+  report:
+    name: Publish sanitized Super Animes audit result
+    if: always()
+    needs: [normalize, audit]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+
+    steps:
+      - name: Publish result without private source access
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NORMALIZE_RESULT: ${{ needs.normalize.result }}
+          AUDIT_RESULT: ${{ needs.audit.result }}
+          AUDIT_STATUS: ${{ needs.audit.outputs.audit_status }}
+          ARTIFACT_ID: ${{ needs.audit.outputs.artifact_id }}
+          ARTIFACT_NAME: ${{ needs.audit.outputs.artifact_name }}
+          TOOLCHAINS_TRIGGER_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/goanime-super-animes-report.json"
+          python3 - "$report" <<'PY'
+          import json
+          import os
+          import sys
+          from datetime import datetime, timezone
+
+          payload = {
+              "schemaVersion": 1,
+              "runId": int(os.environ["RUN_ID"]),
+              "runAttempt": int(os.environ["RUN_ATTEMPT"]),
+              "toolchainsTriggerSha": os.environ["TOOLCHAINS_TRIGGER_SHA"],
+              "normalizeResult": os.environ["NORMALIZE_RESULT"],
+              "auditResult": os.environ["AUDIT_RESULT"],
+              "auditStatus": os.environ.get("AUDIT_STATUS") or None,
+              "artifactId": os.environ.get("ARTIFACT_ID") or None,
+              "artifactName": os.environ.get("ARTIFACT_NAME") or None,
+              "finishedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+          }
+          with open(sys.argv[1], "w", encoding="utf-8") as stream:
+              json.dump(payload, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          PY
+          encoded="$(base64 -w0 < "$report")"
+          path="reports/goanime-super-animes/${RUN_ID}.json"
+          gh api \
+            --method PUT \
+            "repos/${GITHUB_REPOSITORY}/contents/${path}" \
+            -f "message=ci(goanime): report Super Animes audit run ${RUN_ID}" \
+            -f "content=${encoded}" \
+            >/dev/null
