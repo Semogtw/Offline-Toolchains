@@ -174,13 +174,18 @@ jobs:
         if: steps.preflight.outcome == 'success' && (steps.setup_python.outcome != 'success' || steps.toolchain.outcome != 'success')
         run: exit 1
 
-      - name: Run external pipeline unit tests
+      - name: Run external pipeline unit tests by sanitized group
         if: steps.toolchain.outcome == 'success'
         id: tests
         continue-on-error: true
         working-directory: private-source
         shell: bash
-        run: python -m unittest discover -s tools/scrapling_provider_pipeline/tests -p 'test_*.py'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 ../trusted-source/scripts/goanime_run_test_groups.py \
+            --tests-dir tools/scrapling_provider_pipeline/tests \
+            --reporter ../trusted-source/scripts/goanime_post_status.py
 
       - name: Report test status
         if: always() && steps.toolchain.outcome == 'success'
