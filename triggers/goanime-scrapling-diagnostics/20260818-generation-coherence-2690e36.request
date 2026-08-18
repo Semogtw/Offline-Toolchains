@@ -1,0 +1,3 @@
+target_branch=feat/scrapling-provider-pipeline
+source_hint=2690e367f639e18022a2030362e2738751c40da2
+reason=validate mixed-generation provider artifact rejection
