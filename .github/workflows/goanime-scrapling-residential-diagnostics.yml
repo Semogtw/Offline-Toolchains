@@ -35,15 +35,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/goanime_post_status.py \
-            --state pending \
-            --context goanime-scrapling/residential-config
-          python3 scripts/goanime_post_status.py \
-            --state pending \
-            --context goanime-scrapling/residential-tailnet
-          python3 scripts/goanime_post_status.py \
-            --state pending \
-            --context goanime-scrapling/residential-egress
+          for context in \
+            residential-client-id \
+            residential-audience \
+            residential-exit-node \
+            residential-config \
+            residential-tailnet \
+            residential-egress; do
+            python3 scripts/goanime_post_status.py \
+              --state pending \
+              --context "goanime-scrapling/$context"
+          done
 
       - name: Check residential configuration
         id: config
@@ -52,24 +54,42 @@ jobs:
           TAILSCALE_AUDIENCE: ${{ secrets.GOANIME_TAILSCALE_AUDIENCE }}
         run: |
           set -euo pipefail
+          client_id=false
+          audience=false
+          exit_node=false
+          [ -n "$TAILSCALE_OAUTH_CLIENT_ID" ] && client_id=true
+          [ -n "$TAILSCALE_AUDIENCE" ] && audience=true
+          [ -n "$TAILSCALE_EXIT_NODE" ] && exit_node=true
           configured=false
-          if [ -n "$TAILSCALE_OAUTH_CLIENT_ID" ] \
-            && [ -n "$TAILSCALE_AUDIENCE" ] \
-            && [ -n "$TAILSCALE_EXIT_NODE" ]; then
+          if [ "$client_id" = true ] && [ "$audience" = true ] && [ "$exit_node" = true ]; then
             configured=true
           fi
+          echo "client_id=$client_id" >> "$GITHUB_OUTPUT"
+          echo "audience=$audience" >> "$GITHUB_OUTPUT"
+          echo "exit_node=$exit_node" >> "$GITHUB_OUTPUT"
           echo "configured=$configured" >> "$GITHUB_OUTPUT"
 
-      - name: Report residential configuration
+      - name: Report residential prerequisites
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          CLIENT_ID: ${{ steps.config.outputs.client_id }}
+          AUDIENCE: ${{ steps.config.outputs.audience }}
+          EXIT_NODE: ${{ steps.config.outputs.exit_node }}
           CONFIGURED: ${{ steps.config.outputs.configured }}
         run: |
-          state=failure
-          [ "$CONFIGURED" = true ] && state=success
-          python3 scripts/goanime_post_status.py \
-            --state "$state" \
-            --context goanime-scrapling/residential-config
+          for item in \
+            "residential-client-id:$CLIENT_ID" \
+            "residential-audience:$AUDIENCE" \
+            "residential-exit-node:$EXIT_NODE" \
+            "residential-config:$CONFIGURED"; do
+            context="${item%%:*}"
+            present="${item#*:}"
+            state=failure
+            [ "$present" = true ] && state=success
+            python3 scripts/goanime_post_status.py \
+              --state "$state" \
+              --context "goanime-scrapling/$context"
+          done
 
       - name: Connect residential exit node
         if: steps.config.outputs.configured == 'true'
