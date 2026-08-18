@@ -1,0 +1,3 @@
+target_branch=feat/scrapling-provider-pipeline
+source_hint=205c895e45102b5fc72d688dcec30458ef2ba99c
+reason=classify deterministic failures by safe error category
