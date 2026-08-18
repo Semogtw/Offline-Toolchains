@@ -1,0 +1,243 @@
+diff --git a/src/main/services/local-download-sources/run-local-source-update-validation-concurrency.test.ts b/src/main/services/local-download-sources/run-local-source-update-validation-concurrency.test.ts
+new file mode 100644
+index 00000000..7aac6d0d
+--- /dev/null
++++ b/src/main/services/local-download-sources/run-local-source-update-validation-concurrency.test.ts
+@@ -0,0 +1,160 @@
++import test from "node:test";
++import assert from "node:assert/strict";
++import type {
++  LocalDownloadEntry,
++  LocalDownloadSource,
++  LocalSourceUriReviewItem,
++} from "@types";
++import type { LocalSourceRepository } from "./source-repository";
++import { createLocalSourceUpdateCoordinator } from "./run-local-source-update";
++import type { LocalSourceCandidate } from "./types";
++
++const source: LocalDownloadSource = {
++  id: "large-catalogue-source",
++  kind: "local-crawler",
++  name: "Large catalogue",
++  startUrl: "https://gamebounty.world/",
++  rootDomain: "gamebounty.world",
++  includeSubdomains: true,
++  useDynamicFallback: false,
++  approvedDownloadHosts: ["gamebounty.world"],
++  limits: {
++    maxPages: 5_000,
++    maxDepth: 12,
++    maxDurationMinutes: 1,
++    httpConcurrency: 4,
++    dynamicConcurrency: 1,
++    dynamicFallbackPages: 0,
++    requestTimeoutSeconds: 5,
++    maxResponseBytes: 1024 * 1024,
++    maxRedirects: 3,
++  },
++  status: "never-updated",
++  activeRunId: null,
++  pendingRunId: null,
++  createdAt: "2026-08-17T00:00:00.000Z",
++  updatedAt: "2026-08-17T00:00:00.000Z",
++  lastSuccessfulUpdateAt: null,
++  lastAttemptAt: null,
++  lastError: null,
++  stats: {
++    entries: 0,
++    explicitlyMatchedEntries: 0,
++    unresolvedEntries: 0,
++    pendingUriReviews: 0,
++    trustedUris: 0,
++    rejectedUris: 0,
++    reviewedUris: 0,
++  },
++};
++
++function candidate(index: number): LocalSourceCandidate {
++  const pageUrl = `https://gamebounty.world/game-${index}`;
++  return {
++    pageUrl,
++    title: `Game ${index}`,
++    normalizedTitle: `game ${index}`,
++    fileSize: "1 GB",
++    uploadDate: null,
++    explicitIdentities: [],
++    evidence: ["html-link"],
++    uriCandidates: [
++      {
++        uri: `https://pixeldrain.com/u/game-${index}`,
++        sourcePageUrl: pageUrl,
++        discoveredFrom: "html",
++        strongSignals: [],
++        contextualSignals: ["download-text", "same-item-block"],
++        negativeSignals: [],
++        mandatoryRejections: [],
++        relationClear: true,
++        linkText: "Download Full Game",
++      },
++    ],
++  };
++}
++
++function repositoryFixture() {
++  const staged: LocalDownloadEntry[] = [];
++  const reviews: LocalSourceUriReviewItem[] = [];
++  const repository = {
++    async getSource() {
++      return source;
++    },
++    async markRunStarted() {},
++    async getAlias() {
++      return undefined;
++    },
++    async getUriDecision() {
++      return undefined;
++    },
++    async putReviewItems(_sourceId: string, items: LocalSourceUriReviewItem[]) {
++      reviews.push(...items);
++    },
++    async writeStagedEntries(
++      _sourceId: string,
++      _runId: string,
++      entries: LocalDownloadEntry[]
++    ) {
++      staged.push(...entries);
++    },
++    async activateGeneration() {},
++    async discardGeneration() {},
++  } as unknown as LocalSourceRepository;
++  return { repository, staged, reviews };
++}
++
++test("large catalogue destination validation is bounded and concurrent", async () => {
++  const fixture = repositoryFixture();
++  const candidates = Array.from({ length: 24 }, (_, offset) =>
++    candidate(offset + 1)
++  );
++  let activeValidations = 0;
++  let maxActiveValidations = 0;
++
++  const coordinator = createLocalSourceUpdateCoordinator({
++    repository: fixture.repository,
++    createRunId: () => "run-validation-concurrency",
++    crawlHttp: async () => ({
++      completionReason: "complete" as const,
++      visitedUrls: candidates.map((item) => item.pageUrl),
++      candidates,
++      dynamicFallbackUrls: [],
++      errors: [],
++    }),
++    validate: async (uri) => {
++      activeValidations += 1;
++      maxActiveValidations = Math.max(
++        maxActiveValidations,
++        activeValidations
++      );
++      await new Promise((resolve) => setTimeout(resolve, 10));
++      activeValidations -= 1;
++      return {
++        originalUrl: uri,
++        finalUrl: uri,
++        redirectChain: [uri],
++        status: 200,
++        contentType: "text/html",
++        contentLength: null,
++        contentDisposition: null,
++        insufficientMetadata: false,
++      };
++    },
++  });
++
++  const report = await coordinator.start(source.id);
++
++  assert.equal(report.completionReason, "complete");
++  assert.ok("trustedUris" in report);
++  assert.equal(report.trustedUris, candidates.length);
++  assert.equal(report.reviewUris, 0);
++  assert.equal(fixture.reviews.length, 0);
++  assert.equal(fixture.staged.length, candidates.length);
++  assert.ok(maxActiveValidations > 1);
++  assert.ok(maxActiveValidations <= source.limits.httpConcurrency);
++  assert.deepEqual(
++    fixture.staged.map((entry) => entry.title),
++    candidates.map((item) => item.title)
++  );
++});
+diff --git a/src/main/services/local-download-sources/run-local-source-update.ts b/src/main/services/local-download-sources/run-local-source-update.ts
+index 02a726bf..612ac57f 100644
+--- a/src/main/services/local-download-sources/run-local-source-update.ts
++++ b/src/main/services/local-download-sources/run-local-source-update.ts
+@@ -325,6 +325,42 @@ export function createLocalSourceUpdateCoordinator(
+       orderedCandidates,
+       source.rootDomain
+     );
++    const validationResults = new Map<
++      string,
++      { validation: DestinationValidationResult; failed: boolean }
++    >();
++    const validationTasks = orderedCandidates.flatMap((candidate) =>
++      candidate.uriCandidates.map((uriCandidate) => ({ candidate, uriCandidate }))
++    );
++    await mapWithConcurrency(
++      validationTasks,
++      source.limits.httpConcurrency,
++      async ({ candidate, uriCandidate }) => {
++        if (run.controller.signal.aborted) return;
++        const fingerprint = uriFingerprint(candidate, uriCandidate.uri);
++        const deferredAnkerDownloadId = parseAnkerGamesDeferredDownloadUrl(
++          uriCandidate.uri
++        );
++        try {
++          const validation =
++            deferredAnkerDownloadId !== null ||
++            uriCandidate.uri.startsWith("magnet:")
++              ? syntheticValidation(uriCandidate.uri)
++              : await (deps.validate ?? validateDestination)(uriCandidate.uri, {
++                  maxRedirects: source.limits.maxRedirects,
++                  requestTimeoutMs:
++                    source.limits.requestTimeoutSeconds * 1_000,
++                  signal: run.controller.signal,
++                });
++          validationResults.set(fingerprint, { validation, failed: false });
++        } catch {
++          validationResults.set(fingerprint, {
++            validation: syntheticValidation(uriCandidate.uri),
++            failed: true,
++          });
++        }
++      }
++    );
+ 
+     for (const candidate of orderedCandidates) {
+       if (run.controller.signal.aborted) break;
+@@ -342,25 +378,12 @@ export function createLocalSourceUpdateCoordinator(
+           source.id,
+           fingerprint
+         );
+-        let validation: DestinationValidationResult;
++        const validationResult = validationResults.get(fingerprint);
++        const validation =
++          validationResult?.validation ?? syntheticValidation(uriCandidate.uri);
+         let mandatory = [...uriCandidate.mandatoryRejections];
+-        const deferredAnkerDownloadId = parseAnkerGamesDeferredDownloadUrl(
+-          uriCandidate.uri
+-        );
+-        try {
+-          validation =
+-            deferredAnkerDownloadId !== null ||
+-            uriCandidate.uri.startsWith("magnet:")
+-              ? syntheticValidation(uriCandidate.uri)
+-              : await (deps.validate ?? validateDestination)(uriCandidate.uri, {
+-                  maxRedirects: source.limits.maxRedirects,
+-                  requestTimeoutMs:
+-                    source.limits.requestTimeoutSeconds * 1_000,
+-                  signal: run.controller.signal,
+-                });
+-        } catch (error) {
++        if (validationResult?.failed) {
+           errors += 1;
+-          validation = syntheticValidation(uriCandidate.uri);
+           mandatory = [...mandatory, "destination-validation-failed"];
+         }
+ 

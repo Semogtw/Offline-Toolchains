@@ -1,0 +1,1 @@
+hydra perf/local-source-validation-concurrency 37542f41cbdfa6616cef52948186d26bcfec277c .hydra-patches/2026-08-18-validation-concurrency-minimal.patch
