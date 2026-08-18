@@ -1,0 +1,134 @@
+name: Validate private Hydra style
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "triggers/hydra-style/*.request"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hydra-private-style
+  cancel-in-progress: false
+
+jobs:
+  style:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact style request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/hydra-style/*.request' | head -n 1)"
+          test -n "$request"
+          request="toolchain-control/$request"
+          read -r project branch expected_sha < "$request"
+          test "$project" = "hydra"
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ ]]
+          [[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "expected_sha=$expected_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private Hydra revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/HydraPersonalizado
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          ref: ${{ steps.request.outputs.expected_sha }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify requested branch still points to revision
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git -C private-source rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_sha="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/HydraPersonalizado.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_sha" = "$EXPECTED_SHA"
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.23.1
+          check-latest: false
+
+      - name: Install JavaScript dependencies without build side effects
+        id: deps
+        working-directory: private-source
+        continue-on-error: true
+        run: yarn install --frozen-lockfile --ignore-scripts --non-interactive
+
+      - name: Check formatting
+        id: format
+        working-directory: private-source
+        continue-on-error: true
+        run: yarn format-check
+
+      - name: Run ESLint without modifying checkout
+        id: eslint
+        working-directory: private-source
+        continue-on-error: true
+        run: yarn eslint . --ext .js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts
+
+      - name: Publish style status
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.expected_sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          DEPS_OUTCOME: ${{ steps.deps.outcome }}
+          FORMAT_OUTCOME: ${{ steps.format.outcome }}
+          ESLINT_OUTCOME: ${{ steps.eslint.outcome }}
+        run: |
+          set -euo pipefail
+          status=success
+          for outcome in "$DEPS_OUTCOME" "$FORMAT_OUTCOME" "$ESLINT_OUTCOME"; do
+            if [ "$outcome" != "success" ]; then status=failure; fi
+          done
+          result="$(jq -n \
+            --arg status "$status" \
+            --arg targetSha "$TARGET_SHA" \
+            --arg targetBranch "$TARGET_BRANCH" \
+            --arg runId "$GITHUB_RUN_ID" \
+            --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
+            --arg deps "$DEPS_OUTCOME" \
+            --arg format "$FORMAT_OUTCOME" \
+            --arg eslint "$ESLINT_OUTCOME" \
+            '{status:$status,targetSha:$targetSha,targetBranch:$targetBranch,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),steps:{deps:$deps,format:$format,eslint:$eslint}}')"
+          path="hydra-style-results/${TARGET_SHA}.json"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          current_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=hydra-validation-results" --jq '.sha' 2>/dev/null || true)"
+          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/${path}" -f "message=test(hydra): record style ${TARGET_SHA}" -f "content=${encoded}" -f "branch=hydra-validation-results")
+          if [ -n "$current_sha" ]; then args+=(-f "sha=${current_sha}"); fi
+          gh api "${args[@]}" >/dev/null
+          test "$status" = success
