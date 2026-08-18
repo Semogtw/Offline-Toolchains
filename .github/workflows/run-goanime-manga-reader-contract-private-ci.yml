@@ -20,7 +20,7 @@ jobs:
     name: Manga reader contract
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Require private repository token
@@ -135,9 +135,64 @@ jobs:
             test/tools/manga/collect_enabled_manga_live_evidence_test.dart \
             test/tools/manga/audit_planned_provider_stage_test.dart
 
+      - name: Build sanitized failure map
+        id: diagnose
+        if: always()
+        working-directory: private-source
+        shell: bash
+        env:
+          ANALYZE_OUTCOME: ${{ steps.analyze.outcome }}
+          TESTS_OUTCOME: ${{ steps.tests.outcome }}
+          FORMAT_OUTCOME: ${{ steps.format.outcome }}
+        run: |
+          set -euo pipefail
+          source_files=(
+            lib/services/manga/manga_remote_content_probe.dart
+            lib/services/manga/manga_remote_manifest_validator.dart
+            lib/services/manga/manga_content_resolver.dart
+            lib/services/manga/manga_readability_verifier.dart
+            lib/services/manga/manga_source_discovery_service.dart
+            lib/services/manga/manga_search_coordinator.dart
+            tools/manga/collect_enabled_manga_live_evidence.dart
+            tools/manga/audit_planned_provider_stage.dart
+          )
+          test_files=(
+            test/services/manga/manga_http_stream_cancellation_test.dart
+            test/services/manga/manga_remote_content_probe_test.dart
+            test/services/manga/manga_content_resolver_test.dart
+            test/services/manga/manga_readability_verifier_test.dart
+            test/services/manga/manga_source_discovery_service_test.dart
+            test/services/manga/manga_search_coordinator_test.dart
+            test/tools/manga/collect_enabled_manga_live_evidence_test.dart
+            test/tools/manga/audit_planned_provider_stage_test.dart
+            test/architecture/manga_provider_registry_manifest_test.dart
+            test/architecture/manga_planned_provider_definitions_test.dart
+          )
+          : >/tmp/analyze_failures
+          : >/tmp/test_failures
+          : >/tmp/format_failures
+          if [ "$ANALYZE_OUTCOME" != success ]; then
+            for path in "${source_files[@]}" "${test_files[@]}"; do
+              flutter analyze --no-pub "$path" >/dev/null 2>&1 || echo "$path" >>/tmp/analyze_failures
+            done
+          fi
+          if [ "$TESTS_OUTCOME" != success ]; then
+            for path in "${test_files[@]}"; do
+              flutter test --no-pub "$path" >/dev/null 2>&1 || echo "$path" >>/tmp/test_failures
+            done
+          fi
+          if [ "$FORMAT_OUTCOME" != success ]; then
+            for path in "${source_files[@]}" "${test_files[@]}"; do
+              dart format --output=none --set-exit-if-changed "$path" >/dev/null 2>&1 || echo "$path" >>/tmp/format_failures
+            done
+          fi
+          echo "analyze=$(jq -Rsc 'split("\n")|map(select(length>0))' </tmp/analyze_failures)" >> "$GITHUB_OUTPUT"
+          echo "tests=$(jq -Rsc 'split("\n")|map(select(length>0))' </tmp/test_failures)" >> "$GITHUB_OUTPUT"
+          echo "format=$(jq -Rsc 'split("\n")|map(select(length>0))' </tmp/format_failures)" >> "$GITHUB_OUTPUT"
+
       - name: Remove private checkout
         if: always()
-        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control" /tmp/analyze_failures /tmp/test_failures /tmp/format_failures
 
       - name: Publish sanitized contract result
         if: always()
@@ -150,37 +205,23 @@ jobs:
           ANALYZE_OUTCOME: ${{ steps.analyze.outcome }}
           TESTS_OUTCOME: ${{ steps.tests.outcome }}
           FORMAT_OUTCOME: ${{ steps.format.outcome }}
+          ANALYZE_FILES: ${{ steps.diagnose.outputs.analyze }}
+          TEST_FILES: ${{ steps.diagnose.outputs.tests }}
+          FORMAT_FILES: ${{ steps.diagnose.outputs.format }}
         run: |
           set -euo pipefail
           state=failure
-          if [ "$JOB_STATUS" = success ]; then
-            state=success
-          fi
+          [ "$JOB_STATUS" = success ] && state=success
           failed_stage=none
-          if [ "$ANALYZE_OUTCOME" != success ]; then
-            failed_stage=analyze
-          elif [ "$TESTS_OUTCOME" != success ]; then
-            failed_stage=tests
-          elif [ "$FORMAT_OUTCOME" != success ]; then
-            failed_stage=format
+          if [ "$ANALYZE_OUTCOME" != success ]; then failed_stage=analyze
+          elif [ "$TESTS_OUTCOME" != success ]; then failed_stage=tests
+          elif [ "$FORMAT_OUTCOME" != success ]; then failed_stage=format
           fi
-          gh api --method POST \
-            "repos/$GITHUB_REPOSITORY/statuses/$CONTROL_SHA" \
-            -f state="$state" \
-            -f context='goanime/manga-reader-contract' \
+          analyze_files="${ANALYZE_FILES:-[]}"; test_files="${TEST_FILES:-[]}"; format_files="${FORMAT_FILES:-[]}"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$CONTROL_SHA" \
+            -f state="$state" -f context='goanime/manga-reader-contract' \
             -f description="Manga reader contract gate: $JOB_STATUS"
-
-          result="$(jq -cn \
-            --arg controlSha "$CONTROL_SHA" \
-            --arg reviewedSha "$REVIEWED_SHA" \
-            --arg state "$state" \
-            --arg failedStage "$failed_stage" \
-            --arg analyze "$ANALYZE_OUTCOME" \
-            --arg tests "$TESTS_OUTCOME" \
-            --arg format "$FORMAT_OUTCOME" \
-            '{schemaVersion:2,controlSha:$controlSha,reviewedSha:$reviewedSha,state:$state,failedStage:$failedStage,stages:{analyze:$analyze,tests:$tests,format:$format}}')"
+          result="$(jq -cn --arg controlSha "$CONTROL_SHA" --arg reviewedSha "$REVIEWED_SHA" --arg state "$state" --arg failedStage "$failed_stage" --arg analyze "$ANALYZE_OUTCOME" --arg tests "$TESTS_OUTCOME" --arg format "$FORMAT_OUTCOME" --argjson analyzeFiles "$analyze_files" --argjson testFiles "$test_files" --argjson formatFiles "$format_files" '{schemaVersion:3,controlSha:$controlSha,reviewedSha:$reviewedSha,state:$state,failedStage:$failedStage,stages:{analyze:$analyze,tests:$tests,format:$format},failedFiles:{analyze:$analyzeFiles,tests:$testFiles,format:$formatFiles}}')"
           encoded="$(printf '%s\n' "$result" | base64 -w0)"
-          gh api --method PUT \
-            "repos/$GITHUB_REPOSITORY/contents/results/goanime-manga-reader-contract/$CONTROL_SHA.json" \
-            -f message="ci(result): record manga reader contract $CONTROL_SHA" \
-            -f content="$encoded"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/results/goanime-manga-reader-contract/$CONTROL_SHA.json" \
+            -f message="ci(result): record manga reader contract $CONTROL_SHA" -f content="$encoded"
