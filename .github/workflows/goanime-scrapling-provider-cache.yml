@@ -20,6 +20,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: goanime-scrapling-provider-cache
@@ -35,6 +36,9 @@ jobs:
       SCRAPLING_WORKERS: ${{ github.event.inputs.workers || '8' }}
       SCRAPLING_PROXY_URL: ${{ secrets.GOANIME_SCRAPLING_PROXY_URL }}
       SCRAPLING_PROXY_PROVIDERS: animefire,animesonline
+      TAILSCALE_OAUTH_CLIENT_ID: ${{ secrets.GOANIME_TAILSCALE_CLIENT_ID }}
+      TAILSCALE_AUDIENCE: ${{ secrets.GOANIME_TAILSCALE_AUDIENCE }}
+      TAILSCALE_EXIT_NODE: ${{ vars.GOANIME_TAILSCALE_EXIT_NODE }}
     steps:
       - name: Checkout trusted Toolchains source
         uses: actions/checkout@v6
@@ -171,7 +175,71 @@ jobs:
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
           if [ "$code" -eq 2 ]; then
-            echo 'Some fresh provider crawls were rejected; preserved snapshots will be validated before publication.'
+            echo 'Some fresh provider crawls were rejected; optional residential fallback will be considered.'
+          fi
+
+      - name: Check phone fallback configuration
+        if: steps.crawl.outputs.code == '2'
+        id: phone
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "$TAILSCALE_OAUTH_CLIENT_ID" ] && [ -n "$TAILSCALE_AUDIENCE" ] && [ -n "$TAILSCALE_EXIT_NODE" ]; then
+            echo 'configured=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'configured=false' >> "$GITHUB_OUTPUT"
+            echo 'Phone residential fallback is not fully configured; preserved provider snapshots remain in use.'
+          fi
+
+      - name: Connect optional phone exit node
+        if: steps.crawl.outputs.code == '2' && steps.phone.outputs.configured == 'true'
+        id: tailscale
+        continue-on-error: true
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ env.TAILSCALE_OAUTH_CLIENT_ID }}
+          audience: ${{ env.TAILSCALE_AUDIENCE }}
+          tags: tag:goanime-scraper
+          tailscaled-args: --tun=userspace-networking --socks5-server=127.0.0.1:1055 --outbound-http-proxy-listen=127.0.0.1:1055
+          args: --exit-node=${{ env.TAILSCALE_EXIT_NODE }}
+
+      - name: Verify optional residential route
+        if: steps.tailscale.outcome == 'success'
+        id: residential_route
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 20 \
+            --proxy http://127.0.0.1:1055 \
+            https://www.google.com/generate_204 \
+            --output /dev/null
+          echo 'ready=true' >> "$GITHUB_OUTPUT"
+
+      - name: Retry only blocked providers through phone egress
+        if: steps.tailscale.outcome == 'success' && steps.residential_route.outputs.ready == 'true'
+        id: residential
+        working-directory: private-source
+        shell: bash
+        env:
+          SCRAPLING_PROXY_URL: http://127.0.0.1:1055
+          SCRAPLING_PROXY_PROVIDERS: animefire,animesonline
+        run: |
+          set +e
+          python tools/scrapling_provider_pipeline/build_provider_cache.py \
+            --repo-root . \
+            --state-dir .cache/scrapling-provider-pipeline \
+            --workers "$SCRAPLING_WORKERS" \
+            --only-providers animefire,animesonline
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ] && [ "$code" -ne 2 ]; then
+            echo "Unexpected residential crawler exit code: $code" >&2
+            exit "$code"
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          if [ "$code" -eq 2 ]; then
+            echo 'Residential retry still left at least one preserved provider snapshot.'
           fi
 
       - name: Preserve learned adaptive selector state
@@ -269,10 +337,14 @@ jobs:
           echo '## GoAnime external Scrapling cache' >> "$GITHUB_STEP_SUMMARY"
           echo '- Target branch: `${{ env.TARGET_BRANCH }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Source revision: `${{ steps.source.outputs.sha }}`' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Crawler result: `${{ steps.crawl.outputs.code }}` (0=fresh complete, 2=preserved fallback present)' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Initial crawler result: `${{ steps.crawl.outputs.code }}` (0=fresh complete, 2=preserved fallback present)' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Phone fallback configured: `${{ steps.phone.outputs.configured }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Tailnet connection: `${{ steps.tailscale.outcome }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Residential route ready: `${{ steps.residential_route.outputs.ready }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Residential retry result: `${{ steps.residential.outputs.code }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Cache changed: `${{ steps.diff.outputs.changed }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Automatic publication enabled: `${{ steps.credentials.outputs.publish }}`' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Optional proxy configured: `${{ steps.credentials.outputs.proxy }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Optional direct proxy configured: `${{ steps.credentials.outputs.proxy }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Published commit: `${{ steps.commit.outputs.sha }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Adaptive selector state survives runs through the Toolchains Actions cache without entering the APK/repository.' >> "$GITHUB_STEP_SUMMARY"
 
