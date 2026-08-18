@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: hydra-source-package-${{ github.ref }}
@@ -52,6 +52,7 @@ jobs:
           [[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]]
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
           echo "expected_sha=$expected_sha" >> "$GITHUB_OUTPUT"
+          echo "request_path=$request" >> "$GITHUB_OUTPUT"
 
       - name: Checkout exact private Hydra revision
         uses: actions/checkout@v6
@@ -99,6 +100,7 @@ jobs:
           cache-dependency-path: private-source/python_rpc/requirements-scrapling.txt
 
       - name: Install Python build dependencies
+        id: deps
         working-directory: private-source
         shell: bash
         env:
@@ -109,6 +111,7 @@ jobs:
           python -m pip install cx_Freeze libtorrent
 
       - name: Build packaged Python RPC and discovery CLI
+        id: build
         working-directory: private-source
         shell: bash
         env:
@@ -116,6 +119,7 @@ jobs:
         run: node scripts/build-python-rpc.cjs
 
       - name: Verify packaged discovery artifacts
+        id: verify
         working-directory: private-source
         shell: bash
         run: |
@@ -125,3 +129,42 @@ jobs:
           test -d hydra-scrapling-browser
           test -n "$(find hydra-scrapling-browser -type f -print -quit)"
           ./hydra-python-rpc/hydra-source-discovery </dev/null >/dev/null 2>&1 || test "$?" -ne 126
+
+      - name: Publish packaging status
+        if: ${{ always() && steps.request.outputs.expected_sha != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.expected_sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          REQUEST_PATH: ${{ steps.request.outputs.request_path }}
+          DEPS_OUTCOME: ${{ steps.deps.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
+        run: |
+          set -euo pipefail
+          status=success
+          for outcome in "$DEPS_OUTCOME" "$BUILD_OUTCOME" "$VERIFY_OUTCOME"; do
+            if [ "$outcome" != "success" ]; then
+              status=failure
+            fi
+          done
+          result="$(jq -n \
+            --arg status "$status" \
+            --arg targetSha "$TARGET_SHA" \
+            --arg targetBranch "$TARGET_BRANCH" \
+            --arg requestPath "$REQUEST_PATH" \
+            --arg runId "$GITHUB_RUN_ID" \
+            --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
+            --arg deps "$DEPS_OUTCOME" \
+            --arg build "$BUILD_OUTCOME" \
+            --arg verify "$VERIFY_OUTCOME" \
+            '{status:$status,targetSha:$targetSha,targetBranch:$targetBranch,requestPath:$requestPath,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),steps:{deps:$deps,build:$build,verify:$verify}}')"
+          path="hydra-package-results/${TARGET_SHA}.json"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          current_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=hydra-validation-results" --jq '.sha' 2>/dev/null || true)"
+          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/${path}" -f "message=ci(hydra): record package ${TARGET_SHA}" -f "content=${encoded}" -f "branch=hydra-validation-results")
+          if [ -n "$current_sha" ]; then
+            args+=(-f "sha=${current_sha}")
+          fi
+          gh api "${args[@]}" >/dev/null
