@@ -1,0 +1,1 @@
+{"schemaVersion":2,"controlSha":"0450a913e518831ce9dbce4c5d0e146bf2469d73","reviewedSha":"470aafbc006de883be1a241b36d5afe100d1a623","state":"failure","failedStage":"analyze","stages":{"analyze":"failure","tests":"skipped","format":"skipped"},"candidates":["ptbr.arthurscan","ptbr.hqnow","ptbr.kamisamaexplorer"]}
