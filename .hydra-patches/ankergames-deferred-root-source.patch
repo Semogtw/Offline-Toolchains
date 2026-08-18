@@ -1,0 +1,548 @@
+diff --git a/src/main/services/local-download-sources/ankergames-adapter.ts b/src/main/services/local-download-sources/ankergames-adapter.ts
+index c7d0bb2..0000000 100644
+--- a/src/main/services/local-download-sources/ankergames-adapter.ts
++++ b/src/main/services/local-download-sources/ankergames-adapter.ts
+@@ -19,10 +19,16 @@ export interface AnkerGamesPageMetadata {
+   explicitIdentities: Array<{ shop: "steam"; objectId: string }>;
+ }
+ 
++export function isAnkerGamesHost(hostname: string) {
++  const normalized = hostname.toLowerCase();
++  return (
++    normalized === ANKERGAMES_HOST || normalized === `www.${ANKERGAMES_HOST}`
++  );
++}
++
+ export function isAnkerGamesPage(pageUrl: string) {
+   try {
+-    return new URL(pageUrl).hostname.toLowerCase() === ANKERGAMES_HOST;
++    return isAnkerGamesHost(new URL(pageUrl).hostname);
+   } catch {
+     return false;
+   }
+diff --git a/src/main/services/local-download-sources/ankergames-download-window.ts b/src/main/services/local-download-sources/ankergames-download-window.ts
+index 0000000..0000000 100644
+--- a/src/main/services/local-download-sources/ankergames-download-window.ts
++++ b/src/main/services/local-download-sources/ankergames-download-window.ts
+@@ -1,5 +1,8 @@
+ import { createRequire } from "node:module";
+-import { isAnkerGamesPage } from "./ankergames-adapter";
++import {
++  isAnkerGamesHost,
++  isAnkerGamesPage,
++} from "./ankergames-adapter";
+ import {
+   createTaskQueue,
+   getAnkerGamesRateLimitDelay,
+@@ -76,7 +79,7 @@ function isAllowedRequest(url: string) {
+       return false;
+     const hostname = parsed.hostname.toLowerCase();
+     return (
+-      hostname === ANKERGAMES_HOST || hostname === CLOUDFLARE_CHALLENGE_HOST
++      isAnkerGamesHost(hostname) || hostname === CLOUDFLARE_CHALLENGE_HOST
+     );
+   } catch {
+     return false;
+diff --git a/src/main/services/local-download-sources/ankergames-deferred-download.ts b/src/main/services/local-download-sources/ankergames-deferred-download.ts
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/src/main/services/local-download-sources/ankergames-deferred-download.ts
+@@ -0,0 +1,36 @@
++import { isAnkerGamesHost } from "./ankergames-adapter";
++
++const DEFERRED_PATH = /^\/generate-download-url\/(\d+)\/?$/;
++
++export function createAnkerGamesDeferredDownloadUrl(downloadId: number) {
++  if (!Number.isSafeInteger(downloadId) || downloadId <= 0) {
++    throw new Error("AnkerGames download ID must be a positive safe integer");
++  }
++  return `https://ankergames.net/generate-download-url/${downloadId}`;
++}
++
++export function parseAnkerGamesDeferredDownloadUrl(value: string) {
++  try {
++    const parsed = new URL(value);
++    if (
++      parsed.protocol !== "https:" ||
++      !isAnkerGamesHost(parsed.hostname) ||
++      parsed.username ||
++      parsed.password ||
++      parsed.search ||
++      parsed.hash
++    ) {
++      return null;
++    }
++    const match = DEFERRED_PATH.exec(parsed.pathname);
++    if (!match) return null;
++    const downloadId = Number(match[1]);
++    return Number.isSafeInteger(downloadId) && downloadId > 0
++      ? downloadId
++      : null;
++  } catch {
++    return null;
++  }
++}
+diff --git a/src/main/services/local-download-sources/http-crawler.ts b/src/main/services/local-download-sources/http-crawler.ts
+index 43384cd..0000000 100644
+--- a/src/main/services/local-download-sources/http-crawler.ts
++++ b/src/main/services/local-download-sources/http-crawler.ts
+@@ -2,9 +2,14 @@ import type { LocalSourceCrawlLimits, LocalSourceSpec } from "@types";
+ import { CrawlQueue } from "./crawl-queue";
+ import {
+   extractAnkerGamesDownloadRequests,
++  isAnkerGamesHost,
+   isAnkerGamesPage,
+ } from "./ankergames-adapter";
++import { createAnkerGamesDeferredDownloadUrl } from "./ankergames-deferred-download";
+ import type { AnkerGamesDownloadResolver } from "./ankergames-download-window";
+ import type {
+   AnkerGamesDownloadPageInput,
+@@ -112,6 +117,41 @@ export function createAnkerGamesCandidate(
+   };
+ }
+ 
++export function createDeferredAnkerGamesCandidate(
++  pageUrl: string,
++  downloadId: number,
++  metadata: ReturnType<typeof extractAnkerGamesDownloadRequests>["metadata"],
++  fallbackTitle: string | null
++): LocalSourceCandidate {
++  const title = metadata.title ?? fallbackTitle;
++  return {
++    pageUrl,
++    title,
++    normalizedTitle: title ? normalizeLocalSourceTitle(title) : null,
++    uploadDate: metadata.uploadDate,
++    fileSize: metadata.fileSize,
++    uriCandidates: [
++      {
++        uri: createAnkerGamesDeferredDownloadUrl(downloadId),
++        sourcePageUrl: pageUrl,
++        discoveredFrom: "adapter",
++        strongSignals: ["ankergames-deferred-download"],
++        contextualSignals: ["ankergames-page", "same-item-block"],
++        negativeSignals: [],
++        mandatoryRejections: [],
++        adapterApprovedHost: true,
++        relationClear: true,
++        linkText: "AnkerGames deferred download",
++      },
++    ],
++    explicitIdentities: metadata.explicitIdentities,
++    evidence: ["ankergames-page", "ankergames-deferred-download"],
++  };
++}
++
+ async function resolveAnkerGamesPage(
+   input: HttpCrawlerInput,
+   pageUrl: string,
+@@ -159,10 +199,13 @@ function isUsefulPage(url: string) {
+ function isAnkerGamesCrawlPage(url: string) {
+   try {
+     const parsed = new URL(url);
+-    if (parsed.hostname.toLowerCase() !== "ankergames.net") return true;
++    if (!isAnkerGamesHost(parsed.hostname)) return true;
+     return (
+-      parsed.pathname === "/" || /^\/game\/[^/]+\/?$/i.test(parsed.pathname)
++      parsed.pathname === "/" ||
++      /^\/(?:games(?:-list)?|browse)\/?$/i.test(parsed.pathname) ||
++      /^\/game\/[^/]+\/?$/i.test(parsed.pathname)
+     );
+   } catch {
+     return false;
+@@ -511,29 +554,17 @@ export async function crawlHttpSource(
+                 ?.title ?? null;
+             if (anker.downloadIds.length > 0) {
+-              try {
+-                const resolvedDownloads = await resolveAnkerGamesPage(
+-                  input,
+-                  loaded.finalUrl,
+-                  anker.downloadIds
+-                );
+-                for (const resolved of resolvedDownloads) {
+-                  candidates.push(
+-                    createAnkerGamesCandidate(
+-                      loaded.finalUrl,
+-                      resolved.url,
+-                      anker.metadata,
+-                      fallbackTitle
+-                    )
+-                  );
+-                }
+-              } catch (error) {
+-                const message =
+-                  error instanceof Error ? error.message : String(error);
+-                for (const downloadId of anker.downloadIds) {
+-                  errors.push({
+-                    url: `${loaded.finalUrl}#download-${downloadId}`,
+-                    message,
+-                  });
+-                }
++              for (const downloadId of anker.downloadIds) {
++                candidates.push(
++                  createDeferredAnkerGamesCandidate(
++                    loaded.finalUrl,
++                    downloadId,
++                    anker.metadata,
++                    fallbackTitle
++                  )
++                );
+               }
+             }
+           }
+diff --git a/src/main/services/local-download-sources/run-local-source-update.ts b/src/main/services/local-download-sources/run-local-source-update.ts
+index 2da8ce2..0000000 100644
+--- a/src/main/services/local-download-sources/run-local-source-update.ts
++++ b/src/main/services/local-download-sources/run-local-source-update.ts
+@@ -30,6 +30,7 @@ import {
+   extractAnkerGamesDownloadRequests,
+   isAnkerGamesPage,
+ } from "./ankergames-adapter";
++import { parseAnkerGamesDeferredDownloadUrl } from "./ankergames-deferred-download";
+ import {
+   createAnkerGamesDownloadSessionForRun,
+   resolveAnkerGamesDownloadUrl,
+@@ -340,10 +341,13 @@ export function createLocalSourceUpdateCoordinator(
+         let validation: DestinationValidationResult;
+         let mandatory = [...uriCandidate.mandatoryRejections];
++        const deferredAnkerDownloadId = parseAnkerGamesDeferredDownloadUrl(
++          uriCandidate.uri
++        );
+         try {
+-          validation = uriCandidate.uri.startsWith("magnet:")
+-            ? syntheticValidation(uriCandidate.uri)
+-            : await (deps.validate ?? validateDestination)(uriCandidate.uri, {
++          validation =
++            deferredAnkerDownloadId !== null ||
++            uriCandidate.uri.startsWith("magnet:")
++              ? syntheticValidation(uriCandidate.uri)
++              : await (deps.validate ?? validateDestination)(uriCandidate.uri, {
+                 maxRedirects: source.limits.maxRedirects,
+                 requestTimeoutMs: source.limits.requestTimeoutSeconds * 1_000,
+                 signal: run.controller.signal,
+diff --git a/src/main/services/local-download-sources/get-game-download-options.ts b/src/main/services/local-download-sources/get-game-download-options.ts
+index 3cf83a1..0000000 100644
+--- a/src/main/services/local-download-sources/get-game-download-options.ts
++++ b/src/main/services/local-download-sources/get-game-download-options.ts
+@@ -27,6 +27,10 @@ export interface GameDownloadOptionsDependencies {
+     game: Pick<GameDownloadOptionsInput, "shop" | "objectId">,
+     downloadSourceIds: string[]
+   ): Promise<GameRepack[]>;
++  resolveLocalUris?(
++    entry: LocalDownloadEntry,
++    source: LocalDownloadSource
++  ): Promise<string[]>;
+ }
+ 
+ function optionKey(option: GameRepack) {
+@@ -40,14 +44,16 @@ function optionKey(option: GameRepack) {
+ 
+ function localEntryToRepack(
+   entry: LocalDownloadEntry,
+-  source: LocalDownloadSource
++  source: LocalDownloadSource,
++  uris: string[] = entry.uris
+ ): GameRepack {
+   return {
+     id: `local:${entry.sourceId}:${entry.fingerprint}`,
+     title: entry.title,
+     fileSize: entry.fileSize,
+-    uris: entry.uris,
++    uris,
+     unavailableUris: [],
+     uploadDate: normalizeDownloadOptionDate(entry.uploadDate),
+     downloadSourceId: entry.sourceId,
+@@ -93,9 +99,21 @@ export async function getGameDownloadOptions(
+         for (const entry of titleEntries) {
+           if (entry.gameIdentity === null) entries.set(entry.id, entry);
+         }
+-        return [...entries.values()].map((entry) =>
+-          localEntryToRepack(entry, source)
+-        );
++        const options = await Promise.all(
++          [...entries.values()].map(async (entry) => {
++            try {
++              const uris = dependencies.resolveLocalUris
++                ? await dependencies.resolveLocalUris(entry, source)
++                : entry.uris;
++              if (uris.length === 0) return null;
++              return localEntryToRepack(entry, source, uris);
++            } catch {
++              return null;
++            }
++          })
++        );
++        return options.filter((option): option is GameRepack => option !== null);
+       } catch {
+         return [];
+       }
+diff --git a/src/main/services/local-download-sources/get-game-download-options.instance.ts b/src/main/services/local-download-sources/get-game-download-options.instance.ts
+index 68c642d..0000000 100644
+--- a/src/main/services/local-download-sources/get-game-download-options.instance.ts
++++ b/src/main/services/local-download-sources/get-game-download-options.instance.ts
+@@ -1,10 +1,29 @@
++import { randomUUID } from "node:crypto";
+ import { downloadSourcesSublevel } from "../../level";
+ import { HydraApi } from "../hydra-api";
+-import type { GameRepack } from "@types";
++import type { GameRepack, LocalDownloadEntry } from "@types";
+ import { localSourceRepository } from "./source-repository.instance";
+ import { getGameDownloadOptions } from "./get-game-download-options";
++import { isAnkerGamesPage } from "./ankergames-adapter";
++import { parseAnkerGamesDeferredDownloadUrl } from "./ankergames-deferred-download";
++import { resolveAnkerGamesDownloadUrl } from "./ankergames-download-window";
++
++async function resolveLocalUris(entry: LocalDownloadEntry) {
++  return Promise.all(
++    entry.uris.map(async (uri) => {
++      const downloadId = parseAnkerGamesDeferredDownloadUrl(uri);
++      if (downloadId === null) return uri;
++      if (!isAnkerGamesPage(entry.pageUrl)) {
++        throw new Error("AnkerGames deferred download has an invalid page URL");
++      }
++      const resolved = await resolveAnkerGamesDownloadUrl({
++        pageUrl: entry.pageUrl,
++        downloadId,
++        runId: `local-option-${randomUUID()}`,
++      });
++      return resolved.url;
++    })
++  );
++}
+ 
+ export const getCombinedGameDownloadOptions = (
+   input: Parameters<typeof getGameDownloadOptions>[0]
+@@ -28,4 +47,5 @@ export const getCombinedGameDownloadOptions = (
+           needsAuth: false,
+         }
+       ),
++    resolveLocalUris: (entry) => resolveLocalUris(entry),
+   });
+diff --git a/src/main/services/local-download-sources/ankergames-adapter.test.ts b/src/main/services/local-download-sources/ankergames-adapter.test.ts
+index 770342b..0000000 100644
+--- a/src/main/services/local-download-sources/ankergames-adapter.test.ts
++++ b/src/main/services/local-download-sources/ankergames-adapter.test.ts
+@@ -25,8 +25,10 @@ test("extracts CSRF and only positive direct-download IDs", () => {
+   });
+ });
+ 
+-test("rejects other hosts and deduplicates malformed IDs", () => {
++test("accepts canonical/www hosts, rejects other hosts and deduplicates malformed IDs", () => {
++  assert.equal(isAnkerGamesPage("https://ankergames.net/game/example"), true);
++  assert.equal(isAnkerGamesPage("https://www.ankergames.net/game/example"), true);
+   assert.equal(isAnkerGamesPage("https://evil.test/game"), false);
+ 
+   const result = extractAnkerGamesDownloadRequests({
+diff --git a/src/main/services/local-download-sources/ankergames-deferred-download.test.ts b/src/main/services/local-download-sources/ankergames-deferred-download.test.ts
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/src/main/services/local-download-sources/ankergames-deferred-download.test.ts
+@@ -0,0 +1,28 @@
++import test from "node:test";
++import assert from "node:assert/strict";
++import {
++  createAnkerGamesDeferredDownloadUrl,
++  parseAnkerGamesDeferredDownloadUrl,
++} from "./ankergames-deferred-download";
++
++test("round-trips the exact allowlisted AnkerGames deferred endpoint", () => {
++  const url = createAnkerGamesDeferredDownloadUrl(4358);
++  assert.equal(url, "https://ankergames.net/generate-download-url/4358");
++  assert.equal(parseAnkerGamesDeferredDownloadUrl(url), 4358);
++  assert.equal(
++    parseAnkerGamesDeferredDownloadUrl(
++      "https://www.ankergames.net/generate-download-url/4358"
++    ),
++    4358
++  );
++});
++
++test("rejects lookalike hosts and non-exact deferred endpoints", () => {
++  assert.equal(
++    parseAnkerGamesDeferredDownloadUrl(
++      "https://evil.test/generate-download-url/4358"
++    ),
++    null
++  );
++  assert.equal(parseAnkerGamesDeferredDownloadUrl("https://ankergames.net/generate-download-url/0"), null);
++  assert.equal(parseAnkerGamesDeferredDownloadUrl("https://ankergames.net/generate-download-url/4358?x=1"), null);
++});
+diff --git a/src/main/services/local-download-sources/http-crawler.test.ts b/src/main/services/local-download-sources/http-crawler.test.ts
+index cc5e325..0000000 100644
+--- a/src/main/services/local-download-sources/http-crawler.test.ts
++++ b/src/main/services/local-download-sources/http-crawler.test.ts
+@@ -80,13 +80,12 @@ test("crawler reports Cloudflare challenge pages and schedules dynamic fallback", async () => {
+   }
+ });
+ 
+-test("crawler resolves AnkerGames generated downloads with page metadata", async () => {
++test("crawler records AnkerGames deferred downloads without resolving during catalogue crawl", async () => {
+   const source = {
+     ...(await makeSource("https://ankergames.net")),
+     startUrl: "https://ankergames.net/game/example",
+     rootDomain: "ankergames.net",
+   };
+-  const calls: Array<{ pageUrl: string; downloadId: number; runId?: string }> =
+-    [];
++  let resolverCalls = 0;
+   const fetchImpl: typeof fetch = async (input) => {
+     const url = String(input);
+     if (url.endsWith("/robots.txt")) {
+@@ -116,16 +115,9 @@ test("crawler resolves AnkerGames generated downloads with page metadata", async () => {
+     source,
+     runId: "run-anker",
+     fetchImpl,
+-    resolveAnkerGamesDownloadUrl: async (input) => {
+-      calls.push({
+-        pageUrl: input.pageUrl,
+-        downloadId: input.downloadId,
+-        runId: input.runId,
+-      });
+-      return {
+-        status: 200,
+-        url: "https://files.example.test/example.zip",
+-      };
++    resolveAnkerGamesDownloadUrl: async () => {
++      resolverCalls += 1;
++      throw new Error("catalogue crawl must not resolve AnkerGames downloads");
+     },
+   });
+ 
+@@ -135,18 +127,11 @@ test("crawler resolves AnkerGames generated downloads with page metadata", async () => {
+     result.visitedUrls.some((url) => url.includes("/tag/")),
+     false
+   );
+-  assert.deepEqual(calls, [
+-    {
+-      pageUrl: "https://ankergames.net/game/example",
+-      downloadId: 4358,
+-      runId: "run-anker",
+-    },
+-  ]);
++  assert.equal(resolverCalls, 0);
+   assert.deepEqual(
+     result.candidates.find((candidate) =>
+-      candidate.evidence.includes("ankergames-generated-download")
++      candidate.evidence.includes("ankergames-deferred-download")
+     ),
+     {
+       pageUrl: "https://ankergames.net/game/example",
+@@ -156,18 +141,18 @@ test("crawler resolves AnkerGames generated downloads with page metadata", async () => {
+       fileSize: "4.2 GB",
+       uriCandidates: [
+         {
+-          uri: "https://files.example.test/example.zip",
++          uri: "https://ankergames.net/generate-download-url/4358",
+           sourcePageUrl: "https://ankergames.net/game/example",
+-          discoveredFrom: "observed-json",
+-          strongSignals: ["ankergames-generated-download"],
++          discoveredFrom: "adapter",
++          strongSignals: ["ankergames-deferred-download"],
+           contextualSignals: ["ankergames-page", "same-item-block"],
+           negativeSignals: [],
+           mandatoryRejections: [],
+           adapterApprovedHost: true,
+           relationClear: true,
+-          linkText: "AnkerGames direct download",
++          linkText: "AnkerGames deferred download",
+         },
+       ],
+       explicitIdentities: [{ shop: "steam", objectId: "620" }],
+-      evidence: ["ankergames-page", "ankergames-generated-download"],
++      evidence: ["ankergames-page", "ankergames-deferred-download"],
+     }
+   );
+ });
+ 
+-test("crawler resolves every AnkerGames ID from one page in one batch", async () => {
++test("crawler records every AnkerGames ID from one page without a batch POST", async () => {
+   const source = {
+     ...(await makeSource("https://ankergames.net")),
+     startUrl: "https://ankergames.net/game/batch-example",
+     rootDomain: "ankergames.net",
+   };
+-  const batches: Array<{ pageUrl: string; downloadIds: number[] }> = [];
++  let batchCalls = 0;
+   const fetchImpl: typeof fetch = async (input) => {
+     const url = String(input);
+     if (url.endsWith("/robots.txt")) {
+@@ -204,29 +189,23 @@ test("crawler resolves every AnkerGames ID from one page in one batch", async () => {
+     source,
+     runId: "run-anker-batch",
+     fetchImpl,
+-    resolveAnkerGamesDownloadPage: async (input) => {
+-      batches.push({ pageUrl: input.pageUrl, downloadIds: input.downloadIds });
+-      return input.downloadIds.map((downloadId) => ({
+-        downloadId,
+-        status: 200,
+-        url: `https://files.example.test/${downloadId}.zip`,
+-      }));
++    resolveAnkerGamesDownloadPage: async () => {
++      batchCalls += 1;
++      throw new Error("catalogue crawl must not issue AnkerGames batch POSTs");
+     },
+   });
+ 
+-  assert.deepEqual(batches, [
+-    {
+-      pageUrl: "https://ankergames.net/game/batch-example",
+-      downloadIds: [4358, 4359],
+-    },
+-  ]);
+-  assert.equal(
+-    result.candidates.filter((candidate) =>
+-      candidate.evidence.includes("ankergames-generated-download")
+-    ).length,
+-    2
++  assert.equal(batchCalls, 0);
++  assert.deepEqual(
++    result.candidates
++      .filter((candidate) =>
++        candidate.evidence.includes("ankergames-deferred-download")
++      )
++      .map((candidate) => candidate.uriCandidates[0]?.uri),
++    [
++      "https://ankergames.net/generate-download-url/4358",
++      "https://ankergames.net/generate-download-url/4359",
++    ]
+   );
+ });
+diff --git a/src/main/services/local-download-sources/get-game-download-options.test.ts b/src/main/services/local-download-sources/get-game-download-options.test.ts
+index 1c821cd..0000000 100644
+--- a/src/main/services/local-download-sources/get-game-download-options.test.ts
++++ b/src/main/services/local-download-sources/get-game-download-options.test.ts
+@@ -145,6 +145,32 @@ test("remote failure does not hide valid local results", async () => {
+   assert.equal(result[0].downloadSourceName, "Local");
+ });
+ 
++test("resolves deferred local URIs before returning the download option", async () => {
++  const deps = dependencies();
++  const deferredEntry: LocalDownloadEntry = {
++    ...localEntry,
++    pageUrl: "https://ankergames.net/game/portal-2",
++    uris: ["https://ankergames.net/generate-download-url/4358"],
++  };
++  deps.getLocalEntriesByTitle = async () => [deferredEntry];
++  let resolverCalls = 0;
++  deps.resolveLocalUris = async (entry) => {
++    resolverCalls += 1;
++    assert.equal(entry.pageUrl, deferredEntry.pageUrl);
++    return ["https://files.example.test/portal-2.zip"];
++  };
++
++  const result = await getGameDownloadOptions(
++    { shop: "steam", objectId: "620", title: "Portal 2" },
++    deps
++  );
++
++  assert.equal(resolverCalls, 1);
++  assert.deepEqual(result[0]?.uris, [
++    "https://files.example.test/portal-2.zip",
++  ]);
++});
++
+ test("same-title options remain separate by catalog origin and URI", async () => {
+   const deps = dependencies();
+   const secondEntry = {
