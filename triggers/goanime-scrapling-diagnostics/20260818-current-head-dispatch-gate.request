@@ -1,0 +1,3 @@
+target_branch=feat/scrapling-provider-pipeline
+auto_gate=true
+reason=read-only deterministic validation of current head followed by exact-SHA workflow dispatch only when fully green
