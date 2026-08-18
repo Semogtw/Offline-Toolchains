@@ -74,11 +74,14 @@ jobs:
         run: flutter pub get >/dev/null 2>&1
 
       - name: Analyze candidate surface
+        id: analyze
         working-directory: private-source
         run: |
           flutter analyze --no-pub \
             lib/services/manga/manga_provider_definitions.dart \
             lib/services/manga/default_manga_source_providers.dart \
+            lib/services/manga/manga_provider_policy.dart \
+            lib/services/manga/manga_remote_manifest_validator.dart \
             lib/services/manga/providers/arthur_scan_manga_provider.dart \
             lib/services/manga/providers/hqnow_manga_provider.dart \
             lib/services/manga/providers/kami_sama_explorer_manga_provider.dart \
@@ -91,6 +94,7 @@ jobs:
             test/tools/manga/audit_planned_provider_stage_test.dart
 
       - name: Run deterministic candidate contracts
+        id: tests
         working-directory: private-source
         run: |
           flutter test --no-pub \
@@ -103,12 +107,16 @@ jobs:
             test/architecture/manga_provider_registry_manifest_test.dart \
             test/architecture/manga_planned_provider_definitions_test.dart
 
-      - name: Reject formatting drift in touched candidate surface
+      - name: Check candidate formatting
+        id: format
+        continue-on-error: true
         working-directory: private-source
         run: |
           dart format --output=none --set-exit-if-changed \
             lib/services/manga/manga_provider_definitions.dart \
             lib/services/manga/default_manga_source_providers.dart \
+            lib/services/manga/manga_provider_policy.dart \
+            lib/services/manga/manga_remote_manifest_validator.dart \
             lib/services/manga/providers/arthur_scan_manga_provider.dart \
             lib/services/manga/providers/hqnow_manga_provider.dart \
             lib/services/manga/providers/kami_sama_explorer_manga_provider.dart \
@@ -131,26 +139,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CONTROL_SHA: ${{ github.sha }}
           REVIEWED_SHA: ${{ steps.request.outputs.sha }}
-          JOB_STATUS: ${{ job.status }}
+          ANALYZE: ${{ steps.analyze.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+          FORMAT: ${{ steps.format.outcome }}
         run: |
           set -euo pipefail
-          state=failure
-          if [ "$JOB_STATUS" = success ]; then
-            state=success
+          state=success
+          failed_stage=none
+          if [ "$ANALYZE" != success ]; then state=failure; failed_stage=analyze
+          elif [ "$TESTS" != success ]; then state=failure; failed_stage=tests
+          elif [ "$FORMAT" != success ]; then state=failure; failed_stage=format
           fi
           gh api --method POST \
             "repos/$GITHUB_REPOSITORY/statuses/$CONTROL_SHA" \
             -f state="$state" \
             -f context='goanime/manga-promotion-candidates' \
-            -f description="Manga promotion candidate gate: $JOB_STATUS"
-
-          result="$(jq -cn \
-            --arg controlSha "$CONTROL_SHA" \
-            --arg reviewedSha "$REVIEWED_SHA" \
-            --arg state "$state" \
-            '{schemaVersion:1,controlSha:$controlSha,reviewedSha:$reviewedSha,state:$state,candidates:["ptbr.arthurscan","ptbr.hqnow","ptbr.kamisamaexplorer"]}')"
+            -f description="Manga promotion candidates: $state; failed=$failed_stage"
+          result="$(jq -cn --arg controlSha "$CONTROL_SHA" --arg reviewedSha "$REVIEWED_SHA" --arg state "$state" --arg failedStage "$failed_stage" --arg analyze "$ANALYZE" --arg tests "$TESTS" --arg format "$FORMAT" '{schemaVersion:2,controlSha:$controlSha,reviewedSha:$reviewedSha,state:$state,failedStage:$failedStage,stages:{analyze:$analyze,tests:$tests,format:$format},candidates:["ptbr.arthurscan","ptbr.hqnow","ptbr.kamisamaexplorer"]}')"
           encoded="$(printf '%s\n' "$result" | base64 -w0)"
-          gh api --method PUT \
-            "repos/$GITHUB_REPOSITORY/contents/results/goanime-manga-promotion-candidates/$CONTROL_SHA.json" \
-            -f message="ci(result): record manga promotion candidates $CONTROL_SHA" \
-            -f content="$encoded"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/results/goanime-manga-promotion-candidates/$CONTROL_SHA.json" \
+            -f message="ci(result): record manga promotion candidates $CONTROL_SHA" -f content="$encoded"
