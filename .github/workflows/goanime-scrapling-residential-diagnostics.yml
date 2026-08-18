@@ -1,0 +1,132 @@
+name: GoAnime Scrapling residential diagnostics
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-scrapling-residential-diagnostics/*.request'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  statuses: write
+
+concurrency:
+  group: goanime-scrapling-residential-diagnostics
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    if: github.event_name == 'workflow_dispatch' || github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      TAILSCALE_EXIT_NODE: ${{ vars.GOANIME_TAILSCALE_EXIT_NODE }}
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Mark route diagnostics pending
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/goanime_post_status.py \
+            --state pending \
+            --context goanime-scrapling/residential-config
+          python3 scripts/goanime_post_status.py \
+            --state pending \
+            --context goanime-scrapling/residential-tailnet
+          python3 scripts/goanime_post_status.py \
+            --state pending \
+            --context goanime-scrapling/residential-egress
+
+      - name: Check residential configuration
+        id: config
+        env:
+          TAILSCALE_OAUTH_CLIENT_ID: ${{ secrets.GOANIME_TAILSCALE_CLIENT_ID }}
+          TAILSCALE_AUDIENCE: ${{ secrets.GOANIME_TAILSCALE_AUDIENCE }}
+        run: |
+          set -euo pipefail
+          configured=false
+          if [ -n "$TAILSCALE_OAUTH_CLIENT_ID" ] \
+            && [ -n "$TAILSCALE_AUDIENCE" ] \
+            && [ -n "$TAILSCALE_EXIT_NODE" ]; then
+            configured=true
+          fi
+          echo "configured=$configured" >> "$GITHUB_OUTPUT"
+
+      - name: Report residential configuration
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CONFIGURED: ${{ steps.config.outputs.configured }}
+        run: |
+          state=failure
+          [ "$CONFIGURED" = true ] && state=success
+          python3 scripts/goanime_post_status.py \
+            --state "$state" \
+            --context goanime-scrapling/residential-config
+
+      - name: Connect residential exit node
+        if: steps.config.outputs.configured == 'true'
+        id: tailscale
+        continue-on-error: true
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.GOANIME_TAILSCALE_CLIENT_ID }}
+          audience: ${{ secrets.GOANIME_TAILSCALE_AUDIENCE }}
+          tags: tag:goanime-scraper
+          tailscaled-args: --tun=userspace-networking --outbound-http-proxy-listen=127.0.0.1:1055
+          args: --exit-node=${{ env.TAILSCALE_EXIT_NODE }}
+
+      - name: Report tailnet connection
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CONFIGURED: ${{ steps.config.outputs.configured }}
+          OUTCOME: ${{ steps.tailscale.outcome }}
+        run: |
+          state=failure
+          if [ "$CONFIGURED" = true ] && [ "$OUTCOME" = success ]; then
+            state=success
+          fi
+          python3 scripts/goanime_post_status.py \
+            --state "$state" \
+            --context goanime-scrapling/residential-tailnet
+
+      - name: Verify changed public egress
+        if: steps.tailscale.outcome == 'success'
+        id: egress
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          direct_ip="$(curl --fail --silent --show-error --max-time 20 \
+            --noproxy '*' \
+            https://checkip.amazonaws.com | tr -d '[:space:]')"
+          proxy_ip="$(curl --fail --silent --show-error --max-time 20 \
+            --proxy http://127.0.0.1:1055 \
+            https://checkip.amazonaws.com | tr -d '[:space:]')"
+          test -n "$direct_ip"
+          test -n "$proxy_ip"
+          test "$direct_ip" != "$proxy_ip"
+          curl --fail --silent --show-error --max-time 20 \
+            --proxy http://127.0.0.1:1055 \
+            https://www.google.com/generate_204 \
+            --output /dev/null
+          unset direct_ip proxy_ip
+
+      - name: Report residential egress
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.egress.outcome }}
+        run: |
+          state=failure
+          [ "$OUTCOME" = success ] && state=success
+          python3 scripts/goanime_post_status.py \
+            --state "$state" \
+            --context goanime-scrapling/residential-egress
