@@ -73,7 +73,7 @@ jobs:
         working-directory: private-source
         run: flutter pub get >/dev/null 2>&1
 
-      - name: Validate and normalize enabled evidence collector
+      - name: Validate and normalize enabled evidence transport
         id: format
         working-directory: private-source
         shell: bash
@@ -81,21 +81,31 @@ jobs:
           set -euo pipefail
           flutter analyze --no-pub \
             tools/manga/collect_enabled_manga_live_evidence.dart \
-            test/tools/manga/collect_enabled_manga_live_evidence_test.dart
-          flutter test --no-pub test/tools/manga/collect_enabled_manga_live_evidence_test.dart
+            test/tools/manga/collect_enabled_manga_live_evidence_test.dart \
+            lib/services/manga/manga_remote_content_probe.dart \
+            test/services/manga/manga_remote_content_probe_test.dart
+          flutter test --no-pub \
+            test/tools/manga/collect_enabled_manga_live_evidence_test.dart \
+            test/services/manga/manga_remote_content_probe_test.dart
           dart format \
             tools/manga/collect_enabled_manga_live_evidence.dart \
-            test/tools/manga/collect_enabled_manga_live_evidence_test.dart >/dev/null
+            test/tools/manga/collect_enabled_manga_live_evidence_test.dart \
+            lib/services/manga/manga_remote_content_probe.dart \
+            test/services/manga/manga_remote_content_probe_test.dart >/dev/null
           if git diff --quiet -- \
             tools/manga/collect_enabled_manga_live_evidence.dart \
-            test/tools/manga/collect_enabled_manga_live_evidence_test.dart; then
+            test/tools/manga/collect_enabled_manga_live_evidence_test.dart \
+            lib/services/manga/manga_remote_content_probe.dart \
+            test/services/manga/manga_remote_content_probe_test.dart; then
             echo 'changed=false' >> "$GITHUB_OUTPUT"
           else
             echo 'changed=true' >> "$GITHUB_OUTPUT"
             echo 'BEGIN_FORMAT_PATCH'
             git diff --no-ext-diff --unified=3 -- \
               tools/manga/collect_enabled_manga_live_evidence.dart \
-              test/tools/manga/collect_enabled_manga_live_evidence_test.dart
+              test/tools/manga/collect_enabled_manga_live_evidence_test.dart \
+              lib/services/manga/manga_remote_content_probe.dart \
+              test/services/manga/manga_remote_content_probe_test.dart
             echo 'END_FORMAT_PATCH'
           fi
 
