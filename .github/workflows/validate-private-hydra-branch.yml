@@ -118,6 +118,12 @@ jobs:
         shell: bash
         run: node --import ./scripts/register-ts-node.mjs --test "src/main/services/local-download-sources/*.test.ts"
 
+      - name: Run shared downloader routing tests
+        id: downloader_tests
+        working-directory: private-source
+        shell: bash
+        run: node --import ./scripts/register-ts-node.mjs --test src/shared/downloaders.test.ts
+
       - name: Typecheck Node process
         id: typecheck
         if: ${{ always() && steps.deps.outcome == 'success' }}
@@ -138,11 +144,12 @@ jobs:
           COMPILE_PYTHON_OUTCOME: ${{ steps.compile_python.outcome }}
           PYTHON_TESTS_OUTCOME: ${{ steps.python_tests.outcome }}
           LOCAL_TESTS_OUTCOME: ${{ steps.local_tests.outcome }}
+          DOWNLOADER_TESTS_OUTCOME: ${{ steps.downloader_tests.outcome }}
           TYPECHECK_OUTCOME: ${{ steps.typecheck.outcome }}
         run: |
           set -euo pipefail
           status=success
-          for outcome in "$DEPS_OUTCOME" "$ELECTRON_OUTCOME" "$COMPILE_PYTHON_OUTCOME" "$PYTHON_TESTS_OUTCOME" "$LOCAL_TESTS_OUTCOME" "$TYPECHECK_OUTCOME"; do
+          for outcome in "$DEPS_OUTCOME" "$ELECTRON_OUTCOME" "$COMPILE_PYTHON_OUTCOME" "$PYTHON_TESTS_OUTCOME" "$LOCAL_TESTS_OUTCOME" "$DOWNLOADER_TESTS_OUTCOME" "$TYPECHECK_OUTCOME"; do
             if [ "$outcome" != "success" ]; then
               status=failure
             fi
@@ -159,8 +166,9 @@ jobs:
             --arg compilePython "$COMPILE_PYTHON_OUTCOME" \
             --arg pythonTests "$PYTHON_TESTS_OUTCOME" \
             --arg localTests "$LOCAL_TESTS_OUTCOME" \
+            --arg downloaderTests "$DOWNLOADER_TESTS_OUTCOME" \
             --arg typecheck "$TYPECHECK_OUTCOME" \
-            '{status:$status,targetSha:$targetSha,targetBranch:$targetBranch,requestPath:$requestPath,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),steps:{deps:$deps,electron:$electron,compilePython:$compilePython,pythonTests:$pythonTests,localTests:$localTests,typecheck:$typecheck}}')"
+            '{status:$status,targetSha:$targetSha,targetBranch:$targetBranch,requestPath:$requestPath,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),steps:{deps:$deps,electron:$electron,compilePython:$compilePython,pythonTests:$pythonTests,localTests:$localTests,downloaderTests:$downloaderTests,typecheck:$typecheck}}')"
           path="hydra-validation-results/${TARGET_SHA}.json"
           encoded="$(printf '%s\n' "$result" | base64 -w0)"
           current_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=hydra-validation-results" --jq '.sha' 2>/dev/null || true)"
