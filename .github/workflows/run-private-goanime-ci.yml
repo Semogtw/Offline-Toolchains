@@ -8,6 +8,7 @@ on:
     paths:
       - .github/workflows/run-private-goanime-ci.yml
       - scripts/private_ci_request.py
+      - triggers/goanime-full-ci/*.request
   workflow_dispatch:
     inputs:
       ref:
@@ -44,7 +45,9 @@ jobs:
           ref: main
           path: trusted-source
           persist-credentials: false
-          sparse-checkout: scripts/private_ci_request.py
+          sparse-checkout: |
+            scripts/private_ci_request.py
+            triggers/goanime-full-ci
           sparse-checkout-cone-mode: false
 
       - name: Normalize fixed repository and ref
@@ -52,15 +55,45 @@ jobs:
         shell: bash
         env:
           INPUT_REF: ${{ inputs.ref }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           request="$RUNNER_TEMP/goanime-ci-request.json"
-          python3 - "$request" "$INPUT_REF" <<'PY'
+          python3 - "$request" "$INPUT_REF" "$EVENT_NAME" "$GITHUB_EVENT_PATH" <<'PY'
           import json
+          import re
           import sys
+          from pathlib import Path
 
-          with open(sys.argv[1], "w", encoding="utf-8") as stream:
-              json.dump({"project": "goanime", "ref": sys.argv[2]}, stream)
+          request_path = Path(sys.argv[1])
+          input_ref = sys.argv[2].strip()
+          event_name = sys.argv[3]
+          event_path = Path(sys.argv[4])
+          requested_ref = input_ref or "main"
+
+          if event_name == "push":
+              event = json.loads(event_path.read_text(encoding="utf-8"))
+              head_commit = event.get("head_commit") or {}
+              changed = [
+                  *head_commit.get("added", []),
+                  *head_commit.get("modified", []),
+              ]
+              pattern = re.compile(
+                  r"^triggers/goanime-full-ci/[A-Za-z0-9._-]+\.request$"
+              )
+              trigger_paths = sorted({path for path in changed if pattern.fullmatch(path)})
+              if len(trigger_paths) > 1:
+                  raise SystemExit(
+                      "push must modify at most one GoAnime full-CI request file"
+                  )
+              if trigger_paths:
+                  trigger = Path("trusted-source") / trigger_paths[0]
+                  requested_ref = trigger.read_text(encoding="utf-8").strip()
+                  if not requested_ref:
+                      raise SystemExit("GoAnime full-CI request ref is empty")
+
+          with request_path.open("w", encoding="utf-8") as stream:
+              json.dump({"project": "goanime", "ref": requested_ref}, stream)
           PY
           normalized="$(python3 trusted-source/scripts/private_ci_request.py "$request")"
           python3 - "$normalized" "$GITHUB_OUTPUT" <<'PY'
