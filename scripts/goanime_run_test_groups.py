@@ -59,6 +59,7 @@ def main() -> int:
     args = parser.parse_args()
 
     tests_dir = args.tests_dir.resolve()
+    pipeline_dir = tests_dir.parent
     reporter = args.reporter.resolve()
     files = sorted(tests_dir.glob("test_*.py"))
     if not files:
@@ -85,10 +86,11 @@ def main() -> int:
                     "unittest",
                     "discover",
                     "-s",
-                    str(tests_dir),
+                    "tests",
                     "-p",
                     path.name,
                 ],
+                cwd=pipeline_dir,
                 check=False,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
