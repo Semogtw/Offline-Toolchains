@@ -21,6 +21,7 @@ on:
 permissions:
   contents: read
   id-token: write
+  statuses: write
 
 concurrency:
   group: goanime-scrapling-provider-cache
@@ -495,6 +496,43 @@ jobs:
           echo '- Optional direct proxy configured: `${{ steps.credentials.outputs.proxy }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Published commit: `${{ steps.commit.outputs.sha }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Adaptive selector state survives runs through the Toolchains Actions cache without entering the APK/repository.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish sanitized trigger status
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          STATUS_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          case "$JOB_STATUS" in
+            success) state=success ;;
+            failure) state=failure ;;
+            cancelled) state=error ;;
+            *) state=error ;;
+          esac
+          STATE="$state" python3 - <<'PY' > "$RUNNER_TEMP/goanime-status.json"
+          import json
+          import os
+          state = os.environ['STATE']
+          payload = {
+              'state': state,
+              'context': 'goanime-scrapling/provider-cache',
+              'description': f'GoAnime provider-cache run finished: {state}',
+          }
+          print(json.dumps(payload))
+          PY
+          curl --fail --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer $STATUS_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            --data-binary @"$RUNNER_TEMP/goanime-status.json" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+            >/dev/null
+          rm -f "$RUNNER_TEMP/goanime-status.json"
+          unset STATUS_TOKEN state
 
       - name: Remove private checkout
         if: always()
