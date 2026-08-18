@@ -1,0 +1,4 @@
+Hydra Direct HTTP public smoke fixture v1
+This file exists only to prove safe byte transfer through Hydra's DirectHttp path.
+0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+END
