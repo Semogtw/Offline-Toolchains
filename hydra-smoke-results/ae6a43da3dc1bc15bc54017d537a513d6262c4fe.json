@@ -1,0 +1,9 @@
+{
+  "status": "running",
+  "targetSha": "ae6a43da3dc1bc15bc54017d537a513d6262c4fe",
+  "targetBranch": "hardening/source-regression-review",
+  "requestPath": "toolchain-control/triggers/hydra-source-smoke/source-regression-review-ae6a43da-20260818.request",
+  "runId": 32193117490,
+  "runAttempt": 1,
+  "steps": {}
+}
