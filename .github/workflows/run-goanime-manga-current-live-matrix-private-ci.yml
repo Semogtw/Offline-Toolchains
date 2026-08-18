@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 concurrency:
   group: goanime-manga-current-live-matrix-${{ github.sha }}
@@ -120,3 +121,23 @@ jobs:
       - name: Remove private checkout
         if: always()
         run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control" /tmp/goanime-manga-live.log
+
+      - name: Publish sanitized provider status
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTROL_SHA: ${{ github.sha }}
+          JOB_STATUS: ${{ job.status }}
+          SOURCE_ID: ${{ matrix.source }}
+        run: |
+          set -euo pipefail
+          state=failure
+          if [ "$JOB_STATUS" = success ]; then
+            state=success
+          fi
+          gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/statuses/$CONTROL_SHA" \
+            -f state="$state" \
+            -f context="goanime/manga-live/$SOURCE_ID" \
+            -f description="Manga live provider gate: $JOB_STATUS"
