@@ -1,6 +1,6 @@
 {
   "profile": "hydra",
-  "ref": "8e0fea9cda9d7e4f35570334184da6dcb8b786be",
-  "requested_at_utc": "2026-08-18T01:55:00Z",
-  "reason": "Validate GameBounty repeated external mirror trust classification and safety guards"
+  "ref": "cc08d9b8826b898eec0cb9239fb9004fe4b41f9b",
+  "requested_at_utc": "2026-08-18T02:05:00Z",
+  "reason": "Validate GameBounty repeated mirror trust after fixing the AnkerGames smoke type contract"
 }
