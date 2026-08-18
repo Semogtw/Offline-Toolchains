@@ -1,0 +1,164 @@
+name: Validate private Hydra renderer
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "triggers/hydra-renderer-validation/*.request"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: validate-private-hydra-renderer
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    if: github.repository_owner == 'Semogtw'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted control files
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact renderer request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            request="$(find toolchain-control/triggers/hydra-renderer-validation -maxdepth 1 -type f -name '*.request' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n 1 | cut -d' ' -f2-)"
+          else
+            request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/hydra-renderer-validation/*.request' | head -n 1)"
+            request="toolchain-control/$request"
+          fi
+          test -n "$request"
+          read -r project branch expected_sha < "$request"
+          test "$project" = "hydra"
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ ]]
+          [[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "expected_sha=$expected_sha" >> "$GITHUB_OUTPUT"
+          echo "request_path=$request" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private Hydra revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/HydraPersonalizado
+          ref: ${{ steps.request.outputs.expected_sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify requested branch still points to revision
+        working-directory: private-source
+        shell: bash
+        env:
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_sha="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/HydraPersonalizado.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_sha" = "$EXPECTED_SHA"
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22.23.1"
+          check-latest: false
+
+      - name: Activate Yarn 1
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare yarn@1.22.22 --activate
+          yarn --version
+
+      - name: Install exact JavaScript dependencies
+        id: deps
+        working-directory: private-source
+        shell: bash
+        env:
+          CI: "true"
+        run: yarn install --frozen-lockfile --ignore-scripts --non-interactive
+
+      - name: Typecheck renderer
+        id: typecheck_web
+        working-directory: private-source
+        shell: bash
+        run: yarn typecheck:web
+
+      - name: Check formatting
+        id: format
+        working-directory: private-source
+        shell: bash
+        run: yarn format-check
+
+      - name: Run ESLint without modifying checkout
+        id: lint
+        working-directory: private-source
+        shell: bash
+        run: >-
+          yarn eslint .
+          --ext .js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts
+
+      - name: Publish renderer validation status
+        if: ${{ always() && steps.request.outputs.expected_sha != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.expected_sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          REQUEST_PATH: ${{ steps.request.outputs.request_path }}
+          DEPS_OUTCOME: ${{ steps.deps.outcome }}
+          TYPECHECK_WEB_OUTCOME: ${{ steps.typecheck_web.outcome }}
+          FORMAT_OUTCOME: ${{ steps.format.outcome }}
+          LINT_OUTCOME: ${{ steps.lint.outcome }}
+        run: |
+          set -euo pipefail
+          status=success
+          for outcome in "$DEPS_OUTCOME" "$TYPECHECK_WEB_OUTCOME" "$FORMAT_OUTCOME" "$LINT_OUTCOME"; do
+            if [ "$outcome" != "success" ]; then
+              status=failure
+            fi
+          done
+          result="$(jq -n \
+            --arg status "$status" \
+            --arg targetSha "$TARGET_SHA" \
+            --arg targetBranch "$TARGET_BRANCH" \
+            --arg requestPath "$REQUEST_PATH" \
+            --arg runId "$GITHUB_RUN_ID" \
+            --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
+            --arg deps "$DEPS_OUTCOME" \
+            --arg typecheckWeb "$TYPECHECK_WEB_OUTCOME" \
+            --arg format "$FORMAT_OUTCOME" \
+            --arg lint "$LINT_OUTCOME" \
+            '{status:$status,targetSha:$targetSha,targetBranch:$targetBranch,requestPath:$requestPath,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),steps:{deps:$deps,typecheckWeb:$typecheckWeb,format:$format,lint:$lint}}')"
+          path="hydra-renderer-results/${TARGET_SHA}.json"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          current_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=hydra-validation-results" --jq '.sha' 2>/dev/null || true)"
+          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/${path}" -f "message=ci(hydra): record renderer validation ${TARGET_SHA}" -f "content=${encoded}" -f "branch=hydra-validation-results")
+          if [ -n "$current_sha" ]; then
+            args+=(-f "sha=${current_sha}")
+          fi
+          gh api "${args[@]}" >/dev/null
