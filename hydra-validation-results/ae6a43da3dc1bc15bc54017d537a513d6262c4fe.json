@@ -1,0 +1,17 @@
+{
+  "status": "success",
+  "targetSha": "ae6a43da3dc1bc15bc54017d537a513d6262c4fe",
+  "targetBranch": "hardening/source-regression-review",
+  "requestPath": "triggers/hydra-validation/source-regression-review-ae6a43da-20260818.request",
+  "runId": 32193104658,
+  "runAttempt": 1,
+  "steps": {
+    "deps": "success",
+    "electron": "success",
+    "compilePython": "success",
+    "pythonTests": "success",
+    "localTests": "success",
+    "downloaderTests": "success",
+    "typecheck": "success"
+  }
+}
