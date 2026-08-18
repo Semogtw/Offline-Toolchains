@@ -54,6 +54,31 @@ jobs:
           echo "expected_sha=$expected_sha" >> "$GITHUB_OUTPUT"
           echo "request_path=$request" >> "$GITHUB_OUTPUT"
 
+      - name: Publish smoke running status
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.expected_sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          REQUEST_PATH: ${{ steps.request.outputs.request_path }}
+        run: |
+          set -euo pipefail
+          result="$(jq -n \
+            --arg targetSha "$TARGET_SHA" \
+            --arg targetBranch "$TARGET_BRANCH" \
+            --arg requestPath "$REQUEST_PATH" \
+            --arg runId "$GITHUB_RUN_ID" \
+            --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
+            '{status:"running",targetSha:$targetSha,targetBranch:$targetBranch,requestPath:$requestPath,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),steps:{}}')"
+          path="hydra-smoke-results/${TARGET_SHA}.json"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          current_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=hydra-validation-results" --jq '.sha' 2>/dev/null || true)"
+          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/${path}" -f "message=test(hydra): mark smoke running ${TARGET_SHA}" -f "content=${encoded}" -f "branch=hydra-validation-results")
+          if [ -n "$current_sha" ]; then
+            args+=(-f "sha=${current_sha}")
+          fi
+          gh api "${args[@]}" >/dev/null
+
       - name: Checkout exact private Hydra revision
         uses: actions/checkout@v6
         with:
@@ -218,7 +243,7 @@ jobs:
             --arg trustPipeline "$TRUST_PIPELINE_OUTCOME" \
             --arg downloadE2e "$DOWNLOAD_E2E_OUTCOME" \
             --arg directHttpManager "$DIRECT_HTTP_MANAGER_OUTCOME" \
-            '{status:$status,targetSha:$targetSha,targetBranch:$targetBranch,requestPath:$requestPath,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),steps:{deps:$deps,electron:$electron,scrapling:$scrapling,gamebounty:$gamebounty,ecologica:$ecologica,ankergames:$ankergames,trustPipeline:$trustPipeline,downloadE2e:$downloadE2e,directHttpManager:$directHttpManager}}')"
+            '{status:$status,targetSha:$targetSha,targetBranch:$targetBranch,requestPath:$requestPath,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),steps:{deps:$deps,electron:$electron,scrapling:$scrapling,gamebounty:$gamebounty,ecologica:$ecologica,ankergames:$ankergames,trustPipeline:$trustPipeline,downloadE2e:$downloadE2E,directHttpManager:$directHttpManager}}')"
           path="hydra-smoke-results/${TARGET_SHA}.json"
           encoded="$(printf '%s\n' "$result" | base64 -w0)"
           current_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=hydra-validation-results" --jq '.sha' 2>/dev/null || true)"
