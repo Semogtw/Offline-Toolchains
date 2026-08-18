@@ -30,8 +30,6 @@ def _changed_paths(event: dict[str, object]) -> tuple[set[str], set[str]]:
             if isinstance(values, list):
                 removed.update(str(value) for value in values)
 
-    # Some push producers provide the useful path list only on head_commit.
-    # Merging the fallback is harmless when `commits` already contained it.
     head_commit = event.get("head_commit")
     if isinstance(head_commit, dict):
         for key in ("added", "modified"):
@@ -42,6 +40,47 @@ def _changed_paths(event: dict[str, object]) -> tuple[set[str], set[str]]:
         if isinstance(values, list):
             removed.update(str(value) for value in values)
 
+    return changed, removed
+
+
+def _git_changed_paths(workspace: Path) -> tuple[set[str], set[str]]:
+    """Read the triggering commit's path changes from the trusted checkout.
+
+    GitHub push payloads can omit or truncate the useful per-commit path lists.
+    The checked-out Toolchains commit is the stronger source of truth whenever
+    its parent is available (workflows using this helper fetch depth >= 2).
+    """
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(workspace),
+            "diff",
+            "--name-status",
+            "--no-renames",
+            "HEAD^",
+            "HEAD",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return set(), set()
+
+    changed: set[str] = set()
+    removed: set[str] = set()
+    for raw_line in result.stdout.splitlines():
+        if not raw_line.strip() or "\t" not in raw_line:
+            continue
+        status, path = raw_line.split("\t", 1)
+        path = path.strip()
+        if not path:
+            continue
+        if status.startswith("D"):
+            removed.add(path)
+        else:
+            changed.add(path)
     return changed, removed
 
 
@@ -100,7 +139,11 @@ def resolve_push_request(
     workspace: Path,
     request_dir: str,
 ) -> tuple[str, str]:
-    changed, removed = _changed_paths(event)
+    event_changed, event_removed = _changed_paths(event)
+    git_changed, git_removed = _git_changed_paths(workspace)
+    changed = event_changed | git_changed
+    removed = event_removed | git_removed
+
     removed_requests = sorted(
         path for path in removed if _is_request_path(path, request_dir)
     )
