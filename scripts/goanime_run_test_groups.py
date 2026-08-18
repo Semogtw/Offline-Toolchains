@@ -21,7 +21,7 @@ def _group_for(path: Path) -> str:
     return "core"
 
 
-def _post_status(*, group: str, state: str, reporter: Path) -> None:
+def _post_status(*, context: str, state: str, reporter: Path) -> None:
     subprocess.run(
         [
             sys.executable,
@@ -29,12 +29,27 @@ def _post_status(*, group: str, state: str, reporter: Path) -> None:
             "--state",
             state,
             "--context",
-            f"goanime-scrapling/tests-{group}",
+            context,
         ],
         check=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
+
+def _failure_kind(output: str) -> str:
+    lowered = output.lower()
+    if "modulenotfounderror" in lowered or "importerror" in lowered:
+        return "import"
+    if "typeerror" in lowered:
+        return "type-error"
+    if "syntaxerror" in lowered or "indentationerror" in lowered:
+        return "syntax"
+    if "assertionerror" in lowered or "fail:" in lowered:
+        return "assertion"
+    if "valueerror" in lowered:
+        return "value-error"
+    return "runtime"
 
 
 def main() -> int:
@@ -58,8 +73,10 @@ def main() -> int:
         group_files = grouped[group]
         if not group_files:
             continue
-        _post_status(group=group, state="pending", reporter=reporter)
+        group_context = f"goanime-scrapling/tests-{group}"
+        _post_status(context=group_context, state="pending", reporter=reporter)
         group_failed = False
+        first_kind = ""
         for path in group_files:
             result = subprocess.run(
                 [
@@ -73,17 +90,25 @@ def main() -> int:
                     path.name,
                 ],
                 check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
                 env=os.environ.copy(),
             )
             if result.returncode != 0:
                 group_failed = True
+                if not first_kind:
+                    first_kind = _failure_kind(result.stdout)
         state = "failure" if group_failed else "success"
-        _post_status(group=group, state=state, reporter=reporter)
-        print(f"{group}: {state}")
+        _post_status(context=group_context, state=state, reporter=reporter)
         if group_failed:
             failed.append(group)
+            _post_status(
+                context=f"{group_context}-{first_kind or 'runtime'}",
+                state="failure",
+                reporter=reporter,
+            )
+        print(f"{group}: {state}")
 
     output_path = os.environ.get("GITHUB_OUTPUT")
     if output_path:
