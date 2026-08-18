@@ -16,12 +16,11 @@ concurrency:
 
 env:
   TARGET_BRANCH: feat/scrapling-provider-pipeline
-  EXPECTED_HEAD: c376f6168be5daf884d99c5ca922252d2e200b05
   FLUTTER_VERSION: 3.44.1
 
 jobs:
   format:
-    name: Format exact provider branch and publish atomic commit
+    name: Format current provider branch and publish atomic commit
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
@@ -35,11 +34,11 @@ jobs:
           test -n "$PRIVATE_REPOSITORIES_TOKEN"
           test -n "$GOANIME_CATALOG_WRITE_TOKEN"
 
-      - name: Checkout exact expected private source read-only
+      - name: Checkout current private provider branch read-only
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
-          ref: ${{ env.EXPECTED_HEAD }}
+          ref: ${{ env.TARGET_BRANCH }}
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
           fetch-depth: 1
@@ -47,6 +46,12 @@ jobs:
           lfs: false
           submodules: false
           show-progress: false
+
+      - name: Capture source branch head
+        id: source
+        working-directory: private-source
+        shell: bash
+        run: echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Set up pinned Flutter formatter
         uses: subosito/flutter-action@v2
@@ -61,7 +66,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           dart format lib test packages tools
           git diff --check
           mapfile -t changed < <(git diff --name-only --diff-filter=ACMRT)
@@ -81,10 +85,11 @@ jobs:
         shell: bash
         env:
           PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          SOURCE_HEAD: ${{ steps.source.outputs.head }}
         run: |
           set -euo pipefail
           remote_head="$(git ls-remote "https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git" "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')"
-          test "$remote_head" = "$EXPECTED_HEAD" || {
+          test "$remote_head" = "$SOURCE_HEAD" || {
             echo "Target branch moved; refusing stale formatting publish." >&2
             exit 1
           }
