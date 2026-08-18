@@ -18,7 +18,7 @@ jobs:
   smoke:
     if: github.repository_owner == 'Semogtw'
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     env:
       PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
     steps:
@@ -148,6 +148,26 @@ jobs:
             --no-sandbox --disable-gpu --disable-dev-shm-usage \
             scripts/run-ankergames-real-smoke.cjs
 
+      - name: Smoke real discovery-to-trusted pipeline
+        id: trust_pipeline
+        working-directory: private-source
+        shell: bash
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/private-source/hydra-scrapling-browser
+        run: |
+          xvfb-run -a ./node_modules/.bin/electron \
+            --no-sandbox --disable-gpu --disable-dev-shm-usage \
+            scripts/run-real-source-trust-smoke.cjs
+
+      - name: Prove local trusted option writes real bytes
+        id: download_e2e
+        working-directory: private-source
+        shell: bash
+        run: |
+          node --import ./scripts/register-ts-node.mjs --test \
+            src/main/services/local-download-sources/local-source-download-e2e.test.ts \
+            src/shared/downloaders.test.ts
+
       - name: Publish smoke status
         if: ${{ always() && steps.request.outputs.expected_sha != '' }}
         shell: bash
@@ -162,10 +182,12 @@ jobs:
           GAMEBOUNTY_OUTCOME: ${{ steps.gamebounty.outcome }}
           ECOLOGICA_OUTCOME: ${{ steps.ecologica.outcome }}
           ANKERGAMES_OUTCOME: ${{ steps.ankergames.outcome }}
+          TRUST_PIPELINE_OUTCOME: ${{ steps.trust_pipeline.outcome }}
+          DOWNLOAD_E2E_OUTCOME: ${{ steps.download_e2e.outcome }}
         run: |
           set -euo pipefail
           status=success
-          for outcome in "$DEPS_OUTCOME" "$ELECTRON_OUTCOME" "$SCRAPLING_OUTCOME" "$GAMEBOUNTY_OUTCOME" "$ECOLOGICA_OUTCOME" "$ANKERGAMES_OUTCOME"; do
+          for outcome in "$DEPS_OUTCOME" "$ELECTRON_OUTCOME" "$SCRAPLING_OUTCOME" "$GAMEBOUNTY_OUTCOME" "$ECOLOGICA_OUTCOME" "$ANKERGAMES_OUTCOME" "$TRUST_PIPELINE_OUTCOME" "$DOWNLOAD_E2E_OUTCOME"; do
             if [ "$outcome" != "success" ]; then
               status=failure
             fi
@@ -183,7 +205,9 @@ jobs:
             --arg gamebounty "$GAMEBOUNTY_OUTCOME" \
             --arg ecologica "$ECOLOGICA_OUTCOME" \
             --arg ankergames "$ANKERGAMES_OUTCOME" \
-            '{status:$status,targetSha:$targetSha,targetBranch:$targetBranch,requestPath:$requestPath,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),steps:{deps:$deps,electron:$electron,scrapling:$scrapling,gamebounty:$gamebounty,ecologica:$ecologica,ankergames:$ankergames}}')"
+            --arg trustPipeline "$TRUST_PIPELINE_OUTCOME" \
+            --arg downloadE2e "$DOWNLOAD_E2E_OUTCOME" \
+            '{status:$status,targetSha:$targetSha,targetBranch:$targetBranch,requestPath:$requestPath,runId:($runId|tonumber),runAttempt:($runAttempt|tonumber),steps:{deps:$deps,electron:$electron,scrapling:$scrapling,gamebounty:$gamebounty,ecologica:$ecologica,ankergames:$ankergames,trustPipeline:$trustPipeline,downloadE2e:$downloadE2e}}')"
           path="hydra-smoke-results/${TARGET_SHA}.json"
           encoded="$(printf '%s\n' "$result" | base64 -w0)"
           current_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=hydra-validation-results" --jq '.sha' 2>/dev/null || true)"
