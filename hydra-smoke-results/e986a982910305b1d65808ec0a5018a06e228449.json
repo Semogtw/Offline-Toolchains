@@ -1,0 +1,16 @@
+{
+  "status": "failure",
+  "targetSha": "e986a982910305b1d65808ec0a5018a06e228449",
+  "targetBranch": "main",
+  "requestPath": "toolchain-control/triggers/hydra-source-smoke/universal-source-hardening-e986a982.request",
+  "runId": 32105515462,
+  "runAttempt": 1,
+  "steps": {
+    "deps": "success",
+    "electron": "success",
+    "scrapling": "success",
+    "gamebounty": "success",
+    "ecologica": "success",
+    "ankergames": "failure"
+  }
+}
