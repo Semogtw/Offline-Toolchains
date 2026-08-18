@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: apply-private-hydra-patch
@@ -138,3 +139,33 @@ jobs:
         if: always()
         shell: bash
         run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control"
+
+  report:
+    needs: apply
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Publish sanitized controlled-patch receipt
+        uses: actions/github-script@v8
+        env:
+          APPLY_RESULT: ${{ needs.apply.result }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const runId = context.runId;
+            const marker = `<!-- hydra-controlled-patch-run:${runId} -->`;
+            const body = [
+              marker,
+              '### Apply private Hydra patch',
+              '',
+              `- Run: [${runId}](https://github.com/${owner}/${repo}/actions/runs/${runId})`,
+              `- Conclusion: \`${process.env.APPLY_RESULT}\``,
+              '- Private checkout contents, patch payload and credentials are intentionally omitted.',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: 4,
+              body,
+            });
