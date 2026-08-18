@@ -1,32 +1,30 @@
 # GoAnime — refresh externo de catálogo com Scrapling
 
-O catálogo externo do `Semogtw/GoAnime-Mobile` é atualizado por um único workflow confiável do `Semogtw/Offline-Toolchains`:
+O catálogo externo do `Semogtw/GoAnime-Mobile` é atualizado por um único workflow canônico do `Semogtw/Offline-Toolchains`:
 
 ```text
 .github/workflows/goanime-scrapling-provider-cache.yml
 ```
 
-O coletor roda fora do APK e do runtime Flutter. O GoAnime contém parser, crawler, política de refresh, testes, validator e contrato dos artefatos; o Toolchains fornece o runner confiável, credenciais mínimas, navegador, egress opcional e publicação.
+O coletor roda fora do APK/runtime Flutter. O GoAnime mantém crawlers, política de refresh, testes, validator e contrato dos artefatos; o Toolchains fornece runner confiável, toolchain pinada, egress opcional e publicação.
 
 ## Branch ativa
-
-O desenvolvimento atual pertence a:
 
 ```text
 feat/scrapling-provider-pipeline
 ```
 
-Não usar o GoAnime original nem reviver os antigos workflows `goanime-scrapling-catalog`/`goanime-scrapling-residential-egress` para este fluxo.
+Não usar o GoAnime original nem reviver os workflows residenciais/multisource antigos para este fluxo.
 
-## Request source-bound
+## Requests source-bound
 
-Triggers automáticos pertencem a:
+Triggers por push pertencem a:
 
 ```text
 triggers/goanime-scrapling-provider-cache/<identificador>.request
 ```
 
-Formato atual:
+Formato:
 
 ```text
 target_branch=feat/scrapling-provider-pipeline
@@ -34,91 +32,139 @@ source_hint=<SHA completo de 40 caracteres do GoAnime>
 reason=<motivo curto>
 ```
 
-Em push, o workflow:
+O parser compartilhado fica em:
+
+```text
+scripts/goanime_resolve_request.py
+```
+
+Ele:
 
 - exige exatamente um `.request` adicionado/modificado;
-- rejeita request removido, linha malformada, chave desconhecida ou chave duplicada;
-- valida a branch com `git check-ref-format --branch`;
-- exige `source_hint` hexadecimal completo;
-- compara o SHA realmente obtido no checkout privado com o SHA solicitado antes de instalar a toolchain ou abrir egress.
+- rejeita remoção de request, linha malformada, chave desconhecida ou duplicada;
+- valida `target_branch` com `git check-ref-format --branch`;
+- exige SHA completo em triggers por push;
+- cruza os paths do payload do GitHub com o diff confiável `HEAD^..HEAD` do Toolchains, evitando depender de listas de commits truncadas no evento.
 
-`workflow_dispatch` e `schedule` não precisam de `source_hint`; nesses modos o SHA obtido no checkout passa a ser a revisão imutável da execução.
+Por isso os workflows que usam o parser fazem checkout do Toolchains com `fetch-depth: 2`.
+
+`workflow_dispatch` aceita `target_branch` e um `source_hint` opcional. Quando o SHA é fornecido, o checkout privado é feito diretamente nessa revisão. Em `schedule`, a revisão obtida no checkout da branch é fixada para a execução.
+
+## Diagnóstico determinístico
+
+Antes de gastar um crawl real, o workflow:
+
+```text
+.github/workflows/goanime-scrapling-diagnostics.yml
+```
+
+pode validar um SHA exato do GoAnime. Ele executa:
+
+1. checkout source-bound;
+2. classificação estrutural sanitizada do MAL;
+3. `mal_input_preflight.py` oficial e fail-closed;
+4. Python 3.12;
+5. requisitos pinados;
+6. instalação Scrapling;
+7. instalação Patchright/Chromium com retry;
+8. verificação das versões pinadas;
+9. suíte determinística.
+
+Quando a suíte falha, o runner de diagnóstico divide os testes em grupos sanitizados (`core`, `network`, `crawl`, `evidence`) e publica apenas o estado do grupo, sem despejar conteúdo privado dos testes em status públicos.
+
+A sonda MAL não substitui o validator: ela apenas classifica a estrutura para diagnóstico. O `mal_input_preflight.py` do próprio SHA testado continua sendo o gate obrigatório.
+
+## Ordem do gate canônico
+
+1. resolve/valida request ou dispatch;
+2. valida credenciais e `workers`;
+3. faz checkout privado da branch ou do SHA solicitado;
+4. fixa/verifica a revisão de origem;
+5. roda o preflight MAL antes do setup pesado;
+6. instala Python 3.12 e Scrapling/Playwright/Patchright nas versões pinadas;
+7. restaura browsers/estado adaptativo quando disponíveis em cache;
+8. executa toda a suíte determinística;
+9. executa o primeiro crawl real de AnimeFire, AnimesOnline, Goyabu e AniTube;
+10. se houver fallback seguro (`exit 2`), seleciona somente providers elegíveis em `preserved`/`unavailable`;
+11. quando configurado, conecta Tailscale e prova troca real de egress;
+12. recrawleia apenas os providers selecionados com `--only-providers`;
+13. executa `validate_provider_cache.py --allow-preserved`;
+14. aplica o whitelist de diff gerado;
+15. executa `git diff --cached --check`;
+16. busca novamente a branch remota e exige o mesmo SHA de origem;
+17. publica somente os artefatos permitidos com push normal, nunca forçado;
+18. arquiva cache/evidência e limpa o checkout privado.
+
+## Toolchain pinada
+
+O gate verifica explicitamente:
+
+```text
+Scrapling 0.4.14
+Playwright 1.62.0
+Patchright 1.61.2
+```
+
+A instalação do Chromium Patchright usa `scripts/goanime_install_patchright.py` com novas tentativas. O retry cobre falhas transitórias de download, mas o gate continua falhando se o browser não puder ser instalado.
 
 ## Contrato de segurança
 
-- `PRIVATE_REPOSITORIES_TOKEN` é usado somente onde o checkout privado/validação precisa dele;
-- `persist-credentials` fica desativado no checkout privado;
-- `GOANIME_CATALOG_WRITE_TOKEN` só é exposto à sondagem de capacidade de publicação e ao passo de push;
-- o proxy direto opcional só existe no ambiente do primeiro crawl;
-- credenciais Tailscale só existem nos passos que verificam/configuram o tailnet;
-- testes, preflight e setup não recebem secrets de proxy/Tailscale;
-- o workflow nunca usa `set -x` nem imprime ambiente completo;
-- o checkout privado é removido em `always()`;
-- antes do push, a branch remota precisa continuar exatamente no SHA que originou a coleta;
-- o push é normal, não forçado, oferecendo uma segunda proteção contra avanço concorrente.
-
-## Ordem dos gates
-
-A execução confiável segue esta ordem:
-
-1. resolve e valida o request;
-2. valida credenciais e parâmetros de workers;
-3. faz checkout privado da branch solicitada;
-4. fixa/verifica a revisão de origem;
-5. executa `mal_input_preflight.py` antes do setup pesado;
-6. instala Python 3.12 e as versões pinadas de Scrapling/Playwright/Patchright;
-7. restaura o estado adaptativo e browsers quando disponíveis em cache;
-8. executa toda a suíte determinística do pipeline;
-9. executa o primeiro crawl real de AnimeFire, AnimesOnline, Goyabu e AniTube;
-10. se o crawl retornar código `2`, identifica providers elegíveis em `preserved`/`unavailable` para a rota do telefone;
-11. quando configurado, conecta Tailscale e prova que o proxy realmente mudou o egress público antes do segundo passe;
-12. recrawleia somente os providers selecionados com `--only-providers`;
-13. valida o contrato completo dos artefatos com `validate_provider_cache.py --allow-preserved`;
-14. aplica o whitelist de diff gerado;
-15. faz `git diff --cached --check`;
-16. busca novamente a branch remota e exige o mesmo SHA de origem;
-17. publica somente os artefatos permitidos;
-18. arquiva cache/evidência sanitizados e limpa o checkout privado.
-
-## Estados de provider
-
-A publicação aceita:
-
-- `complete`: o crawl atual foi aceito pelos gates de completude/cobertura;
-- `preserved`: o crawl atual foi rejeitado ou incompleto, mas existe snapshot anterior validado e ele foi mantido.
-
-`unavailable` não passa pelo validator de publicação. Uma fonte sem snapshot seguro nunca é promovida apenas para manter o pipeline verde.
-
-O manifest mantém `allProvidersComplete: false` quando algum provider está preservado.
-
-## Política de refresh
-
-Um crawl marcado como completo ainda precisa satisfazer a política de qualidade:
-
-- mínimo absoluto de entradas;
-- razão mínima em relação ao snapshot anterior;
-- arredondamento compatível com o runtime Dart do app;
-- preservação do snapshot anterior quando a tentativa atual não atende ao contrato.
-
-Isso evita substituir silenciosamente um catálogo válido por uma coleta truncada.
+- `persist-credentials: false` no checkout privado;
+- `PRIVATE_REPOSITORIES_TOKEN` somente onde o checkout privado precisa dele;
+- `GOANIME_CATALOG_WRITE_TOKEN` somente na sondagem de publicação e no push;
+- proxy direto opcional somente no primeiro crawl;
+- credenciais Tailscale somente nos passos de configuração/conexão;
+- preflight/testes não recebem secrets de proxy/Tailscale;
+- nenhum `set -x` ou dump de ambiente;
+- checkout privado removido em `always()`;
+- branch remota precisa continuar no SHA de origem imediatamente antes do push;
+- publicação nunca usa force-push.
 
 ## Rota residencial opcional
 
-AnimeFire e AnimesOnline são os providers atualmente elegíveis ao fallback residencial. O workflow não reroda os dois cegamente: a lista real vem do manifest produzido no primeiro passe e inclui apenas providers elegíveis que terminaram `preserved` ou `unavailable`.
+AnimeFire e AnimesOnline são os providers atualmente elegíveis. A lista real do segundo passe vem do manifest após o primeiro crawl, portanto um provider saudável não é rerodado apenas porque seu par falhou.
 
-Antes do segundo passe, a rota Tailscale precisa provar:
+Tailscale roda em userspace com **um único listener HTTP**:
 
-- proxy local respondendo em `127.0.0.1:1055`;
-- IP público via proxy diferente do IP público direto do runner;
-- probe HTTPS concluído pela rota alternada.
+```text
+--tun=userspace-networking
+--outbound-http-proxy-listen=127.0.0.1:1055
+```
 
-Os IPs observados não são impressos. O teste direto ignora proxies herdados com `--noproxy '*'`.
+Não use `--socks5-server` no mesmo endereço/porta. O pipeline consome HTTP em:
 
-Detalhes de configuração estão em `docs/GOANIME_SCRAPLING_RESIDENTIAL_EGRESS.md`.
+```text
+SCRAPLING_PROXY_URL=http://127.0.0.1:1055
+```
+
+Antes do retry, o workflow exige:
+
+- IP público direto obtido com `--noproxy '*'`;
+- IP público via proxy HTTP;
+- os IPs precisam ser diferentes;
+- probe HTTPS adicional pela rota alternada precisa concluir.
+
+Os IPs não são impressos.
+
+Detalhes de configuração: `docs/GOANIME_SCRAPLING_RESIDENTIAL_EGRESS.md`.
+
+## Estados de provider
+
+- `complete`: crawl atual aceito pelos gates de completude/cobertura;
+- `preserved`: tentativa atual rejeitada/incompleta, mas snapshot anterior validado foi preservado.
+
+`unavailable` não passa silenciosamente pelo validator de publicação. Uma fonte sem snapshot seguro não é promovida para manter o pipeline verde.
+
+## Política de refresh
+
+Um crawl marcado como completo ainda precisa respeitar:
+
+- mínimo absoluto de entradas;
+- razão mínima contra snapshot anterior;
+- arredondamento compatível com o runtime Dart;
+- preservação do snapshot anterior quando a tentativa atual falha no contrato.
 
 ## Artefatos permitidos
-
-A publicação é limitada a:
 
 ```text
 assets/data/anime_provider_catalogs.json
@@ -130,24 +176,17 @@ assets/data/provider_scrape_evidence.json
 tools/scrapling_provider_pipeline/provider_source_hints.json
 ```
 
-Qualquer outro arquivo alterado pelo processo faz o gate falhar.
+Qualquer outro arquivo gerado/alterado faz o gate falhar.
 
 ## Evidência e privacidade
 
-A evidência pública não deve conter URL de proxy, userinfo, senha, query string sensível ou payload bruto de exceção. O pipeline sanitiza esses dados e mantém apenas contexto operacional seguro, inclusive o marcador auditável `[redacted-proxy]` quando aplicável.
+A evidência pública não deve conter URL de proxy, userinfo, senha, query/fragment sensível, payload bruto de exceção, localhost ou hosts/IPs privados observados pelo navegador.
 
-`networkAssessment` registra a rota usada e a recomendação operacional. Para sucesso limpo:
+O ownership de rede continua mais estrito que a atribuição de evidência: uma URL histórica só pode ser associada a um provider depois de sanitizada, sem tornar a URL bruta elegível para fetch.
+
+Para sucesso limpo:
 
 - `reachable + direct` recomenda `direct`;
 - `reachable + alternate` recomenda `residential`.
 
 O validator verifica essa paridade independentemente do gerador.
-
-## O que este workflow não faz
-
-- não instala Flutter para compilar o app;
-- não publica código de feature;
-- não altera arquivos fora do whitelist de cache/evidência;
-- não transforma snapshot parcial em `complete`;
-- não usa o workflow residencial antigo, que foi aposentado;
-- não substitui os gates próprios do APK/runtime do GoAnime.
