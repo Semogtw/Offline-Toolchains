@@ -6,6 +6,8 @@ on:
     paths:
       - "triggers/hydra-source-smoke/*.request"
   workflow_dispatch:
+  schedule:
+    - cron: "17 9 * * *"
 
 permissions:
   contents: write
@@ -39,15 +41,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            request="$(find toolchain-control/triggers/hydra-source-smoke -maxdepth 1 -type f -name '*.request' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n 1 | cut -d' ' -f2-)"
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            branch="main"
+            auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+            expected_sha="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/HydraPersonalizado.git refs/heads/main | awk '{print $1}')"
+            request="schedule:hydra-main"
           else
-            request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/hydra-source-smoke/*.request' | head -n 1)"
-            request="toolchain-control/$request"
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              request="$(find toolchain-control/triggers/hydra-source-smoke -maxdepth 1 -type f -name '*.request' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n 1 | cut -d' ' -f2-)"
+            else
+              request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/hydra-source-smoke/*.request' | head -n 1)"
+              request="toolchain-control/$request"
+            fi
+            test -n "$request"
+            read -r project branch expected_sha < "$request"
+            test "$project" = "hydra"
           fi
-          test -n "$request"
-          read -r project branch expected_sha < "$request"
-          test "$project" = "hydra"
           [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ ]]
           [[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]]
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
