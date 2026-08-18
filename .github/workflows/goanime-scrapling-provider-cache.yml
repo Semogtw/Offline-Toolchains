@@ -11,6 +11,10 @@ on:
         description: GoAnime branch that owns the external Scrapling pipeline
         required: true
         default: feat/scrapling-provider-pipeline
+      source_hint:
+        description: Optional exact 40-character GoAnime source SHA
+        required: false
+        default: ''
       workers:
         description: Concurrent static fetch workers
         required: true
@@ -29,7 +33,7 @@ concurrency:
 
 jobs:
   refresh:
-    if: github.actor == github.repository_owner || github.event_name == 'schedule'
+    if: github.event_name == 'workflow_dispatch' || github.actor == github.repository_owner || github.event_name == 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -41,85 +45,24 @@ jobs:
         uses: actions/checkout@v6
         with:
           path: trusted-source
-          fetch-depth: 1
+          fetch-depth: 2
           persist-credentials: false
           show-progress: false
 
       - name: Resolve trusted refresh request
         id: request
+        working-directory: trusted-source
         shell: bash
         env:
           DISPATCH_TARGET_BRANCH: ${{ github.event.inputs.target_branch || '' }}
+          DISPATCH_SOURCE_HINT: ${{ github.event.inputs.source_hint || '' }}
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import json
-          import os
-          import re
-          import subprocess
-          from pathlib import Path
-
-          default_branch = 'feat/scrapling-provider-pipeline'
-          event_name = os.environ['GITHUB_EVENT_NAME']
-          target_branch = os.environ.get('DISPATCH_TARGET_BRANCH', '').strip() or default_branch
-          source_hint = ''
-
-          if event_name == 'push':
-              event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text(encoding='utf-8'))
-              changed = set()
-              removed = set()
-              for commit in event.get('commits') or []:
-                  for key in ('added', 'modified'):
-                      changed.update(commit.get(key) or [])
-                  removed.update(commit.get('removed') or [])
-              pattern = re.compile(r'^triggers/goanime-scrapling-provider-cache/[^/]+\.request$')
-              request_paths = sorted(path for path in changed if pattern.fullmatch(path))
-              removed_requests = sorted(path for path in removed if pattern.fullmatch(path))
-              if removed_requests:
-                  raise SystemExit('Deleting a refresh request cannot trigger a provider crawl')
-              if len(request_paths) != 1:
-                  raise SystemExit(
-                      f'Expected exactly one added/modified refresh request, got {len(request_paths)}'
-                  )
-
-              request_path = Path('trusted-source') / request_paths[0]
-              values = {}
-              for raw_line in request_path.read_text(encoding='utf-8').splitlines():
-                  line = raw_line.strip()
-                  if not line or line.startswith('#'):
-                      continue
-                  if '=' not in line:
-                      raise SystemExit(f'Malformed refresh request line: {line!r}')
-                  key, value = line.split('=', 1)
-                  key = key.strip()
-                  value = value.strip()
-                  if key not in {'target_branch', 'source_hint', 'reason'}:
-                      raise SystemExit(f'Unknown refresh request key: {key}')
-                  if key in values:
-                      raise SystemExit(f'Duplicate refresh request key: {key}')
-                  values[key] = value
-
-              target_branch = values.get('target_branch', '')
-              source_hint = values.get('source_hint', '').lower()
-              if not target_branch:
-                  raise SystemExit('Refresh request is missing target_branch')
-              if not re.fullmatch(r'[0-9a-f]{40}', source_hint):
-                  raise SystemExit('Refresh request source_hint must be a full 40-character SHA')
-
-          if subprocess.run(
-              ['git', 'check-ref-format', '--branch', target_branch],
-              stdout=subprocess.DEVNULL,
-              stderr=subprocess.DEVNULL,
-              check=False,
-          ).returncode != 0:
-              raise SystemExit(f'Invalid target branch: {target_branch!r}')
-
-          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-              output.write(f'target_branch={target_branch}\n')
-              output.write(f'source_hint={source_hint}\n')
-          print(f'Refresh target resolved: {target_branch}')
-          print('Source revision is pinned by request.' if source_hint else 'Source revision will be pinned after checkout.')
-          PY
+          python3 scripts/goanime_resolve_request.py \
+            --request-dir triggers/goanime-scrapling-provider-cache \
+            --workspace . \
+            --dispatch-target "$DISPATCH_TARGET_BRANCH" \
+            --dispatch-source-hint "$DISPATCH_SOURCE_HINT"
 
       - name: Validate request and credentials
         id: credentials
@@ -138,7 +81,7 @@ jobs:
             echo 'publish=true' >> "$GITHUB_OUTPUT"
           else
             echo 'publish=false' >> "$GITHUB_OUTPUT"
-            echo 'GOANIME_CATALOG_WRITE_TOKEN is not configured; this run will build, validate and archive caches without pushing.'
+            echo 'GOANIME_CATALOG_WRITE_TOKEN is not configured; build/validation only.'
           fi
           if [ -n "$PROXY_URL" ]; then
             echo 'proxy=true' >> "$GITHUB_OUTPUT"
@@ -150,7 +93,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
-          ref: ${{ steps.request.outputs.target_branch }}
+          ref: ${{ steps.request.outputs.source_hint || steps.request.outputs.target_branch }}
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
           fetch-depth: 1
@@ -169,7 +112,7 @@ jobs:
           set -euo pipefail
           sha="$(git rev-parse HEAD)"
           if [ -n "$EXPECTED_SOURCE_HINT" ] && [ "$sha" != "$EXPECTED_SOURCE_HINT" ]; then
-            echo 'Checked-out GoAnime revision does not match the trusted request source_hint.' >&2
+            echo 'Checked-out GoAnime revision does not match source_hint.' >&2
             exit 1
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
@@ -222,7 +165,9 @@ jobs:
           set -euo pipefail
           python -m pip install --disable-pip-version-check --requirement tools/scrapling_provider_pipeline/requirements.txt
           scrapling install
-          python -m patchright install chromium
+          python ../trusted-source/scripts/goanime_install_patchright.py \
+            --browser chromium \
+            --attempts 3
           python - <<'PY'
           import importlib.metadata
           expected = {
@@ -282,9 +227,7 @@ jobs:
           from pathlib import Path
 
           manifest = json.loads(
-              Path('assets/data/anime_provider_catalog_manifest.json').read_text(
-                  encoding='utf-8'
-              )
+              Path('assets/data/anime_provider_catalog_manifest.json').read_text(encoding='utf-8')
           )
           providers = manifest.get('providers')
           if not isinstance(providers, dict):
@@ -320,7 +263,7 @@ jobs:
             echo 'configured=true' >> "$GITHUB_OUTPUT"
           else
             echo 'configured=false' >> "$GITHUB_OUTPUT"
-            echo 'Phone residential fallback is not fully configured; failed provider snapshots remain in their safe fallback state.'
+            echo 'Phone residential fallback is not fully configured; safe snapshots remain preserved.'
           fi
 
       - name: Connect optional phone exit node
@@ -332,7 +275,7 @@ jobs:
           oauth-client-id: ${{ secrets.GOANIME_TAILSCALE_CLIENT_ID }}
           audience: ${{ secrets.GOANIME_TAILSCALE_AUDIENCE }}
           tags: tag:goanime-scraper
-          tailscaled-args: --tun=userspace-networking --socks5-server=127.0.0.1:1055 --outbound-http-proxy-listen=127.0.0.1:1055
+          tailscaled-args: --tun=userspace-networking --outbound-http-proxy-listen=127.0.0.1:1055
           args: --exit-node=${{ env.TAILSCALE_EXIT_NODE }}
 
       - name: Verify optional residential route
@@ -385,7 +328,7 @@ jobs:
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
           if [ "$code" -eq 2 ]; then
-            echo 'Residential retry still left at least one provider in a preserved/unavailable state.'
+            echo 'Residential retry still left at least one provider preserved/unavailable.'
           fi
 
       - name: Preserve learned adaptive selector state
@@ -500,39 +443,21 @@ jobs:
       - name: Publish sanitized trigger status
         if: always()
         continue-on-error: true
-        shell: bash
+        working-directory: trusted-source
         env:
-          STATUS_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
           JOB_STATUS: ${{ job.status }}
         run: |
-          set -euo pipefail
+          state=error
           case "$JOB_STATUS" in
             success) state=success ;;
             failure) state=failure ;;
             cancelled) state=error ;;
-            *) state=error ;;
           esac
-          STATE="$state" python3 - <<'PY' > "$RUNNER_TEMP/goanime-status.json"
-          import json
-          import os
-          state = os.environ['STATE']
-          payload = {
-              'state': state,
-              'context': 'goanime-scrapling/provider-cache',
-              'description': f'GoAnime provider-cache run finished: {state}',
-          }
-          print(json.dumps(payload))
-          PY
-          curl --fail --silent --show-error \
-            --request POST \
-            --header "Authorization: Bearer $STATUS_TOKEN" \
-            --header 'Accept: application/vnd.github+json' \
-            --header 'X-GitHub-Api-Version: 2022-11-28' \
-            --data-binary @"$RUNNER_TEMP/goanime-status.json" \
-            "https://api.github.com/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
-            >/dev/null
-          rm -f "$RUNNER_TEMP/goanime-status.json"
-          unset STATUS_TOKEN state
+          python3 scripts/goanime_post_status.py \
+            --state "$state" \
+            --context goanime-scrapling/provider-cache \
+            --description "GoAnime provider-cache run finished: $state"
 
       - name: Remove private checkout
         if: always()
