@@ -1,0 +1,16 @@
+{
+  "status": "failure",
+  "targetSha": "4798849e26d32b07c1926efdd9e0a9d3a9f6d869",
+  "targetBranch": "main",
+  "requestPath": "toolchain-control/triggers/hydra-source-smoke/ankergames-catalogue-seeds-4798849e.request",
+  "runId": 32106610410,
+  "runAttempt": 1,
+  "steps": {
+    "deps": "success",
+    "electron": "success",
+    "scrapling": "success",
+    "gamebounty": "success",
+    "ecologica": "success",
+    "ankergames": "failure"
+  }
+}
