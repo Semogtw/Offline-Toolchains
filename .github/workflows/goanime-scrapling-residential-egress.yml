@@ -179,7 +179,7 @@ jobs:
           echo 'SCRAPLING_PROXY_URL=http://127.0.0.1:1055' >> "$GITHUB_ENV"
           echo 'TAILSCALE_PROXY_ACTIVE=true' >> "$GITHUB_ENV"
 
-      - name: Crawl providers and build cache
+      - name: Crawl blocked providers and rebuild merged cache
         if: steps.tailscale.outcome == 'success' && steps.route.outputs.ready == 'true'
         id: crawl
         working-directory: private-source
@@ -189,7 +189,8 @@ jobs:
           python tools/scrapling_provider_pipeline/build_provider_cache.py \
             --repo-root . \
             --state-dir .cache/scrapling-provider-pipeline \
-            --workers "$SCRAPLING_WORKERS"
+            --workers "$SCRAPLING_WORKERS" \
+            --only-providers animefire,animesonline
           code=$?
           set -e
           if [ "$code" -ne 0 ] && [ "$code" -ne 2 ]; then
@@ -198,7 +199,7 @@ jobs:
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
           if [ "$code" -eq 2 ]; then
-            echo 'Some fresh provider crawls were rejected; preserved snapshots will be validated before publication.'
+            echo 'Some residential provider crawls were rejected; preserved snapshots will be validated before publication.'
           fi
 
       - name: Preserve learned adaptive selector state
@@ -308,7 +309,7 @@ jobs:
           echo '- Crawler result: `${{ steps.crawl.outputs.code }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Cache changed: `${{ steps.diff.outputs.changed }}`' >> "$GITHUB_STEP_SUMMARY"
           echo '- Published commit: `${{ steps.commit.outputs.sha }}`' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Only AnimeFire and AnimesOnline use the local Tailscale HTTP proxy; other providers keep direct GitHub egress.' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Only AnimeFire and AnimesOnline are crawled in this pass; Goyabu and AniTube stay on their existing validated snapshots.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove private checkout
         if: always()
