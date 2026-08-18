@@ -15,8 +15,6 @@ on:
         description: Concurrent static fetch workers
         required: true
         default: '8'
-  schedule:
-    - cron: '48 07 * * *'
 
 permissions:
   contents: read
