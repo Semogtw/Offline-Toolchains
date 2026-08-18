@@ -78,7 +78,8 @@ def main() -> int:
         _post_status(context=group_context, state="pending", reporter=reporter)
         group_failed = False
         first_kind = ""
-        for path in group_files:
+        first_slot = ""
+        for index, path in enumerate(group_files, start=1):
             result = subprocess.run(
                 [
                     sys.executable,
@@ -101,12 +102,19 @@ def main() -> int:
                 group_failed = True
                 if not first_kind:
                     first_kind = _failure_kind(result.stdout)
+                    first_slot = f"{index:02d}"
         state = "failure" if group_failed else "success"
         _post_status(context=group_context, state=state, reporter=reporter)
         if group_failed:
             failed.append(group)
+            kind = first_kind or "runtime"
             _post_status(
-                context=f"{group_context}-{first_kind or 'runtime'}",
+                context=f"{group_context}-{kind}",
+                state="failure",
+                reporter=reporter,
+            )
+            _post_status(
+                context=f"{group_context}-slot-{first_slot or '00'}-{kind}",
                 state="failure",
                 reporter=reporter,
             )
