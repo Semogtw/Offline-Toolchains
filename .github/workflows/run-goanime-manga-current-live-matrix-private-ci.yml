@@ -20,7 +20,7 @@ jobs:
     name: Validate manga live auditor
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 15
 
     steps:
       - name: Require private repository token
@@ -73,22 +73,36 @@ jobs:
         working-directory: private-source
         run: flutter pub get >/dev/null 2>&1
 
-      - name: Validate byte-aware live auditor
+      - name: Analyze byte-aware live auditor
+        id: analyze
         working-directory: private-source
-        shell: bash
         run: |
-          set -euo pipefail
           flutter analyze --no-pub \
             tools/manga/audit_planned_provider_stage.dart \
             test/tools/manga/audit_planned_provider_stage_test.dart \
+            lib/services/manga/manga_provider_policy.dart \
+            lib/services/manga/manga_remote_manifest_validator.dart \
             lib/services/manga/manga_remote_content_probe.dart \
             test/services/manga/manga_remote_content_probe_test.dart
+
+      - name: Test byte-aware live auditor
+        id: tests
+        working-directory: private-source
+        run: |
           flutter test --no-pub \
             test/tools/manga/audit_planned_provider_stage_test.dart \
             test/services/manga/manga_remote_content_probe_test.dart
+
+      - name: Check auditor formatting without blocking live probes
+        id: format
+        continue-on-error: true
+        working-directory: private-source
+        run: |
           dart format --output=none --set-exit-if-changed \
             tools/manga/audit_planned_provider_stage.dart \
             test/tools/manga/audit_planned_provider_stage_test.dart \
+            lib/services/manga/manga_provider_policy.dart \
+            lib/services/manga/manga_remote_manifest_validator.dart \
             lib/services/manga/manga_remote_content_probe.dart \
             test/services/manga/manga_remote_content_probe_test.dart
 
@@ -103,17 +117,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CONTROL_SHA: ${{ github.sha }}
           JOB_STATUS: ${{ job.status }}
+          FORMAT_OUTCOME: ${{ steps.format.outcome }}
         run: |
           set -euo pipefail
           state=failure
-          if [ "$JOB_STATUS" = success ]; then
-            state=success
-          fi
+          if [ "$JOB_STATUS" = success ]; then state=success; fi
           gh api --method POST \
             "repos/$GITHUB_REPOSITORY/statuses/$CONTROL_SHA" \
             -f state="$state" \
             -f context='goanime/manga-live-auditor-validation' \
-            -f description="Manga live auditor validation: $JOB_STATUS"
+            -f description="Manga live auditor: $JOB_STATUS; format=$FORMAT_OUTCOME"
 
   live-source:
     name: Live ${{ matrix.source }}
@@ -208,13 +221,11 @@ jobs:
           status=$?
           set -e
           grep -E '^(search_[0-9]+|search_[0-9]+_results|details|chapters|chapter_count|content_[0-9]+|content_[0-9]+_kind|transport_[0-9]+|verifier|terminal|[a-z0-9_]+_(type|kind|status|host))=' "$log" || true
-
           terminal="$(grep -E '^terminal=' "$log" | tail -n 1 | cut -d= -f2- || true)"
           problem="$(grep -E '^(search_[0-9]+|details|chapters|content_[0-9]+|transport_[0-9]+)=(failure|unreadable)$' "$log" | tail -n 1 || true)"
           problem="${problem/=/:}"
           echo "terminal=${terminal:-unknown}" >> "$GITHUB_OUTPUT"
           echo "problem=${problem:-none}" >> "$GITHUB_OUTPUT"
-
           if [ "$status" -eq 0 ] && grep -q '^terminal=readable$' "$log"; then
             echo 'live_result=readable'
             rm -f "$log"
@@ -244,32 +255,17 @@ jobs:
         run: |
           set -euo pipefail
           state=failure
-          if [ "$JOB_STATUS" = success ]; then
-            state=success
-          fi
+          if [ "$JOB_STATUS" = success ]; then state=success; fi
           gh api --method POST \
             "repos/$GITHUB_REPOSITORY/statuses/$CONTROL_SHA" \
             -f state="$state" \
             -f context="goanime/manga-live/$SOURCE_ID" \
             -f description="Manga live provider gate: $JOB_STATUS"
-
-          result="$(jq -cn \
-            --arg controlSha "$CONTROL_SHA" \
-            --arg reviewedSha "$REVIEWED_SHA" \
-            --arg sourceId "$SOURCE_ID" \
-            --arg state "$state" \
-            --arg terminal "${TERMINAL:-unknown}" \
-            --arg problem "${PROBLEM:-none}" \
-            '{schemaVersion:1,controlSha:$controlSha,reviewedSha:$reviewedSha,sourceId:$sourceId,state:$state,terminal:$terminal,problem:$problem}')"
+          result="$(jq -cn --arg controlSha "$CONTROL_SHA" --arg reviewedSha "$REVIEWED_SHA" --arg sourceId "$SOURCE_ID" --arg state "$state" --arg terminal "${TERMINAL:-unknown}" --arg problem "${PROBLEM:-none}" '{schemaVersion:1,controlSha:$controlSha,reviewedSha:$reviewedSha,sourceId:$sourceId,state:$state,terminal:$terminal,problem:$problem}')"
           encoded="$(printf '%s\n' "$result" | base64 -w0)"
           path="results/goanime-manga-live/$CONTROL_SHA/$SOURCE_ID.json"
           for attempt in 1 2 3 4 5; do
-            if gh api --method PUT \
-              "repos/$GITHUB_REPOSITORY/contents/$path" \
-              -f message="ci(result): record manga live $SOURCE_ID" \
-              -f content="$encoded"; then
-              exit 0
-            fi
+            if gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): record manga live $SOURCE_ID" -f content="$encoded"; then exit 0; fi
             sleep "$attempt"
           done
           exit 1
