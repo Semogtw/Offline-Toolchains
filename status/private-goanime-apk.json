@@ -1,0 +1,10 @@
+{
+  "conclusion": "cancelled",
+  "run_id": 32312689380,
+  "run_number": 7,
+  "schema_version": 1,
+  "source_ref": "c8b5ee153d47978a88dc4c3bc089d939112b1453",
+  "trigger_sha": "1f1901618ebc77baf589009f3ebc551baeefbd00",
+  "updated_at": "2026-08-19T23:25:58Z",
+  "workflow": "Build encrypted private GoAnime APK"
+}
