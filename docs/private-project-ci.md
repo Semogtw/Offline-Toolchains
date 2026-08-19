@@ -10,7 +10,7 @@ The security invariants are defined in `docs/WORKFLOW_HUB_SECURITY.md` and machi
 | --- | --- | --- | --- |
 | `goanime` | `Semogtw/goanime-mobile` | `main` | Flutter health, format, analysis, tests, release-workflow validation, debug APK build-and-discard |
 | `zapzap` | `Semogtw/Zapzap` | `development/android-build-recovery` | source/pure checks, Android baseline, unit tests, lint, debug APK build-and-discard |
-| `semogsite` | `Semogtw/SemogSite` | `main` | frozen pnpm install, confidentiality/boundary gates, focused orchestration tests, full monorepo check, build and isolated Playwright gate |
+| `semogsite` | `Semogtw/SemogSite` | `main` | frozen pnpm install, confidentiality/boundary gates, full monorepo check/build plus isolated auth/workflow/editorial/portfolio Playwright diagnostics |
 | `hydra` | `Semogtw/HydraPersonalizado` | `main` | pinned Node/Yarn, GTK4 Layer Shell, Rust, typechecks, tests, format/ESLint and build |
 | `receitas` | `Semogtw/Receitas` | `main` | dedicated Node/pnpm source audits, lint, typecheck, unit tests and static Pages build via `Run Receitas CI` |
 | `fichario` | `Semogtw/FicharioVirtual` | `main` | token-free public checkout and `pnpm verify:full` in the dedicated Fichário workflow |
@@ -61,7 +61,25 @@ All uploaded artifacts in this repository have a maximum configured retention of
 
 ## SemogSite
 
-SemogSite now follows integrated `main`, not the old bootstrap branch. The public hub mirrors the stronger workflow-control gate: exact pnpm install, native SQLite verification, package/confidentiality checks, focused orchestration/database/web tests, full monorepo check, production build and isolated Playwright privacy/mobile navigation test. No project-derived Actions cache is retained.
+SemogSite now follows integrated `main`, not the old bootstrap branch. The shared private-project gate still runs the broad repository verification path, while `Run SemogSite portfolio CI` provides a connector-friendly diagnostic gate for exact private refs.
+
+The portfolio gate runs these fixed stages:
+
+- frozen dependency install with an ephemeral runner-only `better-sqlite3` build allowlist;
+- package, Cloudflare, MCP, run-ledger, editorial and public-confidentiality guardrails;
+- recursive typecheck, full Vitest workspace and aggregated `pnpm check`;
+- production web build;
+- isolated E2E database;
+- canonical auth-topology E2E;
+- workflow privacy E2E;
+- editorial publication E2E;
+- public portfolio/mobile/discovery E2E.
+
+The four Playwright suites use `continue-on-error` only to collect independent diagnostic outcomes. A final enforcement step fails the job if any suite failed, so diagnostics do not weaken the gate.
+
+The SemogSite Playwright harness intentionally starts the canonical API beside the web runtime. The web test server may proxy `/api/*` to that API only when `NODE_ENV=test`, and the configured upstream is restricted to loopback. This reproduces the browser-facing same-origin topology needed by the canonical auth API without reintroducing the deprecated Node auth facade or creating a production proxy feature.
+
+No project-derived Actions cache is retained. The private checkout and build/test outputs are removed or discarded after the job.
 
 ## Hydra
 
@@ -88,7 +106,7 @@ The older `receitas` job inside `Run private project CI` remains only as a compa
 
 ## Sanitized run receipts
 
-`Report private project CI runs` writes completed shared-hub results to the open **Public private CI run receipts** issue #15. Receipts include public run metadata and the selected project job/result only. Private source, private commit/ref details, logs, artifacts, secrets and build outputs are intentionally omitted.
+`Report private project CI runs` writes completed shared-hub results to the open **Public private CI run receipts** issue #15. Receipts include public run metadata and the selected project job/result only. For the SemogSite portfolio diagnostic job, the receipt additionally reports only the outcome of the four named E2E suites (`success`, `failure`, `skipped`/not-run). Private source, private commit/ref details, logs, artifacts, secrets and build outputs remain intentionally omitted.
 
 The dedicated Receitas runner currently reports only through its sanitized GitHub Step Summary and does not upload an artifact or write private ref/SHA details to the public receipt issue.
 
