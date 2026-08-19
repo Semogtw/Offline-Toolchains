@@ -1,0 +1,3 @@
+target_branch=feat/scrapling-provider-pipeline
+source_hint=c0cce9de5019f31f22908ddbef75e49c9b13edda
+reason=require structurally valid sitemap XML before complete=true
