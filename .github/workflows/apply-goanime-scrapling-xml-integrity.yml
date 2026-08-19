@@ -32,8 +32,7 @@ jobs:
         working-directory: trusted-source
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          python3 scripts/goanime_post_status.py --state pending --context goanime-scrapling/xml-integrity
+        run: python3 scripts/goanime_post_status.py --state pending --context goanime-scrapling/xml-integrity
 
       - name: Resolve source-bound request
         id: request
@@ -80,7 +79,7 @@ jobs:
       - name: Run focused crawler tests
         working-directory: private-source/tools/scrapling_provider_pipeline
         shell: bash
-        run: python3 tests/test_provider_crawlers.py
+        run: python3 -m unittest discover -s tests -p 'test_provider_crawlers.py'
 
       - name: Enforce narrow diff
         working-directory: private-source
