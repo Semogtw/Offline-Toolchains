@@ -61,6 +61,23 @@ jobs:
                   `- Project job: \`${job.name}\` — \`${job.conclusion ?? job.status}\``
                 );
 
+            const semogsitePortfolioJob = projectJobs.find(
+              (job) => job.name === 'SemogSite portfolio diagnostics and E2E',
+            );
+            const e2eNames = [
+              'Workflow privacy E2E',
+              'Editorial publication E2E',
+              'Public portfolio E2E',
+            ];
+            const e2eLines = semogsitePortfolioJob === undefined
+              ? []
+              : e2eNames.map((stepName) => {
+                  const step = semogsitePortfolioJob.steps?.find(
+                    (candidate) => candidate.name === stepName,
+                  );
+                  return `- ${stepName}: \`${step?.conclusion ?? 'not-run'}\``;
+                });
+
             const body = [
               marker,
               `### ${run.name}`,
@@ -72,6 +89,7 @@ jobs:
               `- Public head: \`${run.head_sha}\``,
               `- Actor: \`${run.actor?.login ?? 'unknown'}\``,
               ...jobLines,
+              ...e2eLines,
               '- Private source, private resolved commit, logs, artifacts, and build outputs are intentionally omitted.',
             ].join('\n');
 
