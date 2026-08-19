@@ -1,0 +1,112 @@
+name: Diagnose GoAnime Scrapling baseline hardening
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-scrapling-baseline-hardening-diagnostics/*.request'
+
+permissions:
+  contents: read
+  statuses: write
+
+concurrency:
+  group: goanime-scrapling-baseline-hardening-diagnostics
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve source-bound request
+        id: request
+        working-directory: trusted-source
+        run: |
+          set -euo pipefail
+          python3 scripts/goanime_resolve_request.py \
+            --request-dir triggers/goanime-scrapling-baseline-hardening-diagnostics \
+            --workspace .
+
+      - name: Checkout exact GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.source_hint }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Apply patch in disposable checkout
+        id: patch
+        continue-on-error: true
+        run: python3 trusted-source/scripts/goanime_apply_scrapling_baseline_hardening.py --repo-root private-source
+
+      - name: Report patch status
+        if: always()
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.patch.outcome }}
+        run: |
+          state=failure
+          [ "$OUTCOME" = success ] && state=success
+          python3 scripts/goanime_post_status.py --state "$state" --context goanime-scrapling/baseline-patch
+
+      - name: Stop after patch failure
+        if: steps.patch.outcome == 'failure'
+        run: exit 1
+
+      - name: Run focused baseline tests
+        id: tests
+        if: steps.patch.outcome == 'success'
+        continue-on-error: true
+        working-directory: private-source/tools/scrapling_provider_pipeline
+        run: python3 -m unittest discover -s tests -p 'test_legacy_baseline_preflight.py'
+
+      - name: Report tests status
+        if: always() && steps.patch.outcome == 'success'
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.tests.outcome }}
+        run: |
+          state=failure
+          [ "$OUTCOME" = success ] && state=success
+          python3 scripts/goanime_post_status.py --state "$state" --context goanime-scrapling/baseline-tests
+
+      - name: Stop after test failure
+        if: steps.tests.outcome == 'failure'
+        run: exit 1
+
+      - name: Mark baseline diagnostic success
+        if: steps.tests.outcome == 'success'
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/goanime_post_status.py --state success --context goanime-scrapling/baseline-diagnostics
+
+      - name: Mark baseline diagnostic failure
+        if: failure()
+        continue-on-error: true
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/goanime_post_status.py --state failure --context goanime-scrapling/baseline-diagnostics
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
