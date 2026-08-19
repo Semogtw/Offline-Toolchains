@@ -36,9 +36,9 @@ def main() -> int:
     )
     build_text = replace_once(
         build_text,
-        "        configs.append(config)\n    return configs\n",
-        "        configs.append(config)\n    _validate_owned_host_scopes(configs)\n    return configs\n",
-        label="config return",
+        '''        if not config.roots and not config.sitemap:\n            raise SystemExit(\n                f"Provider {config.id} must declare at least one root or sitemap"\n            )\n\n        _require_owned_provider_url(config, config.base_url, label="baseUrl")\n''',
+        '''        if not config.roots and not config.sitemap:\n            raise SystemExit(\n                f"Provider {config.id} must declare at least one root or sitemap"\n            )\n\n        # Validate the trust boundary itself before using it to validate URLs.\n        # Include already accepted providers so cross-provider overlaps also fail\n        # before any fetcher/network state can exist.\n        _validate_owned_host_scopes(configs + [config])\n\n        _require_owned_provider_url(config, config.base_url, label="baseUrl")\n''',
+        label="pre-URL host validation",
     )
     build.write_text(build_text, encoding="utf-8")
 
