@@ -45,12 +45,14 @@ jobs:
             --workspace .
 
       - name: Require expected target branch
+        id: target
         shell: bash
         env:
           TARGET_BRANCH: ${{ steps.request.outputs.target_branch }}
         run: test "$TARGET_BRANCH" = 'feat/scrapling-provider-pipeline'
 
       - name: Checkout exact GoAnime source
+        id: source_checkout
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
@@ -64,6 +66,7 @@ jobs:
           show-progress: false
 
       - name: Verify exact source revision
+        id: source_verify
         working-directory: private-source
         shell: bash
         env:
@@ -71,6 +74,7 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "$SOURCE_HINT"
 
       - name: Apply scoped crawler hardening
+        id: patch
         shell: bash
         run: |
           set -euo pipefail
@@ -78,11 +82,13 @@ jobs:
             --repo-root private-source
 
       - name: Run focused crawler tests
+        id: tests
         working-directory: private-source/tools/scrapling_provider_pipeline
         shell: bash
         run: python3 tests/test_provider_crawlers.py
 
       - name: Enforce narrow diff
+        id: diff
         working-directory: private-source
         shell: bash
         run: |
@@ -94,6 +100,7 @@ jobs:
           test "${changed[1]}" = 'tools/scrapling_provider_pipeline/tests/test_provider_crawlers.py'
 
       - name: Verify target branch did not move
+        id: race
         working-directory: private-source
         shell: bash
         env:
@@ -106,6 +113,7 @@ jobs:
           test "$remote_head" = "$SOURCE_HINT" || { echo 'Target branch moved; refusing stale publish.' >&2; exit 1; }
 
       - name: Commit hardening
+        id: commit
         working-directory: private-source
         shell: bash
         run: |
@@ -118,6 +126,7 @@ jobs:
           git commit -m 'fix(scrapling): harden sitemap fanout and pagination origin'
 
       - name: Publish hardening commit
+        id: push
         working-directory: private-source
         shell: bash
         env:
@@ -137,13 +146,35 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: python3 scripts/goanime_post_status.py --state success --context goanime-scrapling/crawler-hardening
 
-      - name: Mark crawler hardening failed
+      - name: Classify crawler hardening failure
         if: failure()
         continue-on-error: true
         working-directory: trusted-source
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python3 scripts/goanime_post_status.py --state failure --context goanime-scrapling/crawler-hardening
+          REQUEST: ${{ steps.request.outcome }}
+          TARGET: ${{ steps.target.outcome }}
+          SOURCE_CHECKOUT: ${{ steps.source_checkout.outcome }}
+          SOURCE_VERIFY: ${{ steps.source_verify.outcome }}
+          PATCH: ${{ steps.patch.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+          DIFF: ${{ steps.diff.outcome }}
+          RACE: ${{ steps.race.outcome }}
+          COMMIT: ${{ steps.commit.outcome }}
+          PUSH: ${{ steps.push.outcome }}
+        run: |
+          phase=unknown
+          if [ "$REQUEST" != success ] || [ "$TARGET" != success ]; then phase=request
+          elif [ "$SOURCE_CHECKOUT" != success ] || [ "$SOURCE_VERIFY" != success ]; then phase=source
+          elif [ "$PATCH" != success ]; then phase=patch
+          elif [ "$TESTS" != success ]; then phase=tests
+          elif [ "$DIFF" != success ]; then phase=diff
+          elif [ "$RACE" != success ]; then phase=race
+          elif [ "$COMMIT" != success ]; then phase=commit
+          elif [ "$PUSH" != success ]; then phase=push
+          fi
+          python3 scripts/goanime_post_status.py --state failure --context "goanime-scrapling/crawler-hardening-$phase"
+          python3 scripts/goanime_post_status.py --state failure --context goanime-scrapling/crawler-hardening
 
       - name: Cleanup private checkout
         if: always()
