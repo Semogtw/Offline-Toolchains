@@ -4,6 +4,7 @@ on:
   workflow_run:
     workflows:
       - Run private project CI
+      - Run SemogSite portfolio CI
       - Run Fichario CI
       - Bootstrap Fichario lockfile
     types:
@@ -47,6 +48,7 @@ jobs:
               'GoAnime real CI and Android debug build',
               'ZapZap real Android CI and debug build',
               'SemogSite full checks and production build',
+              'SemogSite portfolio diagnostics and E2E',
               'Hydra real repository gates',
               'Receitas repository and documentation guards',
               'Fichário Virtual complete verification',
