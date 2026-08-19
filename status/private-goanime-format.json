@@ -4,8 +4,8 @@
   "run_number": 5,
   "schema_version": 1,
   "source_ref": "3f6e59565c11a627950e23c231e5c6dbd4f9ba1d",
-  "status": "queued",
+  "status": "in_progress",
   "trigger_sha": "fc41ac0cadf79c7d552a134e971a6f7e99d95d09",
-  "updated_at": "2026-08-19T23:47:32Z",
+  "updated_at": "2026-08-19T23:47:35Z",
   "workflow": "Prepare verified GoAnime formatting fix"
 }
