@@ -243,6 +243,26 @@ jobs:
         working-directory: private-source
         run: pnpm exec playwright test tests/e2e/public-portfolio.spec.ts
 
+      - name: Auth topology E2E failed
+        if: always() && steps.auth_e2e.outcome == 'failure'
+        shell: bash
+        run: true
+
+      - name: Workflow privacy E2E failed
+        if: always() && steps.workflow_e2e.outcome == 'failure'
+        shell: bash
+        run: true
+
+      - name: Editorial publication E2E failed
+        if: always() && steps.editorial_e2e.outcome == 'failure'
+        shell: bash
+        run: true
+
+      - name: Public portfolio E2E failed
+        if: always() && steps.portfolio_e2e.outcome == 'failure'
+        shell: bash
+        run: true
+
       - name: Summarize E2E outcomes
         if: always()
         shell: bash
