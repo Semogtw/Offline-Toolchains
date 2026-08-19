@@ -1,0 +1,3 @@
+target_branch=feat/scrapling-provider-pipeline
+source_hint=e55e282770568783df01f8ad4fb0bf9c7fab6502
+reason=classify ownedHosts hardening publisher failure without exposing private logs
