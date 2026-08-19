@@ -64,19 +64,30 @@ jobs:
             const semogsitePortfolioJob = projectJobs.find(
               (job) => job.name === 'SemogSite portfolio diagnostics and E2E',
             );
-            const e2eNames = [
-              'Auth topology E2E',
-              'Workflow privacy E2E',
-              'Editorial publication E2E',
-              'Public portfolio E2E',
+            const e2eSuites = [
+              ['Auth topology E2E', 'Auth topology E2E failed'],
+              ['Workflow privacy E2E', 'Workflow privacy E2E failed'],
+              ['Editorial publication E2E', 'Editorial publication E2E failed'],
+              ['Public portfolio E2E', 'Public portfolio E2E failed'],
             ];
             const e2eLines = semogsitePortfolioJob === undefined
               ? []
-              : e2eNames.map((stepName) => {
-                  const step = semogsitePortfolioJob.steps?.find(
-                    (candidate) => candidate.name === stepName,
+              : e2eSuites.map(([suiteName, failureMarkerName]) => {
+                  const suite = semogsitePortfolioJob.steps?.find(
+                    (candidate) => candidate.name === suiteName,
                   );
-                  return `- ${stepName}: \`${step?.conclusion ?? 'not-run'}\``;
+                  const failureMarker = semogsitePortfolioJob.steps?.find(
+                    (candidate) => candidate.name === failureMarkerName,
+                  );
+                  let outcome = 'not-run';
+                  if (suite !== undefined && suite.conclusion !== 'skipped') {
+                    outcome = failureMarker?.conclusion === 'success'
+                      ? 'failure'
+                      : failureMarker?.conclusion === 'skipped'
+                        ? 'success'
+                        : 'unknown';
+                  }
+                  return `- ${suiteName}: \`${outcome}\``;
                 });
 
             const body = [
