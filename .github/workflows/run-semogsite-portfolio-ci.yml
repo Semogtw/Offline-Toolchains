@@ -220,16 +220,49 @@ jobs:
         run: node scripts/prepare-e2e.mjs
 
       - name: Workflow privacy E2E
+        id: workflow_e2e
+        continue-on-error: true
         working-directory: private-source
         run: pnpm exec playwright test tests/e2e/workflow-orchestration.spec.ts
 
       - name: Editorial publication E2E
+        id: editorial_e2e
+        continue-on-error: true
         working-directory: private-source
         run: pnpm exec playwright test tests/e2e/editorial-publication.spec.ts
 
       - name: Public portfolio E2E
+        id: portfolio_e2e
+        continue-on-error: true
         working-directory: private-source
         run: pnpm exec playwright test tests/e2e/public-portfolio.spec.ts
+
+      - name: Summarize E2E outcomes
+        if: always()
+        shell: bash
+        env:
+          WORKFLOW_E2E: ${{ steps.workflow_e2e.outcome }}
+          EDITORIAL_E2E: ${{ steps.editorial_e2e.outcome }}
+          PORTFOLIO_E2E: ${{ steps.portfolio_e2e.outcome }}
+        run: |
+          {
+            echo "## Sanitized E2E outcomes"
+            echo
+            echo "- Workflow privacy: \`$WORKFLOW_E2E\`"
+            echo "- Editorial publication: \`$EDITORIAL_E2E\`"
+            echo "- Public portfolio: \`$PORTFOLIO_E2E\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enforce E2E success
+        if: >-
+          always() &&
+          (steps.workflow_e2e.outcome == 'failure' ||
+           steps.editorial_e2e.outcome == 'failure' ||
+           steps.portfolio_e2e.outcome == 'failure')
+        shell: bash
+        run: |
+          echo "One or more SemogSite E2E suites failed; see sanitized outcomes above." >&2
+          exit 1
 
       - name: Remove private checkout
         if: always()
@@ -246,6 +279,6 @@ jobs:
             echo "## SemogSite portfolio CI"
             echo
             echo "- Result: \`$RESULT\`"
-            echo "- Guardrails are split into diagnostic steps and workflow, editorial-publication, and public-portfolio E2E suites are included."
+            echo "- Guardrails are split into diagnostic steps and all three E2E suites run independently."
             echo "- Tests/build outputs and the private checkout were discarded."
           } >> "$GITHUB_STEP_SUMMARY"
