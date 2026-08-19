@@ -1,0 +1,9 @@
+{
+  "status": "running",
+  "targetSha": "fa4bdf2025b7edf938139080f3a39683528a72f2",
+  "targetBranch": "fix/live-source-app-parity",
+  "requestPath": "toolchain-control/triggers/hydra-source-smoke/live-source-app-parity-fa4bdf2-20260819.request",
+  "runId": 32212542564,
+  "runAttempt": 1,
+  "steps": {}
+}
