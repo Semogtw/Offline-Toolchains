@@ -1,0 +1,1 @@
+{"schemaVersion":2,"controlSha":"4812e11f861f95ac0aec9320d3a74787f67299a9","reviewedSha":"f77036fee4d111da68805aeeebd002050a67a14f","newSha":"","state":"failure","stages":{"fixtures":"success","live":"failure","patch":"skipped","commit":"skipped"},"enabledProviders":9}
