@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 concurrency:
   group: goanime-scrapling-host-hardening
@@ -26,6 +27,15 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
           show-progress: false
+
+      - name: Mark host hardening pending
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/goanime_post_status.py \
+            --state pending \
+            --context goanime-scrapling/host-hardening
 
       - name: Resolve source-bound request
         id: request
@@ -121,9 +131,31 @@ jobs:
           TARGET_BRANCH: ${{ steps.request.outputs.target_branch }}
         run: |
           set -euo pipefail
+          test -n "$GOANIME_CATALOG_WRITE_TOKEN"
           git remote set-url origin "https://x-access-token:${GOANIME_CATALOG_WRITE_TOKEN}@github.com/Semogtw/goanime-mobile.git"
           git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
           git remote set-url origin 'https://github.com/Semogtw/goanime-mobile.git'
+
+      - name: Mark host hardening successful
+        if: success()
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/goanime_post_status.py \
+            --state success \
+            --context goanime-scrapling/host-hardening
+
+      - name: Mark host hardening failed
+        if: failure()
+        continue-on-error: true
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/goanime_post_status.py \
+            --state failure \
+            --context goanime-scrapling/host-hardening
 
       - name: Cleanup private checkout
         if: always()
