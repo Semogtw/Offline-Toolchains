@@ -99,9 +99,11 @@ jobs:
           dart format --output=none --set-exit-if-changed \
             lib/services/anime_metadata_cache_service.dart \
             lib/services/runtime_home_catalog_service.dart \
+            tools/anilist_metadata_bulk_loader.dart \
             tools/build_anime_metadata_seed.dart \
             test/services/anime_metadata_home_candidates_test.dart \
             test/services/runtime_home_catalog_partial_cache_repair_test.dart \
+            test/tools/anilist_metadata_bulk_loader_test.dart \
             test/tools/build_anime_metadata_seed_catalog_sources_test.dart
 
       - name: Analyze
@@ -121,4 +123,5 @@ jobs:
             test/services/runtime_home_catalog_seed_fallback_test.dart \
             test/services/runtime_home_catalog_partial_cache_repair_test.dart \
             test/services/runtime_home_catalog_resilience_test.dart \
+            test/tools/anilist_metadata_bulk_loader_test.dart \
             test/tools/build_anime_metadata_seed_catalog_sources_test.dart
