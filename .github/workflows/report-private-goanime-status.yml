@@ -7,6 +7,7 @@ on:
       - Refresh private GoAnime catalog and build encrypted APK
       - Validate private GoAnime source
       - Prepare verified GoAnime formatting fix
+      - Generate private GoAnime rich catalog
     types: [requested, in_progress, completed]
 
 permissions:
@@ -53,6 +54,11 @@ jobs:
           elif [ "$WORKFLOW_NAME" = 'Validate private GoAnime source' ]; then
             trigger_path='triggers/private-goanime-validate.json'
             status_path='status/private-goanime-validate.json'
+            trigger_json="$(git show "$TRIGGER_SHA:$trigger_path")"
+            SOURCE_REF="$(printf '%s' "$trigger_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ref"])')"
+          elif [ "$WORKFLOW_NAME" = 'Generate private GoAnime rich catalog' ]; then
+            trigger_path='triggers/private-goanime-rich-catalog.json'
+            status_path='status/private-goanime-rich-catalog.json'
             trigger_json="$(git show "$TRIGGER_SHA:$trigger_path")"
             SOURCE_REF="$(printf '%s' "$trigger_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ref"])')"
           elif [ "$WORKFLOW_NAME" = 'Prepare verified GoAnime formatting fix' ]; then
