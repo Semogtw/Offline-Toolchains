@@ -1,0 +1,19 @@
+{
+  "diagnostics": [
+    "home status=200 host=goyabu.io",
+    "nonce=present",
+    "search status=200 host=goyabu.io",
+    "anime_result=present host=goyabu.io",
+    "anime status=200 host=goyabu.io",
+    "episode=present host=goyabu.io",
+    "episode_page status=200 host=goyabu.io",
+    "player=present count=1 hosts=www.blogger.com",
+    "playback_shape=blogger-browser-fallback host=www.blogger.com"
+  ],
+  "exitCode": 0,
+  "finishedAt": "2026-08-19T11:49:19.637028Z",
+  "runAttempt": 1,
+  "runId": 32249473011,
+  "schemaVersion": 1,
+  "toolchainsSha": "e8a7bcd9348ffe8f44323a815791f3ee59fb112a"
+}
