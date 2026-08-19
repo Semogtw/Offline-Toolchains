@@ -1,0 +1,43 @@
+name: Chain GoAnime Manga APK after catalog
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'results/goanime-manga-publish-catalog-v3/*.json'
+
+permissions:
+  contents: write
+
+jobs:
+  chain:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+      - name: Read successful catalog receipt and trigger APK build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          result_path="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'results/goanime-manga-publish-catalog-v3/*.json' | head -n1)"
+          test -n "$result_path"
+          state="$(jq -r '.state' "$result_path")"
+          new_sha="$(jq -r '.newSha' "$result_path")"
+          test "$state" = success
+          [[ "$new_sha" =~ ^[0-9a-f]{40}$ ]]
+          path="triggers/goanime-manga-committed-apk/auto-${new_sha}.request"
+          content="goanime feature/manga-platform $new_sha"
+          encoded="$(printf '%s\n' "$content" | base64 -w0)"
+          if gh api "repos/$GITHUB_REPOSITORY/contents/$path" >/dev/null 2>&1; then
+            echo 'apk_trigger_already_exists=true'
+            exit 0
+          fi
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" \
+            -f message="ci(goanime): build committed manga APK at $new_sha" \
+            -f content="$encoded"
