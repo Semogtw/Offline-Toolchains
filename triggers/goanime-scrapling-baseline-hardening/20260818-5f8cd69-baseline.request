@@ -1,0 +1,3 @@
+target_branch=feat/scrapling-provider-pipeline
+source_hint=5f8cd69e56ee3f1494c9608138717e25bf10ccae
+reason=prevent compatible provider cache from rebuilding legacyBaseline from merged availability
