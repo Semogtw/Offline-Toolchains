@@ -1,0 +1,134 @@
+name: Diagnose GoAnime functional manga providers
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-functional-diagnose/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [ptbr.mangadash, ptbr.mangaflix]
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-functional-diagnose/*.request' | head -n1)"
+          read -r project branch sha < "control/$request"
+          test "$project" = goanime
+          test "$branch" = feature/manga-platform
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null
+
+      - name: Run sanitized stage audit
+        id: audit
+        working-directory: private-source
+        shell: bash
+        env:
+          SOURCE_ID: ${{ matrix.source }}
+        run: |
+          set +e
+          dart run tools/manga/audit_planned_provider_stage.dart "$SOURCE_ID" > /tmp/audit.log 2>&1
+          code=$?
+          set -e
+          python3 - "$SOURCE_ID" "$code" "$GITHUB_OUTPUT" <<'PY'
+          import json, re, sys
+          source, code, output = sys.argv[1:]
+          allowed = {}
+          patterns = (
+              r'^(search_\d+|search_\d+_results|details|chapters|chapter_count|content_\d+|content_\d+_kind|transport_\d+|verifier|terminal)=([^\r\n]+)$',
+              r'^((?:search_\d+|details|chapters|content_\d+|transport_\d+|setup)_(?:type|kind|status|host))=([^\r\n]+)$',
+          )
+          for line in open('/tmp/audit.log', encoding='utf-8', errors='replace'):
+              line = line.strip()
+              for pattern in patterns:
+                  m = re.match(pattern, line)
+                  if m:
+                      allowed[m.group(1)] = m.group(2)[:200]
+                      break
+          problem = 'none'
+          for key, value in allowed.items():
+              if key.endswith(('_type','_kind','_status','_host')):
+                  continue
+              if value in ('failure','unreadable'):
+                  problem = f'{key}:{value}'
+          payload = {
+              'schemaVersion': 1,
+              'sourceId': source,
+              'exitCode': int(code),
+              'problem': problem,
+              'diagnostics': allowed,
+          }
+          text = json.dumps(payload, separators=(',', ':'))
+          with open(output, 'a', encoding='utf-8') as out:
+              out.write('payload<<EOF\n' + text + '\nEOF\n')
+          PY
+          rm -f /tmp/audit.log
+
+      - name: Publish sanitized result
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTROL_SHA: ${{ github.sha }}
+          SOURCE_ID: ${{ matrix.source }}
+          SOURCE_SHA: ${{ steps.request.outputs.sha }}
+          PAYLOAD: ${{ steps.audit.outputs.payload }}
+        run: |
+          set -euo pipefail
+          result="$(jq -c --arg controlSha "$CONTROL_SHA" --arg sourceSha "$SOURCE_SHA" '. + {controlSha:$controlSha,sourceSha:$sourceSha}' <<< "$PAYLOAD")"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          path="results/goanime-manga-functional-diagnose/$CONTROL_SHA/$SOURCE_ID.json"
+          for attempt in 1 2 3 4 5; do
+            if gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" \
+              -f message="ci(result): diagnose $SOURCE_ID" -f content="$encoded"; then exit 0; fi
+            sleep "$attempt"
+          done
+          exit 1
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control" /tmp/audit.log
