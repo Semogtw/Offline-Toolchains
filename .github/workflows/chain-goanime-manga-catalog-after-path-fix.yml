@@ -1,0 +1,45 @@
+name: Chain GoAnime Manga catalog after path fix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'results/goanime-manga-fix-relative-catalog/*.json'
+
+permissions:
+  contents: write
+
+jobs:
+  chain:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+      - name: Read trusted result and trigger catalog publisher
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          result_path="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'results/goanime-manga-fix-relative-catalog/*.json' | head -n1)"
+          test -n "$result_path"
+          state="$(jq -r '.state' "$result_path")"
+          new_sha="$(jq -r '.newSha' "$result_path")"
+          reviewed_sha="$(jq -r '.reviewedSha' "$result_path")"
+          test "$state" = success
+          [[ "$new_sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$reviewed_sha" =~ ^[0-9a-f]{40}$ ]]
+          path="triggers/goanime-manga-publish-catalog-v3/auto-${new_sha}.request"
+          content="goanime feature/manga-platform $new_sha"
+          encoded="$(printf '%s\n' "$content" | base64 -w0)"
+          if gh api "repos/$GITHUB_REPOSITORY/contents/$path" >/dev/null 2>&1; then
+            echo 'catalog_trigger_already_exists=true'
+            exit 0
+          fi
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" \
+            -f message="ci(goanime): publish manga catalog at $new_sha" \
+            -f content="$encoded"
