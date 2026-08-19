@@ -1,0 +1,3 @@
+target_branch=feat/scrapling-provider-pipeline
+source_hint=cdace0cac9e25578538254972fd63aea094962d2
+reason=publish validated AnimesOnline sitemap and Goyabu pagination-origin hardening
