@@ -1,0 +1,1 @@
+{"schemaVersion":2,"controlSha":"656e0c2568b380ec7bada960002efc7eb84fccbf","reviewedSha":"aa9fd5e23b14dcf4985992b22b475231c5d48dae","state":"failure","failedStage":"format","stages":{"analyze":"success","tests":"success","format":"failure","collect":"success","coverage":"success"}}
