@@ -1,0 +1,72 @@
+name: Harden GoAnime canonical publisher
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-canonical-publisher-hardening/*.request'
+
+permissions:
+  contents: write
+  statuses: write
+
+concurrency:
+  group: goanime-canonical-publisher-hardening
+  cancel-in-progress: false
+
+jobs:
+  harden:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: true
+          show-progress: false
+
+      - name: Mark publisher hardening pending
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/goanime_post_status.py --state pending --context goanime-scrapling/canonical-publisher-hardening
+
+      - name: Require one trigger-only commit
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(git diff --name-only HEAD^ HEAD)
+          test "${#changed[@]}" -eq 1
+          [[ "${changed[0]}" =~ ^triggers/goanime-canonical-publisher-hardening/[^/]+\.request$ ]]
+
+      - name: Patch canonical workflow
+        run: |
+          set -euo pipefail
+          python3 scripts/goanime_harden_canonical_publisher.py \
+            --workflow .github/workflows/goanime-scrapling-provider-cache.yml
+          git diff --check
+          mapfile -t changed < <(git diff --name-only)
+          test "${#changed[@]}" -eq 1
+          test "${changed[0]}" = '.github/workflows/goanime-scrapling-provider-cache.yml'
+
+      - name: Commit hardened publisher
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/goanime-scrapling-provider-cache.yml
+          git commit -m 'fix(goanime): harden canonical cache publication tail'
+          git push origin HEAD:main
+
+      - name: Mark publisher hardening successful
+        if: success()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/goanime_post_status.py --state success --context goanime-scrapling/canonical-publisher-hardening
+
+      - name: Mark publisher hardening failed
+        if: failure()
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/goanime_post_status.py --state failure --context goanime-scrapling/canonical-publisher-hardening
