@@ -49,7 +49,8 @@ jobs:
         working-directory: private-source
         shell: bash
         run: |
-          cat > tool/_manga_product_live_smoke.dart <<'DART'
+          mkdir -p tools/manga
+          cat > tools/manga/_manga_product_live_smoke.dart <<'DART'
           import 'dart:convert';
           import 'dart:io';
           import 'dart:typed_data';
@@ -197,7 +198,7 @@ jobs:
         id: smoke
         continue-on-error: true
         working-directory: private-source
-        run: dart run tool/_manga_product_live_smoke.dart
+        run: dart run tools/manga/_manga_product_live_smoke.dart
       - name: Publish sanitized result
         if: always()
         env:
