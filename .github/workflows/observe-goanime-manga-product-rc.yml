@@ -1,0 +1,27 @@
+name: Observe GoAnime manga product RC
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-product-rc-observe/*.request'
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+      - name: Publish state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          runs="$(gh run list --workflow build-goanime-manga-product-rc.yml --limit 5 --json databaseId,status,conclusion,headSha,createdAt)"
+          encoded="$(jq -cn --argjson runs "$runs" '{schemaVersion:1,runs:$runs}' | base64 -w0)"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/results/goanime-manga-product-rc-observe/$GITHUB_SHA.json" -f message="ci(result): observe manga product rc" -f content="$encoded"
