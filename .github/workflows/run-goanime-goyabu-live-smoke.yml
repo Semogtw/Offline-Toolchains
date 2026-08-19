@@ -100,8 +100,8 @@ jobs:
           safe_prefixes = (
               'home ', 'nonce=', 'search ', 'search_shape=', 'search_result=',
               'anime_result=', 'anime ', 'episode=', 'episode_page ', 'player=',
-              'player_profiles=', 'goyabu_ajax_error=', 'playback_shape=',
-              'blogger_probe_error=', 'probe_error=',
+              'player_profiles=', 'blogger_formats=', 'goyabu_ajax_error=',
+              'playback_shape=', 'blogger_probe_error=', 'probe_error=',
           )
           log_path = Path(sys.argv[2])
           lines = []
