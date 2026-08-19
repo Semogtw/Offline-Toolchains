@@ -1,0 +1,147 @@
+name: Apply GoAnime Scrapling baseline hardening
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-scrapling-baseline-hardening/*.request'
+
+permissions:
+  contents: read
+  statuses: write
+
+concurrency:
+  group: goanime-scrapling-baseline-hardening
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Mark baseline hardening pending
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/goanime_post_status.py --state pending --context goanime-scrapling/baseline-hardening
+
+      - name: Resolve source-bound request
+        id: request
+        working-directory: trusted-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/goanime_resolve_request.py \
+            --request-dir triggers/goanime-scrapling-baseline-hardening \
+            --workspace .
+
+      - name: Require expected target branch
+        shell: bash
+        env:
+          TARGET_BRANCH: ${{ steps.request.outputs.target_branch }}
+        run: test "$TARGET_BRANCH" = 'feat/scrapling-provider-pipeline'
+
+      - name: Checkout exact GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.source_hint }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify exact source revision
+        working-directory: private-source
+        env:
+          SOURCE_HINT: ${{ steps.request.outputs.source_hint }}
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_HINT"
+
+      - name: Apply scoped baseline hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 trusted-source/scripts/goanime_apply_scrapling_baseline_hardening.py --repo-root private-source
+
+      - name: Run focused baseline tests
+        working-directory: private-source/tools/scrapling_provider_pipeline
+        shell: bash
+        run: python3 -m unittest discover -s tests -p 'test_legacy_baseline_preflight.py'
+
+      - name: Enforce narrow diff
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          mapfile -t changed < <(git diff --name-only --diff-filter=ACMRT)
+          test "${#changed[@]}" -eq 3
+          test "${changed[0]}" = 'tools/scrapling_provider_pipeline/build_provider_cache.py'
+          test "${changed[1]}" = 'tools/scrapling_provider_pipeline/cache_contract.py'
+          test "${changed[2]}" = 'tools/scrapling_provider_pipeline/tests/test_legacy_baseline_preflight.py'
+
+      - name: Verify target branch did not move
+        working-directory: private-source
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          SOURCE_HINT: ${{ steps.request.outputs.source_hint }}
+          TARGET_BRANCH: ${{ steps.request.outputs.target_branch }}
+        run: |
+          set -euo pipefail
+          remote_head="$(git ls-remote "https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git" "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')"
+          test "$remote_head" = "$SOURCE_HINT" || { echo 'Target branch moved; refusing stale publish.' >&2; exit 1; }
+
+      - name: Commit hardening
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- \
+            tools/scrapling_provider_pipeline/build_provider_cache.py \
+            tools/scrapling_provider_pipeline/cache_contract.py \
+            tools/scrapling_provider_pipeline/tests/test_legacy_baseline_preflight.py
+          git commit -m 'fix(scrapling): harden legacy baseline bootstrap'
+
+      - name: Publish hardening commit
+        working-directory: private-source
+        env:
+          GOANIME_CATALOG_WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.target_branch }}
+        run: |
+          set -euo pipefail
+          test -n "$GOANIME_CATALOG_WRITE_TOKEN"
+          git remote set-url origin "https://x-access-token:${GOANIME_CATALOG_WRITE_TOKEN}@github.com/Semogtw/goanime-mobile.git"
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          git remote set-url origin 'https://github.com/Semogtw/goanime-mobile.git'
+
+      - name: Mark baseline hardening successful
+        if: success()
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/goanime_post_status.py --state success --context goanime-scrapling/baseline-hardening
+
+      - name: Mark baseline hardening failed
+        if: failure()
+        continue-on-error: true
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/goanime_post_status.py --state failure --context goanime-scrapling/baseline-hardening
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
