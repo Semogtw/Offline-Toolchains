@@ -1,0 +1,55 @@
+name: GoAnime Manga APK8
+on:
+  push:
+    paths: ['triggers/goanime-manga-apk8/**']
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: 5dd346f02abf553e758068940b64200de83b9f41
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.1
+          channel: stable
+      - run: flutter pub get
+      - name: Build 8-source profile
+        run: |
+          sed -i "/ptbr.ninjascan/d" lib/services/manga/default_manga_source_providers.dart
+          python3 - <<'PY'
+          import json
+          p='docs/manga_sources_ptbr.json'
+          d=json.load(open(p))
+          for r in d['providerRecords']:
+            if r.get('goanimeSourceId')=='ptbr.ninjascan': r['implementationState']='planned'
+          json.dump(d,open(p,'w'),ensure_ascii=False,indent=2)
+          open(p,'a').write('\n')
+          PY
+          mkdir -p /tmp/apk8
+          dart run tools/manga/collect_enabled_manga_live_evidence.dart /tmp/apk8/evidence.json /tmp/apk8/status.json 5dd346f02abf553e758068940b64200de83b9f41
+          python3 - <<'PY'
+          import json
+          p='docs/manga_sources_ptbr.json'; d=json.load(open(p)); s=json.load(open('/tmp/apk8/status.json'))
+          for r in d['providerRecords']:
+            if r.get('implementationState')=='enabled': r['rolloutGates']={'fixtureContractPassed':True,'liveReadabilityPassed':True,'verifiedAt':s['generatedAt']}
+          json.dump(d,open(p,'w'),ensure_ascii=False,indent=2); open(p,'a').write('\n')
+          PY
+          echo '{"schemaVersion":1,"occurrenceMappings":[],"externalMappings":[]}' >/tmp/apk8/ledger0.json
+          dart run tools/manga/bootstrap_manga_canonical_id_ledger.dart --allow-new-identities /tmp/apk8/evidence.json /tmp/apk8/ledger0.json /tmp/apk8/ledger.json /tmp/apk8/report.json
+          dart run tools/manga/build_safe_manga_canonical_staging.dart /tmp/apk8/evidence.json /tmp/apk8/ledger.json /tmp/apk8/staging.json /tmp/apk8/ledger2.json
+          dart run tools/manga/promote_manga_canonical_candidate.dart docs/manga_sources_ptbr.json /tmp/apk8/staging.json 5dd346f02abf553e758068940b64200de83b9f41 /tmp/apk8/seed.json --allow-production-transition
+          dart run tools/manga/build_manga_production_catalog.dart docs/manga_sources_ptbr.json /tmp/apk8/seed.json 5dd346f02abf553e758068940b64200de83b9f41 "$PWD/assets/data/manga_availability.db"
+          grep -q 'assets/data/manga_availability.db' pubspec.yaml || sed -i '/  assets:/a\    - assets/data/manga_availability.db' pubspec.yaml
+          flutter pub get
+          flutter build apk --debug --no-pub
+      - uses: actions/upload-artifact@v7
+        with:
+          name: goanime-manga-apk8
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          retention-days: 7
