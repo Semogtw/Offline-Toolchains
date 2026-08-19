@@ -1,0 +1,89 @@
+name: Report private GoAnime workflow status
+
+on:
+  workflow_run:
+    workflows:
+      - Build encrypted private GoAnime APK
+      - Refresh private GoAnime catalog and build encrypted APK
+    types: [completed]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: private-goanime-status-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    if: github.event.workflow_run.actor.login == github.repository_owner
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout trusted status branch
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Record completed workflow
+        env:
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          TRIGGER_SHA: ${{ github.event.workflow_run.head_sha }}
+          UPDATED_AT: ${{ github.event.workflow_run.updated_at }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p status
+          if [ "$WORKFLOW_NAME" = 'Build encrypted private GoAnime APK' ]; then
+            trigger_path='triggers/private-goanime-apk.json'
+            status_path='status/private-goanime-apk.json'
+          elif [ "$WORKFLOW_NAME" = 'Refresh private GoAnime catalog and build encrypted APK' ]; then
+            trigger_path='triggers/private-goanime-refresh.json'
+            status_path='status/private-goanime-refresh.json'
+          else
+            echo "Unexpected workflow: $WORKFLOW_NAME" >&2
+            exit 1
+          fi
+
+          git cat-file -e "$TRIGGER_SHA^{commit}"
+          trigger_json="$(git show "$TRIGGER_SHA:$trigger_path")"
+          SOURCE_REF="$(printf '%s' "$trigger_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ref"])')"
+          export SOURCE_REF
+
+          python3 - "$status_path" <<'PY'
+          import json
+          import os
+          import sys
+
+          path = sys.argv[1]
+          payload = {
+              'schema_version': 1,
+              'workflow': os.environ['WORKFLOW_NAME'],
+              'run_id': int(os.environ['RUN_ID']),
+              'run_number': int(os.environ['RUN_NUMBER']),
+              'conclusion': os.environ['CONCLUSION'],
+              'source_ref': os.environ['SOURCE_REF'],
+              'trigger_sha': os.environ['TRIGGER_SHA'],
+              'updated_at': os.environ['UPDATED_AT'],
+          }
+          with open(path, 'w', encoding='utf-8') as stream:
+              json.dump(payload, stream, indent=2, sort_keys=True)
+              stream.write('\n')
+          PY
+
+      - name: Commit status
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add status/
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m 'ci(goanime): record private workflow status'
+          git pull --rebase origin main
+          git push origin HEAD:main
