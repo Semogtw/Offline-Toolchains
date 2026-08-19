@@ -91,6 +91,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Include the new regression test in the diff/whitelist without staging
+          # its contents for commit yet. `git diff` otherwise omits untracked files.
+          git add -N -- tools/scrapling_provider_pipeline/tests/test_legacy_baseline_preflight.py
           git diff --check
           mapfile -t changed < <(git diff --name-only --diff-filter=ACMRT)
           test "${#changed[@]}" -eq 3
