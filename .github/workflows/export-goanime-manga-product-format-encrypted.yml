@@ -7,7 +7,7 @@ on:
       - 'triggers/goanime-manga-product-format-export/*.request'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   export:
@@ -102,5 +102,16 @@ jobs:
           compression-level: 0
           retention-days: 1
           if-no-files-found: error
+      - name: Publish sanitized receipt
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.request.outputs.sha }}
+          STATE: ${{ job.status }}
+        shell: bash
+        run: |
+          result="$(jq -cn --arg sha "$SHA" --arg state "$STATE" --argjson runId "$GITHUB_RUN_ID" '{schemaVersion:1,reviewedSha:$sha,state:$state,runId:$runId}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/results/goanime-manga-product-format-export/$GITHUB_SHA.json" -f message="ci(result): record manga product format export $GITHUB_SHA" -f content="$encoded"
       - if: always()
         run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control" "$RUNNER_TEMP/goanime-manga-product-format"
