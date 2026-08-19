@@ -1,0 +1,173 @@
+name: Diagnose GoAnime manga manifest policy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-manifest-policy/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [ptbr.mangadash, ptbr.mangaflix]
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+      - name: Resolve request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-manifest-policy/*.request' | head -n1)"
+          read -r project branch sha < "control/$request"
+          test "$project" = goanime
+          test "$branch" = feature/manga-platform
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null
+      - name: Build transient host-only probe
+        working-directory: private-source
+        shell: bash
+        run: |
+          cat > tools/manga/_tmp_manifest_policy_probe.dart <<'DART'
+          import 'dart:io';
+          import 'package:goanime/services/manga/manga_http_client.dart';
+          import 'package:goanime/services/manga/manga_provider_definitions.dart';
+          import 'package:goanime/services/manga/manga_remote_manifest_validator.dart';
+          import 'package:goanime_core/goanime_core.dart';
+          import 'package:http/http.dart' as http;
+
+          Future<void> main(List<String> args) async {
+            final sourceId = args.single;
+            final definition = releaseCandidateMangaProviderDefinition(sourceId);
+            final raw = http.Client();
+            try {
+              final client = MangaHttpClient(policy: definition.policy, client: raw);
+              final provider = definition.build(client);
+              MangaSourceOccurrence? occurrence;
+              for (final query in const ['', 'a', 'manga']) {
+                try {
+                  final page = await provider.search(MangaSearchRequest(query: query));
+                  if (page.items.isNotEmpty) { occurrence = page.items.first; break; }
+                } catch (_) {}
+              }
+              if (occurrence == null) { stdout.writeln('terminal=no_search'); exitCode=1; return; }
+              final chapters = await provider.chapters(occurrence);
+              stdout.writeln('chapter_count=${chapters.length}');
+              for (var i=0; i<chapters.length && i<3; i++) {
+                final chapter = chapters[i];
+                ChapterContentManifest manifest;
+                try {
+                  manifest = await provider.resolveContent(chapter);
+                  stdout.writeln('resolve_${i+1}=success');
+                } catch (e) {
+                  stdout.writeln('resolve_${i+1}=failure');
+                  stdout.writeln('resolve_${i+1}_type=${e.runtimeType}');
+                  continue;
+                }
+                final hosts=<String>{};
+                final keys=<String>{};
+                switch (manifest) {
+                  case ImageSequenceContentManifest(:final pages):
+                    for (final page in pages) { hosts.add(page.uri.host.toLowerCase()); keys.addAll(page.headers.keys.map((e)=>e.toLowerCase())); }
+                  case PdfDocumentContentManifest(:final documentUri, :final headers):
+                    hosts.add(documentUri.host.toLowerCase()); keys.addAll(headers.keys.map((e)=>e.toLowerCase()));
+                  case LocalPackageContentManifest():
+                    stdout.writeln('manifest_${i+1}_local=true');
+                }
+                final sortedHosts=hosts.toList()..sort();
+                final sortedKeys=keys.toList()..sort();
+                stdout.writeln('manifest_${i+1}_kind=${manifest.kind.name}');
+                stdout.writeln('manifest_${i+1}_hosts=${sortedHosts.join(',')}');
+                stdout.writeln('manifest_${i+1}_header_keys=${sortedKeys.join(',')}');
+                try {
+                  const MangaRemoteManifestValidator().validate(
+                    chapter: chapter, manifest: manifest,
+                    capabilities: provider.capabilities, policy: definition.policy,
+                  );
+                  stdout.writeln('validate_${i+1}=success');
+                } catch (e) {
+                  stdout.writeln('validate_${i+1}=failure');
+                  stdout.writeln('validate_${i+1}_type=${e.runtimeType}');
+                }
+              }
+            } finally { raw.close(); }
+          }
+          DART
+      - name: Run host-only probe
+        id: probe
+        working-directory: private-source
+        shell: bash
+        env:
+          SOURCE_ID: ${{ matrix.source }}
+        run: |
+          set +e
+          dart run tools/manga/_tmp_manifest_policy_probe.dart "$SOURCE_ID" > /tmp/policy.log 2>&1
+          code=$?
+          set -e
+          python3 - "$SOURCE_ID" "$code" "$GITHUB_OUTPUT" <<'PY'
+          import json,re,sys
+          source, code, out = sys.argv[1:]
+          safe={}
+          pattern=re.compile(r'^(chapter_count|resolve_\d+|resolve_\d+_type|manifest_\d+_(?:kind|hosts|header_keys|local)|validate_\d+|validate_\d+_type|terminal)=([^\r\n]*)$')
+          for line in open('/tmp/policy.log', encoding='utf-8', errors='replace'):
+              m=pattern.match(line.strip())
+              if m: safe[m.group(1)]=m.group(2)[:300]
+          payload=json.dumps({'schemaVersion':1,'sourceId':source,'exitCode':int(code),'diagnostics':safe},separators=(',',':'))
+          with open(out,'a',encoding='utf-8') as f: f.write('payload<<EOF\n'+payload+'\nEOF\n')
+          PY
+          rm -f /tmp/policy.log tools/manga/_tmp_manifest_policy_probe.dart
+      - name: Publish sanitized result
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTROL_SHA: ${{ github.sha }}
+          SOURCE_SHA: ${{ steps.request.outputs.sha }}
+          SOURCE_ID: ${{ matrix.source }}
+          PAYLOAD: ${{ steps.probe.outputs.payload }}
+        run: |
+          set -euo pipefail
+          result="$(jq -c --arg controlSha "$CONTROL_SHA" --arg sourceSha "$SOURCE_SHA" '. + {controlSha:$controlSha,sourceSha:$sourceSha}' <<< "$PAYLOAD")"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          path="results/goanime-manga-manifest-policy/$CONTROL_SHA/$SOURCE_ID.json"
+          for attempt in 1 2 3 4 5; do
+            if gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): inspect $SOURCE_ID manifest policy" -f content="$encoded"; then exit 0; fi
+            sleep "$attempt"
+          done
+          exit 1
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control" /tmp/policy.log
