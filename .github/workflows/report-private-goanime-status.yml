@@ -6,6 +6,7 @@ on:
       - Build encrypted private GoAnime APK
       - Refresh private GoAnime catalog and build encrypted APK
       - Validate private GoAnime source
+      - Prepare verified GoAnime formatting fix
     types: [requested, in_progress, completed]
 
 permissions:
@@ -42,20 +43,27 @@ jobs:
           if [ "$WORKFLOW_NAME" = 'Build encrypted private GoAnime APK' ]; then
             trigger_path='triggers/private-goanime-apk.json'
             status_path='status/private-goanime-apk.json'
+            trigger_json="$(git show "$TRIGGER_SHA:$trigger_path")"
+            SOURCE_REF="$(printf '%s' "$trigger_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ref"])')"
           elif [ "$WORKFLOW_NAME" = 'Refresh private GoAnime catalog and build encrypted APK' ]; then
             trigger_path='triggers/private-goanime-refresh.json'
             status_path='status/private-goanime-refresh.json'
+            trigger_json="$(git show "$TRIGGER_SHA:$trigger_path")"
+            SOURCE_REF="$(printf '%s' "$trigger_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ref"])')"
           elif [ "$WORKFLOW_NAME" = 'Validate private GoAnime source' ]; then
             trigger_path='triggers/private-goanime-validate.json'
             status_path='status/private-goanime-validate.json'
+            trigger_json="$(git show "$TRIGGER_SHA:$trigger_path")"
+            SOURCE_REF="$(printf '%s' "$trigger_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ref"])')"
+          elif [ "$WORKFLOW_NAME" = 'Prepare verified GoAnime formatting fix' ]; then
+            status_path='status/private-goanime-format.json'
+            workflow_text="$(git show "$TRIGGER_SHA:.github/workflows/prepare-goanime-format-fix.yml")"
+            SOURCE_REF="$(printf '%s' "$workflow_text" | sed -n 's/^      SOURCE_REF: \([0-9a-f]\{40\}\)$/\1/p' | head -n1)"
+            test -n "$SOURCE_REF"
           else
             echo "Unexpected workflow: $WORKFLOW_NAME" >&2
             exit 1
           fi
-
-          git cat-file -e "$TRIGGER_SHA^{commit}"
-          trigger_json="$(git show "$TRIGGER_SHA:$trigger_path")"
-          SOURCE_REF="$(printf '%s' "$trigger_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ref"])')"
           export SOURCE_REF
 
           python3 - "$status_path" <<'PY'
