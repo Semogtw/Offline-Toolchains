@@ -1,0 +1,95 @@
+name: Run GoAnime manga UX focus privately
+on:
+  push:
+    branches: [main]
+    paths: ['triggers/goanime-manga-ux-focus/*.request']
+permissions:
+  contents: write
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+      - name: Resolve exact revision
+        id: request
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-ux-focus/*.request' | head -n1)"
+          read -r project branch sha < "control/$request"
+          test "$project" = goanime
+          test "$branch" = feature/manga-platform
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          persist-credentials: false
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+      - name: Analyze UX reading surface
+        id: analyze
+        working-directory: private-source
+        continue-on-error: true
+        run: |
+          flutter analyze --no-pub \
+            lib/services/manga/manga_chapter_hydrator.dart \
+            lib/services/manga/manga_hydrating_details_data_source.dart \
+            lib/services/manga/manga_reader_remote_transport.dart \
+            lib/services/manga/manga_source_runtime.dart \
+            lib/services/manga/manga_platform_runtime.dart \
+            lib/services/manga/manga_platform_runtime_service.dart \
+            lib/screens/manga/manga_reader_screen.dart \
+            test/services/manga/manga_chapter_hydrator_test.dart
+      - name: Run focused tests
+        id: tests
+        continue-on-error: true
+        working-directory: private-source
+        run: |
+          flutter test --no-pub --concurrency=1 \
+            test/services/manga/manga_chapter_hydrator_test.dart \
+            test/services/manga/manga_content_resolver_test.dart \
+            test/widgets/manga/manga_default_details_navigation_test.dart \
+            test/widgets/manga/manga_details_screen_test.dart
+      - name: Check format
+        id: format
+        continue-on-error: true
+        working-directory: private-source
+        run: |
+          dart format --output=none --set-exit-if-changed \
+            lib/services/manga/manga_chapter_hydrator.dart \
+            lib/services/manga/manga_hydrating_details_data_source.dart \
+            lib/services/manga/manga_reader_remote_transport.dart \
+            lib/services/manga/manga_source_runtime.dart \
+            lib/services/manga/manga_platform_runtime.dart \
+            lib/services/manga/manga_platform_runtime_service.dart \
+            lib/screens/manga/manga_reader_screen.dart \
+            test/services/manga/manga_chapter_hydrator_test.dart
+      - name: Publish sanitized result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.request.outputs.sha }}
+          ANALYZE: ${{ steps.analyze.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+          FORMAT: ${{ steps.format.outcome }}
+        run: |
+          set -euo pipefail
+          result="$(jq -cn --arg sha "$SHA" --arg analyze "$ANALYZE" --arg tests "$TESTS" --arg format "$FORMAT" --argjson runId "$GITHUB_RUN_ID" '{schemaVersion:1,reviewedSha:$sha,runId:$runId,stages:{analyze:$analyze,tests:$tests,format:$format},state:(if $analyze=="success" and $tests=="success" and $format=="success" then "success" else "failure" end)}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/results/goanime-manga-ux-focus/$SHA.json" -f message="ci(result): record manga UX gate $SHA" -f content="$encoded"
+          test "$ANALYZE" = success
+          test "$TESTS" = success
+          test "$FORMAT" = success
