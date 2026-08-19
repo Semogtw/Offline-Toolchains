@@ -1,0 +1,17 @@
+{
+  "status": "success",
+  "targetSha": "eb58f9eab3011ea824613884b3f714bb5dc0f3aa",
+  "targetBranch": "fix/live-source-app-parity",
+  "requestPath": "triggers/hydra-validation/live-source-app-parity-eb58f9e-20260819.request",
+  "runId": 32212785149,
+  "runAttempt": 1,
+  "steps": {
+    "deps": "success",
+    "electron": "success",
+    "compilePython": "success",
+    "pythonTests": "success",
+    "localTests": "success",
+    "downloaderTests": "success",
+    "typecheck": "success"
+  }
+}
