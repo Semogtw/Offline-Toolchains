@@ -1,0 +1,101 @@
+name: Format GoAnime manga evidence collector
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-format-evidence/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Require token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+      - name: Resolve request
+        id: request
+        working-directory: control
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-format-evidence/*.request' | head -n1)"
+          read -r project branch sha < "$request"
+          test "$project" = goanime && test "$branch" = feature/manga-platform
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: feature/manga-platform
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: true
+          show-progress: false
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - name: Format and verify collector surface
+        id: format
+        working-directory: private-source
+        env:
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$REVIEWED_SHA"
+          flutter pub get >/dev/null
+          dart format tools/manga/manga_live_provider_evidence.dart test/tools/manga/manga_live_provider_evidence_test.dart >/dev/null
+          flutter analyze --no-pub tools/manga/manga_live_provider_evidence.dart test/tools/manga/manga_live_provider_evidence_test.dart
+          flutter test --no-pub test/tools/manga/manga_live_provider_evidence_test.dart
+          git diff --check
+          mapfile -t changed < <(git diff --name-only)
+          for f in "${changed[@]}"; do
+            test "$f" = tools/manga/manga_live_provider_evidence.dart || test "$f" = test/tools/manga/manga_live_provider_evidence_test.dart
+          done
+          if [ "${#changed[@]}" -eq 0 ]; then
+            echo "new_sha=$REVIEWED_SHA" >> "$GITHUB_OUTPUT"
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch origin feature/manga-platform --quiet
+          test "$(git rev-parse origin/feature/manga-platform)" = "$REVIEWED_SHA"
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tools/manga/manga_live_provider_evidence.dart test/tools/manga/manga_live_provider_evidence_test.dart
+          git commit -m 'style(manga): format live evidence collector'
+          new_sha="$(git rev-parse HEAD)"
+          git push origin HEAD:feature/manga-platform
+          echo "new_sha=$new_sha" >> "$GITHUB_OUTPUT"
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+      - name: Publish receipt
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTROL_SHA: ${{ github.sha }}
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+          NEW_SHA: ${{ steps.format.outputs.new_sha }}
+          CHANGED: ${{ steps.format.outputs.changed }}
+          STATE: ${{ job.status }}
+        run: |
+          result="$(jq -cn --arg controlSha "$CONTROL_SHA" --arg reviewedSha "$REVIEWED_SHA" --arg newSha "${NEW_SHA:-}" --arg changed "${CHANGED:-}" --arg state "$STATE" '{schemaVersion:1,controlSha:$controlSha,reviewedSha:$reviewedSha,newSha:$newSha,changed:($changed=="true"),state:$state}')"
+          encoded="$(printf '%s\n' "$result"|base64 -w0)"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/results/goanime-manga-format-evidence/$CONTROL_SHA.json" -f message="ci(result): record manga evidence format $CONTROL_SHA" -f content="$encoded"
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
