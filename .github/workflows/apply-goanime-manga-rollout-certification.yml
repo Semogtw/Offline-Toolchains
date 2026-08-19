@@ -1,0 +1,125 @@
+name: Apply GoAnime Manga rollout certification
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-apply-certification/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Require private token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+      - name: Resolve certification request
+        id: request
+        working-directory: control
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-apply-certification/*.request' | head -n1)"
+          read -r project branch sha matrix_control fixture_control < "$request"
+          test "$project" = goanime && test "$branch" = feature/manga-platform
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$matrix_control" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$fixture_control" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "matrix=$matrix_control" >> "$GITHUB_OUTPUT"
+          echo "fixtures=$fixture_control" >> "$GITHUB_OUTPUT"
+      - name: Verify exact persisted evidence
+        working-directory: control
+        env:
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+          MATRIX_CONTROL: ${{ steps.request.outputs.matrix }}
+          FIXTURE_CONTROL: ${{ steps.request.outputs.fixtures }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path('.')
+          sha=os.environ['REVIEWED_SHA']; matrix=os.environ['MATRIX_CONTROL']; fixture=os.environ['FIXTURE_CONTROL']
+          fixture_path=root/'results/goanime-manga-certify-rollout-v2'/f'{fixture}.json'
+          f=json.loads(fixture_path.read_text())
+          assert f['reviewedSha']==sha and f['stages']['fixtures']=='success'
+          expected={'ptbr.astratoons','ptbr.capitoons','ptbr.kivaratoons','ptbr.leituramanga','ptbr.maidscan','ptbr.mangadash','ptbr.mangaflix','ptbr.mangalivreblog','ptbr.ninjascan'}
+          seen=set()
+          for source in sorted(expected):
+              p=root/'results/goanime-manga-live'/matrix/f'{source}.json'
+              row=json.loads(p.read_text())
+              assert row['reviewedSha']==sha
+              assert row['sourceId']==source and row['state']=='success' and row['terminal']=='readable' and row['problem']=='none'
+              seen.add(source)
+          assert seen==expected
+          print('certification_evidence=success providers=9')
+          PY
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: feature/manga-platform
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: true
+          show-progress: false
+      - name: Apply certification to unchanged reviewed branch
+        id: commit
+        working-directory: private-source
+        env:
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$REVIEWED_SHA"
+          python3 - <<'PY'
+          import datetime,json
+          from pathlib import Path
+          expected={'ptbr.astratoons','ptbr.capitoons','ptbr.kivaratoons','ptbr.leituramanga','ptbr.maidscan','ptbr.mangadash','ptbr.mangaflix','ptbr.mangalivreblog','ptbr.ninjascan'}
+          p=Path('docs/manga_sources_ptbr.json'); m=json.loads(p.read_text()); enabled=set()
+          verified=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds').replace('+00:00','Z')
+          for r in m['providerRecords']:
+              if r.get('implementationState')=='enabled':
+                  sid=r['goanimeSourceId']; enabled.add(sid)
+                  r['rolloutGates']={'fixtureContractPassed':True,'liveReadabilityPassed':True,'verifiedAt':verified}
+          assert enabled==expected
+          p.write_text(json.dumps(m,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+          PY
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/manga_sources_ptbr.json
+          git commit -m 'chore(manga): certify enabled rollout gates'
+          new_sha="$(git rev-parse HEAD)"
+          git fetch origin feature/manga-platform --quiet
+          test "$(git rev-parse origin/feature/manga-platform)" = "$REVIEWED_SHA"
+          git push origin HEAD:feature/manga-platform
+          echo "new_sha=$new_sha" >> "$GITHUB_OUTPUT"
+      - name: Publish receipt
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTROL_SHA: ${{ github.sha }}
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+          NEW_SHA: ${{ steps.commit.outputs.new_sha }}
+        run: |
+          result="$(jq -cn --arg controlSha "$CONTROL_SHA" --arg reviewedSha "$REVIEWED_SHA" --arg newSha "$NEW_SHA" '{schemaVersion:1,state:"success",controlSha:$controlSha,reviewedSha:$reviewedSha,newSha:$newSha,enabledProviders:9,fixtureContracts:true,liveByteEvidence:true,evidenceMode:"persisted-exact-sha"}')"
+          encoded="$(printf '%s\n' "$result"|base64 -w0)"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/results/goanime-manga-apply-certification/$CONTROL_SHA.json" -f message="ci(result): apply manga certification $CONTROL_SHA" -f content="$encoded"
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
