@@ -1,0 +1,106 @@
+name: Export GoAnime manga product format encrypted
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-product-format-export/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Resolve exact revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-product-format-export/*.request' | head -n1)"
+          read -r project branch sha < "control/$request"
+          test "$project" = goanime
+          test "$branch" = feature/manga-platform
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - name: Format, verify and encrypt changed files
+        id: bundle
+        working-directory: private-source
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$REVIEWED_SHA"
+          flutter pub get >/dev/null 2>&1
+          base=5dd346f02abf553e758068940b64200de83b9f41
+          mapfile -t files < <(git diff --name-only "$base" HEAD -- '*.dart')
+          test "${#files[@]}" -gt 0
+          dart format "${files[@]}" >/dev/null
+          flutter analyze --no-pub "${files[@]}" >/dev/null
+          flutter test --no-pub --concurrency=1 \
+            test/services/manga/manga_chapter_hydrator_test.dart \
+            test/services/manga/manga_source_discovery_service_test.dart \
+            test/services/manga/manga_search_coordinator_test.dart \
+            test/services/manga/manga_content_resolver_test.dart \
+            test/widgets/manga/manga_browse_views_test.dart \
+            test/widgets/manga/manga_default_details_navigation_test.dart \
+            test/widgets/manga/manga_details_screen_test.dart >/dev/null
+          git diff --check
+
+          root="$RUNNER_TEMP/goanime-manga-product-format"
+          plain="$root/plain"
+          formatted="$plain/formatted"
+          transfer="$root/transfer"
+          archive="$root/formatted.tar.zst"
+          gpg_home="$root/gpg"
+          rm -rf "$root"
+          mkdir -p "$formatted" "$transfer" "$gpg_home"
+          chmod 700 "$gpg_home"
+          git diff --name-only > "$plain/FILES.txt"
+          printf '%s\n' "$REVIEWED_SHA" > "$plain/BASE_SHA.txt"
+          while IFS= read -r path; do
+            test -n "$path"
+            mkdir -p "$formatted/$(dirname "$path")"
+            cp "$path" "$formatted/$path"
+          done < "$plain/FILES.txt"
+          tar -C "$plain" -I 'zstd -T0 -6' -cf "$archive" .
+
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import "$GITHUB_WORKSPACE/control/keys/source-bundles-public.asc" >/dev/null 2>&1
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" --output "$transfer/formatted.gpg" --encrypt "$archive"
+          sha256sum "$transfer/formatted.gpg" > "$transfer/SHA256SUMS"
+          rm -rf "$plain" "$archive" "$gpg_home" "$GITHUB_WORKSPACE/private-source"
+          echo "transfer=$transfer" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: goanime-manga-product-format-encrypted
+          path: ${{ steps.bundle.outputs.transfer }}
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+      - if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control" "$RUNNER_TEMP/goanime-manga-product-format"
