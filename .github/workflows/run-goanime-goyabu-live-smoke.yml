@@ -6,10 +6,12 @@ on:
     branches:
       - main
     paths:
+      - '.github/workflows/run-goanime-goyabu-live-smoke.yml'
+      - 'scripts/goyabu_live_smoke.py'
       - 'triggers/goanime-goyabu-live/*.request'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: goanime-goyabu-live-smoke
@@ -26,7 +28,7 @@ jobs:
       - name: Checkout trusted probe
         uses: actions/checkout@v6
         with:
-          ref: main
+          ref: ${{ github.sha }}
           persist-credentials: false
           sparse-checkout: |
             scripts/goyabu_live_smoke.py
@@ -39,10 +41,11 @@ jobs:
         shell: bash
         env:
           CAPTURE_DIR: ${{ runner.temp }}/goyabu-live-capture
+          SAFE_LOG: ${{ runner.temp }}/goyabu-live-safe.log
         run: |
           set +e
-          python3 scripts/goyabu_live_smoke.py
-          code=$?
+          python3 scripts/goyabu_live_smoke.py 2>&1 | tee "$SAFE_LOG"
+          code=${PIPESTATUS[0]}
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit 0
 
@@ -74,6 +77,56 @@ jobs:
           retention-days: 1
           compression-level: 0
 
+      - name: Publish sanitized live report
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXIT_CODE: ${{ steps.smoke.outputs.exit_code }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          TOOLCHAINS_SHA: ${{ github.sha }}
+          SAFE_LOG: ${{ runner.temp }}/goyabu-live-safe.log
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/goyabu-live-report.json"
+          python3 - "$report" "$SAFE_LOG" <<'PY'
+          import json
+          import os
+          import sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          safe_prefixes = (
+              'home ', 'nonce=', 'search ', 'search_shape=', 'search_result=',
+              'anime_result=', 'anime ', 'episode=', 'episode_page ', 'player=',
+              'player_profiles=', 'goyabu_ajax_error=', 'playback_shape=',
+              'blogger_probe_error=', 'probe_error=',
+          )
+          log_path = Path(sys.argv[2])
+          lines = []
+          if log_path.is_file():
+              for raw in log_path.read_text(encoding='utf-8', errors='replace').splitlines():
+                  if raw.startswith(safe_prefixes):
+                      lines.append(raw[:1000])
+          payload = {
+              'schemaVersion': 1,
+              'runId': int(os.environ['RUN_ID']),
+              'runAttempt': int(os.environ['RUN_ATTEMPT']),
+              'toolchainsSha': os.environ['TOOLCHAINS_SHA'],
+              'exitCode': int(os.environ.get('EXIT_CODE') or -1),
+              'finishedAt': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+              'diagnostics': lines,
+          }
+          Path(sys.argv[1]).write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          PY
+          encoded="$(base64 -w0 < "$report")"
+          path="reports/goanime-goyabu-live/${RUN_ID}.json"
+          gh api --method PUT \
+            "repos/${GITHUB_REPOSITORY}/contents/${path}" \
+            -f "message=ci(goanime): report Goyabu live run ${RUN_ID}" \
+            -f "content=${encoded}" >/dev/null
+
       - name: Enforce smoke result
         shell: bash
         env:
@@ -83,4 +136,4 @@ jobs:
       - name: Remove transient capture
         if: always()
         shell: bash
-        run: rm -rf "$RUNNER_TEMP/goyabu-live-capture" "$RUNNER_TEMP/goyabu-live-gpg" "$RUNNER_TEMP/goyabu-live-out"
+        run: rm -rf "$RUNNER_TEMP/goyabu-live-capture" "$RUNNER_TEMP/goyabu-live-gpg" "$RUNNER_TEMP/goyabu-live-out" "$RUNNER_TEMP/goyabu-live-safe.log"
