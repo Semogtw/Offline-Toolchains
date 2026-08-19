@@ -45,6 +45,32 @@ SAFE_PLAYER_LABEL_FIELDS = (
     "player",
     "description",
 )
+BLOGGER_FORMAT_HEIGHT = {
+    315: 2160,
+    313: 2160,
+    266: 2160,
+    308: 1440,
+    271: 1440,
+    264: 1440,
+    303: 1080,
+    299: 1080,
+    137: 1080,
+    37: 1080,
+    302: 720,
+    298: 720,
+    136: 720,
+    22: 720,
+    135: 480,
+    244: 480,
+    134: 360,
+    243: 360,
+    43: 360,
+    18: 360,
+    133: 240,
+    242: 240,
+    160: 144,
+    278: 144,
+}
 
 
 @dataclass(frozen=True)
@@ -205,23 +231,39 @@ def decode_goyabu_blogger(token: str, referer: str) -> str | None:
     return str(candidates[0]["src"])
 
 
-def blogger_has_media(player_url: str) -> bool:
+def blogger_media_profile(player_url: str) -> tuple[bool, dict]:
     response = request(player_url, referer=BASE + "/")
     if response.status != 200:
-        return False
-    if MEDIA_RE.search(response.body) or PLAY_URL_RE.search(response.body):
-        return True
+        return False, {"formatIds": [], "heights": [], "bestHeight": 0}
+
+    has_media = bool(MEDIA_RE.search(response.body) or PLAY_URL_RE.search(response.body))
+    format_ids: list[int] = []
     config = VIDEO_CONFIG_RE.search(response.body)
-    if not config:
-        return False
-    try:
-        payload = json.loads(config.group(1))
-    except json.JSONDecodeError:
-        return False
-    streams = payload.get("streams") if isinstance(payload, dict) else None
-    return isinstance(streams, list) and any(
-        isinstance(stream, dict) and bool(stream.get("play_url")) for stream in streams
-    )
+    if config:
+        try:
+            payload = json.loads(config.group(1))
+        except json.JSONDecodeError:
+            payload = None
+        streams = payload.get("streams") if isinstance(payload, dict) else None
+        if isinstance(streams, list):
+            for stream in streams:
+                if not isinstance(stream, dict) or not stream.get("play_url"):
+                    continue
+                has_media = True
+                raw_format = stream.get("format_id")
+                try:
+                    format_id = int(raw_format)
+                except (TypeError, ValueError):
+                    continue
+                format_ids.append(format_id)
+
+    unique_ids = sorted(set(format_ids))
+    heights = sorted({BLOGGER_FORMAT_HEIGHT[value] for value in unique_ids if value in BLOGGER_FORMAT_HEIGHT})
+    return has_media, {
+        "formatIds": unique_ids,
+        "heights": heights,
+        "bestHeight": max(heights, default=0),
+    }
 
 
 def main() -> int:
@@ -297,7 +339,9 @@ def main() -> int:
             if "blogger.com" in safe_host(candidate):
                 blogger_fallback = candidate
                 try:
-                    if blogger_has_media(candidate):
+                    resolvable, profile = blogger_media_profile(candidate)
+                    print("blogger_formats=" + json.dumps(profile, separators=(",", ":"), sort_keys=True))
+                    if resolvable:
                         print(f"playback_shape=blogger-resolvable host={safe_host(candidate)}")
                         return 0
                 except Exception as exc:
