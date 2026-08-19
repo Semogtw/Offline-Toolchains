@@ -1,0 +1,1 @@
+{"schemaVersion":1,"controlSha":"18a1517678c3572ec5f43c305f56145fe2b78e32","reviewedSha":"5dd346f02abf553e758068940b64200de83b9f41","state":"failure","stages":{"contracts":"success","collect":"failure","runtime":"skipped"},"collectionAttempts":0,"works":0,"sourceLinks":0,"providers":0,"runId":32217054455,"artifactId":0,"artifactName":"goanime-manga-catalog-bundle-encrypted"}
