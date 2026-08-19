@@ -1,0 +1,96 @@
+name: Fix GoAnime manga product format
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-product-format/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+      - name: Resolve exact revision
+        id: request
+        working-directory: control
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-product-format/*.request' | head -n1)"
+          read -r project branch sha < "$request"
+          test "$project" = goanime
+          test "$branch" = feature/manga-platform
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - name: Format changed manga Dart surface
+        id: fix
+        working-directory: private-source
+        env:
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$REVIEWED_SHA"
+          flutter pub get >/dev/null 2>&1
+          base=5dd346f02abf553e758068940b64200de83b9f41
+          mapfile -t files < <(git diff --name-only "$base" HEAD -- '*.dart')
+          test "${#files[@]}" -gt 0
+          dart format "${files[@]}" >/dev/null
+          flutter analyze --no-pub "${files[@]}"
+          flutter test --no-pub --concurrency=1 \
+            test/services/manga/manga_chapter_hydrator_test.dart \
+            test/services/manga/manga_source_discovery_service_test.dart \
+            test/services/manga/manga_search_coordinator_test.dart \
+            test/services/manga/manga_content_resolver_test.dart \
+            test/widgets/manga/manga_browse_views_test.dart \
+            test/widgets/manga/manga_default_details_navigation_test.dart \
+            test/widgets/manga/manga_details_screen_test.dart
+          git diff --check
+          if git diff --quiet; then
+            echo "new_sha=$REVIEWED_SHA" >> "$GITHUB_OUTPUT"
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch origin feature/manga-platform --quiet
+          test "$(git rev-parse origin/feature/manga-platform)" = "$REVIEWED_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- "${files[@]}"
+          git commit -m 'style(manga): format product runtime changes'
+          git push origin HEAD:feature/manga-platform
+          echo "new_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+      - name: Publish result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+          NEW_SHA: ${{ steps.fix.outputs.new_sha }}
+          CHANGED: ${{ steps.fix.outputs.changed }}
+          STATE: ${{ job.status }}
+        shell: bash
+        run: |
+          result="$(jq -cn --arg reviewedSha "$REVIEWED_SHA" --arg newSha "${NEW_SHA:-}" --arg changed "${CHANGED:-}" --arg state "$STATE" --argjson runId "$GITHUB_RUN_ID" '{schemaVersion:1,reviewedSha:$reviewedSha,newSha:$newSha,changed:($changed=="true"),state:$state,runId:$runId}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/results/goanime-manga-product-format/$REVIEWED_SHA.json" -f message="ci(result): record manga product format $REVIEWED_SHA" -f content="$encoded"
