@@ -223,6 +223,10 @@ jobs:
         working-directory: private-source
         run: pnpm exec playwright test tests/e2e/workflow-orchestration.spec.ts
 
+      - name: Editorial publication E2E
+        working-directory: private-source
+        run: pnpm exec playwright test tests/e2e/editorial-publication.spec.ts
+
       - name: Public portfolio E2E
         working-directory: private-source
         run: pnpm exec playwright test tests/e2e/public-portfolio.spec.ts
@@ -242,6 +246,6 @@ jobs:
             echo "## SemogSite portfolio CI"
             echo
             echo "- Result: \`$RESULT\`"
-            echo "- Guardrails are split into diagnostic steps and the public portfolio E2E is included."
+            echo "- Guardrails are split into diagnostic steps and workflow, editorial-publication, and public-portfolio E2E suites are included."
             echo "- Tests/build outputs and the private checkout were discarded."
           } >> "$GITHUB_STEP_SUMMARY"
