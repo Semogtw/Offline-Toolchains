@@ -5,7 +5,8 @@ on:
     workflows:
       - Build encrypted private GoAnime APK
       - Refresh private GoAnime catalog and build encrypted APK
-    types: [completed]
+      - Validate private GoAnime source
+    types: [requested, in_progress, completed]
 
 permissions:
   contents: write
@@ -25,11 +26,12 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Record completed workflow
+      - name: Record workflow status
         env:
           WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+          RUN_STATUS: ${{ github.event.workflow_run.status }}
           CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           TRIGGER_SHA: ${{ github.event.workflow_run.head_sha }}
           UPDATED_AT: ${{ github.event.workflow_run.updated_at }}
@@ -43,6 +45,9 @@ jobs:
           elif [ "$WORKFLOW_NAME" = 'Refresh private GoAnime catalog and build encrypted APK' ]; then
             trigger_path='triggers/private-goanime-refresh.json'
             status_path='status/private-goanime-refresh.json'
+          elif [ "$WORKFLOW_NAME" = 'Validate private GoAnime source' ]; then
+            trigger_path='triggers/private-goanime-validate.json'
+            status_path='status/private-goanime-validate.json'
           else
             echo "Unexpected workflow: $WORKFLOW_NAME" >&2
             exit 1
@@ -59,12 +64,14 @@ jobs:
           import sys
 
           path = sys.argv[1]
+          conclusion = os.environ.get('CONCLUSION', '').strip() or None
           payload = {
               'schema_version': 1,
               'workflow': os.environ['WORKFLOW_NAME'],
               'run_id': int(os.environ['RUN_ID']),
               'run_number': int(os.environ['RUN_NUMBER']),
-              'conclusion': os.environ['CONCLUSION'],
+              'status': os.environ['RUN_STATUS'],
+              'conclusion': conclusion,
               'source_ref': os.environ['SOURCE_REF'],
               'trigger_sha': os.environ['TRIGGER_SHA'],
               'updated_at': os.environ['UPDATED_AT'],
