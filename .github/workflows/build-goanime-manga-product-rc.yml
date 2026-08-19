@@ -1,0 +1,271 @@
+name: GoAnime Manga Product RC
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-product-rc/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: feature/manga-platform
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve product revision
+        id: revision
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+      - name: Format Manga product surface
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=5dd346f02abf553e758068940b64200de83b9f41
+          mapfile -t files < <(
+            git diff --name-only "$base" HEAD -- '*.dart' |
+            grep -E '^(lib/(screens|services|widgets)/manga/|test/(services|widgets)/manga/)' || true
+          )
+          test "${#files[@]}" -gt 0
+          dart format "${files[@]}" >/dev/null
+          git diff --check
+          printf '%s\n' "${files[@]}" > /tmp/manga-product-dart-files.txt
+      - name: Analyze Manga product surface
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t files < /tmp/manga-product-dart-files.txt
+          flutter analyze --no-pub "${files[@]}"
+      - name: Run Manga product tests
+        working-directory: private-source
+        run: |
+          flutter test --no-pub --concurrency=1 \
+            test/services/manga/manga_platform_runtime_test.dart \
+            test/services/manga/manga_chapter_hydrator_test.dart \
+            test/services/manga/manga_work_matcher_service_test.dart \
+            test/services/manga/manga_source_discovery_service_test.dart \
+            test/services/manga/manga_search_coordinator_test.dart \
+            test/services/manga/manga_content_resolver_test.dart \
+            test/widgets/manga/manga_browse_views_test.dart \
+            test/widgets/manga/manga_default_details_navigation_test.dart \
+            test/widgets/manga/manga_details_screen_test.dart
+      - name: Write real-network product smoke
+        working-directory: private-source
+        shell: bash
+        run: |
+          mkdir -p tools/manga
+          cat > tools/manga/_manga_product_rc_smoke.dart <<'DART'
+          import 'dart:convert';
+          import 'dart:io';
+          import 'dart:typed_data';
+
+          import 'package:goanime_core/goanime_core.dart';
+          import 'package:sqflite/sqflite.dart';
+          import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+          import 'package:goanime/services/manga/manga_availability_models.dart';
+          import 'package:goanime/services/manga/manga_source_runtime.dart';
+          import 'package:goanime/services/manga/storage/manga_database.dart';
+
+          Future<void> main() async {
+            sqfliteFfiInit();
+            databaseFactory = databaseFactoryFfi;
+            final temp = await Directory.systemTemp.createTemp('goanime_manga_product_rc_');
+            final database = MangaDatabase(databasePath: '${temp.path}/manga.db');
+            final runtime = MangaSourceRuntime.standard(database: database);
+            final owner = Object();
+            final records = <String, MangaAvailabilityRecord>{};
+            final openedWorks = <String>{};
+            final openedSources = <String>{};
+            var detailsWithChapters = 0;
+
+            try {
+              await database.open();
+              for (var cycle = 0; cycle < 3; cycle += 1) {
+                await for (final update in runtime.discoverHome(
+                  ownerToken: owner,
+                  maxCandidatesPerSource: 5,
+                )) {
+                  for (final record in update.results) {
+                    records[record.work.workId] = record;
+                  }
+                }
+              }
+
+              for (final record in records.values) {
+                if (openedWorks.length >= 8 && openedSources.length >= 5) break;
+                try {
+                  final details = await runtime.detailsDataSource
+                      .load(record)
+                      .timeout(const Duration(seconds: 90));
+                  if (details.chapters.isEmpty) continue;
+                  detailsWithChapters += 1;
+                  for (final chapter in details.chapters.take(4)) {
+                    final variants = details.variantsByChapter[chapter.canonicalChapterId] ??
+                        const <ChapterVariant>[];
+                    if (variants.isEmpty) continue;
+                    try {
+                      final resolved = await runtime.resolveContent(
+                        variants: variants,
+                        preference: details.sourcePreference,
+                        ownerToken: owner,
+                      ).timeout(const Duration(seconds: 90));
+                      final readable = await _readAsset(
+                        runtime,
+                        resolved.manifest,
+                        owner,
+                        temp,
+                      ).timeout(const Duration(seconds: 90));
+                      if (!readable) continue;
+                      openedWorks.add(record.work.workId);
+                      openedSources.add(resolved.manifest.sourceId);
+                      break;
+                    } catch (_) {}
+                  }
+                } catch (_) {}
+              }
+
+              final proof = <String, Object>{
+                'schemaVersion': 3,
+                'discoveredWorks': records.length,
+                'detailsWithChapters': detailsWithChapters,
+                'openedWorks': openedWorks.length,
+                'openedSourceCount': openedSources.length,
+                'openedSourceIds': openedSources.toList()..sort(),
+              };
+              await Directory('build').create(recursive: true);
+              await File('build/manga-product-rc-proof.json')
+                  .writeAsString('${jsonEncode(proof)}\n');
+              stdout.writeln(jsonEncode(proof));
+
+              if (records.length < 10 ||
+                  detailsWithChapters < 5 ||
+                  openedWorks.length < 4 ||
+                  openedSources.length < 3) {
+                throw StateError('Manga product live thresholds were not met.');
+              }
+            } finally {
+              runtime.cancelOwner(owner);
+              runtime.close();
+              await database.close();
+              if (await temp.exists()) await temp.delete(recursive: true);
+            }
+          }
+
+          Future<bool> _readAsset(
+            MangaSourceRuntime runtime,
+            ChapterContentManifest manifest,
+            Object owner,
+            Directory tempRoot,
+          ) async {
+            switch (manifest) {
+              case final ImageSequenceContentManifest images:
+                if (images.pages.isEmpty) return false;
+                final bytes = await runtime.readerRemoteTransport.loadImagePage(
+                  sourceId: images.sourceId,
+                  request: images.pages.first,
+                  ownerToken: owner,
+                );
+                return _imageMagic(bytes);
+              case final PdfDocumentContentManifest pdf:
+                final directory = await Directory(
+                  '${tempRoot.path}/pdf_${DateTime.now().microsecondsSinceEpoch}',
+                ).create(recursive: true);
+                final file = await runtime.readerRemoteTransport.materializePdf(
+                  sourceId: pdf.sourceId,
+                  uri: pdf.documentUri,
+                  headers: pdf.headers,
+                  directory: directory,
+                  ownerToken: owner,
+                );
+                final header = await file.openRead(0, 5).fold<List<int>>(
+                  <int>[],
+                  (bytes, chunk) => bytes..addAll(chunk),
+                );
+                return header.length == 5 && ascii.decode(header) == '%PDF-';
+              case LocalPackageContentManifest():
+                return false;
+            }
+          }
+
+          bool _imageMagic(Uint8List b) {
+            if (b.length >= 3 && b[0] == 0xff && b[1] == 0xd8 && b[2] == 0xff) {
+              return true;
+            }
+            if (b.length >= 8 &&
+                b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4e && b[3] == 0x47 &&
+                b[4] == 0x0d && b[5] == 0x0a && b[6] == 0x1a && b[7] == 0x0a) {
+              return true;
+            }
+            return b.length >= 12 &&
+                ascii.decode(b.sublist(0, 4), allowInvalid: true) == 'RIFF' &&
+                ascii.decode(b.sublist(8, 12), allowInvalid: true) == 'WEBP';
+          }
+          DART
+      - name: Prove Home to reader bytes over real network
+        working-directory: private-source
+        run: dart run tools/manga/_manga_product_rc_smoke.dart
+      - name: Build installable debug APK
+        working-directory: private-source
+        run: flutter build apk --debug --no-pub
+      - name: Verify APK does not depend on certification seed
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s build/app/outputs/flutter-apk/app-debug.apk
+          if grep -q 'assets/data/manga_availability.db' pubspec.yaml; then
+            test -s assets/data/manga_availability.db
+          fi
+          sha256sum build/app/outputs/flutter-apk/app-debug.apk > build/app-debug.apk.sha256
+      - uses: actions/upload-artifact@v7
+        with:
+          name: goanime-manga-product-rc
+          path: |
+            private-source/build/app/outputs/flutter-apk/app-debug.apk
+            private-source/build/app-debug.apk.sha256
+            private-source/build/manga-product-rc-proof.json
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
+      - name: Publish sanitized receipt
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.revision.outputs.sha }}
+          STATE: ${{ job.status }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          proof='{}'
+          if [ -s private-source/build/manga-product-rc-proof.json ]; then
+            proof="$(cat private-source/build/manga-product-rc-proof.json)"
+          fi
+          result="$(jq -cn --arg sha "$SHA" --arg state "$STATE" --argjson runId "$GITHUB_RUN_ID" --argjson proof "$proof" '{schemaVersion:1,sourceSha:$sha,state:$state,runId:$runId,proof:$proof}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          path="results/goanime-manga-product-rc/$GITHUB_RUN_ID.json"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): record manga product rc $GITHUB_RUN_ID" -f content="$encoded"
