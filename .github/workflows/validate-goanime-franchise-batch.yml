@@ -1,0 +1,169 @@
+name: Validate GoAnime franchise batch optimization
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-franchise-batch-validate/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-franchise-batch-validate
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact GoAnime revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-franchise-batch-validate/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          test "$branch" = 'perf/app-wide-optimization-20260819'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify exact source and remote head
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/GoAnime-Mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies and format focused files
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter pub get
+          dart format \
+            lib/services/franchise_availability_database_service.dart \
+            lib/services/franchise_availability_cache_service.dart \
+            lib/services/catalog_franchise_display_service.dart \
+            test/services/franchise_availability_database_batch_test.dart >/dev/null
+          git diff --check
+
+      - name: Analyze focused services
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart analyze lib/services/franchise_availability_database_service.dart
+          dart analyze lib/services/franchise_availability_cache_service.dart
+          dart analyze lib/services/catalog_franchise_display_service.dart
+          dart analyze test/services/franchise_availability_database_batch_test.dart
+
+      - name: Run franchise and catalog tests
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter test --no-pub --concurrency=1 \
+            test/services/franchise_availability_database_batch_test.dart \
+            test/services/franchise_availability_database_service_test.dart \
+            test/services/catalog_franchise_display_service_test.dart
+
+      - name: Record validated optimization
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('docs/performance_audit_2026-08-19.md')
+          text = path.read_text(encoding='utf-8')
+          marker = '### P0 — collapse de franquias em N consultas\n'
+          status = ('\n**Estado:** lookup em lote implementado e validado com testes SQLite e de apresentação. '
+                    'O catálogo consulta o índice e os payloads de franquias em blocos e preserva o fallback por MAL ID.\n')
+          if status.strip() not in text:
+              assert text.count(marker) == 1
+              text = text.replace(marker, marker + status, 1)
+              path.write_text(text, encoding='utf-8')
+          PY
+          git diff --check
+
+      - name: Commit validated result and fast-forward branch
+        id: publish
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            lib/services/franchise_availability_database_service.dart \
+            lib/services/franchise_availability_cache_service.dart \
+            lib/services/catalog_franchise_display_service.dart \
+            test/services/franchise_availability_database_batch_test.dart \
+            docs/performance_audit_2026-08-19.md
+          git commit -m 'perf(franchise): validate batched catalog lookup'
+          new_sha="$(git rev-parse HEAD)"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/GoAnime-Mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/GoAnime-Mobile.git "HEAD:refs/heads/$TARGET_BRANCH"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+          echo "sha=$new_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        shell: bash
+        run: echo "Validated franchise batch SHA ${{ steps.publish.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
