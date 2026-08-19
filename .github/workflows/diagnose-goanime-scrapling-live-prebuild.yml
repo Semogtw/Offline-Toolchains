@@ -1,0 +1,115 @@
+name: Diagnose GoAnime Scrapling live prebuild
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-scrapling-live-prebuild/*.request'
+
+permissions:
+  contents: read
+  statuses: write
+
+concurrency:
+  group: goanime-scrapling-live-prebuild
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve request
+        id: request
+        working-directory: trusted-source
+        run: |
+          set -euo pipefail
+          python3 scripts/goanime_resolve_request.py \
+            --request-dir triggers/goanime-scrapling-live-prebuild \
+            --workspace .
+
+      - name: Checkout exact GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.source_hint }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Validate live legacy baseline input
+        id: baseline
+        continue-on-error: true
+        working-directory: private-source/tools/scrapling_provider_pipeline
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from cache_contract import load_legacy_baseline
+
+          repo = Path('../..').resolve()
+          data = repo / 'assets' / 'data'
+          cache = json.loads((data / 'anime_provider_catalogs.json').read_text(encoding='utf-8'))
+          baseline = load_legacy_baseline(
+              cache,
+              data / 'available_animes.json',
+              data / 'available_anime_modes.json',
+          )
+          if len(baseline) != len(cache['legacyBaseline']):
+              raise SystemExit('legacy baseline count changed during load')
+          PY
+
+      - name: Report live baseline status
+        if: always()
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.baseline.outcome }}
+        run: |
+          state=failure
+          [ "$OUTCOME" = success ] && state=success
+          python3 scripts/goanime_post_status.py --state "$state" --context goanime-scrapling/live-baseline
+
+      - name: Validate live artifacts with independent validator
+        id: validator
+        if: steps.baseline.outcome == 'success'
+        continue-on-error: true
+        working-directory: private-source/tools/scrapling_provider_pipeline
+        run: python3 validate_provider_cache.py --repo-root ../.. --allow-preserved
+
+      - name: Report live validator status
+        if: always() && steps.baseline.outcome == 'success'
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.validator.outcome }}
+        run: |
+          state=failure
+          [ "$OUTCOME" = success ] && state=success
+          python3 scripts/goanime_post_status.py --state "$state" --context goanime-scrapling/live-validator
+
+      - name: Fail on diagnostic failure
+        if: steps.baseline.outcome != 'success' || steps.validator.outcome != 'success'
+        run: exit 1
+
+      - name: Report diagnostic success
+        if: success()
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/goanime_post_status.py --state success --context goanime-scrapling/live-prebuild
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
