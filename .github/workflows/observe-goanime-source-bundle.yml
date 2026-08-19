@@ -1,0 +1,23 @@
+name: Observe GoAnime source bundle
+on:
+  push:
+    branches: [main]
+    paths: ['triggers/goanime-source-observe/**']
+permissions:
+  actions: read
+  contents: write
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Publish request and builder state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          request_runs="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow request-goanime-source-bundle.yml --branch build/source-bundles --limit 5 --json databaseId,status,conclusion,headSha,createdAt)"
+          builder_runs="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow build-private-source-bundle.yml --limit 10 --json databaseId,status,conclusion,headSha,createdAt)"
+          jq -cn --argjson requests "$request_runs" --argjson builders "$builder_runs" '{schemaVersion:1,requests:$requests,builders:$builders}' > /tmp/result.json
+          encoded="$(base64 -w0 /tmp/result.json)"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/results/goanime-source-observe/${GITHUB_SHA}.json" -f message="ci(result): observe goanime source bundle" -f content="$encoded"
