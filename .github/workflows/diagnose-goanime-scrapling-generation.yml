@@ -1,0 +1,172 @@
+name: Diagnose GoAnime Scrapling generation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-scrapling-generation-diagnostics/*.request'
+
+permissions:
+  contents: read
+  statuses: write
+
+concurrency:
+  group: goanime-scrapling-generation-diagnostics
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve source-bound request
+        id: request
+        working-directory: trusted-source
+        run: |
+          set -euo pipefail
+          python3 scripts/goanime_resolve_request.py \
+            --request-dir triggers/goanime-scrapling-generation-diagnostics \
+            --workspace .
+
+      - name: Checkout exact GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.source_hint }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: private-source/tools/scrapling_provider_pipeline/requirements.txt
+
+      - name: Restore browser binaries
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: goanime-scrapling-browsers-v1-${{ runner.os }}-${{ hashFiles('private-source/tools/scrapling_provider_pipeline/requirements.txt') }}
+
+      - name: Install pinned browser toolchain
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --requirement tools/scrapling_provider_pipeline/requirements.txt
+          scrapling install
+          python ../trusted-source/scripts/goanime_install_patchright.py --browser chromium --attempts 3
+
+      - name: Run direct provider generation
+        id: crawl
+        continue-on-error: true
+        working-directory: private-source
+        env:
+          SCRAPLING_WORKERS: '8'
+        run: |
+          set +e
+          python tools/scrapling_provider_pipeline/build_provider_cache.py \
+            --repo-root . \
+            --state-dir .cache/scrapling-provider-pipeline \
+            --workers "$SCRAPLING_WORKERS"
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          if [ "$code" -ne 0 ] && [ "$code" -ne 2 ]; then
+            exit "$code"
+          fi
+
+      - name: Report generation crawl status
+        if: always()
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.crawl.outcome }}
+          CODE: ${{ steps.crawl.outputs.code }}
+        run: |
+          state=failure
+          [ "$OUTCOME" = success ] && state=success
+          python3 scripts/goanime_post_status.py --state "$state" --context goanime-scrapling/generation-crawl
+          if [ "$state" = success ] && [ "$CODE" = 2 ]; then
+            python3 scripts/goanime_post_status.py --state success --context goanime-scrapling/generation-preserved
+          fi
+
+      - name: Stop after generation error
+        if: steps.crawl.outcome != 'success'
+        run: exit 1
+
+      - name: Validate freshly generated artifacts
+        id: validator
+        continue-on-error: true
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          python tools/scrapling_provider_pipeline/validate_provider_cache.py --repo-root . --allow-preserved
+          python -m json.tool assets/data/provider_scrape_evidence.json >/dev/null
+          python -m json.tool tools/scrapling_provider_pipeline/provider_source_hints.json >/dev/null
+
+      - name: Report generation validator status
+        if: always() && steps.crawl.outcome == 'success'
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.validator.outcome }}
+        run: |
+          state=failure
+          [ "$OUTCOME" = success ] && state=success
+          python3 scripts/goanime_post_status.py --state "$state" --context goanime-scrapling/generation-validator
+
+      - name: Stop after validator failure
+        if: steps.validator.outcome != 'success'
+        run: exit 1
+
+      - name: Validate cache-only diff
+        id: diff
+        continue-on-error: true
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          allowed='^(assets/data/(anime_provider_catalogs\.json|anime_provider_catalog_manifest\.json|available_animes\.json|available_anime_modes\.json|mal_provider_availability_map\.json|provider_scrape_evidence\.json)|tools/scrapling_provider_pipeline/provider_source_hints\.json)$'
+          changed_paths="$(git status --porcelain=v1 | sed -E 's/^.. //' | grep -Ev '^\.cache/scrapling-provider-pipeline(/|$)' || true)"
+          unexpected="$(printf '%s\n' "$changed_paths" | sed '/^$/d' | grep -Ev "$allowed" || true)"
+          test -z "$unexpected"
+
+      - name: Report generation diff status
+        if: always() && steps.validator.outcome == 'success'
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.diff.outcome }}
+        run: |
+          state=failure
+          [ "$OUTCOME" = success ] && state=success
+          python3 scripts/goanime_post_status.py --state "$state" --context goanime-scrapling/generation-diff
+
+      - name: Mark generation diagnostic successful
+        if: steps.diff.outcome == 'success'
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/goanime_post_status.py --state success --context goanime-scrapling/generation-diagnostics
+
+      - name: Fail diagnostic if needed
+        if: steps.diff.outcome != 'success'
+        run: exit 1
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
