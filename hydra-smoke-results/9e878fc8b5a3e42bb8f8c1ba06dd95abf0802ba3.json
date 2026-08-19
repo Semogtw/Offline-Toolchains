@@ -1,9 +1,19 @@
 {
-  "status": "running",
+  "status": "failure",
   "targetSha": "9e878fc8b5a3e42bb8f8c1ba06dd95abf0802ba3",
   "targetBranch": "fix/live-source-app-parity",
   "requestPath": "toolchain-control/triggers/hydra-source-smoke/live-source-app-parity-9e878fc-20260819.request",
   "runId": 32213547674,
   "runAttempt": 1,
-  "steps": {}
+  "steps": {
+    "deps": "success",
+    "electron": "success",
+    "scrapling": "success",
+    "gamebounty": "success",
+    "ecologica": "success",
+    "ankergames": "success",
+    "trustPipeline": "failure",
+    "downloadE2e": "skipped",
+    "directHttpManager": "skipped"
+  }
 }
