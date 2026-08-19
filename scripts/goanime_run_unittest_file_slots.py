@@ -27,6 +27,13 @@ def main() -> int:
     args = parser.parse_args()
 
     test_file = args.test_file.resolve()
+    # Pipeline tests import sibling modules (cache_contract, provider_crawlers,
+    # etc.) as top-level modules. Mirror the production/unit-test working
+    # directory explicitly instead of depending on the caller's sys.path.
+    pipeline_root = test_file.parent.parent
+    if str(pipeline_root) not in sys.path:
+        sys.path.insert(0, str(pipeline_root))
+
     module_name = f"goanime_slots_{test_file.stem}"
     spec = importlib.util.spec_from_file_location(module_name, test_file)
     if spec is None or spec.loader is None:
