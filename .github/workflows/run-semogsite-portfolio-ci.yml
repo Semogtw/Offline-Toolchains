@@ -1,0 +1,252 @@
+name: Run SemogSite portfolio CI
+
+on:
+  workflow_run:
+    workflows:
+      - Request private project CI
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: semogsite-portfolio-ci-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  normalize:
+    name: Normalize SemogSite portfolio request
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'build/private-ci' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.actor.login == github.repository_owner &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      enabled: ${{ steps.request.outputs.enabled }}
+      repository: ${{ steps.request.outputs.repository }}
+      ref: ${{ steps.request.outputs.ref }}
+
+    steps:
+      - name: Checkout trusted request implementation
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: trusted-source
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/private_ci_request.py
+            config/workflow-hub-projects.json
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout connector request revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          path: request-source
+          persist-credentials: false
+          sparse-checkout: triggers/private-ci.json
+          sparse-checkout-cone-mode: false
+
+      - name: Normalize trusted request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          normalized="$(python3 trusted-source/scripts/private_ci_request.py request-source/triggers/private-ci.json)"
+          python3 - "$normalized" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          request = json.loads(sys.argv[1])
+          enabled = "true" if request["project"] == "semogsite" else "false"
+          with open(sys.argv[2], "a", encoding="utf-8") as stream:
+              stream.write(f"enabled={enabled}\n")
+              if enabled == "true":
+                  for key in ("repository", "ref"):
+                      value = request[key]
+                      if "\n" in value or "\r" in value:
+                          raise SystemExit(f"unsafe newline in normalized {key}")
+                      stream.write(f"{key}={value}\n")
+          PY
+
+      - name: Summarize portfolio request
+        if: steps.request.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          {
+            echo "## SemogSite portfolio CI request"
+            echo
+            echo "- Project: \`semogsite\`"
+            echo "- Private repository/ref details are intentionally omitted from the public summary."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  portfolio:
+    name: SemogSite portfolio diagnostics and E2E
+    needs: normalize
+    if: needs.normalize.outputs.enabled == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout private SemogSite source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ needs.normalize.outputs.repository }}
+          ref: ${{ needs.normalize.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Record resolved private checkpoint privately
+        working-directory: private-source
+        shell: bash
+        run: git rev-parse HEAD
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          check-latest: false
+
+      - name: Activate repository-pinned pnpm
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_manager="$(node -p "JSON.parse(require('node:fs').readFileSync('package.json','utf8')).packageManager")"
+          case "$package_manager" in
+            pnpm@*) ;;
+            *) echo "package.json must pin pnpm via packageManager" >&2; exit 1 ;;
+          esac
+          corepack enable
+          corepack prepare "$package_manager" --activate
+          pnpm --version
+
+      - name: Configure CI-only SQLite native build
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f pnpm-workspace.yaml
+          cat >> pnpm-workspace.yaml <<'YAML'
+
+          # Ephemeral runner-only allowlist. The private checkout is discarded.
+          onlyBuiltDependencies:
+            - better-sqlite3
+          YAML
+
+      - name: Install exact dependencies
+        working-directory: private-source
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify native SQLite dependency
+        working-directory: private-source
+        shell: bash
+        run: >-
+          test -f
+          node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3/build/Release/better_sqlite3.node
+
+      - name: Guardrail tests
+        working-directory: private-source
+        run: pnpm test:guardrails
+
+      - name: Upstream cleanliness
+        working-directory: private-source
+        run: pnpm check:upstream-clean
+
+      - name: Package boundaries
+        working-directory: private-source
+        run: pnpm check:boundaries
+
+      - name: Cloudflare Worker boundary
+        working-directory: private-source
+        run: pnpm check:cloudflare-worker-boundary
+
+      - name: MCP transport boundary
+        working-directory: private-source
+        run: pnpm check:mcp-transport-boundary
+
+      - name: MCP package boundaries
+        working-directory: private-source
+        run: pnpm check:mcp-package-boundaries
+
+      - name: MCP Node runtime boundary
+        working-directory: private-source
+        run: pnpm check:mcp-node-runtime-boundary
+
+      - name: Run-ledger guardrails
+        working-directory: private-source
+        run: pnpm check:run-ledger-guardrails
+
+      - name: Editorial guardrails
+        working-directory: private-source
+        run: pnpm check:editorial-guardrails
+
+      - name: Public confidentiality
+        working-directory: private-source
+        run: pnpm check:public-confidentiality
+
+      - name: Recursive typecheck
+        working-directory: private-source
+        run: pnpm -r typecheck
+
+      - name: Full Vitest workspace
+        working-directory: private-source
+        run: pnpm test
+
+      - name: Aggregated repository check
+        working-directory: private-source
+        run: pnpm check
+
+      - name: Production web build
+        working-directory: private-source
+        run: pnpm --filter @semogtw/web build
+
+      - name: Install Chromium for E2E
+        working-directory: private-source
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Prepare isolated E2E database
+        working-directory: private-source
+        run: node scripts/prepare-e2e.mjs
+
+      - name: Workflow privacy E2E
+        working-directory: private-source
+        run: pnpm exec playwright test tests/e2e/workflow-orchestration.spec.ts
+
+      - name: Public portfolio E2E
+        working-directory: private-source
+        run: pnpm exec playwright test tests/e2e/public-portfolio.spec.ts
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
+
+      - name: Summarize sanitized result
+        if: always()
+        shell: bash
+        env:
+          RESULT: ${{ job.status }}
+        run: |
+          {
+            echo "## SemogSite portfolio CI"
+            echo
+            echo "- Result: \`$RESULT\`"
+            echo "- Guardrails are split into diagnostic steps and the public portfolio E2E is included."
+            echo "- Tests/build outputs and the private checkout were discarded."
+          } >> "$GITHUB_STEP_SUMMARY"
