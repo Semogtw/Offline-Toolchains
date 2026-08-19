@@ -45,12 +45,14 @@ jobs:
             --workspace .
 
       - name: Require expected target branch
+        id: target
         shell: bash
         env:
           TARGET_BRANCH: ${{ steps.request.outputs.target_branch }}
         run: test "$TARGET_BRANCH" = 'feat/scrapling-provider-pipeline'
 
       - name: Checkout exact GoAnime source
+        id: source_checkout
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
@@ -64,23 +66,27 @@ jobs:
           show-progress: false
 
       - name: Verify exact source revision
+        id: source_verify
         working-directory: private-source
         env:
           SOURCE_HINT: ${{ steps.request.outputs.source_hint }}
         run: test "$(git rev-parse HEAD)" = "$SOURCE_HINT"
 
       - name: Apply scoped baseline hardening
+        id: patch
         shell: bash
         run: |
           set -euo pipefail
           python3 trusted-source/scripts/goanime_apply_scrapling_baseline_hardening.py --repo-root private-source
 
       - name: Run focused baseline tests
+        id: tests
         working-directory: private-source/tools/scrapling_provider_pipeline
         shell: bash
         run: python3 -m unittest discover -s tests -p 'test_legacy_baseline_preflight.py'
 
       - name: Enforce narrow diff
+        id: diff
         working-directory: private-source
         shell: bash
         run: |
@@ -88,11 +94,13 @@ jobs:
           git diff --check
           mapfile -t changed < <(git diff --name-only --diff-filter=ACMRT)
           test "${#changed[@]}" -eq 3
+          printf '%s\n' "${changed[@]}" | sort -c
           test "${changed[0]}" = 'tools/scrapling_provider_pipeline/build_provider_cache.py'
           test "${changed[1]}" = 'tools/scrapling_provider_pipeline/cache_contract.py'
           test "${changed[2]}" = 'tools/scrapling_provider_pipeline/tests/test_legacy_baseline_preflight.py'
 
       - name: Verify target branch did not move
+        id: race
         working-directory: private-source
         env:
           PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
@@ -104,6 +112,7 @@ jobs:
           test "$remote_head" = "$SOURCE_HINT" || { echo 'Target branch moved; refusing stale publish.' >&2; exit 1; }
 
       - name: Commit hardening
+        id: commit
         working-directory: private-source
         run: |
           set -euo pipefail
@@ -116,6 +125,7 @@ jobs:
           git commit -m 'fix(scrapling): harden legacy baseline bootstrap'
 
       - name: Publish hardening commit
+        id: push
         working-directory: private-source
         env:
           GOANIME_CATALOG_WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
@@ -134,13 +144,35 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: python3 scripts/goanime_post_status.py --state success --context goanime-scrapling/baseline-hardening
 
-      - name: Mark baseline hardening failed
+      - name: Classify baseline hardening failure
         if: failure()
         continue-on-error: true
         working-directory: trusted-source
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python3 scripts/goanime_post_status.py --state failure --context goanime-scrapling/baseline-hardening
+          REQUEST: ${{ steps.request.outcome }}
+          TARGET: ${{ steps.target.outcome }}
+          SOURCE_CHECKOUT: ${{ steps.source_checkout.outcome }}
+          SOURCE_VERIFY: ${{ steps.source_verify.outcome }}
+          PATCH: ${{ steps.patch.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+          DIFF: ${{ steps.diff.outcome }}
+          RACE: ${{ steps.race.outcome }}
+          COMMIT: ${{ steps.commit.outcome }}
+          PUSH: ${{ steps.push.outcome }}
+        run: |
+          phase=unknown
+          if [ "$REQUEST" != success ] || [ "$TARGET" != success ]; then phase=request
+          elif [ "$SOURCE_CHECKOUT" != success ] || [ "$SOURCE_VERIFY" != success ]; then phase=source
+          elif [ "$PATCH" != success ]; then phase=patch
+          elif [ "$TESTS" != success ]; then phase=tests
+          elif [ "$DIFF" != success ]; then phase=diff
+          elif [ "$RACE" != success ]; then phase=race
+          elif [ "$COMMIT" != success ]; then phase=commit
+          elif [ "$PUSH" != success ]; then phase=push
+          fi
+          python3 scripts/goanime_post_status.py --state failure --context "goanime-scrapling/baseline-hardening-$phase"
+          python3 scripts/goanime_post_status.py --state failure --context goanime-scrapling/baseline-hardening
 
       - name: Cleanup
         if: always()
