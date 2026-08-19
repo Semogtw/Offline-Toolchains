@@ -65,6 +65,7 @@ jobs:
               (job) => job.name === 'SemogSite portfolio diagnostics and E2E',
             );
             const e2eNames = [
+              'Auth topology E2E',
               'Workflow privacy E2E',
               'Editorial publication E2E',
               'Public portfolio E2E',
