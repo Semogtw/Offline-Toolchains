@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 concurrency:
   group: goanime-scrapling-animesonline-hardening
@@ -26,6 +27,12 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
           show-progress: false
+
+      - name: Mark crawler hardening pending
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/goanime_post_status.py --state pending --context goanime-scrapling/crawler-hardening
 
       - name: Resolve source-bound request
         id: request
@@ -63,7 +70,7 @@ jobs:
           SOURCE_HINT: ${{ steps.request.outputs.source_hint }}
         run: test "$(git rev-parse HEAD)" = "$SOURCE_HINT"
 
-      - name: Apply scoped AnimesOnline hardening
+      - name: Apply scoped crawler hardening
         shell: bash
         run: |
           set -euo pipefail
@@ -96,10 +103,7 @@ jobs:
         run: |
           set -euo pipefail
           remote_head="$(git ls-remote "https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git" "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')"
-          test "$remote_head" = "$SOURCE_HINT" || {
-            echo 'Target branch moved; refusing stale publish.' >&2
-            exit 1
-          }
+          test "$remote_head" = "$SOURCE_HINT" || { echo 'Target branch moved; refusing stale publish.' >&2; exit 1; }
 
       - name: Commit hardening
         working-directory: private-source
@@ -111,7 +115,7 @@ jobs:
           git add -- \
             tools/scrapling_provider_pipeline/provider_crawlers.py \
             tools/scrapling_provider_pipeline/tests/test_provider_crawlers.py
-          git commit -m 'fix(scrapling): harden AnimesOnline sitemap fanout'
+          git commit -m 'fix(scrapling): harden sitemap fanout and pagination origin'
 
       - name: Publish hardening commit
         working-directory: private-source
@@ -121,9 +125,25 @@ jobs:
           TARGET_BRANCH: ${{ steps.request.outputs.target_branch }}
         run: |
           set -euo pipefail
+          test -n "$GOANIME_CATALOG_WRITE_TOKEN"
           git remote set-url origin "https://x-access-token:${GOANIME_CATALOG_WRITE_TOKEN}@github.com/Semogtw/goanime-mobile.git"
           git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
           git remote set-url origin 'https://github.com/Semogtw/goanime-mobile.git'
+
+      - name: Mark crawler hardening successful
+        if: success()
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/goanime_post_status.py --state success --context goanime-scrapling/crawler-hardening
+
+      - name: Mark crawler hardening failed
+        if: failure()
+        continue-on-error: true
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/goanime_post_status.py --state failure --context goanime-scrapling/crawler-hardening
 
       - name: Cleanup private checkout
         if: always()
