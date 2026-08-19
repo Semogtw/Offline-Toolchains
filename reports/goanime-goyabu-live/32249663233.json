@@ -1,0 +1,21 @@
+{
+  "diagnostics": [
+    "home status=200 host=goyabu.io",
+    "nonce=present",
+    "search status=200 host=goyabu.io",
+    "anime_result=present host=goyabu.io",
+    "anime status=200 host=goyabu.io",
+    "episode=present host=goyabu.io",
+    "episode_page status=200 host=goyabu.io",
+    "player_profiles=[{\"hasToken\":true,\"hasUrl\":true,\"index\":0,\"keys\":[\"idioma\",\"name\",\"select\"],\"labels\":{\"name\":\"Blog\"}}]",
+    "player=present count=1 hosts=www.blogger.com",
+    "blogger_formats={\"bestHeight\":0,\"formatIds\":[],\"heights\":[]}",
+    "playback_shape=blogger-browser-fallback host=www.blogger.com"
+  ],
+  "exitCode": 0,
+  "finishedAt": "2026-08-19T11:51:39.904513Z",
+  "runAttempt": 1,
+  "runId": 32249663233,
+  "schemaVersion": 1,
+  "toolchainsSha": "b3d803a04d5355ed030f7a8c277a623030acdadb"
+}
