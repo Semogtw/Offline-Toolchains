@@ -219,6 +219,12 @@ jobs:
         working-directory: private-source
         run: node scripts/prepare-e2e.mjs
 
+      - name: Auth topology E2E
+        id: auth_e2e
+        continue-on-error: true
+        working-directory: private-source
+        run: pnpm exec playwright test tests/e2e/auth-topology.spec.ts
+
       - name: Workflow privacy E2E
         id: workflow_e2e
         continue-on-error: true
@@ -241,6 +247,7 @@ jobs:
         if: always()
         shell: bash
         env:
+          AUTH_E2E: ${{ steps.auth_e2e.outcome }}
           WORKFLOW_E2E: ${{ steps.workflow_e2e.outcome }}
           EDITORIAL_E2E: ${{ steps.editorial_e2e.outcome }}
           PORTFOLIO_E2E: ${{ steps.portfolio_e2e.outcome }}
@@ -248,6 +255,7 @@ jobs:
           {
             echo "## Sanitized E2E outcomes"
             echo
+            echo "- Auth topology: \`$AUTH_E2E\`"
             echo "- Workflow privacy: \`$WORKFLOW_E2E\`"
             echo "- Editorial publication: \`$EDITORIAL_E2E\`"
             echo "- Public portfolio: \`$PORTFOLIO_E2E\`"
@@ -256,7 +264,8 @@ jobs:
       - name: Enforce E2E success
         if: >-
           always() &&
-          (steps.workflow_e2e.outcome == 'failure' ||
+          (steps.auth_e2e.outcome == 'failure' ||
+           steps.workflow_e2e.outcome == 'failure' ||
            steps.editorial_e2e.outcome == 'failure' ||
            steps.portfolio_e2e.outcome == 'failure')
         shell: bash
@@ -279,6 +288,6 @@ jobs:
             echo "## SemogSite portfolio CI"
             echo
             echo "- Result: \`$RESULT\`"
-            echo "- Guardrails are split into diagnostic steps and all three E2E suites run independently."
+            echo "- Guardrails are split into diagnostic steps and all four E2E suites run independently."
             echo "- Tests/build outputs and the private checkout were discarded."
           } >> "$GITHUB_STEP_SUMMARY"
