@@ -4,8 +4,8 @@
   "run_number": 4,
   "schema_version": 1,
   "source_ref": "b50910ea92c78d6966dd0f1d353ffdc848e11737",
-  "status": "queued",
+  "status": "in_progress",
   "trigger_sha": "5851e605be39a81a5c216bdf0114f1068456b50e",
-  "updated_at": "2026-08-19T23:40:58Z",
+  "updated_at": "2026-08-19T23:41:02Z",
   "workflow": "Validate private GoAnime source"
 }
