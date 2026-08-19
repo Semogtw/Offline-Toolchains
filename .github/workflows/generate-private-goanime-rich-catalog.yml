@@ -77,57 +77,83 @@ jobs:
         working-directory: private-source
         run: flutter pub get
 
-      - name: Prepare bounded seasonal Jikan targets
+      - name: Bulk-enrich strict MAL identities first
+        working-directory: private-source
+        shell: bash
+        env:
+          EMPTY_TARGETS_PATH: ${{ runner.temp }}/goanime-rich-empty-targets.json
+          BULK_BASELINE_PATH: ${{ runner.temp }}/goanime-rich-bulk-baseline.json
+        run: |
+          set -euo pipefail
+          printf '{"queries":[],"targets":[]}\n' > "$EMPTY_TARGETS_PATH"
+          dart run tools/build_anime_metadata_seed.dart --targets="$EMPTY_TARGETS_PATH"
+          cp dist/anime_metadata_cache/anime_metadata_seed.json "$BULK_BASELINE_PATH"
+
+      - name: Derive bounded seasonal Jikan targets from enriched metadata
         working-directory: private-source
         shell: bash
         env:
           TARGETS_PATH: ${{ runner.temp }}/goanime-rich-targets.json
+          BULK_BASELINE_PATH: ${{ runner.temp }}/goanime-rich-bulk-baseline.json
         run: |
           set -euo pipefail
-          python3 - "$TARGETS_PATH" <<'PY'
+          python3 - "$TARGETS_PATH" "$BULK_BASELINE_PATH" <<'PY'
           import json,sys
           from datetime import datetime,timezone
           from pathlib import Path
 
           out=Path(sys.argv[1])
+          baseline_path=Path(sys.argv[2])
           now=datetime.now(timezone.utc)
           season='winter' if now.month<=3 else 'spring' if now.month<=6 else 'summer' if now.month<=9 else 'fall'
           mal=json.loads(Path('assets/data/mal_availability_map.json').read_text(encoding='utf-8'))
-          baseline=json.loads(Path('assets/data/anime_metadata_seed.json').read_text(encoding='utf-8'))
+          baseline=json.loads(baseline_path.read_text(encoding='utf-8'))
 
-          by_id={}
-          candidates=[]
+          strict={}
           for raw in mal.get('entries') or []:
               if not isinstance(raw,dict): continue
               mid=raw.get('malId'); modes=raw.get('modes') or {}
               if not isinstance(mid,int) or mid<=0 or not (modes.get('sub') or modes.get('dub')): continue
+              strict[mid]=str(raw.get('canonicalTitle') or f'MAL {mid}').strip()
+
+          by_id={}
+          seasonal=[]
+          for raw in baseline.get('entries') or []:
+              if not isinstance(raw,dict): continue
+              mid=raw.get('malId')
+              if not isinstance(mid,int) or mid not in strict: continue
               if raw.get('year')==now.year and str(raw.get('season') or '').lower()==season:
-                  candidates.append(raw)
-          candidates.sort(key=lambda e:(-float(e.get('matchConfidence') or 0), str(e.get('canonicalTitle') or '')))
-          for raw in candidates[:60]:
+                  seasonal.append(raw)
+          seasonal.sort(key=lambda e:(-float(e.get('popularity') or 0), -float(e.get('score') or 0), str(e.get('title') or '')))
+          for raw in seasonal[:60]:
               mid=int(raw['malId'])
-              by_id[mid]={'malId':mid,'title':str(raw.get('canonicalTitle') or f'MAL {mid}').strip()}
+              by_id[mid]={'malId':mid,'title':str(raw.get('title') or strict[mid]).strip()}
 
           for raw in baseline.get('entries') or []:
               if not isinstance(raw,dict): continue
               mid=raw.get('malId'); status=str(raw.get('status') or '').lower()
-              if not isinstance(mid,int) or mid<=0: continue
+              if not isinstance(mid,int) or mid not in strict: continue
               if any(token in status for token in ('currently airing','releasing','not yet','upcoming')):
-                  by_id.setdefault(mid,{'malId':mid,'title':str(raw.get('title') or f'MAL {mid}').strip()})
+                  by_id.setdefault(mid,{'malId':mid,'title':str(raw.get('title') or strict[mid]).strip()})
 
-          if len(candidates)<10:
-              raise SystemExit(f'strict current-season availability too small: {len(candidates)}')
+          if len(seasonal)<10:
+              raise SystemExit(f'strict current-season metadata too small after bulk enrichment: {len(seasonal)}')
           payload={'queries':[],'targets':list(by_id.values())}
           out.write_text(json.dumps(payload,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
-          print(f'current-season strict identities={len(candidates)}; Jikan refresh targets={len(by_id)}')
+          print(f'current-season strict identities={len(seasonal)}; Jikan refresh targets={len(by_id)}')
           PY
 
-      - name: Generate rich metadata seed
+      - name: Refresh season and broadcast on rich baseline
         working-directory: private-source
         shell: bash
         env:
           TARGETS_PATH: ${{ runner.temp }}/goanime-rich-targets.json
-        run: dart run tools/build_anime_metadata_seed.dart --targets="$TARGETS_PATH"
+          BULK_BASELINE_PATH: ${{ runner.temp }}/goanime-rich-bulk-baseline.json
+        run: |
+          set -euo pipefail
+          dart run tools/build_anime_metadata_seed.dart \
+            --targets="$TARGETS_PATH" \
+            --baseline="$BULK_BASELINE_PATH"
 
       - name: Validate generated rich catalog
         working-directory: private-source
@@ -147,7 +173,7 @@ jobs:
           covered=len(rich & strict)
           ratio=covered/len(strict) if strict else 1.0
           now=datetime.now(timezone.utc); season='winter' if now.month<=3 else 'spring' if now.month<=6 else 'summer' if now.month<=9 else 'fall'
-          current=[e for e in entries if isinstance(e,dict) and e.get('year')==now.year and str(e.get('season') or '').lower()==season and str(e.get('imageUrl') or '').strip()]
+          current=[e for e in entries if isinstance(e,dict) and e.get('malId') in strict and e.get('year')==now.year and str(e.get('season') or '').lower()==season and str(e.get('imageUrl') or '').strip()]
           if ratio<0.90: raise SystemExit(f'strict rich coverage too small: {covered}/{len(strict)} ({ratio:.1%})')
           if len(current)<10: raise SystemExit(f'current season metadata too small: {len(current)}')
           if len(broadcasts)<5: raise SystemExit(f'broadcast snapshot too small: {len(broadcasts)}')
@@ -189,4 +215,4 @@ jobs:
         if: always()
         shell: bash
         run: |
-          rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source" "$RUNNER_TEMP/goanime-rich-handoff" "$RUNNER_TEMP/goanime-rich-targets.json"
+          rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source" "$RUNNER_TEMP/goanime-rich-handoff" "$RUNNER_TEMP/goanime-rich-targets.json" "$RUNNER_TEMP/goanime-rich-empty-targets.json" "$RUNNER_TEMP/goanime-rich-bulk-baseline.json"
