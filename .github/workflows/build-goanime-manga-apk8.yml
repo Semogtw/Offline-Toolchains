@@ -22,6 +22,7 @@ jobs:
       - name: Build 8-source profile
         run: |
           sed -i "/ptbr.ninjascan/d" lib/services/manga/default_manga_source_providers.dart
+          sed -i "/'ptbr.ninjascan':/d" tools/manga/collect_enabled_manga_live_evidence.dart
           python3 - <<'PY'
           import json
           p='docs/manga_sources_ptbr.json'
