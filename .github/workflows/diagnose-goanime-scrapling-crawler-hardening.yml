@@ -52,13 +52,33 @@ jobs:
           show-progress: false
 
       - name: Apply patch in disposable checkout
+        id: patch
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
           python3 trusted-source/scripts/goanime_apply_scrapling_animesonline_hardening.py \
             --repo-root private-source
 
+      - name: Report patch status
+        if: always()
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.patch.outcome }}
+        run: |
+          state=failure
+          [ "$OUTCOME" = success ] && state=success
+          python3 scripts/goanime_post_status.py --state "$state" --context goanime-scrapling/crawler-patch
+
+      - name: Stop after patch failure
+        if: steps.patch.outcome == 'failure'
+        run: exit 1
+
       - name: Diagnose crawler tests by slot
+        id: tests
+        if: steps.patch.outcome == 'success'
+        continue-on-error: true
         working-directory: private-source/tools/scrapling_provider_pipeline
         shell: bash
         env:
@@ -69,8 +89,23 @@ jobs:
             --reporter ../../../trusted-source/scripts/goanime_post_status.py \
             --context-prefix goanime-scrapling/crawler-test-slot
 
+      - name: Report test-loader status
+        if: always() && steps.patch.outcome == 'success'
+        working-directory: trusted-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.tests.outcome }}
+        run: |
+          state=failure
+          [ "$OUTCOME" = success ] && state=success
+          python3 scripts/goanime_post_status.py --state "$state" --context goanime-scrapling/crawler-test-loader
+
+      - name: Stop after test failure
+        if: steps.tests.outcome == 'failure'
+        run: exit 1
+
       - name: Mark diagnostic success
-        if: success()
+        if: steps.tests.outcome == 'success'
         working-directory: trusted-source
         env:
           GITHUB_TOKEN: ${{ github.token }}
