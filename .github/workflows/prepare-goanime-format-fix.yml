@@ -13,7 +13,7 @@ jobs:
   prepare:
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 26
     env:
       SOURCE_REF: b4055d3c0741c05d6747c55346fb081e7a8ddd20
     steps:
