@@ -85,7 +85,7 @@ jobs:
         id: tests
         working-directory: private-source/tools/scrapling_provider_pipeline
         shell: bash
-        run: python3 tests/test_provider_crawlers.py
+        run: python3 -m unittest discover -s tests -p 'test_provider_crawlers.py'
 
       - name: Enforce narrow diff
         id: diff
