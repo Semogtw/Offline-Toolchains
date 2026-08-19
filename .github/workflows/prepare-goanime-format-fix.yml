@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 26
     env:
-      SOURCE_REF: b4055d3c0741c05d6747c55346fb081e7a8ddd20
+      SOURCE_REF: 3f6e59565c11a627950e23c231e5c6dbd4f9ba1d
     steps:
       - name: Checkout trusted Toolchains source
         uses: actions/checkout@v6
@@ -54,25 +54,24 @@ jobs:
         run: |
           set -euo pipefail
           dart format \
+            lib/services/anime_metadata_cache_service.dart \
             lib/services/runtime_home_catalog_service.dart \
+            tools/anilist_metadata_bulk_loader.dart \
             tools/build_anime_metadata_seed.dart \
+            test/services/anime_metadata_home_candidates_test.dart \
             test/services/runtime_home_catalog_partial_cache_repair_test.dart \
+            test/tools/anilist_metadata_bulk_loader_test.dart \
             test/tools/build_anime_metadata_seed_catalog_sources_test.dart
           git diff --check
           changed="$(git diff --name-only)"
           expected="$(printf '%s\n' \
-            lib/services/runtime_home_catalog_service.dart \
-            tools/build_anime_metadata_seed.dart | sort)"
+            tools/anilist_metadata_bulk_loader.dart \
+            test/services/anime_metadata_home_candidates_test.dart | sort)"
           test "$(printf '%s\n' "$changed" | sort)" = "$expected" || {
             echo 'Unexpected formatter change set:'
             printf '%s\n' "$changed"
             exit 1
           }
-          dart format --output=none --set-exit-if-changed \
-            lib/services/runtime_home_catalog_service.dart \
-            tools/build_anime_metadata_seed.dart \
-            test/services/runtime_home_catalog_partial_cache_repair_test.dart \
-            test/tools/build_anime_metadata_seed_catalog_sources_test.dart
 
       - name: Run focused tests against formatted workspace
         working-directory: private-source
@@ -80,9 +79,11 @@ jobs:
         run: |
           set -euo pipefail
           flutter test --no-pub \
+            test/services/anime_metadata_home_candidates_test.dart \
             test/services/runtime_home_catalog_seed_fallback_test.dart \
             test/services/runtime_home_catalog_partial_cache_repair_test.dart \
             test/services/runtime_home_catalog_resilience_test.dart \
+            test/tools/anilist_metadata_bulk_loader_test.dart \
             test/tools/build_anime_metadata_seed_catalog_sources_test.dart
 
       - name: Encrypt formatted handoff
@@ -92,11 +93,11 @@ jobs:
         run: |
           set -euo pipefail
           work="$RUNNER_TEMP/goanime-format-fix"
-          mkdir -p "$work/gpg" "$work/out" "$work/payload/lib/services" "$work/payload/tools"
+          mkdir -p "$work/gpg" "$work/out" "$work/payload/tools" "$work/payload/test/services"
           chmod 700 "$work/gpg"
           export GNUPGHOME="$work/gpg"
-          cp private-source/lib/services/runtime_home_catalog_service.dart "$work/payload/lib/services/"
-          cp private-source/tools/build_anime_metadata_seed.dart "$work/payload/tools/"
+          cp private-source/tools/anilist_metadata_bulk_loader.dart "$work/payload/tools/"
+          cp private-source/test/services/anime_metadata_home_candidates_test.dart "$work/payload/test/services/"
           tar -C "$work/payload" -czf "$work/formatted-files.tar.gz" .
           gpg --batch --import trusted-source/keys/source-bundles-public.asc
           fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1=="fpr"{print $10;exit}')"
