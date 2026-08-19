@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Live smoke probe for the public Goyabu source.
 
-Only stage/status/host information is printed. Failed-page captures stay in
-the ephemeral runner directory so the workflow can encrypt them before upload.
+Only stage/status/host information and sanitized player metadata are printed.
+Failed-page captures stay in the ephemeral runner directory so the workflow can
+encrypt them before upload.
 """
 
 from __future__ import annotations
@@ -34,6 +35,16 @@ BLOGGER_RE = re.compile(r"https?://[^\s\"']*blogger\.com/[^\s\"']+", re.I)
 MEDIA_RE = re.compile(r"https?://[^\s\"']+?\.(?:m3u8|mp4)(?:\?[^\s\"']*)?", re.I)
 VIDEO_CONFIG_RE = re.compile(r"var\s+VIDEO_CONFIG\s*=\s*(\{[\s\S]*?\});", re.I)
 PLAY_URL_RE = re.compile(r'"play_url"\s*:\s*"([^"]+)"', re.I)
+SAFE_PLAYER_LABEL_FIELDS = (
+    "label",
+    "name",
+    "title",
+    "quality",
+    "type",
+    "server",
+    "player",
+    "description",
+)
 
 
 @dataclass(frozen=True)
@@ -100,25 +111,66 @@ def first_episode_url(page_url: str, body: str) -> str | None:
     return None
 
 
+def _players_data(body: str) -> list[dict]:
+    match = PLAYERS_DATA_RE.search(body)
+    if not match:
+        return []
+    try:
+        data = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, dict)]
+
+
+def _safe_label(value: object) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if "http://" in text.lower() or "https://" in text.lower():
+        return "<url>"
+    text = re.sub(r"[\r\n\t]+", " ", text)
+    return text[:80]
+
+
+def sanitized_player_profiles(body: str) -> list[dict]:
+    profiles: list[dict] = []
+    for index, item in enumerate(_players_data(body)):
+        labels = {
+            field: safe
+            for field in SAFE_PLAYER_LABEL_FIELDS
+            if (safe := _safe_label(item.get(field))) is not None
+        }
+        safe_keys = sorted(
+            key
+            for key in (str(key) for key in item.keys())
+            if "token" not in key.lower()
+            and "url" not in key.lower()
+            and key.lower() not in {"src", "file"}
+        )
+        profiles.append(
+            {
+                "index": index,
+                "keys": safe_keys,
+                "labels": labels,
+                "hasUrl": bool(str(item.get("url") or "").strip()),
+                "hasToken": bool(str(item.get("blogger_token") or "").strip()),
+            }
+        )
+    return profiles
+
+
 def player_data(episode_url: str, body: str) -> tuple[list[str], str | None]:
     candidates: list[str] = []
     blogger_token: str | None = None
-    match = PLAYERS_DATA_RE.search(body)
-    if match:
-        try:
-            data = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            data = []
-        if isinstance(data, list):
-            for item in data:
-                if not isinstance(item, dict):
-                    continue
-                value = str(item.get("url") or "").strip()
-                if value:
-                    candidates.append(resolve(episode_url, value))
-                token = str(item.get("blogger_token") or "").strip()
-                if token and blogger_token is None:
-                    blogger_token = token
+    for item in _players_data(body):
+        value = str(item.get("url") or "").strip()
+        if value:
+            candidates.append(resolve(episode_url, value))
+        token = str(item.get("blogger_token") or "").strip()
+        if token and blogger_token is None:
+            blogger_token = token
     candidates.extend(resolve(episode_url, m.group(0)) for m in BLOGGER_RE.finditer(body))
     candidates.extend(resolve(episode_url, m.group(0)) for m in MEDIA_RE.finditer(body))
     return list(dict.fromkeys(candidates)), blogger_token
@@ -216,6 +268,8 @@ def main() -> int:
         print(f"episode_page status={episode.status} host={safe_host(episode.url)}")
         if episode.status != 200:
             return 9
+        profiles = sanitized_player_profiles(episode.body)
+        print("player_profiles=" + json.dumps(profiles, separators=(",", ":"), sort_keys=True))
         candidates, token = player_data(episode.url, episode.body)
         if not candidates and not token:
             capture_episode_html(episode.body)
