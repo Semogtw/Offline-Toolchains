@@ -1,0 +1,11 @@
+{
+  "conclusion": null,
+  "run_id": 32313818531,
+  "run_number": 4,
+  "schema_version": 1,
+  "source_ref": "b4055d3c0741c05d6747c55346fb081e7a8ddd20",
+  "status": "queued",
+  "trigger_sha": "a81310adaff4f17d6d6792c967fa7b0b059588be",
+  "updated_at": "2026-08-19T23:34:26Z",
+  "workflow": "Prepare verified GoAnime formatting fix"
+}
