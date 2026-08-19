@@ -1,0 +1,149 @@
+name: Certify GoAnime enabled manga rollout gates v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-certify-rollout-v2/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  certify:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+      - name: Resolve exact reviewed SHA
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-certify-rollout-v2/*.request' | head -n1)"
+          read -r project branch sha < "control/$request"
+          test "$project" = goanime && test "$branch" = feature/manga-platform
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: feature/manga-platform
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+      - name: Refuse initial branch drift
+        id: drift
+        working-directory: private-source
+        env:
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+        run: test "$(git rev-parse HEAD)" = "$REVIEWED_SHA"
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null
+      - name: Prove deterministic contracts
+        id: fixtures
+        working-directory: private-source
+        run: |
+          flutter test --no-pub --concurrency=2 test/services/manga/providers
+          flutter test --no-pub --concurrency=1 \
+            test/architecture/manga_provider_manifest_validator_test.dart \
+            test/architecture/manga_provider_registry_manifest_test.dart \
+            test/architecture/manga_planned_provider_definitions_test.dart
+      - name: Prove exact enabled cohort live bytes
+        id: live
+        working-directory: private-source
+        env:
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+          WORK: ${{ runner.temp }}/goanime-manga-certify-v2
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$WORK" && mkdir -p "$WORK"
+          dart run tools/manga/collect_enabled_manga_live_evidence.dart "$WORK/evidence.json" "$WORK/status.json" "$REVIEWED_SHA"
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          s=json.loads(Path(os.environ['WORK'],'status.json').read_text())
+          expected={'ptbr.astratoons','ptbr.capitoons','ptbr.kivaratoons','ptbr.leituramanga','ptbr.maidscan','ptbr.mangadash','ptbr.mangaflix','ptbr.mangalivreblog','ptbr.ninjascan'}
+          assert s['providerSetVersion']==os.environ['REVIEWED_SHA'] and s['complete'] is True and s['failures']==[]
+          assert set(s['successfulProviderIds'])==expected
+          PY
+      - name: Add rollout gates
+        id: patch
+        working-directory: private-source
+        env:
+          WORK: ${{ runner.temp }}/goanime-manga-certify-v2
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=Path('docs/manga_sources_ptbr.json'); m=json.loads(p.read_text())
+          s=json.loads(Path(os.environ['WORK'],'status.json').read_text()); verified=s['generatedAt']; live=set(s['successfulProviderIds']); enabled=set()
+          for r in m['providerRecords']:
+            if r.get('implementationState')=='enabled':
+              sid=r['goanimeSourceId']; enabled.add(sid)
+              assert sid in live
+              r['rolloutGates']={'fixtureContractPassed':True,'liveReadabilityPassed':True,'verifiedAt':verified}
+          assert enabled==live
+          p.write_text(json.dumps(m,ensure_ascii=False,indent=2)+'\n')
+          PY
+          dart run tools/manga/validate_manga_provider_manifest.dart docs/manga_sources_ptbr.json
+          git diff --check
+      - name: Commit certification atomically
+        id: commit
+        working-directory: private-source
+        env:
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin feature/manga-platform --quiet
+          test "$(git rev-parse origin/feature/manga-platform)" = "$REVIEWED_SHA"
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/manga_sources_ptbr.json
+          git commit -m 'chore(manga): certify enabled rollout gates'
+          new_sha="$(git rev-parse HEAD)"; git push origin HEAD:feature/manga-platform
+          echo "new_sha=$new_sha" >> "$GITHUB_OUTPUT"
+      - name: Publish sanitized receipt
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTROL_SHA: ${{ github.sha }}
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+          NEW_SHA: ${{ steps.commit.outputs.new_sha }}
+          JOB_STATUS: ${{ job.status }}
+          FIXTURES: ${{ steps.fixtures.outcome }}
+          LIVE: ${{ steps.live.outcome }}
+          PATCH: ${{ steps.patch.outcome }}
+          COMMIT: ${{ steps.commit.outcome }}
+        run: |
+          set -euo pipefail
+          result="$(jq -cn --arg controlSha "$CONTROL_SHA" --arg reviewedSha "${REVIEWED_SHA:-}" --arg newSha "${NEW_SHA:-}" --arg state "$JOB_STATUS" --arg fixtures "${FIXTURES:-skipped}" --arg live "${LIVE:-skipped}" --arg patch "${PATCH:-skipped}" --arg commit "${COMMIT:-skipped}" '{schemaVersion:2,controlSha:$controlSha,reviewedSha:$reviewedSha,newSha:$newSha,state:$state,stages:{fixtures:$fixtures,live:$live,patch:$patch,commit:$commit},enabledProviders:9}')"
+          encoded="$(printf '%s\n' "$result"|base64 -w0)"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/results/goanime-manga-certify-rollout-v2/$CONTROL_SHA.json" -f message="ci(result): record manga rollout v2 $CONTROL_SHA" -f content="$encoded"
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control" "$RUNNER_TEMP/goanime-manga-certify-v2"
