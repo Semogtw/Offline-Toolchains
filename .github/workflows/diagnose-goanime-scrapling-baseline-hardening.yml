@@ -70,12 +70,18 @@ jobs:
         if: steps.patch.outcome == 'failure'
         run: exit 1
 
-      - name: Run focused baseline tests
+      - name: Run baseline tests by sanitized slot
         id: tests
         if: steps.patch.outcome == 'success'
         continue-on-error: true
         working-directory: private-source/tools/scrapling_provider_pipeline
-        run: python3 -m unittest discover -s tests -p 'test_legacy_baseline_preflight.py'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 ../../../trusted-source/scripts/goanime_run_unittest_file_slots.py \
+            --test-file tests/test_legacy_baseline_preflight.py \
+            --reporter ../../../trusted-source/scripts/goanime_post_status.py \
+            --context-prefix goanime-scrapling/baseline-test-slot
 
       - name: Report tests status
         if: always() && steps.patch.outcome == 'success'
