@@ -1,0 +1,42 @@
+name: Observe GoAnime Manga APK8
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-observe-apk8/*.request'
+permissions:
+  actions: read
+  contents: write
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+      - name: Resolve target SHA
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-observe-apk8/*.request' | head -n1)"
+          read -r target_sha < "$request"
+          [[ "$target_sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$target_sha" >> "$GITHUB_OUTPUT"
+      - name: Publish sanitized run state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+          CONTROL_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          runs="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow build-goanime-manga-apk8.yml --limit 20 --json databaseId,status,conclusion,headSha,event,createdAt)"
+          row="$(jq -c --arg sha "$TARGET_SHA" '[.[] | select(.headSha==$sha)][0] // empty' <<< "$runs")"
+          test -n "$row"
+          result="$(jq -c --arg controlSha "$CONTROL_SHA" --arg targetSha "$TARGET_SHA" '. + {schemaVersion:1,controlSha:$controlSha,targetSha:$targetSha}' <<< "$row")"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/results/goanime-manga-observe-apk8/$CONTROL_SHA.json" -f message="ci(result): observe manga apk8 $TARGET_SHA" -f content="$encoded"
