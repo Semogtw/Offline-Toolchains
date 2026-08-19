@@ -1,0 +1,4 @@
+target_branch=feat/scrapling-provider-pipeline
+source_hint=9d62f645b280cfbdc9d004a3d8642ccb8cf7c312
+workers=8
+reason=full gate after ownership fanout XML and baseline hardening
