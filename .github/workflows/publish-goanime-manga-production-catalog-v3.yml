@@ -1,0 +1,274 @@
+name: Publish GoAnime Manga production catalog v3
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-publish-catalog-v3/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-manga-publish-catalog-v3-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact provider revision
+        id: request
+        working-directory: control
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-publish-catalog-v3/*.request' | head -n1)"
+          read -r project branch sha < "$request"
+          test "$project" = goanime && test "$branch" = feature/manga-platform
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: feature/manga-platform
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Refuse branch drift
+        working-directory: private-source
+        env:
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+        run: test "$(git rev-parse HEAD)" = "$REVIEWED_SHA"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null
+
+      - name: Validate provider and evidence contracts
+        id: contracts
+        working-directory: private-source
+        run: |
+          flutter analyze --no-pub \
+            tools/manga/manga_live_provider_evidence.dart \
+            tools/manga/collect_enabled_manga_live_evidence.dart \
+            test/tools/manga/manga_live_provider_evidence_test.dart \
+            test/tools/manga/collect_enabled_manga_live_evidence_test.dart
+          flutter test --no-pub --concurrency=2 test/services/manga/providers
+          flutter test --no-pub --concurrency=1 \
+            test/tools/manga/manga_live_provider_evidence_test.dart \
+            test/tools/manga/collect_enabled_manga_live_evidence_test.dart \
+            test/architecture/manga_provider_manifest_validator_test.dart \
+            test/architecture/manga_provider_registry_manifest_test.dart \
+            test/architecture/manga_planned_provider_definitions_test.dart
+          dart format --output=none --set-exit-if-changed \
+            tools/manga/manga_live_provider_evidence.dart \
+            tools/manga/collect_enabled_manga_live_evidence.dart \
+            test/tools/manga/manga_live_provider_evidence_test.dart \
+            test/tools/manga/collect_enabled_manga_live_evidence_test.dart
+
+      - name: Collect complete enabled evidence
+        id: collect
+        working-directory: private-source
+        env:
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+          WORK: ${{ runner.temp }}/goanime-manga-catalog-v3
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$WORK" && mkdir -p "$WORK"
+          success=0
+          used=0
+          for attempt in 1 2 3; do
+            used="$attempt"
+            rm -f "$WORK/evidence.json" "$WORK/status.json"
+            set +e
+            dart run tools/manga/collect_enabled_manga_live_evidence.dart \
+              "$WORK/evidence.json" "$WORK/status.json" "$REVIEWED_SHA"
+            set -e
+            if python3 - "$WORK/status.json" "$WORK/evidence.json" "$REVIEWED_SHA" <<'PY'
+          import json,sys
+          from pathlib import Path
+          status_path,evidence_path,sha=map(str,sys.argv[1:])
+          if not Path(status_path).exists() or not Path(evidence_path).exists(): raise SystemExit(1)
+          status=json.loads(Path(status_path).read_text()); evidence=json.loads(Path(evidence_path).read_text())
+          expected={'ptbr.astratoons','ptbr.capitoons','ptbr.kivaratoons','ptbr.leituramanga','ptbr.maidscan','ptbr.mangadash','ptbr.mangaflix','ptbr.mangalivreblog','ptbr.ninjascan'}
+          ok=(status.get('providerSetVersion')==sha and evidence.get('providerSetVersion')==sha and status.get('complete') is True and status.get('failures')==[] and set(status.get('successfulProviderIds',[]))==expected and {row['sourceId'] for row in evidence.get('evidence',[])}==expected)
+          raise SystemExit(0 if ok else 1)
+          PY
+            then
+              success=1
+              break
+            fi
+            sleep "$((attempt * 3))"
+          done
+          test "$success" -eq 1
+          echo "attempts=$used" >> "$GITHUB_OUTPUT"
+
+      - name: Materialize certified rollout gates
+        working-directory: private-source
+        env:
+          WORK: ${{ runner.temp }}/goanime-manga-catalog-v3
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          status=json.loads(Path(os.environ['WORK'],'status.json').read_text())
+          verified=status['generatedAt']; proven=set(status['successfulProviderIds'])
+          p=Path('docs/manga_sources_ptbr.json'); manifest=json.loads(p.read_text()); enabled=set()
+          for record in manifest['providerRecords']:
+            if record.get('implementationState')=='enabled':
+              source=record['goanimeSourceId']; enabled.add(source)
+              assert source in proven
+              record['rolloutGates']={'fixtureContractPassed':True,'liveReadabilityPassed':True,'verifiedAt':verified}
+          assert enabled==proven
+          p.write_text(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+          PY
+          dart run tools/manga/validate_manga_provider_manifest.dart docs/manga_sources_ptbr.json
+          git diff --check
+
+      - name: Build canonical seed and SQLite v2
+        id: catalog
+        working-directory: private-source
+        env:
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+          WORK: ${{ runner.temp }}/goanime-manga-catalog-v3
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$WORK/ledger-empty.json" <<'JSON'
+          {"schemaVersion":1,"occurrenceMappings":[],"externalMappings":[]}
+          JSON
+          dart run tools/manga/bootstrap_manga_canonical_id_ledger.dart \
+            --allow-new-identities "$WORK/evidence.json" "$WORK/ledger-empty.json" \
+            "$WORK/ledger.json" "$WORK/bootstrap-report.json"
+          dart run tools/manga/build_safe_manga_canonical_staging.dart \
+            "$WORK/evidence.json" "$WORK/ledger.json" \
+            "$WORK/staging.json" "$WORK/ledger-after.json"
+          dart run tools/manga/promote_manga_canonical_candidate.dart \
+            docs/manga_sources_ptbr.json "$WORK/staging.json" "$REVIEWED_SHA" \
+            "$WORK/seed-v2.json" --allow-production-transition
+          dart run tools/manga/build_manga_production_catalog.dart \
+            docs/manga_sources_ptbr.json "$WORK/seed-v2.json" "$REVIEWED_SHA" \
+            assets/data/manga_availability.db
+          python3 - <<'PY'
+          import os,sqlite3
+          db='assets/data/manga_availability.db'; con=sqlite3.connect(db)
+          try:
+            meta=dict(con.execute('select key,value from metadata'))
+            expected={'ptbr.astratoons','ptbr.capitoons','ptbr.kivaratoons','ptbr.leituramanga','ptbr.maidscan','ptbr.mangadash','ptbr.mangaflix','ptbr.mangalivreblog','ptbr.ninjascan'}
+            providers={r[0] for r in con.execute('select distinct sourceId from source_links')}
+            works=con.execute('select count(*) from works').fetchone()[0]
+            links=con.execute('select count(*) from source_links').fetchone()[0]
+            assert meta['schemaVersion']=='2' and meta['builderVersion']=='2'
+            assert meta['providerSetVersion']==os.environ['REVIEWED_SHA']
+            assert providers==expected and works>0 and links>=len(expected)
+            with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+              f.write(f'works={works}\nlinks={links}\nproviders={len(providers)}\n')
+          finally: con.close()
+          PY
+
+      - name: Register catalog asset
+        working-directory: private-source
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('pubspec.yaml'); text=p.read_text(encoding='utf-8')
+          asset='    - assets/data/manga_availability.db\n'; anchor='    - assets/data/title_availability.db\n'
+          if asset not in text:
+            if anchor not in text: raise SystemExit('title availability asset anchor missing')
+            p.write_text(text.replace(anchor,anchor+asset,1),encoding='utf-8')
+          PY
+          flutter pub get >/dev/null
+
+      - name: Validate bundled runtime
+        id: runtime
+        working-directory: private-source
+        run: |
+          flutter analyze --no-pub \
+            lib/screens/manga/manga_reader_screen.dart \
+            lib/services/manga/manga_bundled_catalog_source.dart \
+            lib/services/manga/manga_content_resolver.dart \
+            lib/services/manga/manga_platform_runtime.dart \
+            lib/services/manga/manga_platform_runtime_service.dart
+          flutter test --no-pub --concurrency=1 \
+            test/services/manga/manga_bundled_catalog_source_test.dart \
+            test/services/manga/manga_platform_runtime_test.dart \
+            test/services/manga/manga_platform_runtime_service_test.dart \
+            test/architecture/manga_production_catalog_fail_closed_test.dart \
+            test/integration/manga_source_routing_test.dart
+          git diff --check
+
+      - name: Commit certified production catalog atomically
+        id: commit
+        working-directory: private-source
+        env:
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin feature/manga-platform --quiet
+          test "$(git rev-parse origin/feature/manga-platform)" = "$REVIEWED_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/manga_sources_ptbr.json assets/data/manga_availability.db pubspec.yaml
+          git diff --cached --quiet && { echo 'catalog publication produced no changes' >&2; exit 1; }
+          git commit -m 'feat(manga): bundle certified production catalog'
+          new_sha="$(git rev-parse HEAD)"
+          git push origin HEAD:feature/manga-platform
+          echo "new_sha=$new_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Publish sanitized receipt
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTROL_SHA: ${{ github.sha }}
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+          NEW_SHA: ${{ steps.commit.outputs.new_sha }}
+          JOB_STATUS: ${{ job.status }}
+          CONTRACTS: ${{ steps.contracts.outcome }}
+          COLLECT: ${{ steps.collect.outcome }}
+          RUNTIME: ${{ steps.runtime.outcome }}
+          ATTEMPTS: ${{ steps.collect.outputs.attempts }}
+          WORKS: ${{ steps.catalog.outputs.works }}
+          LINKS: ${{ steps.catalog.outputs.links }}
+          PROVIDERS: ${{ steps.catalog.outputs.providers }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          result="$(jq -cn --arg controlSha "$CONTROL_SHA" --arg reviewedSha "${REVIEWED_SHA:-}" --arg newSha "${NEW_SHA:-}" --arg state "$JOB_STATUS" --arg contracts "${CONTRACTS:-skipped}" --arg collect "${COLLECT:-skipped}" --arg runtime "${RUNTIME:-skipped}" --arg attempts "${ATTEMPTS:-0}" --arg works "${WORKS:-0}" --arg links "${LINKS:-0}" --arg providers "${PROVIDERS:-0}" --argjson runId "$RUN_ID" '{schemaVersion:3,controlSha:$controlSha,reviewedSha:$reviewedSha,newSha:$newSha,state:$state,stages:{contracts:$contracts,collect:$collect,runtime:$runtime},collectionAttempts:($attempts|tonumber),works:($works|tonumber),sourceLinks:($links|tonumber),providers:($providers|tonumber),runId:$runId}')"
+          encoded="$(printf '%s\n' "$result"|base64 -w0)"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/results/goanime-manga-publish-catalog-v3/$CONTROL_SHA.json" -f message="ci(result): record manga catalog v3 $CONTROL_SHA" -f content="$encoded"
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control" "$RUNNER_TEMP/goanime-manga-catalog-v3"
