@@ -1,0 +1,354 @@
+name: Build functional GoAnime Manga APK encrypted
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-functional-apk/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-manga-functional-apk
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Functional Manga debug APK
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: toolchain-control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact GoAnime revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-functional-apk/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = goanime
+          test "$branch" = feature/manga-platform
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify exact checkout
+        working-directory: private-source
+        shell: bash
+        env:
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+        run: test "$(git rev-parse HEAD)" = "$REVIEWED_SHA"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Expose Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null
+
+      - name: Validate provider manifest
+        id: manifest
+        working-directory: private-source
+        run: dart run tools/manga/validate_manga_provider_manifest.dart docs/manga_sources_ptbr.json
+
+      - name: Collect byte-aware enabled evidence
+        id: collect
+        working-directory: private-source
+        shell: bash
+        env:
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+          WORK: ${{ runner.temp }}/goanime-manga-functional
+        run: |
+          set -euo pipefail
+          rm -rf "$WORK"
+          mkdir -p "$WORK/plain" "$WORK/transfer" "$WORK/gpg"
+          chmod 700 "$WORK/gpg"
+          dart run tools/manga/collect_enabled_manga_live_evidence.dart \
+            "$WORK/plain/evidence.json" \
+            "$WORK/plain/status.json" \
+            "$REVIEWED_SHA"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ['WORK']) / 'plain'
+          reviewed = os.environ['REVIEWED_SHA']
+          expected = {
+              'ptbr.astratoons', 'ptbr.capitoons', 'ptbr.kivaratoons',
+              'ptbr.leituramanga', 'ptbr.maidscan', 'ptbr.mangadash',
+              'ptbr.mangaflix', 'ptbr.mangalivreblog', 'ptbr.ninjascan',
+          }
+          status = json.loads((root / 'status.json').read_text())
+          evidence = json.loads((root / 'evidence.json').read_text())
+          assert status['providerSetVersion'] == reviewed
+          assert evidence['providerSetVersion'] == reviewed
+          assert status['complete'] is True
+          assert status['failures'] == []
+          assert set(status['successfulProviderIds']) == expected
+          assert {row['sourceId'] for row in evidence['evidence']} == expected
+          PY
+
+      - name: Build canonical staging for enabled cohort
+        id: canonical
+        working-directory: private-source
+        shell: bash
+        env:
+          WORK: ${{ runner.temp }}/goanime-manga-functional
+        run: |
+          set -euo pipefail
+          plain="$WORK/plain"
+          cat > "$plain/ledger-empty.json" <<'JSON'
+          {
+            "schemaVersion": 1,
+            "occurrenceMappings": [],
+            "externalMappings": []
+          }
+          JSON
+          dart run tools/manga/bootstrap_manga_canonical_id_ledger.dart \
+            --allow-new-identities \
+            "$plain/evidence.json" \
+            "$plain/ledger-empty.json" \
+            "$plain/ledger.json" \
+            "$plain/bootstrap-report.json"
+          dart run tools/manga/build_safe_manga_canonical_staging.dart \
+            "$plain/evidence.json" \
+            "$plain/ledger.json" \
+            "$plain/canonical-staging.json" \
+            "$plain/ledger-after.json"
+
+      - name: Promote and build production catalog v2
+        id: catalog
+        working-directory: private-source
+        shell: bash
+        env:
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+          WORK: ${{ runner.temp }}/goanime-manga-functional
+        run: |
+          set -euo pipefail
+          plain="$WORK/plain"
+          dart run tools/manga/promote_manga_canonical_candidate.dart \
+            docs/manga_sources_ptbr.json \
+            "$plain/canonical-staging.json" \
+            "$REVIEWED_SHA" \
+            "$plain/seed-v2.json" \
+            --allow-production-transition
+          dart run tools/manga/build_manga_production_catalog.dart \
+            docs/manga_sources_ptbr.json \
+            "$plain/seed-v2.json" \
+            "$REVIEWED_SHA" \
+            assets/data/manga_availability.db
+          python3 - <<'PY'
+          import os, sqlite3
+          from pathlib import Path
+          db = Path('assets/data/manga_availability.db')
+          assert db.is_file() and db.stat().st_size > 0
+          conn = sqlite3.connect(db)
+          try:
+              meta = dict(conn.execute('SELECT key, value FROM metadata'))
+              expected = {
+                  'ptbr.astratoons', 'ptbr.capitoons', 'ptbr.kivaratoons',
+                  'ptbr.leituramanga', 'ptbr.maidscan', 'ptbr.mangadash',
+                  'ptbr.mangaflix', 'ptbr.mangalivreblog', 'ptbr.ninjascan',
+              }
+              sources = {row[0] for row in conn.execute('SELECT DISTINCT sourceId FROM source_links')}
+              works = conn.execute('SELECT COUNT(*) FROM works').fetchone()[0]
+              links = conn.execute('SELECT COUNT(*) FROM source_links').fetchone()[0]
+              assert meta['schemaVersion'] == '2'
+              assert meta['builderVersion'] == '2'
+              assert meta['providerSetVersion'] == os.environ['REVIEWED_SHA']
+              assert sources == expected
+              assert works > 0 and links >= len(expected)
+              print(f'manga_catalog_verified works={works} links={links} providers={len(sources)}')
+              with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
+                  out.write(f'works={works}\nlinks={links}\nproviders={len(sources)}\n')
+          finally:
+              conn.close()
+          PY
+
+      - name: Include manga catalog in Flutter assets
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('pubspec.yaml')
+          text = path.read_text(encoding='utf-8')
+          asset = '    - assets/data/manga_availability.db\n'
+          if asset not in text:
+              anchor = '    - assets/data/title_availability.db\n'
+              if anchor not in text:
+                  raise SystemExit('title availability asset anchor not found')
+              text = text.replace(anchor, anchor + asset, 1)
+              path.write_text(text, encoding='utf-8')
+          assert asset in path.read_text(encoding='utf-8')
+          PY
+          flutter pub get >/dev/null
+
+      - name: Run focused manga runtime tests
+        id: tests
+        working-directory: private-source
+        run: |
+          flutter test --no-pub --concurrency=1 \
+            test/services/manga/manga_bundled_catalog_source_test.dart \
+            test/services/manga/manga_platform_runtime_test.dart \
+            test/services/manga/manga_platform_runtime_service_test.dart
+
+      - name: Build Android debug APK
+        id: apk
+        working-directory: private-source
+        run: flutter build apk --debug --no-pub
+
+      - name: Verify generated catalog is physically bundled in APK
+        id: verify_apk
+        working-directory: private-source
+        shell: bash
+        env:
+          WORK: ${{ runner.temp }}/goanime-manga-functional
+        run: |
+          set -euo pipefail
+          apk=build/app/outputs/flutter-apk/app-debug.apk
+          test -s "$apk"
+          unzip -t "$apk" >/dev/null
+          bundled='assets/flutter_assets/assets/data/manga_availability.db'
+          unzip -l "$apk" | grep -F "$bundled" >/dev/null
+          unzip -p "$apk" "$bundled" > "$WORK/plain/manga_availability.from-apk.db"
+          source_sha="$(sha256sum assets/data/manga_availability.db | awk '{print $1}')"
+          bundled_sha="$(sha256sum "$WORK/plain/manga_availability.from-apk.db" | awk '{print $1}')"
+          test "$source_sha" = "$bundled_sha"
+          apk_sha="$(sha256sum "$apk" | awk '{print $1}')"
+          apk_size="$(stat -c '%s' "$apk")"
+          echo "apk_sha=$apk_sha" >> "$GITHUB_OUTPUT"
+          echo "apk_size=$apk_size" >> "$GITHUB_OUTPUT"
+          echo "catalog_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo 'manga_catalog_bundled_in_apk=success'
+
+      - name: Encrypt APK
+        id: package
+        working-directory: private-source
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+          SOURCE_SHA: ${{ steps.request.outputs.sha }}
+          APK_SHA: ${{ steps.verify_apk.outputs.apk_sha }}
+          APK_SIZE: ${{ steps.verify_apk.outputs.apk_size }}
+          CATALOG_SHA: ${{ steps.verify_apk.outputs.catalog_sha }}
+          WORKS: ${{ steps.catalog.outputs.works }}
+          PROVIDERS: ${{ steps.catalog.outputs.providers }}
+          WORK: ${{ runner.temp }}/goanime-manga-functional
+        run: |
+          set -euo pipefail
+          apk=build/app/outputs/flutter-apk/app-debug.apk
+          transfer="$WORK/transfer"
+          gpg_home="$WORK/gpg"
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import "$GITHUB_WORKSPACE/toolchain-control/keys/source-bundles-public.asc" >/dev/null 2>&1
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1 == "fpr" {print $10; exit}')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          encrypted="$transfer/GoAnime-Manga-${SOURCE_SHA:0:12}-debug.apk.gpg"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" \
+            --output "$encrypted" --encrypt "$apk"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          data = {
+              'schemaVersion': 1,
+              'sourceSha': os.environ['SOURCE_SHA'],
+              'buildType': 'debug',
+              'apkSha256': os.environ['APK_SHA'],
+              'apkSizeBytes': int(os.environ['APK_SIZE']),
+              'mangaCatalogSha256': os.environ['CATALOG_SHA'],
+              'mangaWorks': int(os.environ['WORKS']),
+              'mangaProviders': int(os.environ['PROVIDERS']),
+              'recipientFingerprint': '2DE29DC31427CF0A911AB96175679291435059B0',
+          }
+          Path(os.environ['WORK'], 'transfer', 'manifest.json').write_text(
+              json.dumps(data, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          PY
+          (cd "$transfer" && sha256sum *.gpg > SHA256SUMS)
+          echo "transfer=$transfer" >> "$GITHUB_OUTPUT"
+
+      - name: Upload encrypted functional APK
+        id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-manga-functional-debug-apk-encrypted
+          path: ${{ steps.package.outputs.transfer }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Remove private checkout and plaintext staging
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchain-control" "$RUNNER_TEMP/goanime-manga-functional"
+
+      - name: Publish sanitized build receipt
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTROL_SHA: ${{ github.sha }}
+          SOURCE_SHA: ${{ steps.request.outputs.sha }}
+          JOB_STATUS: ${{ job.status }}
+          RUN_ID: ${{ github.run_id }}
+          WORKS: ${{ steps.catalog.outputs.works }}
+          PROVIDERS: ${{ steps.catalog.outputs.providers }}
+          APK_SHA: ${{ steps.verify_apk.outputs.apk_sha }}
+          APK_SIZE: ${{ steps.verify_apk.outputs.apk_size }}
+        run: |
+          set -euo pipefail
+          result="$(jq -cn \
+            --arg controlSha "$CONTROL_SHA" \
+            --arg sourceSha "${SOURCE_SHA:-}" \
+            --arg state "$JOB_STATUS" \
+            --argjson runId "$RUN_ID" \
+            --arg works "${WORKS:-0}" \
+            --arg providers "${PROVIDERS:-0}" \
+            --arg apkSha "${APK_SHA:-}" \
+            --arg apkSize "${APK_SIZE:-0}" \
+            '{schemaVersion:1,controlSha:$controlSha,sourceSha:$sourceSha,state:$state,runId:$runId,artifactName:"goanime-manga-functional-debug-apk-encrypted",mangaWorks:($works|tonumber),mangaProviders:($providers|tonumber),apkSha256:$apkSha,apkSizeBytes:($apkSize|tonumber)}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          gh api --method PUT \
+            "repos/$GITHUB_REPOSITORY/contents/results/goanime-manga-functional-apk/$CONTROL_SHA.json" \
+            -f message="ci(result): record functional manga APK $CONTROL_SHA" \
+            -f content="$encoded"
