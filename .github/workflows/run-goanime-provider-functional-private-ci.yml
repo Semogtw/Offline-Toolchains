@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
     paths:
+      - '.github/workflows/run-goanime-provider-functional-private-ci.yml'
       - 'triggers/goanime-provider-functional-ci/latest.request'
 
 permissions:
@@ -93,6 +94,7 @@ jobs:
           flutter test --no-pub test/services/animefire_service_test.dart
           flutter test --no-pub test/services/animesonline_service_test.dart
           flutter test --no-pub test/services/goyabu_service_test.dart
+          flutter test --no-pub test/services/providers/goyabu_quality_propagation_test.dart
           flutter test --no-pub test/services/anitube_service_test.dart
 
       - name: Run full Flutter test suite
@@ -114,3 +116,51 @@ jobs:
         if: always()
         shell: bash
         run: rm -rf "$GITHUB_WORKSPACE/private-source"
+
+  report:
+    name: Publish sanitized provider CI result
+    if: always()
+    needs: [verify]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+
+    steps:
+      - name: Publish result without private source access
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERIFY_RESULT: ${{ needs.verify.result }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          TOOLCHAINS_TRIGGER_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/goanime-provider-functional-ci-report.json"
+          python3 - "$report" <<'PY'
+          import json
+          import os
+          import sys
+          from datetime import datetime, timezone
+
+          payload = {
+              "schemaVersion": 1,
+              "runId": int(os.environ["RUN_ID"]),
+              "runAttempt": int(os.environ["RUN_ATTEMPT"]),
+              "toolchainsTriggerSha": os.environ["TOOLCHAINS_TRIGGER_SHA"],
+              "verifyResult": os.environ["VERIFY_RESULT"],
+              "finishedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+          }
+          with open(sys.argv[1], "w", encoding="utf-8") as stream:
+              json.dump(payload, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          PY
+          encoded="$(base64 -w0 < "$report")"
+          path="reports/goanime-provider-functional-ci/${RUN_ID}.json"
+          gh api \
+            --method PUT \
+            "repos/${GITHUB_REPOSITORY}/contents/${path}" \
+            -f "message=ci(goanime): report provider functional run ${RUN_ID}" \
+            -f "content=${encoded}" \
+            >/dev/null
