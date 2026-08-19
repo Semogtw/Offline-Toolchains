@@ -39,7 +39,7 @@ jobs:
       - name: Resolve dependencies
         working-directory: private-source
         run: flutter pub get >/dev/null 2>&1
-      - name: Analyze UX reading surface
+      - name: Analyze Manga UX surface
         id: analyze
         working-directory: private-source
         continue-on-error: true
@@ -48,11 +48,17 @@ jobs:
             lib/services/manga/manga_chapter_hydrator.dart \
             lib/services/manga/manga_hydrating_details_data_source.dart \
             lib/services/manga/manga_reader_remote_transport.dart \
+            lib/services/manga/manga_source_discovery_service.dart \
+            lib/services/manga/manga_search_coordinator.dart \
             lib/services/manga/manga_source_runtime.dart \
             lib/services/manga/manga_platform_runtime.dart \
             lib/services/manga/manga_platform_runtime_service.dart \
+            lib/screens/manga/manga_home_screen.dart \
             lib/screens/manga/manga_reader_screen.dart \
-            test/services/manga/manga_chapter_hydrator_test.dart
+            lib/widgets/manga/manga_browse_item_tile.dart \
+            test/services/manga/manga_chapter_hydrator_test.dart \
+            test/services/manga/manga_source_discovery_service_test.dart \
+            test/services/manga/manga_search_coordinator_test.dart
       - name: Run focused tests
         id: tests
         continue-on-error: true
@@ -60,7 +66,10 @@ jobs:
         run: |
           flutter test --no-pub --concurrency=1 \
             test/services/manga/manga_chapter_hydrator_test.dart \
+            test/services/manga/manga_source_discovery_service_test.dart \
+            test/services/manga/manga_search_coordinator_test.dart \
             test/services/manga/manga_content_resolver_test.dart \
+            test/widgets/manga/manga_browse_views_test.dart \
             test/widgets/manga/manga_default_details_navigation_test.dart \
             test/widgets/manga/manga_details_screen_test.dart
       - name: Check format
@@ -72,10 +81,14 @@ jobs:
             lib/services/manga/manga_chapter_hydrator.dart \
             lib/services/manga/manga_hydrating_details_data_source.dart \
             lib/services/manga/manga_reader_remote_transport.dart \
+            lib/services/manga/manga_source_discovery_service.dart \
+            lib/services/manga/manga_search_coordinator.dart \
             lib/services/manga/manga_source_runtime.dart \
             lib/services/manga/manga_platform_runtime.dart \
             lib/services/manga/manga_platform_runtime_service.dart \
+            lib/screens/manga/manga_home_screen.dart \
             lib/screens/manga/manga_reader_screen.dart \
+            lib/widgets/manga/manga_browse_item_tile.dart \
             test/services/manga/manga_chapter_hydrator_test.dart
       - name: Publish sanitized result
         if: always()
