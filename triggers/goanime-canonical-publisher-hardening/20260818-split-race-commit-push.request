@@ -1,0 +1,1 @@
+reason=replace canonical extraheader publish tail with separately observable race-check commit and normal authenticated push
