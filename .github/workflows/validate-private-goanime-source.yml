@@ -98,10 +98,12 @@ jobs:
           cd private-source
           dart format --output=none --set-exit-if-changed \
             lib/services/anime_metadata_cache_service.dart \
+            lib/services/anime_metadata_seed_service.dart \
             lib/services/runtime_home_catalog_service.dart \
             tools/anilist_metadata_bulk_loader.dart \
             tools/build_anime_metadata_seed.dart \
             test/services/anime_metadata_home_candidates_test.dart \
+            test/services/anime_metadata_seed_reimport_test.dart \
             test/services/runtime_home_catalog_partial_cache_repair_test.dart \
             test/tools/anilist_metadata_bulk_loader_test.dart \
             test/tools/build_anime_metadata_seed_catalog_sources_test.dart
@@ -120,6 +122,8 @@ jobs:
           cd private-source
           flutter test --no-pub \
             test/services/anime_metadata_home_candidates_test.dart \
+            test/services/anime_metadata_seed_bundled_test.dart \
+            test/services/anime_metadata_seed_reimport_test.dart \
             test/services/runtime_home_catalog_seed_fallback_test.dart \
             test/services/runtime_home_catalog_partial_cache_repair_test.dart \
             test/services/runtime_home_catalog_resilience_test.dart \
