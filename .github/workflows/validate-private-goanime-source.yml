@@ -1,0 +1,117 @@
+name: Validate private GoAnime source
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - triggers/private-goanime-validate.json
+      - .github/workflows/validate-private-goanime-source.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-goanime-source-validation
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout trusted toolchain source
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: trusted-source
+          persist-credentials: false
+
+      - name: Read and validate request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$GITHUB_WORKSPACE/trusted-source/triggers/private-goanime-validate.json"
+          sha="$(python3 - "$request" <<'PY'
+          import json
+          import re
+          import sys
+          payload = json.load(open(sys.argv[1], encoding='utf-8'))
+          sha = str(payload.get('ref') or '').strip().lower()
+          if not re.fullmatch(r'[0-9a-f]{40}', sha):
+              raise SystemExit('ref must be an exact 40-character commit SHA')
+          print(sha)
+          PY
+          )"
+          echo "ref=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPOSITORIES_TOKEN" || {
+            echo 'Missing PRIVATE_REPOSITORIES_TOKEN.' >&2
+            exit 1
+          }
+
+      - name: Checkout private GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify exact private commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C private-source rev-parse HEAD)" = '${{ steps.request.outputs.ref }}'
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+
+      - name: Disable Flutter analytics
+        run: flutter config --no-analytics
+
+      - name: Resolve dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd private-source && flutter pub get)
+          (cd private-source/packages/goanime_core && dart pub get)
+
+      - name: Check formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd private-source
+          dart format --output=none --set-exit-if-changed lib test packages tools
+
+      - name: Analyze
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd private-source
+          flutter analyze --no-pub
+
+      - name: Run focused Home and metadata tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd private-source
+          flutter test --no-pub \
+            test/services/runtime_home_catalog_seed_fallback_test.dart \
+            test/services/runtime_home_catalog_partial_cache_repair_test.dart \
+            test/services/runtime_home_catalog_resilience_test.dart \
+            test/tools/build_anime_metadata_seed_catalog_sources_test.dart
