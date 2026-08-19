@@ -246,22 +246,22 @@ jobs:
       - name: Auth topology E2E failed
         if: always() && steps.auth_e2e.outcome == 'failure'
         shell: bash
-        run: true
+        run: ":"
 
       - name: Workflow privacy E2E failed
         if: always() && steps.workflow_e2e.outcome == 'failure'
         shell: bash
-        run: true
+        run: ":"
 
       - name: Editorial publication E2E failed
         if: always() && steps.editorial_e2e.outcome == 'failure'
         shell: bash
-        run: true
+        run: ":"
 
       - name: Public portfolio E2E failed
         if: always() && steps.portfolio_e2e.outcome == 'failure'
         shell: bash
-        run: true
+        run: ":"
 
       - name: Summarize E2E outcomes
         if: always()
