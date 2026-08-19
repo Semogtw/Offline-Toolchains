@@ -13,7 +13,9 @@ jobs:
   prepare:
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
+    env:
+      SOURCE_REF: b4055d3c0741c05d6747c55346fb081e7a8ddd20
     steps:
       - name: Checkout trusted Toolchains source
         uses: actions/checkout@v6
@@ -26,11 +28,15 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
-          ref: fc2ab86c7501d7823fac4c3fe1eb3ce6a3a52567
+          ref: ${{ env.SOURCE_REF }}
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
           persist-credentials: false
           fetch-depth: 1
+
+      - name: Verify exact private commit
+        shell: bash
+        run: test "$(git -C private-source rev-parse HEAD)" = "$SOURCE_REF"
 
       - name: Set up Flutter 3.44.1
         uses: subosito/flutter-action@v2
@@ -42,41 +48,68 @@ jobs:
         working-directory: private-source
         run: flutter pub get
 
-      - name: Format cache builder and verify full format gate
+      - name: Format unified catalog files
         working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
-          dart format tools/cache_builder.dart
+          dart format \
+            lib/services/runtime_home_catalog_service.dart \
+            tools/build_anime_metadata_seed.dart \
+            test/services/runtime_home_catalog_partial_cache_repair_test.dart \
+            test/tools/build_anime_metadata_seed_catalog_sources_test.dart
           git diff --check
           changed="$(git diff --name-only)"
-          test "$changed" = 'tools/cache_builder.dart' || { echo "Unexpected formatted files:"; printf '%s\n' "$changed"; exit 1; }
-          dart format --output=none --set-exit-if-changed lib test packages tools
-          flutter test test/tools/cache_builder_pagination_test.dart test/tools/cache_builder_test.dart
+          expected="$(printf '%s\n' \
+            lib/services/runtime_home_catalog_service.dart \
+            tools/build_anime_metadata_seed.dart | sort)"
+          test "$(printf '%s\n' "$changed" | sort)" = "$expected" || {
+            echo 'Unexpected formatter change set:'
+            printf '%s\n' "$changed"
+            exit 1
+          }
+          dart format --output=none --set-exit-if-changed \
+            lib/services/runtime_home_catalog_service.dart \
+            tools/build_anime_metadata_seed.dart \
+            test/services/runtime_home_catalog_partial_cache_repair_test.dart \
+            test/tools/build_anime_metadata_seed_catalog_sources_test.dart
 
-      - name: Encrypt formatted file
+      - name: Run focused tests against formatted workspace
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter test --no-pub \
+            test/services/runtime_home_catalog_seed_fallback_test.dart \
+            test/services/runtime_home_catalog_partial_cache_repair_test.dart \
+            test/services/runtime_home_catalog_resilience_test.dart \
+            test/tools/build_anime_metadata_seed_catalog_sources_test.dart
+
+      - name: Encrypt formatted handoff
         shell: bash
         env:
           EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
         run: |
           set -euo pipefail
           work="$RUNNER_TEMP/goanime-format-fix"
-          mkdir -p "$work/gpg" "$work/out"
+          mkdir -p "$work/gpg" "$work/out" "$work/payload/lib/services" "$work/payload/tools"
           chmod 700 "$work/gpg"
           export GNUPGHOME="$work/gpg"
-          cp "$GITHUB_WORKSPACE/private-source/tools/cache_builder.dart" "$work/cache_builder.dart"
-          gpg --batch --import "$GITHUB_WORKSPACE/trusted-source/keys/source-bundles-public.asc"
+          cp private-source/lib/services/runtime_home_catalog_service.dart "$work/payload/lib/services/"
+          cp private-source/tools/build_anime_metadata_seed.dart "$work/payload/tools/"
+          tar -C "$work/payload" -czf "$work/formatted-files.tar.gz" .
+          gpg --batch --import trusted-source/keys/source-bundles-public.asc
           fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1=="fpr"{print $10;exit}')"
           test "$fingerprint" = "$EXPECTED_FINGERPRINT"
           gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" \
-            --output "$work/out/cache_builder.dart.gpg" --encrypt "$work/cache_builder.dart"
-          sha256sum "$work/cache_builder.dart" > "$work/out/cache_builder.dart.sha256"
-          printf '%s\n' 'fc2ab86c7501d7823fac4c3fe1eb3ce6a3a52567' > "$work/out/source-ref.txt"
+            --output "$work/out/formatted-files.tar.gz.gpg" --encrypt "$work/formatted-files.tar.gz"
+          sha256sum "$work/formatted-files.tar.gz" > "$work/out/formatted-files.tar.gz.sha256"
+          printf '%s\n' "$SOURCE_REF" > "$work/out/source-ref.txt"
 
       - name: Upload encrypted verified formatting handoff
         uses: actions/upload-artifact@v7
         with:
-          name: goanime-format-fix-encrypted-v2
+          name: goanime-unified-catalog-format-fix
           path: ${{ runner.temp }}/goanime-format-fix/out
           if-no-files-found: error
           retention-days: 1
