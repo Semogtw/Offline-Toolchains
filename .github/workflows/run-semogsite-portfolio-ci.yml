@@ -111,11 +111,6 @@ jobs:
           submodules: false
           show-progress: false
 
-      - name: Record resolved private checkpoint privately
-        working-directory: private-source
-        shell: bash
-        run: git rev-parse HEAD
-
       - name: Set up Node.js 22
         uses: actions/setup-node@v6
         with:
