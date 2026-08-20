@@ -1,6 +1,6 @@
 {
-  "status": "failure",
-  "targetSha": "f244286401b0af965525e3f962020e6e95a471d9",
-  "outputPrefix": null,
-  "runId": "32327017761"
+  "status": "success",
+  "targetSha": "09e0c7009cbcf05c04ac83dbe462ac422caca4a6",
+  "outputPrefix": "generated/goanime-unused-deps-v2/09e0c7009cbcf05c04ac83dbe462ac422caca4a6",
+  "runId": "32337729411"
 }
