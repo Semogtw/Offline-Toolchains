@@ -1,0 +1,157 @@
+name: Measure GoAnime release APK shrinking
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-r8-measure/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-r8-measure
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - name: Require private token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-r8-measure/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Build baseline release APK
+        id: baseline
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter build apk --release --no-pub
+          apk='build/app/outputs/flutter-apk/app-release.apk'
+          if [ ! -f "$apk" ]; then apk='build/app/outputs/flutter-apk/goanime.apk'; fi
+          test -f "$apk"
+          size="$(stat -c '%s' "$apk")"
+          printf 'size=%s\n' "$size" >> "$GITHUB_OUTPUT"
+          cp "$apk" "$RUNNER_TEMP/baseline.apk"
+
+      - name: Enable R8 and resource shrinking temporarily
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('android/app/build.gradle.kts')
+          text = path.read_text()
+          if text.count('isMinifyEnabled = false') != 1 or text.count('isShrinkResources = false') != 1:
+              raise SystemExit('unexpected release shrinking configuration')
+          text = text.replace('isMinifyEnabled = false', 'isMinifyEnabled = true', 1)
+          text = text.replace('isShrinkResources = false', 'isShrinkResources = true', 1)
+          path.write_text(text)
+          PY
+          rm -rf build android/app/build
+
+      - name: Build shrunk release APK
+        id: shrunk
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter build apk --release --no-pub
+          apk='build/app/outputs/flutter-apk/app-release.apk'
+          if [ ! -f "$apk" ]; then apk='build/app/outputs/flutter-apk/goanime.apk'; fi
+          test -f "$apk"
+          size="$(stat -c '%s' "$apk")"
+          printf 'size=%s\n' "$size" >> "$GITHUB_OUTPUT"
+          cp "$apk" "$RUNNER_TEMP/shrunk.apk"
+
+      - name: Publish measurement
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+          BASELINE_SIZE: ${{ steps.baseline.outputs.size }}
+          SHRUNK_SIZE: ${{ steps.shrunk.outputs.size }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          body="$(python3 - <<'PY'
+          import json, os
+          b = int(os.environ['BASELINE_SIZE']) if os.environ.get('BASELINE_SIZE') else None
+          s = int(os.environ['SHRUNK_SIZE']) if os.environ.get('SHRUNK_SIZE') else None
+          reduction = (b - s) if b is not None and s is not None else None
+          percent = ((b - s) * 100.0 / b) if b and s is not None else None
+          print(json.dumps({
+            'status': os.environ['JOB_STATUS'],
+            'targetSha': os.environ.get('TARGET_SHA'),
+            'baselineBytes': b,
+            'shrunkBytes': s,
+            'reductionBytes': reduction,
+            'reductionPercent': percent,
+            'runId': os.environ.get('GITHUB_RUN_ID'),
+          }, indent=2))
+          PY
+          )"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          path='status/goanime-r8-measure.json'
+          current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$path?ref=main" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$path" -f message='ci(goanime): record release APK shrinking measurement' -f content="$encoded" -f branch=main)
+          if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+          gh api "${args[@]}" >/dev/null
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
