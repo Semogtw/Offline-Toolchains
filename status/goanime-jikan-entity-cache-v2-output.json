@@ -1,6 +1,6 @@
 {
-  "status": "failure",
-  "targetSha": "23e79e8042b93fb97c4bc383a0cbff798b201204",
-  "outputPrefix": null,
-  "runId": "32332252068"
+  "status": "success",
+  "targetSha": "7f63b6d917cfa0af51590e94a2853deecf1c2413",
+  "outputPrefix": "generated/goanime-jikan-entity-cache-v2-output/7f63b6d917cfa0af51590e94a2853deecf1c2413",
+  "runId": "32333218603"
 }
