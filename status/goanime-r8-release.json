@@ -1,7 +1,7 @@
 {
   "status": "success",
-  "targetSha": "23e79e8042b93fb97c4bc383a0cbff798b201204",
-  "outputPrefix": "generated/goanime-r8-release/23e79e8042b93fb97c4bc383a0cbff798b201204",
-  "apkBytes": 117860902,
-  "runId": "32332536882"
+  "targetSha": "7f63b6d917cfa0af51590e94a2853deecf1c2413",
+  "outputPrefix": "generated/goanime-r8-release/7f63b6d917cfa0af51590e94a2853deecf1c2413",
+  "apkBytes": 117861177,
+  "runId": "32333233408"
 }
