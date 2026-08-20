@@ -1,0 +1,153 @@
+name: Validate GoAnime Jikan entity cache
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-jikan-entity-cache/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-jikan-entity-cache
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Require private token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout Toolchains
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-jikan-entity-cache/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          test "$branch" = 'perf/app-wide-optimization-20260819'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Validate patcher
+        working-directory: trusted-source
+        run: python3 -m py_compile scripts/prepare-goanime-jikan-entity-cache.py
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+
+      - name: Verify exact head
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/GoAnime-Mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+
+      - name: Apply cache patch
+        run: python3 trusted-source/scripts/prepare-goanime-jikan-entity-cache.py --root private-source
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Analyze and test
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter pub get
+          dart format lib/services/jikan_service.dart test/services/jikan_entity_cache_test.dart >/dev/null
+          git -c core.whitespace=cr-at-eol diff --check
+          dart analyze lib/services/jikan_service.dart test/services/jikan_entity_cache_test.dart
+          flutter test --no-pub --concurrency=1 \
+            test/services/jikan_entity_cache_test.dart \
+            test/services/jikan_rate_limit_queue_test.dart \
+            test/services/runtime_home_catalog_resilience_test.dart
+
+      - name: Publish outputs
+        id: publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          put_content() {
+            local output="$1" message="$2" encoded="$3" attempt current
+            for attempt in 1 2 3 4 5 6; do
+              current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$output?ref=main" --jq .sha 2>/dev/null || true)"
+              args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$output" -f message="$message" -f content="$encoded" -f branch=main)
+              if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+              if gh api "${args[@]}" >/dev/null 2>&1; then return 0; fi
+              sleep "$attempt"
+            done
+            return 1
+          }
+          prefix="generated/goanime-jikan-entity-cache/$TARGET_SHA"
+          for file in lib/services/jikan_service.dart test/services/jikan_entity_cache_test.dart; do
+            put_content "$prefix/$file" "ci(goanime): publish validated Jikan entity cache" "$(base64 -w0 "private-source/$file")"
+          done
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+
+      - name: Record status
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_STATUS: ${{ job.status }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+          OUTPUT_PREFIX: ${{ steps.publish.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          body="$(python3 - <<'PY'
+          import json, os
+          print(json.dumps({'status': os.environ['GATE_STATUS'], 'targetSha': os.environ.get('TARGET_SHA') or None, 'outputPrefix': os.environ.get('OUTPUT_PREFIX') or None, 'runId': os.environ.get('GITHUB_RUN_ID')}, indent=2))
+          PY
+          )"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          path='status/goanime-jikan-entity-cache.json'
+          for attempt in 1 2 3 4 5 6; do
+            current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$path?ref=main" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$path" -f message="ci(goanime): record Jikan entity cache status" -f content="$encoded" -f branch=main)
+            if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+            if gh api "${args[@]}" >/dev/null 2>&1; then exit 0; fi
+            sleep "$attempt"
+          done
+          exit 1
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
