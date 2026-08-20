@@ -4,8 +4,8 @@
   "run_number": 6,
   "schema_version": 1,
   "source_ref": "248b0a6fa89a79dbfe9e19f5fb083265fbfac414",
-  "status": "queued",
+  "status": "in_progress",
   "trigger_sha": "74fa9a5c772f06c26abe6ec844346bb53550eaf1",
-  "updated_at": "2026-08-20T02:29:44Z",
+  "updated_at": "2026-08-20T02:29:48Z",
   "workflow": "Generate private GoAnime rich catalog"
 }
