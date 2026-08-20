@@ -7,7 +7,7 @@ on:
       - 'triggers/goanime-format-debt/*.request'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: goanime-format-debt
@@ -132,7 +132,37 @@ jobs:
           echo "sha=$new_sha" >> "$GITHUB_OUTPUT"
 
       - name: Summary
+        if: success()
         run: echo "Published formatting cleanup SHA ${{ steps.publish.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record gate status
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_STATUS: ${{ job.status }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+          PUBLISHED_SHA: ${{ steps.publish.outputs.sha }}
+        run: |
+          set -euo pipefail
+          target_sha="${TARGET_SHA:-unknown}"
+          published_sha="${PUBLISHED_SHA:-}"
+          body="$(python3 - <<PY
+          import json, os
+          print(json.dumps({
+              'status': os.environ['GATE_STATUS'],
+              'targetSha': os.environ.get('TARGET_SHA') or None,
+              'publishedSha': os.environ.get('PUBLISHED_SHA') or None,
+              'runId': '${{ github.run_id }}',
+          }, indent=2))
+          PY
+          )"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          path='status/goanime-format-debt.json'
+          current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$path?ref=main" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$path" -f message="ci(goanime): record format debt gate status" -f content="$encoded" -f branch=main)
+          if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+          gh api "${args[@]}" >/dev/null
 
       - name: Remove private checkout
         if: always()
