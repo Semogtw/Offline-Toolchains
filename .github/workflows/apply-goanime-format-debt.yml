@@ -104,40 +104,35 @@ jobs:
           git diff --name-only | sort > "$RUNNER_TEMP/actual-format-files.txt"
           diff -u "$RUNNER_TEMP/expected-format-files.txt" "$RUNNER_TEMP/actual-format-files.txt"
 
-      - name: Commit and fast-forward private branch
+      - name: Publish validated formatted files to Toolchains
         id: publish
-        working-directory: private-source
         shell: bash
         env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
-          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
         run: |
           set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add \
-            lib/utils/image_cache_dimensions.dart \
-            packages/goanime_core/lib/src/title_normalizer.dart \
-            test/services/catalog_franchise_preloaded_index_test.dart \
-            test/services/franchise_availability_database_batch_test.dart \
-            test/services/providers/goyabu_quality_propagation_test.dart \
-            test/tools/super_animes_anilist_envelope_test.dart \
-            test/tools/super_animes_completion_policy_test.dart \
-            test/tools/super_animes_partial_batch_progress_test.dart \
+          files=(
+            lib/utils/image_cache_dimensions.dart
+            packages/goanime_core/lib/src/title_normalizer.dart
+            test/services/catalog_franchise_preloaded_index_test.dart
+            test/services/franchise_availability_database_batch_test.dart
+            test/services/providers/goyabu_quality_propagation_test.dart
+            test/tools/super_animes_anilist_envelope_test.dart
+            test/tools/super_animes_completion_policy_test.dart
+            test/tools/super_animes_partial_batch_progress_test.dart
             tools/super_animes_anilist_mal_resolver.dart
-          git commit -m 'style: clear repository formatting debt'
-          new_sha="$(git rev-parse HEAD)"
-          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
-          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/GoAnime-Mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
-          test "$remote" = "$EXPECTED_SHA"
-          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/GoAnime-Mobile.git "HEAD:refs/heads/$TARGET_BRANCH"
-          unset auth PRIVATE_REPOSITORIES_TOKEN
-          echo "sha=$new_sha" >> "$GITHUB_OUTPUT"
-
-      - name: Summary
-        if: success()
-        run: echo "Published formatting cleanup SHA ${{ steps.publish.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+          )
+          prefix="generated/goanime-format-debt/$TARGET_SHA"
+          for file in "${files[@]}"; do
+            output="$prefix/$file"
+            encoded="$(base64 -w0 "private-source/$file")"
+            current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$output?ref=main" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$output" -f message="ci(goanime): publish validated formatted $file" -f content="$encoded" -f branch=main)
+            if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+            gh api "${args[@]}" >/dev/null
+          done
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
 
       - name: Record gate status
         if: always()
@@ -146,7 +141,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GATE_STATUS: ${{ job.status }}
           TARGET_SHA: ${{ steps.request.outputs.sha }}
-          PUBLISHED_SHA: ${{ steps.publish.outputs.sha }}
+          OUTPUT_PREFIX: ${{ steps.publish.outputs.prefix }}
         run: |
           set -euo pipefail
           body="$(python3 - <<PY
@@ -154,7 +149,7 @@ jobs:
           print(json.dumps({
               'status': os.environ['GATE_STATUS'],
               'targetSha': os.environ.get('TARGET_SHA') or None,
-              'publishedSha': os.environ.get('PUBLISHED_SHA') or None,
+              'outputPrefix': os.environ.get('OUTPUT_PREFIX') or None,
               'runId': '${{ github.run_id }}',
           }, indent=2))
           PY
