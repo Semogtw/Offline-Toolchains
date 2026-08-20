@@ -1,4 +1,4 @@
-name: Apply GoAnime unused dependency cleanup
+name: Validate GoAnime unused dependency cleanup
 
 on:
   push:
@@ -7,16 +7,16 @@ on:
       - 'triggers/goanime-remove-unused-deps/*.request'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: goanime-remove-unused-deps
   cancel-in-progress: false
 
 jobs:
-  apply:
+  validate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - name: Require private repository token
         shell: bash
@@ -91,45 +91,77 @@ jobs:
           ! grep -E '^  (animated_item|bottom_navy_bar|cupertino_icons):' pubspec.lock
           ! grep -R -E 'animated_item|AnimatedItemPlugin|bottom_navy_bar|cupertino_icons' \
             linux/flutter windows/flutter macos/Flutter 2>/dev/null
+          printf '%s\n' pubspec.lock pubspec.yaml | sort > "$RUNNER_TEMP/expected.txt"
+          git diff --name-only | sort > "$RUNNER_TEMP/actual.txt"
+          diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
 
       - name: Validate dependency cleanup
         working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
-          git diff --check
+          git -c core.whitespace=cr-at-eol diff --check
           flutter analyze --no-pub
           flutter test --no-pub --concurrency=1 test/architecture/platform_boundaries_test.dart
           flutter build apk --debug --no-pub
 
-      - name: Commit and fast-forward private branch
+      - name: Publish validated outputs
         id: publish
-        working-directory: private-source
         shell: bash
         env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
-          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
         run: |
           set -euo pipefail
-          test -n "$(git status --porcelain)"
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -- pubspec.yaml pubspec.lock linux/flutter windows/flutter macos/Flutter
-          git commit -m 'perf(deps): remove unused UI packages'
-          new_sha="$(git rev-parse HEAD)"
-          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
-          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/GoAnime-Mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
-          test "$remote" = "$EXPECTED_SHA"
-          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/GoAnime-Mobile.git "HEAD:refs/heads/$TARGET_BRANCH"
-          unset auth PRIVATE_REPOSITORIES_TOKEN
-          echo "sha=$new_sha" >> "$GITHUB_OUTPUT"
+          put_content() {
+            local output="$1" message="$2" encoded="$3" attempt current
+            for attempt in 1 2 3 4 5 6; do
+              current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$output?ref=main" --jq .sha 2>/dev/null || true)"
+              args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$output" -f message="$message" -f content="$encoded" -f branch=main)
+              if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+              if gh api "${args[@]}" >/dev/null 2>&1; then return 0; fi
+              sleep "$attempt"
+            done
+            return 1
+          }
+          prefix="generated/goanime-unused-deps/$TARGET_SHA"
+          for file in pubspec.yaml pubspec.lock; do
+            encoded="$(base64 -w0 "private-source/$file")"
+            put_content "$prefix/$file" "ci(goanime): publish validated dependency cleanup" "$encoded"
+          done
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
 
-      - name: Summary
+      - name: Record status
+        if: always()
         shell: bash
-        run: echo "Published GoAnime dependency cleanup SHA ${{ steps.publish.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_STATUS: ${{ job.status }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+          OUTPUT_PREFIX: ${{ steps.publish.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          body="$(python3 - <<'PY'
+          import json, os
+          print(json.dumps({
+            'status': os.environ['GATE_STATUS'],
+            'targetSha': os.environ.get('TARGET_SHA') or None,
+            'outputPrefix': os.environ.get('OUTPUT_PREFIX') or None,
+            'runId': os.environ.get('GITHUB_RUN_ID'),
+          }, indent=2))
+          PY
+          )"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          path='status/goanime-unused-deps.json'
+          for attempt in 1 2 3 4 5 6; do
+            current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$path?ref=main" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$path" -f message="ci(goanime): record unused dependency status" -f content="$encoded" -f branch=main)
+            if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+            if gh api "${args[@]}" >/dev/null 2>&1; then exit 0; fi
+            sleep "$attempt"
+          done
+          exit 1
 
       - name: Remove private checkout
         if: always()
-        shell: bash
         run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
