@@ -1,0 +1,76 @@
+name: Publish GoAnime metadata seed fast path retry
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-metadata-seed-fast-path-retry/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-metadata-seed-fast-path-retry/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Reproduce validated builder output
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 trusted-source/scripts/prepare-goanime-metadata-seed-fast-path.py --root private-source
+          dart_format_target='private-source/tools/build_anime_metadata_seed.dart'
+          if command -v dart >/dev/null 2>&1; then dart format "$dart_format_target"; fi
+
+      - name: Publish missing builder with retry
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          destination="generated/goanime-metadata-seed-fast-path/$TARGET_SHA/tools/build_anime_metadata_seed.dart"
+          source='private-source/tools/build_anime_metadata_seed.dart'
+          encoded="$(base64 -w0 "$source")"
+          for attempt in 1 2 3 4 5 6; do
+            current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$destination?ref=main" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$destination" -f message='ci(goanime): publish metadata seed builder retry' -f content="$encoded" -f branch=main)
+            if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+            if gh api "${args[@]}" >/dev/null 2>&1; then exit 0; fi
+            sleep "$attempt"
+          done
+          exit 1
