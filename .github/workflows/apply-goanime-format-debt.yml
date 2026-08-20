@@ -85,24 +85,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          dart format \
-            test/services/providers/goyabu_quality_propagation_test.dart \
-            test/tools/super_animes_anilist_envelope_test.dart \
-            test/tools/super_animes_completion_policy_test.dart \
-            test/tools/super_animes_partial_batch_progress_test.dart \
-            tools/super_animes_anilist_mal_resolver.dart >/dev/null
-          git diff --check
-          dart format --output=none --set-exit-if-changed lib test packages tools
-          mapfile -t changed < <(git diff --name-only)
-          expected=(
+          flutter pub get
+          files=(
+            lib/utils/image_cache_dimensions.dart
+            packages/goanime_core/lib/src/title_normalizer.dart
+            test/services/catalog_franchise_preloaded_index_test.dart
+            test/services/franchise_availability_database_batch_test.dart
             test/services/providers/goyabu_quality_propagation_test.dart
             test/tools/super_animes_anilist_envelope_test.dart
             test/tools/super_animes_completion_policy_test.dart
             test/tools/super_animes_partial_batch_progress_test.dart
             tools/super_animes_anilist_mal_resolver.dart
           )
-          test "${#changed[@]}" -eq "${#expected[@]}"
-          for i in "${!expected[@]}"; do test "${changed[$i]}" = "${expected[$i]}"; done
+          dart format "${files[@]}" >/dev/null
+          git diff --check
+          dart format --output=none --set-exit-if-changed lib test packages tools
+          printf '%s\n' "${files[@]}" | sort > "$RUNNER_TEMP/expected-format-files.txt"
+          git diff --name-only | sort > "$RUNNER_TEMP/actual-format-files.txt"
+          diff -u "$RUNNER_TEMP/expected-format-files.txt" "$RUNNER_TEMP/actual-format-files.txt"
 
       - name: Commit and fast-forward private branch
         id: publish
@@ -117,6 +117,10 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add \
+            lib/utils/image_cache_dimensions.dart \
+            packages/goanime_core/lib/src/title_normalizer.dart \
+            test/services/catalog_franchise_preloaded_index_test.dart \
+            test/services/franchise_availability_database_batch_test.dart \
             test/services/providers/goyabu_quality_propagation_test.dart \
             test/tools/super_animes_anilist_envelope_test.dart \
             test/tools/super_animes_completion_policy_test.dart \
@@ -145,8 +149,6 @@ jobs:
           PUBLISHED_SHA: ${{ steps.publish.outputs.sha }}
         run: |
           set -euo pipefail
-          target_sha="${TARGET_SHA:-unknown}"
-          published_sha="${PUBLISHED_SHA:-}"
           body="$(python3 - <<PY
           import json, os
           print(json.dumps({
