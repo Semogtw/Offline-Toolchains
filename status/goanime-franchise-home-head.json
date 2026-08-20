@@ -1,5 +1,6 @@
 {
-  "status": "failure",
+  "status": "success",
   "targetSha": "55a39f995d0659c1d8a36cbe8f64237099440fef",
-  "runId": "32318016804"
+  "outputPrefix": "generated/goanime-franchise-home-fixes/55a39f995d0659c1d8a36cbe8f64237099440fef",
+  "runId": "32318223791"
 }
