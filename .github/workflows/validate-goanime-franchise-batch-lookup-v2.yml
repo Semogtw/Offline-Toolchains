@@ -1,0 +1,308 @@
+name: Validate GoAnime franchise batch lookup v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-franchise-batch-lookup-v2/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-franchise-batch-lookup-v2
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-franchise-batch-lookup-v2/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          test "$branch" = 'perf/app-wide-optimization-20260819'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Apply batch franchise lookup
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          cache_path = Path('lib/services/anime_franchise_cache_service.dart')
+          text = cache_path.read_text()
+          old = '''  Future<AnimeFranchise?> getByMalId(
+    int malId, {
+    bool allowExpired = false,
+  }) async {
+    if (malId <= 0) return null;
+    final db = await database;
+    final indexRows = await db.query(
+      indexTableName,
+      where: 'malId = ?',
+      whereArgs: [malId],
+      limit: 1,
+    );
+    if (indexRows.isEmpty) return null;
+    final franchiseId = indexRows.first['franchiseId']?.toString();
+    if (franchiseId == null || franchiseId.isEmpty) return null;
+    return getByFranchiseId(franchiseId, allowExpired: allowExpired);
+  }
+'''
+          new = '''  Future<AnimeFranchise?> getByMalId(
+    int malId, {
+    bool allowExpired = false,
+  }) async {
+    if (malId <= 0) return null;
+    final franchises = await getByMalIds(
+      [malId],
+      allowExpired: allowExpired,
+    );
+    return franchises[malId];
+  }
+
+  Future<Map<int, AnimeFranchise>> getByMalIds(
+    Iterable<int> malIds, {
+    bool allowExpired = false,
+  }) async {
+    final ids = malIds.where((id) => id > 0).toSet().toList(growable: false);
+    if (ids.isEmpty) return const <int, AnimeFranchise>{};
+
+    final db = await database;
+    final staleCutoff = DateTime.now().toUtc().subtract(expiredRetention);
+    final parsedByFranchiseId = <String, AnimeFranchise?>{};
+    final franchises = <int, AnimeFranchise>{};
+    const batchSize = 400;
+
+    for (var offset = 0; offset < ids.length; offset += batchSize) {
+      final end = offset + batchSize < ids.length
+          ? offset + batchSize
+          : ids.length;
+      final chunk = ids.sublist(offset, end);
+      final placeholders = List.filled(chunk.length, '?').join(',');
+      final rows = await db.rawQuery(
+        'SELECT i.malId AS indexedMalId, c.* '
+        'FROM $indexTableName i '
+        'INNER JOIN $cacheTableName c ON c.franchiseId = i.franchiseId '
+        'WHERE i.malId IN ($placeholders)',
+        chunk,
+      );
+
+      for (final row in rows) {
+        final malId = _asInt(row['indexedMalId']);
+        final franchiseId = row['franchiseId']?.toString();
+        if (malId == null || franchiseId == null || franchiseId.isEmpty) {
+          continue;
+        }
+
+        final franchise = parsedByFranchiseId.putIfAbsent(
+          franchiseId,
+          () => _franchiseFromRow(row),
+        );
+        if (franchise == null) continue;
+        final isExpired = franchise.isExpired;
+        if (!allowExpired && isExpired) continue;
+        if (allowExpired &&
+            isExpired &&
+            !franchise.expiresAt.toUtc().isAfter(staleCutoff)) {
+          continue;
+        }
+        franchises[malId] = franchise.copyWith(isStale: isExpired);
+      }
+    }
+    return franchises;
+  }
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f'cache target count={text.count(old)}')
+          cache_path.write_text(text.replace(old, new, 1))
+
+          display_path = Path('lib/services/catalog_franchise_display_service.dart')
+          text = display_path.read_text()
+          old = '''    final indexedFranchiseByMalId =
+        indexedFranchises ?? await loadIndexedFranchisesFor(animes);
+    final result = <CatalogDisplayEntry>[];
+'''
+          new = '''    final indexedFranchiseByMalId =
+        indexedFranchises ?? await loadIndexedFranchisesFor(animes);
+    final missingIndexedMalIds = animes
+        .map((anime) => anime.malId)
+        .where(
+          (malId) => malId > 0 && !indexedFranchiseByMalId.containsKey(malId),
+        )
+        .toSet();
+    final cachedFranchiseByMalId = missingIndexedMalIds.isEmpty
+        ? const <int, AnimeFranchise>{}
+        : await _cacheService.getByMalIds(missingIndexedMalIds);
+    final result = <CatalogDisplayEntry>[];
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f'display setup target count={text.count(old)}')
+          text = text.replace(old, new, 1)
+          old = '''      final cachedFranchise = indexedFranchise == null && anime.malId > 0
+          ? await _cacheService.getByMalId(anime.malId)
+          : null;
+'''
+          new = '''      final cachedFranchise = indexedFranchise == null && anime.malId > 0
+          ? cachedFranchiseByMalId[anime.malId]
+          : null;
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f'display lookup target count={text.count(old)}')
+          display_path.write_text(text.replace(old, new, 1))
+
+          test_path = Path('test/services/catalog_franchise_display_service_test.dart')
+          text = test_path.read_text()
+          marker = "  test(\n    'collapses cached seasons by franchise id without title matching',\n"
+          addition = '''  test('batch cache lookup maps every indexed MAL id in one result', () async {
+    await cacheService.save(_franchise());
+
+    final franchises = await cacheService.getByMalIds([1, 2, 99, -1, 2]);
+
+    expect(franchises.keys.toSet(), {1, 2});
+    expect(franchises[1]?.franchiseId, 'mal_franchise_1');
+    expect(franchises[2]?.franchiseId, 'mal_franchise_1');
+  });
+
+  test('batch cache lookup preserves expiration semantics', () async {
+    await cacheService.save(
+      _franchise(expiresAt: DateTime.now().subtract(const Duration(days: 1))),
+    );
+
+    expect(await cacheService.getByMalIds([1, 2]), isEmpty);
+    final stale = await cacheService.getByMalIds([1, 2], allowExpired: true);
+    expect(stale.keys.toSet(), {1, 2});
+    expect(stale.values.every((franchise) => franchise.isStale), isTrue);
+  });
+
+'''
+          if text.count(marker) != 1:
+              raise SystemExit(f'test marker count={text.count(marker)}')
+          test_path.write_text(text.replace(marker, addition + marker, 1))
+          PY
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Format and validate
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+          dart format \
+            lib/services/anime_franchise_cache_service.dart \
+            lib/services/catalog_franchise_display_service.dart \
+            test/services/catalog_franchise_display_service_test.dart
+          git -c core.whitespace=cr-at-eol diff --check
+          cat > "$RUNNER_TEMP/expected.txt" <<'EOF'
+          lib/services/anime_franchise_cache_service.dart
+          lib/services/catalog_franchise_display_service.dart
+          test/services/catalog_franchise_display_service_test.dart
+          EOF
+          git diff --name-only | sort > "$RUNNER_TEMP/actual.txt"
+          diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
+          flutter analyze --no-pub
+          flutter test --no-pub --concurrency=1 \
+            test/services/catalog_franchise_display_service_test.dart
+
+      - name: Publish validated outputs
+        id: publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          prefix="generated/goanime-franchise-batch-lookup-v2/$TARGET_SHA"
+          put_content() {
+            local destination="$1" source="$2" encoded current attempt
+            encoded="$(base64 -w0 "$source")"
+            for attempt in 1 2 3 4 5; do
+              current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$destination?ref=main" --jq .sha 2>/dev/null || true)"
+              args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$destination" -f message='ci(goanime): publish franchise batch lookup v2 output' -f content="$encoded" -f branch=main)
+              if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+              if gh api "${args[@]}" >/dev/null 2>&1; then return 0; fi
+              sleep "$attempt"
+            done
+            return 1
+          }
+          for file in \
+            lib/services/anime_franchise_cache_service.dart \
+            lib/services/catalog_franchise_display_service.dart \
+            test/services/catalog_franchise_display_service_test.dart; do
+            put_content "$prefix/$file" "private-source/$file"
+          done
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+
+      - name: Record status
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_STATUS: ${{ job.status }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+          OUTPUT_PREFIX: ${{ steps.publish.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          body="$(python3 - <<'PY'
+          import json, os
+          print(json.dumps({
+            'status': os.environ['GATE_STATUS'],
+            'targetSha': os.environ.get('TARGET_SHA') or None,
+            'outputPrefix': os.environ.get('OUTPUT_PREFIX') or None,
+            'runId': os.environ.get('GITHUB_RUN_ID'),
+          }, indent=2))
+          PY
+          )"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          path='status/goanime-franchise-batch-lookup-v2.json'
+          for attempt in 1 2 3 4 5; do
+            current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$path?ref=main" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$path" -f message='ci(goanime): record franchise batch lookup v2 status' -f content="$encoded" -f branch=main)
+            if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+            if gh api "${args[@]}" >/dev/null 2>&1; then exit 0; fi
+            sleep "$attempt"
+          done
+          exit 1
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
