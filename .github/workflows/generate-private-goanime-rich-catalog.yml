@@ -26,31 +26,25 @@ jobs:
           path: trusted-source
           persist-credentials: false
 
-      - name: Read exact private source SHA
+      - name: Read exact private source request
         id: request
         shell: bash
         run: |
           set -euo pipefail
           request="$GITHUB_WORKSPACE/trusted-source/triggers/private-goanime-rich-catalog.json"
-          sha="$(python3 - "$request" <<'PY'
+          python3 - "$request" "$GITHUB_OUTPUT" <<'PY'
           import json,re,sys
           payload=json.load(open(sys.argv[1],encoding='utf-8'))
           sha=str(payload.get('ref') or '').strip().lower()
+          branch=str(payload.get('branch') or '').strip()
           if not re.fullmatch(r'[0-9a-f]{40}',sha): raise SystemExit('ref must be an exact SHA')
-          print(sha)
+          if not re.fullmatch(r'[A-Za-z0-9._/-]{1,200}',branch) or branch.startswith('/') or branch.endswith('/') or '..' in branch:
+              raise SystemExit('branch must be a safe existing branch name')
+          with open(sys.argv[2],'a',encoding='utf-8') as out:
+              out.write(f'ref={sha}\nbranch={branch}\n')
           PY
-          )"
-          echo "ref=$sha" >> "$GITHUB_OUTPUT"
 
-      - name: Require private repository token
-        env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -n "$PRIVATE_REPOSITORIES_TOKEN"
-
-      - name: Checkout private GoAnime source read-only
+      - name: Checkout private GoAnime source
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
@@ -58,7 +52,7 @@ jobs:
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
           fetch-depth: 1
-          persist-credentials: false
+          persist-credentials: true
           lfs: false
           submodules: false
           show-progress: false
@@ -89,7 +83,7 @@ jobs:
           dart run tools/build_anime_metadata_seed.dart --targets="$EMPTY_TARGETS_PATH"
           cp dist/anime_metadata_cache/anime_metadata_seed.json "$BULK_BASELINE_PATH"
 
-      - name: Build authoritative current-season refresh request
+      - name: Build current-season refresh request
         working-directory: private-source
         shell: bash
         env:
@@ -100,35 +94,19 @@ jobs:
           python3 - "$TARGETS_PATH" "$BULK_BASELINE_PATH" <<'PY'
           import json,sys
           from pathlib import Path
-
-          out=Path(sys.argv[1])
           baseline=json.loads(Path(sys.argv[2]).read_text(encoding='utf-8'))
-
-          # The provider availability map is intentionally independent from
-          # season freshness. Current-season metadata must therefore come from
-          # Jikan /seasons/now instead of assuming providers already expose
-          # Summer/Fall/etc entries.
           refresh={}
           for raw in baseline.get('entries') or []:
               if not isinstance(raw,dict): continue
-              mid=raw.get('malId')
-              status=str(raw.get('status') or '').lower()
+              mid=raw.get('malId'); status=str(raw.get('status') or '').lower()
               if not isinstance(mid,int) or mid<=0: continue
               if any(token in status for token in ('currently airing','releasing','not yet','upcoming')):
-                  refresh[mid]={
-                      'malId':mid,
-                      'title':str(raw.get('title') or f'MAL {mid}').strip(),
-                  }
-
-          payload={
-              'queries':[{'path':'/seasons/now','pages':3}],
-              'targets':list(refresh.values())[:80],
-          }
-          out.write_text(json.dumps(payload,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
-          print(f'Jikan current-season pages=3; airing/upcoming refresh targets={len(payload["targets"])}')
+                  refresh[mid]={'malId':mid,'title':str(raw.get('title') or f'MAL {mid}').strip()}
+          payload={'queries':[{'path':'/seasons/now','pages':3}],'targets':list(refresh.values())[:80]}
+          Path(sys.argv[1]).write_text(json.dumps(payload,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
           PY
 
-      - name: Refresh current season and broadcast on rich baseline
+      - name: Refresh season and broadcast
         working-directory: private-source
         shell: bash
         env:
@@ -136,9 +114,7 @@ jobs:
           BULK_BASELINE_PATH: ${{ runner.temp }}/goanime-rich-bulk-baseline.json
         run: |
           set -euo pipefail
-          dart run tools/build_anime_metadata_seed.dart \
-            --targets="$TARGETS_PATH" \
-            --baseline="$BULK_BASELINE_PATH"
+          dart run tools/build_anime_metadata_seed.dart --targets="$TARGETS_PATH" --baseline="$BULK_BASELINE_PATH"
 
       - name: Validate generated rich catalog
         working-directory: private-source
@@ -155,8 +131,7 @@ jobs:
           entries=seed.get('entries') or []
           rich={e.get('malId') for e in entries if isinstance(e,dict) and isinstance(e.get('malId'),int) and str(e.get('imageUrl') or '').strip()}
           strict={e.get('malId') for e in mal.get('entries') or [] if isinstance(e,dict) and isinstance(e.get('malId'),int) and ((e.get('modes') or {}).get('sub') or (e.get('modes') or {}).get('dub'))}
-          covered=len(rich & strict)
-          ratio=covered/len(strict) if strict else 1.0
+          covered=len(rich & strict); ratio=covered/len(strict) if strict else 1.0
           now=datetime.now(timezone.utc); season='winter' if now.month<=3 else 'spring' if now.month<=6 else 'summer' if now.month<=9 else 'fall'
           current=[e for e in entries if isinstance(e,dict) and e.get('year')==now.year and str(e.get('season') or '').lower()==season and str(e.get('imageUrl') or '').strip()]
           if ratio<0.90: raise SystemExit(f'strict rich coverage too small: {covered}/{len(strict)} ({ratio:.1%})')
@@ -165,39 +140,38 @@ jobs:
           print(f'rich={len(entries)} strict={len(strict)} covered={covered} ratio={ratio:.1%} current={len(current)} broadcasts={len(broadcasts)}')
           PY
 
-      - name: Encrypt catalog handoff
-        id: package
+      - name: Publish validated assets to source branch
+        id: publish
+        working-directory: private-source
         shell: bash
         env:
-          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+          EXPECTED_REF: ${{ steps.request.outputs.ref }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
         run: |
           set -euo pipefail
-          work="$RUNNER_TEMP/goanime-rich-handoff"
-          mkdir -p "$work/gpg" "$work/out" "$work/payload/assets/data"
-          chmod 700 "$work/gpg"
-          export GNUPGHOME="$work/gpg"
-          cp private-source/dist/anime_metadata_cache/anime_metadata_seed.json "$work/payload/assets/data/"
-          cp private-source/dist/anime_metadata_cache/broadcast_schedule.json "$work/payload/assets/data/"
-          tar -C "$work/payload" -czf "$work/goanime-rich-catalog.tar.gz" .
-          sha256sum "$work/goanime-rich-catalog.tar.gz" > "$work/out/goanime-rich-catalog.tar.gz.sha256"
-          printf '%s\n' '${{ steps.request.outputs.ref }}' > "$work/out/source-ref.txt"
-          gpg --batch --import trusted-source/keys/source-bundles-public.asc
-          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1=="fpr"{print $10;exit}')"
-          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
-          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" --output "$work/out/goanime-rich-catalog.tar.gz.gpg" --encrypt "$work/goanime-rich-catalog.tar.gz"
-          echo "transfer_dir=$work/out" >> "$GITHUB_OUTPUT"
+          git fetch origin "$TARGET_BRANCH"
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_REF" || {
+            echo 'Source branch moved during generation; refusing to overwrite it.' >&2
+            exit 1
+          }
+          cp dist/anime_metadata_cache/anime_metadata_seed.json assets/data/anime_metadata_seed.json
+          cp dist/anime_metadata_cache/broadcast_schedule.json assets/data/broadcast_schedule.json
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add assets/data/anime_metadata_seed.json assets/data/broadcast_schedule.json
+          if git diff --cached --quiet; then
+            echo "published_sha=$EXPECTED_REF" >> "$GITHUB_OUTPUT"
+          else
+            git commit -m 'chore(catalog): promote unified rich anime metadata'
+            git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+            echo "published_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Upload encrypted rich catalog
-        uses: actions/upload-artifact@v7
-        with:
-          name: goanime-private-rich-catalog-encrypted
-          path: ${{ steps.package.outputs.transfer_dir }}
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
+      - name: Summary
+        shell: bash
+        run: echo "Published catalog SHA ${{ steps.publish.outputs.published_sha }}"
 
       - name: Cleanup
         if: always()
         shell: bash
-        run: |
-          rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source" "$RUNNER_TEMP/goanime-rich-handoff" "$RUNNER_TEMP/goanime-rich-targets.json" "$RUNNER_TEMP/goanime-rich-empty-targets.json" "$RUNNER_TEMP/goanime-rich-bulk-baseline.json"
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source" "$RUNNER_TEMP/goanime-rich-targets.json" "$RUNNER_TEMP/goanime-rich-empty-targets.json" "$RUNNER_TEMP/goanime-rich-bulk-baseline.json"
