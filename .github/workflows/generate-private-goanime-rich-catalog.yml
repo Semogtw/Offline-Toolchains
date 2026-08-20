@@ -44,12 +44,23 @@ jobs:
               out.write(f'ref={sha}\nbranch={branch}\n')
           PY
 
+      - name: Require catalog write token
+        shell: bash
+        env:
+          CATALOG_WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$CATALOG_WRITE_TOKEN" || {
+            echo 'GOANIME_CATALOG_WRITE_TOKEN is required for promotion.' >&2
+            exit 1
+          }
+
       - name: Checkout private GoAnime source
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
           ref: ${{ steps.request.outputs.ref }}
-          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
           path: private-source
           fetch-depth: 1
           persist-credentials: true
