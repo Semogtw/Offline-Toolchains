@@ -105,118 +105,7 @@ jobs:
           (cd private-source && flutter pub get)
           (cd private-source/packages/goanime_core && dart pub get)
 
-      - name: Discover Summer 2026 MAL IDs via AniList
-        working-directory: private-source
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json
-          import time
-          import urllib.request
-          from datetime import datetime, timezone
-          from pathlib import Path
-
-          path = Path('tools/anime_metadata_seed_targets.json')
-          payload = json.loads(path.read_text(encoding='utf-8'))
-          targets = payload.setdefault('targets', [])
-          existing = {
-              target.get('malId')
-              for target in targets
-              if isinstance(target, dict) and isinstance(target.get('malId'), int)
-          }
-
-          now = datetime.now(timezone.utc)
-          season = (
-              'WINTER' if now.month <= 3 else
-              'SPRING' if now.month <= 6 else
-              'SUMMER' if now.month <= 9 else
-              'FALL'
-          )
-          query = '''
-          query ($page: Int!, $year: Int!, $season: MediaSeason!) {
-            Page(page: $page, perPage: 50) {
-              pageInfo { hasNextPage }
-              media(
-                type: ANIME
-                seasonYear: $year
-                season: $season
-                isAdult: false
-                sort: POPULARITY_DESC
-              ) {
-                idMal
-                title { english romaji }
-              }
-            }
-          }
-          '''
-
-          discovered = set()
-          for page_number in range(1, 5):
-              body = json.dumps({
-                  'query': query,
-                  'variables': {
-                      'page': page_number,
-                      'year': now.year,
-                      'season': season,
-                  },
-              }).encode('utf-8')
-              document = None
-              last_error = None
-              for attempt in range(1, 4):
-                  try:
-                      request = urllib.request.Request(
-                          'https://graphql.anilist.co',
-                          data=body,
-                          headers={
-                              'Content-Type': 'application/json',
-                              'Accept': 'application/json',
-                              'User-Agent': 'GoAnime-Mobile-toolchain/1.0',
-                          },
-                          method='POST',
-                      )
-                      with urllib.request.urlopen(request, timeout=30) as response:
-                          document = json.loads(response.read().decode('utf-8'))
-                      break
-                  except Exception as error:
-                      last_error = error
-                      if attempt < 3:
-                          time.sleep(attempt * 2)
-              if document is None:
-                  raise RuntimeError(f'AniList page {page_number} failed: {last_error}')
-              if document.get('errors'):
-                  raise RuntimeError(f"AniList GraphQL errors: {document['errors']}")
-
-              page = document['data']['Page']
-              for media in page.get('media') or []:
-                  mal_id = media.get('idMal')
-                  if not isinstance(mal_id, int) or mal_id <= 0:
-                      continue
-                  discovered.add(mal_id)
-                  title_data = media.get('title') or {}
-                  title = title_data.get('english') or title_data.get('romaji') or f'MAL {mal_id}'
-                  if mal_id not in existing:
-                      targets.append({'malId': mal_id, 'title': str(title).strip()})
-                      existing.add(mal_id)
-              if not page.get('pageInfo', {}).get('hasNextPage'):
-                  break
-
-          if len(discovered) < 20:
-              raise RuntimeError(f'AniList returned only {len(discovered)} current-season MAL IDs')
-
-          # Jikan list endpoints are currently returning 504 from GitHub runners.
-          # Discovery is handled by AniList here; the existing generator still
-          # enriches every MAL ID through Jikan's per-title endpoint.
-          payload['queries'] = []
-          path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-          print(f'AniList discovery: {season.lower()} {now.year}, MAL IDs={len(discovered)}, total targets={len(targets)}')
-          PY
-
-      - name: Build fresh bundled metadata and broadcast snapshot
-        working-directory: private-source
-        run: dart run tools/build_anime_metadata_seed.dart
-
-      - name: Validate and install refreshed catalog assets
+      - name: Validate promoted bundled catalog
         working-directory: private-source
         shell: bash
         run: |
@@ -226,10 +115,29 @@ jobs:
           from datetime import datetime, timezone
           from pathlib import Path
 
-          root = Path('dist/anime_metadata_cache')
-          payload = json.loads((root / 'anime_metadata_seed.json').read_text(encoding='utf-8'))
-          broadcast = json.loads((root / 'broadcast_schedule.json').read_text(encoding='utf-8'))
-          entries = payload.get('entries') or []
+          seed = json.loads(Path('assets/data/anime_metadata_seed.json').read_text(encoding='utf-8'))
+          broadcast = json.loads(Path('assets/data/broadcast_schedule.json').read_text(encoding='utf-8'))
+          mal = json.loads(Path('assets/data/mal_availability_map.json').read_text(encoding='utf-8'))
+          entries = seed.get('entries') or []
+          broadcasts = broadcast.get('entries') or {}
+
+          rich = {
+              entry.get('malId')
+              for entry in entries
+              if isinstance(entry, dict)
+              and isinstance(entry.get('malId'), int)
+              and str(entry.get('imageUrl') or '').strip()
+          }
+          strict = {
+              entry.get('malId')
+              for entry in mal.get('entries') or []
+              if isinstance(entry, dict)
+              and isinstance(entry.get('malId'), int)
+              and ((entry.get('modes') or {}).get('sub') or (entry.get('modes') or {}).get('dub'))
+          }
+          covered = len(rich & strict)
+          ratio = covered / len(strict) if strict else 1.0
+
           now = datetime.now(timezone.utc)
           season = (
               'winter' if now.month <= 3 else
@@ -239,21 +147,27 @@ jobs:
           )
           current = [
               entry for entry in entries
-              if entry.get('year') == now.year
+              if isinstance(entry, dict)
+              and entry.get('year') == now.year
               and str(entry.get('season') or '').strip().lower() == season
               and str(entry.get('imageUrl') or '').strip()
           ]
-          broadcasts = broadcast.get('entries') or {}
-          if len(entries) < 40:
-              raise SystemExit(f'seed too small: {len(entries)}')
+
+          if len(entries) < 1000:
+              raise SystemExit(f'promoted seed unexpectedly small: {len(entries)}')
+          if ratio < 0.90:
+              raise SystemExit(f'strict rich coverage too small: {covered}/{len(strict)} ({ratio:.1%})')
           if len(current) < 10:
               raise SystemExit(f'current season too small: {len(current)} {season} {now.year} entries')
           if len(broadcasts) < 5:
               raise SystemExit(f'broadcast snapshot too small: {len(broadcasts)}')
-          print(f'validated seed={len(entries)} current={len(current)} broadcasts={len(broadcasts)} season={season} {now.year}')
+
+          print(
+              f'validated promoted seed={len(entries)} strict={len(strict)} '
+              f'covered={covered} ratio={ratio:.1%} current={len(current)} '
+              f'broadcasts={len(broadcasts)} season={season} {now.year}'
+          )
           PY
-          cp dist/anime_metadata_cache/anime_metadata_seed.json assets/data/anime_metadata_seed.json
-          cp dist/anime_metadata_cache/broadcast_schedule.json assets/data/broadcast_schedule.json
 
       - name: Validate project health
         working-directory: private-source
