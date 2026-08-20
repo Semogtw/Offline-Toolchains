@@ -90,10 +90,12 @@ jobs:
             lib/services/franchise_availability_database_service.dart \
             lib/services/franchise_availability_cache_service.dart \
             lib/services/catalog_franchise_display_service.dart \
-            test/services/franchise_availability_database_batch_test.dart >/dev/null
+            lib/screens/home_screen_data.dart \
+            test/services/franchise_availability_database_batch_test.dart \
+            test/services/catalog_franchise_preloaded_index_test.dart >/dev/null
           git diff --check
 
-      - name: Analyze focused services
+      - name: Analyze focused implementation
         working-directory: private-source
         shell: bash
         run: |
@@ -101,7 +103,9 @@ jobs:
           dart analyze lib/services/franchise_availability_database_service.dart
           dart analyze lib/services/franchise_availability_cache_service.dart
           dart analyze lib/services/catalog_franchise_display_service.dart
+          dart analyze lib/screens/home_screen.dart lib/screens/home_screen_data.dart
           dart analyze test/services/franchise_availability_database_batch_test.dart
+          dart analyze test/services/catalog_franchise_preloaded_index_test.dart
 
       - name: Run franchise and catalog tests
         working-directory: private-source
@@ -111,7 +115,8 @@ jobs:
           flutter test --no-pub --concurrency=1 \
             test/services/franchise_availability_database_batch_test.dart \
             test/services/franchise_availability_database_service_test.dart \
-            test/services/catalog_franchise_display_service_test.dart
+            test/services/catalog_franchise_display_service_test.dart \
+            test/services/catalog_franchise_preloaded_index_test.dart
 
       - name: Record validated optimization
         working-directory: private-source
@@ -124,7 +129,7 @@ jobs:
           text = path.read_text(encoding='utf-8')
           marker = '### P0 — collapse de franquias em N consultas\n'
           status = ('\n**Estado:** lookup em lote implementado e validado com testes SQLite e de apresentação. '
-                    'O catálogo consulta o índice e os payloads de franquias em blocos e preserva o fallback por MAL ID.\n')
+                    'A Home carrega um único índice compartilhado para as sete seções, consulta índice/payloads em blocos e preserva o fallback por MAL ID.\n')
           if status.strip() not in text:
               assert text.count(marker) == 1
               text = text.replace(marker, marker + status, 1)
@@ -148,9 +153,11 @@ jobs:
             lib/services/franchise_availability_database_service.dart \
             lib/services/franchise_availability_cache_service.dart \
             lib/services/catalog_franchise_display_service.dart \
+            lib/screens/home_screen_data.dart \
             test/services/franchise_availability_database_batch_test.dart \
+            test/services/catalog_franchise_preloaded_index_test.dart \
             docs/performance_audit_2026-08-19.md
-          git commit -m 'perf(franchise): validate batched catalog lookup'
+          git commit -m 'perf(franchise): validate shared batched catalog lookup'
           new_sha="$(git rev-parse HEAD)"
           auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
           remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/GoAnime-Mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
