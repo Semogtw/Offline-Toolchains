@@ -1,4 +1,4 @@
-name: Apply GoAnime bounded image lookup caches
+name: Validate GoAnime bounded image lookup caches
 
 on:
   push:
@@ -7,14 +7,14 @@ on:
       - 'triggers/goanime-image-cache-bounds/*.request'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: goanime-image-cache-bounds
   cancel-in-progress: false
 
 jobs:
-  apply:
+  validate:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -47,7 +47,6 @@ jobs:
 
       - name: Validate patcher syntax
         working-directory: trusted-source
-        shell: bash
         run: python3 -m py_compile scripts/prepare-goanime-image-cache-bounds.py
 
       - name: Checkout exact private GoAnime revision
@@ -79,7 +78,6 @@ jobs:
           unset auth PRIVATE_REPOSITORIES_TOKEN
 
       - name: Apply bounded cache patch
-        shell: bash
         run: python3 trusted-source/scripts/prepare-goanime-image-cache-bounds.py --root private-source
 
       - name: Set up Flutter 3.44.1
@@ -96,41 +94,61 @@ jobs:
           set -euo pipefail
           flutter pub get
           dart format lib/services/anime_image_cache_service.dart test/services/anime_image_cache_service_test.dart >/dev/null
-          git diff --check
+          git -c core.whitespace=cr-at-eol diff --check
           dart analyze lib/services/anime_image_cache_service.dart test/services/anime_image_cache_service_test.dart
           flutter test --no-pub --concurrency=1 test/services/anime_image_cache_service_test.dart
-          mapfile -t changed < <(git diff --name-only)
-          test "${#changed[@]}" -eq 2
-          test "${changed[0]}" = 'lib/services/anime_image_cache_service.dart'
-          test "${changed[1]}" = 'test/services/anime_image_cache_service_test.dart'
+          printf '%s\n' \
+            lib/services/anime_image_cache_service.dart \
+            test/services/anime_image_cache_service_test.dart | sort > "$RUNNER_TEMP/expected.txt"
+          git diff --name-only | sort > "$RUNNER_TEMP/actual.txt"
+          diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
 
-      - name: Commit and fast-forward private branch
+      - name: Publish validated outputs to Toolchains
         id: publish
-        working-directory: private-source
         shell: bash
         env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
-          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
         run: |
           set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add lib/services/anime_image_cache_service.dart test/services/anime_image_cache_service_test.dart
-          git commit -m 'perf(images): bound lookup cache growth'
-          new_sha="$(git rev-parse HEAD)"
-          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
-          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/GoAnime-Mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
-          test "$remote" = "$EXPECTED_SHA"
-          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/GoAnime-Mobile.git "HEAD:refs/heads/$TARGET_BRANCH"
-          unset auth PRIVATE_REPOSITORIES_TOKEN
-          echo "sha=$new_sha" >> "$GITHUB_OUTPUT"
+          prefix="generated/goanime-image-cache-bounds/$TARGET_SHA"
+          for file in lib/services/anime_image_cache_service.dart test/services/anime_image_cache_service_test.dart; do
+            output="$prefix/$file"
+            encoded="$(base64 -w0 "private-source/$file")"
+            current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$output?ref=main" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$output" -f message="ci(goanime): publish validated bounded image cache output" -f content="$encoded" -f branch=main)
+            if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+            gh api "${args[@]}" >/dev/null
+          done
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
 
-      - name: Summary
+      - name: Record gate status
+        if: always()
         shell: bash
-        run: echo "Published GoAnime bounded image cache SHA ${{ steps.publish.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_STATUS: ${{ job.status }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+          OUTPUT_PREFIX: ${{ steps.publish.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          body="$(python3 - <<'PY'
+          import json, os
+          print(json.dumps({
+            'status': os.environ['GATE_STATUS'],
+            'targetSha': os.environ.get('TARGET_SHA') or None,
+            'outputPrefix': os.environ.get('OUTPUT_PREFIX') or None,
+            'runId': os.environ.get('GITHUB_RUN_ID'),
+          }, indent=2))
+          PY
+          )"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          path='status/goanime-image-cache-bounds.json'
+          current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$path?ref=main" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$path" -f message="ci(goanime): record bounded image cache status" -f content="$encoded" -f branch=main)
+          if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+          gh api "${args[@]}" >/dev/null
 
       - name: Remove private checkout
         if: always()
-        shell: bash
         run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
