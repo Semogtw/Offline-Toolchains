@@ -1,11 +1,11 @@
 {
-  "conclusion": "failure",
-  "run_id": 32315555595,
-  "run_number": 2,
+  "conclusion": null,
+  "run_id": 32316060660,
+  "run_number": 3,
   "schema_version": 1,
-  "source_ref": "0a097a9d65feb1492b1c8e3b59221cc4d1aab062",
-  "status": "completed",
-  "trigger_sha": "029e8b0df8be5697d259786d647eb35e6285c0c0",
-  "updated_at": "2026-08-20T00:04:01Z",
+  "source_ref": "87a8101222ffb77f25e996a65e8fd3ad75b52861",
+  "status": "in_progress",
+  "trigger_sha": "81675127a212cff41631b6a5993032a2a5dfb498",
+  "updated_at": "2026-08-20T00:07:25Z",
   "workflow": "Generate private GoAnime rich catalog"
 }
