@@ -1,7 +1,7 @@
 {
-  "status": "failure",
+  "status": "success",
   "targetSha": "23e79e8042b93fb97c4bc383a0cbff798b201204",
-  "outputPrefix": null,
-  "apkBytes": null,
-  "runId": "32332208301"
+  "outputPrefix": "generated/goanime-r8-release/23e79e8042b93fb97c4bc383a0cbff798b201204",
+  "apkBytes": 117860902,
+  "runId": "32332536882"
 }
