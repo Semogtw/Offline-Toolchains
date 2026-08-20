@@ -1,0 +1,133 @@
+name: Fix GoAnime performance baseline v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-fix-perf-baseline-v2/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-fix-perf-baseline-v2
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Require private token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-fix-perf-baseline-v2/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          test "$branch" = 'perf/app-wide-optimization-20260819'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify exact remote head
+        working-directory: private-source
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: |
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Apply deterministic fixes
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('lib/services/anime_image_cache_service.dart')
+          text = path.read_text()
+          old = '      cache.remove(cache.keys.first);\n'
+          new = '      final evicted = cache.remove(cache.keys.first);\n      if (evicted == null) break;\n'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one bounded-cache eviction line, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          dart format lib/services/anime_image_cache_service.dart test/services/bundled_database_asset_service_test.dart
+          git -c core.whitespace=cr-at-eol diff --check
+          printf '%s\n' lib/services/anime_image_cache_service.dart test/services/bundled_database_asset_service_test.dart | sort > "$RUNNER_TEMP/expected.txt"
+          git diff --name-only | sort > "$RUNNER_TEMP/actual.txt"
+          diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
+
+      - name: Validate
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format --output=none --set-exit-if-changed lib/services/anime_image_cache_service.dart test/services/bundled_database_asset_service_test.dart
+          flutter analyze --no-pub
+          flutter test --no-pub --concurrency=1 test/services/anime_image_cache_service_test.dart test/services/bundled_database_asset_service_test.dart
+
+      - name: Commit and push
+        working-directory: private-source
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'GoAnime Toolchains'
+          git config user.email 'actions@users.noreply.github.com'
+          git add lib/services/anime_image_cache_service.dart test/services/bundled_database_asset_service_test.dart
+          git commit -m 'fix(perf): clear baseline analyzer and format gates'
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/goanime-mobile.git "HEAD:refs/heads/$TARGET_BRANCH"
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
