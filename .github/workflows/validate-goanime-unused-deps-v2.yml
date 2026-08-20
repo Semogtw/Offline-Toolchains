@@ -85,6 +85,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
           ! grep -R --include='*.dart' -E "package:(animated_item|bottom_navy_bar|cupertino_icons)/" lib test packages
           flutter pub remove animated_item bottom_navy_bar cupertino_icons
           git checkout -- \
@@ -93,6 +96,7 @@ jobs:
             macos/Flutter/GeneratedPluginRegistrant.swift \
             windows/flutter/generated_plugin_registrant.cc \
             windows/flutter/generated_plugins.cmake
+          (cd packages/goanime_core && dart pub get)
           ! grep -E '^  (animated_item|bottom_navy_bar|cupertino_icons):' pubspec.yaml
           ! grep -E '^  (animated_item|bottom_navy_bar):' pubspec.lock
           printf '%s\n' pubspec.lock pubspec.yaml | sort > "$RUNNER_TEMP/expected.txt"
