@@ -111,14 +111,29 @@ jobs:
           TARGET_SHA: ${{ steps.request.outputs.sha }}
         run: |
           set -euo pipefail
+          put_content() {
+            local output="$1"
+            local message="$2"
+            local encoded="$3"
+            local attempt current
+            for attempt in 1 2 3 4 5 6; do
+              current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$output?ref=main" --jq .sha 2>/dev/null || true)"
+              args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$output" -f message="$message" -f content="$encoded" -f branch=main)
+              if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+              if gh api "${args[@]}" >/dev/null 2>&1; then
+                return 0
+              fi
+              sleep "$attempt"
+            done
+            echo "Failed to publish $output after retries" >&2
+            return 1
+          }
+
           prefix="generated/goanime-image-cache-bounds/$TARGET_SHA"
           for file in lib/services/anime_image_cache_service.dart test/services/anime_image_cache_service_test.dart; do
             output="$prefix/$file"
             encoded="$(base64 -w0 "private-source/$file")"
-            current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$output?ref=main" --jq .sha 2>/dev/null || true)"
-            args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$output" -f message="ci(goanime): publish validated bounded image cache output" -f content="$encoded" -f branch=main)
-            if [ -n "$current" ]; then args+=(-f sha="$current"); fi
-            gh api "${args[@]}" >/dev/null
+            put_content "$output" "ci(goanime): publish validated bounded image cache output" "$encoded"
           done
           echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
 
@@ -144,10 +159,14 @@ jobs:
           )"
           encoded="$(printf '%s\n' "$body" | base64 -w0)"
           path='status/goanime-image-cache-bounds.json'
-          current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$path?ref=main" --jq .sha 2>/dev/null || true)"
-          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$path" -f message="ci(goanime): record bounded image cache status" -f content="$encoded" -f branch=main)
-          if [ -n "$current" ]; then args+=(-f sha="$current"); fi
-          gh api "${args[@]}" >/dev/null
+          for attempt in 1 2 3 4 5 6; do
+            current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$path?ref=main" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$path" -f message="ci(goanime): record bounded image cache status" -f content="$encoded" -f branch=main)
+            if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+            if gh api "${args[@]}" >/dev/null 2>&1; then exit 0; fi
+            sleep "$attempt"
+          done
+          exit 1
 
       - name: Remove private checkout
         if: always()
