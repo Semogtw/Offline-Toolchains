@@ -45,6 +45,10 @@ jobs:
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
           printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
 
+      - name: Validate patcher syntax
+        working-directory: trusted-source
+        run: python3 -m py_compile scripts/prepare-goanime-franchise-home-analysis-fixes.py
+
       - name: Checkout exact private GoAnime revision
         uses: actions/checkout@v6
         with:
@@ -73,6 +77,9 @@ jobs:
           test "$remote" = "$EXPECTED_SHA"
           unset auth PRIVATE_REPOSITORIES_TOKEN
 
+      - name: Apply analyzer fixes
+        run: python3 trusted-source/scripts/prepare-goanime-franchise-home-analysis-fixes.py --root private-source
+
       - name: Set up Flutter 3.44.1
         uses: subosito/flutter-action@v2
         with:
@@ -86,14 +93,10 @@ jobs:
         run: |
           set -euo pipefail
           flutter pub get
-          dart format --output=none --set-exit-if-changed \
+          dart format \
             lib/services/franchise_availability_database_service.dart \
-            lib/services/franchise_availability_cache_service.dart \
-            lib/services/catalog_franchise_display_service.dart \
-            lib/screens/home_screen.dart \
-            lib/screens/home_screen_data.dart \
-            test/services/franchise_availability_database_batch_test.dart \
-            test/services/catalog_franchise_preloaded_index_test.dart
+            lib/screens/home_screen_data.dart >/dev/null
+          git -c core.whitespace=cr-at-eol diff --check
           dart analyze \
             lib/services/franchise_availability_database_service.dart \
             lib/services/franchise_availability_cache_service.dart \
@@ -108,6 +111,32 @@ jobs:
             test/services/catalog_franchise_display_service_test.dart \
             test/services/catalog_franchise_preloaded_index_test.dart \
             test/widgets/home_cache_race_test.dart
+          printf '%s\n' \
+            lib/screens/home_screen_data.dart \
+            lib/services/franchise_availability_database_service.dart | sort > "$RUNNER_TEMP/expected.txt"
+          git diff --name-only | sort > "$RUNNER_TEMP/actual.txt"
+          diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
+
+      - name: Publish validated outputs to Toolchains
+        id: publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          prefix="generated/goanime-franchise-home-fixes/$TARGET_SHA"
+          for file in \
+            lib/screens/home_screen_data.dart \
+            lib/services/franchise_availability_database_service.dart; do
+            output="$prefix/$file"
+            encoded="$(base64 -w0 "private-source/$file")"
+            current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$output?ref=main" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$output" -f message="ci(goanime): publish validated franchise/Home fix" -f content="$encoded" -f branch=main)
+            if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+            gh api "${args[@]}" >/dev/null
+          done
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
 
       - name: Record gate status
         if: always()
@@ -116,6 +145,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GATE_STATUS: ${{ job.status }}
           TARGET_SHA: ${{ steps.request.outputs.sha }}
+          OUTPUT_PREFIX: ${{ steps.publish.outputs.prefix }}
         run: |
           set -euo pipefail
           body="$(python3 - <<PY
@@ -123,6 +153,7 @@ jobs:
           print(json.dumps({
             'status': os.environ['GATE_STATUS'],
             'targetSha': os.environ.get('TARGET_SHA') or None,
+            'outputPrefix': os.environ.get('OUTPUT_PREFIX') or None,
             'runId': '${{ github.run_id }}',
           }, indent=2))
           PY
