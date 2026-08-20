@@ -86,6 +86,7 @@ def main() -> None:
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goanime/models/jikan_models.dart';
+import 'package:goanime/services/availability_service.dart';
 import 'package:goanime/services/jikan_service.dart';
 
 void main() {
@@ -177,6 +178,7 @@ class _ConcurrentHomeJikanService extends JikanService {
     int genreId, {
     int page = 1,
     int limit = 20,
+    AnimeAvailabilityMode availabilityMode = AnimeAvailabilityMode.any,
   }) {
     return switch (genreId) {
       JikanGenreIds.action => _start('action'),
