@@ -100,7 +100,7 @@ jobs:
           printf '%s\n' \
             lib/services/allanime_service.dart \
             test/services/allanime_episode_index_test.dart | sort > "$RUNNER_TEMP/expected.txt"
-          git diff --name-only | sort > "$RUNNER_TEMP/actual.txt"
+          { git diff --name-only; git ls-files --others --exclude-standard; } | sort > "$RUNNER_TEMP/actual.txt"
           diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
 
       - name: Publish validated outputs to Toolchains
