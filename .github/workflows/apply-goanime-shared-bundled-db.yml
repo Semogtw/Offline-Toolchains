@@ -1,4 +1,4 @@
-name: Apply GoAnime shared bundled database preparation
+name: Validate GoAnime shared bundled database preparation
 
 on:
   push:
@@ -7,14 +7,14 @@ on:
       - 'triggers/goanime-shared-bundled-db/*.request'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: goanime-shared-bundled-db
   cancel-in-progress: false
 
 jobs:
-  apply:
+  validate:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -97,7 +97,7 @@ jobs:
             lib/services/bundled_database_asset_service.dart \
             lib/services/franchise_availability_database_service.dart \
             lib/services/anime_image_cache_service.dart >/dev/null
-          git diff --check
+          git -c core.whitespace=cr-at-eol diff --check
           dart analyze \
             lib/services/bundled_database_asset_service.dart \
             lib/services/franchise_availability_database_service.dart \
@@ -106,39 +106,61 @@ jobs:
             test/services/franchise_availability_database_service_test.dart \
             test/services/franchise_availability_database_batch_test.dart \
             test/services/anime_image_cache_service_test.dart
-          mapfile -t changed < <(git diff --name-only)
-          test "${#changed[@]}" -eq 3
-          test "${changed[0]}" = 'lib/services/anime_image_cache_service.dart'
-          test "${changed[1]}" = 'lib/services/bundled_database_asset_service.dart'
-          test "${changed[2]}" = 'lib/services/franchise_availability_database_service.dart'
-
-      - name: Commit and fast-forward private branch
-        id: publish
-        working-directory: private-source
-        shell: bash
-        env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
-          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
-        run: |
-          set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add \
+          printf '%s\n' \
             lib/services/anime_image_cache_service.dart \
             lib/services/bundled_database_asset_service.dart \
-            lib/services/franchise_availability_database_service.dart
-          git commit -m 'perf(db): share bundled database preparation'
-          new_sha="$(git rev-parse HEAD)"
-          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
-          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/GoAnime-Mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
-          test "$remote" = "$EXPECTED_SHA"
-          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/GoAnime-Mobile.git "HEAD:refs/heads/$TARGET_BRANCH"
-          unset auth PRIVATE_REPOSITORIES_TOKEN
-          echo "sha=$new_sha" >> "$GITHUB_OUTPUT"
+            lib/services/franchise_availability_database_service.dart | sort > "$RUNNER_TEMP/expected.txt"
+          { git diff --name-only; git ls-files --others --exclude-standard; } | sort > "$RUNNER_TEMP/actual.txt"
+          diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
 
-      - name: Summary
-        run: echo "Published shared bundled database SHA ${{ steps.publish.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish validated outputs to Toolchains
+        id: publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          prefix="generated/goanime-shared-bundled-db/$TARGET_SHA"
+          for file in \
+            lib/services/anime_image_cache_service.dart \
+            lib/services/bundled_database_asset_service.dart \
+            lib/services/franchise_availability_database_service.dart; do
+            output="$prefix/$file"
+            encoded="$(base64 -w0 "private-source/$file")"
+            current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$output?ref=main" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$output" -f message="ci(goanime): publish validated shared DB output" -f content="$encoded" -f branch=main)
+            if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+            gh api "${args[@]}" >/dev/null
+          done
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+
+      - name: Record gate status
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_STATUS: ${{ job.status }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+          OUTPUT_PREFIX: ${{ steps.publish.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          body="$(python3 - <<PY
+          import json, os
+          print(json.dumps({
+            'status': os.environ['GATE_STATUS'],
+            'targetSha': os.environ.get('TARGET_SHA') or None,
+            'outputPrefix': os.environ.get('OUTPUT_PREFIX') or None,
+            'runId': '${{ github.run_id }}',
+          }, indent=2))
+          PY
+          )"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          path='status/goanime-shared-bundled-db.json'
+          current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$path?ref=main" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$path" -f message="ci(goanime): record shared DB gate status" -f content="$encoded" -f branch=main)
+          if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+          gh api "${args[@]}" >/dev/null
 
       - name: Remove private checkout
         if: always()
