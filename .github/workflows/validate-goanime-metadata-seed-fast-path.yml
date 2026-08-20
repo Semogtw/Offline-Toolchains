@@ -1,0 +1,205 @@
+name: Validate GoAnime metadata seed fast path
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-metadata-seed-fast-path/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-metadata-seed-fast-path
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-metadata-seed-fast-path/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          test "$branch" = 'perf/app-wide-optimization-20260819'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Validate patcher
+        working-directory: trusted-source
+        run: python3 -m py_compile scripts/prepare-goanime-metadata-seed-fast-path.py
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify exact source SHA
+        working-directory: private-source
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Apply metadata seed fast path
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 trusted-source/scripts/prepare-goanime-metadata-seed-fast-path.py --root private-source
+          sha256sum private-source/assets/data/anime_metadata_seed.json | awk '{print $1}' > private-source/assets/data/anime_metadata_seed.json.sha256
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Format and validate source
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format \
+            lib/services/anime_metadata_seed_service.dart \
+            tools/build_anime_metadata_seed.dart \
+            test/services/anime_metadata_seed_reimport_test.dart
+          dart format --output=none --set-exit-if-changed \
+            lib/services/anime_metadata_seed_service.dart \
+            tools/build_anime_metadata_seed.dart \
+            test/services/anime_metadata_seed_reimport_test.dart
+          test "$(cat assets/data/anime_metadata_seed.json.sha256)" = "$(sha256sum assets/data/anime_metadata_seed.json | awk '{print $1}')"
+          git -c core.whitespace=cr-at-eol diff --check
+          flutter analyze --no-pub
+
+      - name: Run metadata seed regression suite
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter test --no-pub --concurrency=1 \
+            test/services/anime_metadata_seed_bundled_test.dart \
+            test/services/anime_metadata_seed_reimport_test.dart \
+            test/services/anime_metadata_seed_service_test.dart \
+            test/services/anime_metadata_seed_freshness_test.dart \
+            test/services/anime_metadata_seed_transport_test.dart \
+            test/services/anime_metadata_seed_duplicate_test.dart \
+            test/services/anime_metadata_seed_source_sanitization_test.dart \
+            test/tools/build_anime_metadata_seed_catalog_sources_test.dart \
+            test/architecture/anime_metadata_seed_publication_guard_test.dart
+          python3 -m unittest tools.tests.test_anime_metadata_seed_catalog_contract
+
+      - name: Verify patch scope
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/expected.txt" <<'EOF'
+          .github/workflows/anime_metadata_cache.yml
+          assets/data/anime_metadata_seed.json.sha256
+          lib/services/anime_metadata_seed_service.dart
+          pubspec.yaml
+          test/services/anime_metadata_seed_reimport_test.dart
+          tools/build_anime_metadata_seed.dart
+          EOF
+          { git diff --name-only; git ls-files --others --exclude-standard; } | sort > "$RUNNER_TEMP/actual.txt"
+          diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
+
+      - name: Publish validated outputs
+        id: publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          prefix="generated/goanime-metadata-seed-fast-path/$TARGET_SHA"
+          put_content() {
+            local destination="$1" source="$2" current encoded
+            encoded="$(base64 -w0 "$source")"
+            current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$destination?ref=main" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$destination" -f message='ci(goanime): publish validated metadata seed fast path' -f content="$encoded" -f branch=main)
+            if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+            gh api "${args[@]}" >/dev/null
+          }
+          while IFS= read -r path; do
+            put_content "$prefix/$path" "private-source/$path"
+          done <<'EOF'
+          .github/workflows/anime_metadata_cache.yml
+          assets/data/anime_metadata_seed.json.sha256
+          lib/services/anime_metadata_seed_service.dart
+          pubspec.yaml
+          test/services/anime_metadata_seed_reimport_test.dart
+          tools/build_anime_metadata_seed.dart
+          EOF
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+
+      - name: Record status
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_STATUS: ${{ job.status }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+          OUTPUT_PREFIX: ${{ steps.publish.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          body="$(python3 - <<'PY'
+          import json, os
+          print(json.dumps({
+            'status': os.environ['GATE_STATUS'],
+            'targetSha': os.environ.get('TARGET_SHA') or None,
+            'outputPrefix': os.environ.get('OUTPUT_PREFIX') or None,
+            'runId': os.environ.get('GITHUB_RUN_ID'),
+          }, indent=2))
+          PY
+          )"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          path='status/goanime-metadata-seed-fast-path.json'
+          for attempt in 1 2 3 4 5; do
+            current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$path?ref=main" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$path" -f message='ci(goanime): record metadata seed fast path status' -f content="$encoded" -f branch=main)
+            if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+            if gh api "${args[@]}" >/dev/null 2>&1; then exit 0; fi
+            sleep "$attempt"
+          done
+          exit 1
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
