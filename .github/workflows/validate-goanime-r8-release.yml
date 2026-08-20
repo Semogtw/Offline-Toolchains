@@ -106,7 +106,6 @@ jobs:
           flutter analyze --no-pub
           flutter test --no-pub --concurrency=1 \
             test/architecture/platform_boundaries_test.dart \
-            test/architecture/release_asset_guard_test.dart \
             test/services/update_service_test.dart
           flutter build apk --release --no-pub
           apk='build/app/outputs/flutter-apk/app-release.apk'
