@@ -12,7 +12,7 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Require private repository token
         env:
@@ -48,13 +48,18 @@ jobs:
           persist-credentials: false
           show-progress: false
 
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
       - name: Reproduce validated builder output
         shell: bash
         run: |
           set -euo pipefail
           python3 trusted-source/scripts/prepare-goanime-metadata-seed-fast-path.py --root private-source
-          dart_format_target='private-source/tools/build_anime_metadata_seed.dart'
-          if command -v dart >/dev/null 2>&1; then dart format "$dart_format_target"; fi
+          dart format private-source/tools/build_anime_metadata_seed.dart
 
       - name: Publish missing builder with retry
         shell: bash
