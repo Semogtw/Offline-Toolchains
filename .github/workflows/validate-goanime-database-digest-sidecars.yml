@@ -1,0 +1,232 @@
+name: Validate GoAnime database digest sidecars
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-database-digest-sidecars/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-database-digest-sidecars
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout Toolchains
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-database-digest-sidecars/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          test "$branch" = 'perf/app-wide-optimization-20260819'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Validate patcher syntax
+        working-directory: trusted-source
+        run: python3 -m py_compile scripts/prepare-goanime-database-digest-sidecars.py
+
+      - name: Checkout exact private GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify exact source and remote head
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/GoAnime-Mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Apply digest-sidecar patch
+        run: python3 trusted-source/scripts/prepare-goanime-database-digest-sidecars.py --root private-source
+
+      - name: Verify generated sidecars match database bytes
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          for db in assets/data/franchise_availability.db assets/data/title_availability.db; do
+            expected="$(tr -d '\r\n ' < "$db.sha256")"
+            actual="$(sha256sum "$db" | awk '{print $1}')"
+            test "$expected" = "$actual"
+            test "${#expected}" -eq 64
+          done
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve, format and analyze
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter pub get
+          dart format \
+            lib/services/bundled_database_asset_service.dart \
+            lib/services/franchise_availability_database_service.dart \
+            lib/services/anime_image_cache_service.dart \
+            lib/services/title_availability_database_service.dart \
+            tools/database_digest_sidecar.dart \
+            tools/build_franchise_runtime_artifacts.dart \
+            tools/build_title_availability_database.dart \
+            tools/build_runtime_database_manifest.dart \
+            test/services/bundled_database_asset_service_test.dart \
+            test/tools/database_digest_sidecar_test.dart >/dev/null
+          git -c core.whitespace=cr-at-eol diff --check
+          dart analyze \
+            lib/services/bundled_database_asset_service.dart \
+            lib/services/franchise_availability_database_service.dart \
+            lib/services/anime_image_cache_service.dart \
+            lib/services/title_availability_database_service.dart \
+            tools/database_digest_sidecar.dart \
+            tools/build_franchise_runtime_artifacts.dart \
+            tools/build_title_availability_database.dart \
+            tools/build_runtime_database_manifest.dart \
+            test/services/bundled_database_asset_service_test.dart \
+            test/tools/database_digest_sidecar_test.dart
+
+      - name: Run database and tooling tests
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter test --no-pub --concurrency=1 \
+            test/services/bundled_database_asset_service_test.dart \
+            test/services/franchise_availability_database_service_test.dart \
+            test/services/anime_image_cache_service_test.dart \
+            test/services/title_availability_database_service_test.dart \
+            test/tools/database_digest_sidecar_test.dart \
+            test/tools/build_franchise_runtime_artifacts_test.dart \
+            test/tools/build_title_availability_database_test.dart \
+            test/tools/build_runtime_database_manifest_test.dart
+
+      - name: Verify builders keep sidecars synchronized
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart run tools/build_runtime_database_manifest.dart --no-copy-assets --output="$RUNNER_TEMP/runtime_database_manifest.json"
+          for db in assets/data/franchise_availability.db assets/data/title_availability.db; do
+            test "$(tr -d '\r\n ' < "$db.sha256")" = "$(sha256sum "$db" | awk '{print $1}')"
+          done
+
+      - name: Publish validated outputs
+        id: publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          put_content() {
+            local output="$1" message="$2" encoded="$3" attempt current
+            for attempt in 1 2 3 4 5 6; do
+              current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$output?ref=main" --jq .sha 2>/dev/null || true)"
+              args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$output" -f message="$message" -f content="$encoded" -f branch=main)
+              if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+              if gh api "${args[@]}" >/dev/null 2>&1; then return 0; fi
+              sleep "$attempt"
+            done
+            return 1
+          }
+
+          prefix="generated/goanime-database-digest-sidecars/$TARGET_SHA"
+          files=(
+            assets/data/franchise_availability.db.sha256
+            assets/data/title_availability.db.sha256
+            lib/services/bundled_database_asset_service.dart
+            lib/services/franchise_availability_database_service.dart
+            lib/services/anime_image_cache_service.dart
+            lib/services/title_availability_database_service.dart
+            pubspec.yaml
+            tools/database_digest_sidecar.dart
+            tools/build_franchise_runtime_artifacts.dart
+            tools/build_title_availability_database.dart
+            tools/build_runtime_database_manifest.dart
+            test/services/bundled_database_asset_service_test.dart
+            test/tools/database_digest_sidecar_test.dart
+          )
+          for file in "${files[@]}"; do
+            encoded="$(base64 -w0 "private-source/$file")"
+            put_content "$prefix/$file" "ci(goanime): publish validated database sidecar output" "$encoded"
+          done
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+
+      - name: Record status
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_STATUS: ${{ job.status }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+          OUTPUT_PREFIX: ${{ steps.publish.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          body="$(python3 - <<'PY'
+          import json, os
+          print(json.dumps({
+            'status': os.environ['GATE_STATUS'],
+            'targetSha': os.environ.get('TARGET_SHA') or None,
+            'outputPrefix': os.environ.get('OUTPUT_PREFIX') or None,
+            'runId': os.environ.get('GITHUB_RUN_ID'),
+          }, indent=2))
+          PY
+          )"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          path='status/goanime-database-digest-sidecars.json'
+          for attempt in 1 2 3 4 5 6; do
+            current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$path?ref=main" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$path" -f message="ci(goanime): record database sidecar status" -f content="$encoded" -f branch=main)
+            if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+            if gh api "${args[@]}" >/dev/null 2>&1; then exit 0; fi
+            sleep "$attempt"
+          done
+          exit 1
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
