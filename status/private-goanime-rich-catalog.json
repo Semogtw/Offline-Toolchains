@@ -1,11 +1,11 @@
 {
-  "conclusion": null,
+  "conclusion": "failure",
   "run_id": 32315555595,
   "run_number": 2,
   "schema_version": 1,
   "source_ref": "0a097a9d65feb1492b1c8e3b59221cc4d1aab062",
-  "status": "in_progress",
+  "status": "completed",
   "trigger_sha": "029e8b0df8be5697d259786d647eb35e6285c0c0",
-  "updated_at": "2026-08-20T00:00:00Z",
+  "updated_at": "2026-08-20T00:04:01Z",
   "workflow": "Generate private GoAnime rich catalog"
 }
