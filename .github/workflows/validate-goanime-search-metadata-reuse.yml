@@ -1,0 +1,303 @@
+name: Validate GoAnime search metadata reuse
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-search-metadata-reuse/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-search-metadata-reuse
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-search-metadata-reuse/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          test "$branch" = 'perf/app-wide-optimization-20260819'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Reuse metadata search result
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('lib/services/jikan_service.dart')
+          text = path.read_text()
+
+          old = '''    final metadataResults = await _searchMetadataCache(
+      query,
+      limit: limit,
+      availabilityMode: availabilityMode,
+    );
+    if (metadataResults.isNotEmpty) {
+      final metadataByKey = <String, JikanAnime>{};
+'''
+          new = '''    final metadataResults = await _searchMetadataCache(
+      query,
+      limit: limit,
+      availabilityMode: availabilityMode,
+    );
+    if (metadataResults.isNotEmpty) {
+      _saveToCache(
+        _metadataSearchCacheKey(query, limit, availabilityMode),
+        metadataResults,
+      );
+      unawaited(
+        _refreshMetadataCacheFromOnlineSearch(
+          query,
+          limit: limit,
+          availabilityMode: availabilityMode,
+        ),
+      );
+      final metadataByKey = <String, JikanAnime>{};
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f'searchCached target count={text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          old = '''    final cacheKey = [
+      'metadata',
+      normalizedQuery.toLowerCase(),
+      limit,
+      availabilityMode.name,
+    ].join('_');
+
+    return _loadCachedList(cacheKey, () async {
+'''
+          new = '''    final cacheKey = _metadataSearchCacheKey(
+      normalizedQuery,
+      limit,
+      availabilityMode,
+    );
+
+    return _loadCachedList(cacheKey, () async {
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f'metadata key target count={text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          marker = '''  Future<List<JikanAnime>> _searchMetadataCache(
+    String query, {
+'''
+          addition = '''  String _metadataSearchCacheKey(
+    String query,
+    int limit,
+    AnimeAvailabilityMode availabilityMode,
+  ) {
+    return [
+      'metadata',
+      query.trim().toLowerCase(),
+      limit,
+      availabilityMode.name,
+    ].join('_');
+  }
+
+'''
+          if text.count(marker) != 1:
+              raise SystemExit(f'helper marker count={text.count(marker)}')
+          path.write_text(text.replace(marker, addition + marker, 1))
+
+          helper = Path('test/services/jikan_service_search_test_helpers.dart')
+          text = helper.read_text()
+          old = '''  final bool throwOnSearch;
+  final List<AnimeMetadataCacheEntry> savedEntries = [];
+
+  @override
+'''
+          new = '''  final bool throwOnSearch;
+  final List<AnimeMetadataCacheEntry> savedEntries = [];
+  int searchCalls = 0;
+
+  @override
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f'fake fields target count={text.count(old)}')
+          text = text.replace(old, new, 1)
+          old = '''  }) async {
+    if (throwOnSearch) throw StateError('metadata cache failed');
+    return searchResults.take(limit).toList();
+  }
+'''
+          new = '''  }) async {
+    searchCalls += 1;
+    if (throwOnSearch) throw StateError('metadata cache failed');
+    return searchResults.take(limit).toList();
+  }
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f'fake search target count={text.count(old)}')
+          helper.write_text(text.replace(old, new, 1))
+
+          cases = Path('test/services/jikan_service_search_test_cases_1.dart')
+          text = cases.read_text()
+          marker = "  test('getAnimeExtrasById parses studios and themes', () async {\n"
+          addition = '''  test('local search reuses metadata cache for immediate enrichment', () async {
+    AvailabilityService.debugSetAvailableTitles(['cowboy bebop']);
+    final metadataCache = _FakeAnimeMetadataCacheService(
+      searchResults: [
+        AnimeMetadataCacheEntry(
+          malId: 1,
+          title: 'Cowboy Bebop',
+          imageUrl: 'https://cdn.example/cowboy.webp',
+          updatedAt: DateTime.utc(2026, 5, 15),
+        ),
+      ],
+    );
+    JikanService.debugSetAnimeMetadataCacheService(metadataCache);
+    JikanService.httpClient = MockClient(
+      (_) async => http.Response(
+        jsonEncode({
+          'pagination': {'has_next_page': false},
+          'data': <Object>[],
+        }),
+        200,
+      ),
+    );
+
+    final service = JikanService();
+    final local = await service.searchCachedAnimes('cowboy', limit: 20);
+    final enriched = await service.searchAnimeMetadata('cowboy', limit: 20);
+
+    expect(local.single.title, 'Cowboy Bebop');
+    expect(enriched.single.title, 'Cowboy Bebop');
+    expect(metadataCache.searchCalls, 1);
+  });
+
+'''
+          if text.count(marker) != 1:
+              raise SystemExit(f'test marker count={text.count(marker)}')
+          cases.write_text(text.replace(marker, addition + marker, 1))
+          PY
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Format and validate
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+          dart format \
+            lib/services/jikan_service.dart \
+            test/services/jikan_service_search_test_helpers.dart \
+            test/services/jikan_service_search_test_cases_1.dart
+          git -c core.whitespace=cr-at-eol diff --check
+          cat > "$RUNNER_TEMP/expected.txt" <<'EOF'
+          lib/services/jikan_service.dart
+          test/services/jikan_service_search_test_cases_1.dart
+          test/services/jikan_service_search_test_helpers.dart
+          EOF
+          git diff --name-only | sort > "$RUNNER_TEMP/actual.txt"
+          diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
+          flutter analyze --no-pub
+          flutter test --no-pub --concurrency=1 test/services/jikan_service_search_test.dart
+
+      - name: Publish validated outputs
+        id: publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          prefix="generated/goanime-search-metadata-reuse/$TARGET_SHA"
+          put_content() {
+            local destination="$1" source="$2" encoded current attempt
+            encoded="$(base64 -w0 "$source")"
+            for attempt in 1 2 3 4 5; do
+              current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$destination?ref=main" --jq .sha 2>/dev/null || true)"
+              args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$destination" -f message='ci(goanime): publish search metadata reuse output' -f content="$encoded" -f branch=main)
+              if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+              if gh api "${args[@]}" >/dev/null 2>&1; then return 0; fi
+              sleep "$attempt"
+            done
+            return 1
+          }
+          for file in \
+            lib/services/jikan_service.dart \
+            test/services/jikan_service_search_test_helpers.dart \
+            test/services/jikan_service_search_test_cases_1.dart; do
+            put_content "$prefix/$file" "private-source/$file"
+          done
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+
+      - name: Record status
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_STATUS: ${{ job.status }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+          OUTPUT_PREFIX: ${{ steps.publish.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          body="$(python3 - <<'PY'
+          import json, os
+          print(json.dumps({
+            'status': os.environ['GATE_STATUS'],
+            'targetSha': os.environ.get('TARGET_SHA') or None,
+            'outputPrefix': os.environ.get('OUTPUT_PREFIX') or None,
+            'runId': os.environ.get('GITHUB_RUN_ID'),
+          }, indent=2))
+          PY
+          )"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          path='status/goanime-search-metadata-reuse.json'
+          for attempt in 1 2 3 4 5; do
+            current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$path?ref=main" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$path" -f message='ci(goanime): record search metadata reuse status' -f content="$encoded" -f branch=main)
+            if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+            if gh api "${args[@]}" >/dev/null 2>&1; then exit 0; fi
+            sleep "$attempt"
+          done
+          exit 1
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
