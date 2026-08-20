@@ -98,7 +98,7 @@ jobs:
             tools/super_animes_anilist_mal_resolver.dart
           )
           dart format "${files[@]}" >/dev/null
-          git diff --check
+          git -c core.whitespace=cr-at-eol diff --check
           dart format --output=none --set-exit-if-changed lib test packages tools
           printf '%s\n' "${files[@]}" | sort > "$RUNNER_TEMP/expected-format-files.txt"
           git diff --name-only | sort > "$RUNNER_TEMP/actual-format-files.txt"
