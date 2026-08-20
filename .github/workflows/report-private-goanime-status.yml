@@ -44,32 +44,25 @@ jobs:
           if [ "$WORKFLOW_NAME" = 'Build encrypted private GoAnime APK' ]; then
             trigger_path='triggers/private-goanime-apk.json'
             status_path='status/private-goanime-apk.json'
-            trigger_json="$(git show "$TRIGGER_SHA:$trigger_path")"
-            SOURCE_REF="$(printf '%s' "$trigger_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ref"])')"
           elif [ "$WORKFLOW_NAME" = 'Refresh private GoAnime catalog and build encrypted APK' ]; then
             trigger_path='triggers/private-goanime-refresh.json'
             status_path='status/private-goanime-refresh.json'
-            trigger_json="$(git show "$TRIGGER_SHA:$trigger_path")"
-            SOURCE_REF="$(printf '%s' "$trigger_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ref"])')"
           elif [ "$WORKFLOW_NAME" = 'Validate private GoAnime source' ]; then
             trigger_path='triggers/private-goanime-validate.json'
             status_path='status/private-goanime-validate.json'
-            trigger_json="$(git show "$TRIGGER_SHA:$trigger_path")"
-            SOURCE_REF="$(printf '%s' "$trigger_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ref"])')"
           elif [ "$WORKFLOW_NAME" = 'Generate private GoAnime rich catalog' ]; then
             trigger_path='triggers/private-goanime-rich-catalog.json'
             status_path='status/private-goanime-rich-catalog.json'
-            trigger_json="$(git show "$TRIGGER_SHA:$trigger_path")"
-            SOURCE_REF="$(printf '%s' "$trigger_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ref"])')"
           elif [ "$WORKFLOW_NAME" = 'Prepare verified GoAnime formatting fix' ]; then
+            trigger_path='triggers/private-goanime-format.json'
             status_path='status/private-goanime-format.json'
-            workflow_text="$(git show "$TRIGGER_SHA:.github/workflows/prepare-goanime-format-fix.yml")"
-            SOURCE_REF="$(printf '%s' "$workflow_text" | sed -n 's/^      SOURCE_REF: \([0-9a-f]\{40\}\)$/\1/p' | head -n1)"
-            test -n "$SOURCE_REF"
           else
             echo "Unexpected workflow: $WORKFLOW_NAME" >&2
             exit 1
           fi
+          trigger_json="$(git show "$TRIGGER_SHA:$trigger_path")"
+          SOURCE_REF="$(printf '%s' "$trigger_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ref"])')"
+          test -n "$SOURCE_REF"
           export SOURCE_REF
 
           python3 - "$status_path" <<'PY'
@@ -78,7 +71,7 @@ jobs:
           import sys
 
           path = sys.argv[1]
-          conclusion = os.environ.get('CONCLUSION', '').strip() or None
+          conclusion = os.environ.get('CONCLUSION') or None
           payload = {
               'schema_version': 1,
               'workflow': os.environ['WORKFLOW_NAME'],
@@ -90,21 +83,26 @@ jobs:
               'trigger_sha': os.environ['TRIGGER_SHA'],
               'updated_at': os.environ['UPDATED_AT'],
           }
-          with open(path, 'w', encoding='utf-8') as stream:
-              json.dump(payload, stream, indent=2, sort_keys=True)
-              stream.write('\n')
+          with open(path, 'w', encoding='utf-8') as handle:
+              json.dump(payload, handle, indent=2, sort_keys=True)
+              handle.write('\n')
           PY
 
-      - name: Commit status
+      - name: Publish status
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add status/
+          git add status/private-goanime-*.json
           if git diff --cached --quiet; then
             exit 0
           fi
-          git commit -m 'ci(goanime): record private workflow status'
-          git pull --rebase origin main
-          git push origin HEAD:main
+          git commit -m 'ci(status): update private GoAnime workflow status'
+          for attempt in 1 2 3 4; do
+            if git pull --rebase origin main && git push origin HEAD:main; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 4 ]; then sleep $((attempt * 2)); fi
+          done
+          exit 1
