@@ -107,7 +107,8 @@ jobs:
             test/services/watch_history_service_test.dart \
             test/services/user_sync_session_persistence_test.dart \
             test/services/user_sync_flush_serialization_test.dart \
-            test/services/user_sync_queue_merge_test.dart
+            test/services/user_sync_anime_queue_compaction_test.dart \
+            test/services/user_sync_automatic_failure_test.dart
           mapfile -t changed < <(git diff --name-only)
           test "${#changed[@]}" -eq 3
           test "${changed[0]}" = 'lib/services/user_sync_service.dart'
