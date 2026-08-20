@@ -1,6 +1,6 @@
 {
-  "status": "failure",
-  "targetSha": "be066a137245bb46eb50aa44e4a6052e0c98868f",
-  "outputPrefix": null,
-  "runId": "32324350215"
+  "status": "success",
+  "targetSha": "509dc732b2f35619af3b17c9a700a55422044396",
+  "outputPrefix": "generated/goanime-image-cache-bounds/509dc732b2f35619af3b17c9a700a55422044396",
+  "runId": "32324721788"
 }
