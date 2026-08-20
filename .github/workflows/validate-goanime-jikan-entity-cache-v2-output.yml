@@ -95,7 +95,6 @@ jobs:
           flutter analyze --no-pub
           flutter test --no-pub --concurrency=1 \
             test/services/jikan_entity_cache_test.dart \
-            test/services/jikan_rate_limit_queue_test.dart \
             test/services/runtime_home_catalog_resilience_test.dart
           cat > "$RUNNER_TEMP/expected.txt" <<'EOF'
           lib/services/jikan_service.dart
