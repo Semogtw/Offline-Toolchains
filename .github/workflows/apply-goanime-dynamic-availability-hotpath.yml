@@ -1,4 +1,4 @@
-name: Apply GoAnime dynamic availability hot-path optimization
+name: Validate GoAnime dynamic availability hot path
 
 on:
   push:
@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  apply:
+  validate:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -99,27 +99,23 @@ jobs:
           flutter test --no-pub --concurrency=1 test/services/dynamic_availability_export_test.dart
           test "$(git diff --name-only)" = 'lib/services/dynamic_availability_cache.dart'
 
-      - name: Commit and fast-forward private branch
+      - name: Publish validated output to Toolchains
         id: publish
-        working-directory: private-source
         shell: bash
         env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
-          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
         run: |
           set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add lib/services/dynamic_availability_cache.dart
-          git commit -m 'perf(availability): reuse fresh dynamic entries per lookup'
-          new_sha="$(git rev-parse HEAD)"
-          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
-          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/GoAnime-Mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
-          test "$remote" = "$EXPECTED_SHA"
-          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/GoAnime-Mobile.git "HEAD:refs/heads/$TARGET_BRANCH"
-          unset auth PRIVATE_REPOSITORIES_TOKEN
-          echo "sha=$new_sha" >> "$GITHUB_OUTPUT"
+          prefix="generated/goanime-dynamic-availability-hotpath/$TARGET_SHA"
+          file='lib/services/dynamic_availability_cache.dart'
+          output="$prefix/$file"
+          encoded="$(base64 -w0 "private-source/$file")"
+          current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$output?ref=main" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$output" -f message="ci(goanime): publish validated dynamic availability output" -f content="$encoded" -f branch=main)
+          if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+          gh api "${args[@]}" >/dev/null
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
 
       - name: Record gate status
         if: always()
@@ -128,7 +124,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GATE_STATUS: ${{ job.status }}
           TARGET_SHA: ${{ steps.request.outputs.sha }}
-          PUBLISHED_SHA: ${{ steps.publish.outputs.sha }}
+          OUTPUT_PREFIX: ${{ steps.publish.outputs.prefix }}
         run: |
           set -euo pipefail
           body="$(python3 - <<PY
@@ -136,7 +132,7 @@ jobs:
           print(json.dumps({
             'status': os.environ['GATE_STATUS'],
             'targetSha': os.environ.get('TARGET_SHA') or None,
-            'publishedSha': os.environ.get('PUBLISHED_SHA') or None,
+            'outputPrefix': os.environ.get('OUTPUT_PREFIX') or None,
             'runId': '${{ github.run_id }}',
           }, indent=2))
           PY
