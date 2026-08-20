@@ -1,0 +1,171 @@
+name: Validate GoAnime release shrinking
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-r8-release/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-r8-release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout Toolchains
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-r8-release/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          test "$branch" = 'perf/app-wide-optimization-20260819'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Enable shrinking
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('android/app/build.gradle.kts')
+          text = path.read_text()
+          for old, new in [
+              ('isMinifyEnabled = false', 'isMinifyEnabled = true'),
+              ('isShrinkResources = false', 'isShrinkResources = true'),
+          ]:
+              if text.count(old) != 1:
+                  raise SystemExit(f'unexpected release config for {old}')
+              text = text.replace(old, new, 1)
+          path.write_text(text)
+          PY
+          git -c core.whitespace=cr-at-eol diff --check
+          test "$(git diff --name-only)" = 'android/app/build.gradle.kts'
+
+      - name: Validate app and release build
+        id: build
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter analyze --no-pub
+          flutter test --no-pub --concurrency=1 \
+            test/architecture/platform_boundaries_test.dart \
+            test/architecture/release_asset_guard_test.dart \
+            test/services/update_service_test.dart
+          flutter build apk --release --no-pub
+          apk='build/app/outputs/flutter-apk/app-release.apk'
+          if [ ! -f "$apk" ]; then apk='build/app/outputs/flutter-apk/goanime.apk'; fi
+          test -f "$apk"
+          size="$(stat -c '%s' "$apk")"
+          printf 'size=%s\n' "$size" >> "$GITHUB_OUTPUT"
+
+      - name: Publish validated config
+        id: publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          prefix="generated/goanime-r8-release/$TARGET_SHA"
+          source='private-source/android/app/build.gradle.kts'
+          destination="$prefix/android/app/build.gradle.kts"
+          encoded="$(base64 -w0 "$source")"
+          current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$destination?ref=main" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$destination" -f message='ci(goanime): publish validated release shrinking config' -f content="$encoded" -f branch=main)
+          if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+          gh api "${args[@]}" >/dev/null
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+
+      - name: Record status
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_STATUS: ${{ job.status }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+          OUTPUT_PREFIX: ${{ steps.publish.outputs.prefix }}
+          APK_SIZE: ${{ steps.build.outputs.size }}
+        run: |
+          set -euo pipefail
+          body="$(python3 - <<'PY'
+          import json, os
+          print(json.dumps({
+            'status': os.environ['GATE_STATUS'],
+            'targetSha': os.environ.get('TARGET_SHA') or None,
+            'outputPrefix': os.environ.get('OUTPUT_PREFIX') or None,
+            'apkBytes': int(os.environ['APK_SIZE']) if os.environ.get('APK_SIZE') else None,
+            'runId': os.environ.get('GITHUB_RUN_ID'),
+          }, indent=2))
+          PY
+          )"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          path='status/goanime-r8-release.json'
+          for attempt in 1 2 3 4 5; do
+            current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$path?ref=main" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$path" -f message='ci(goanime): record release shrinking status' -f content="$encoded" -f branch=main)
+            if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+            if gh api "${args[@]}" >/dev/null 2>&1; then exit 0; fi
+            sleep "$attempt"
+          done
+          exit 1
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
