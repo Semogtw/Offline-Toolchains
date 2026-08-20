@@ -1,0 +1,296 @@
+name: Anime Metadata Cache
+
+# Keep bundled discovery metadata and broadcast data aligned with the current season.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'
+  push:
+    branches: [main]
+    paths:
+      - 'tools/anime_metadata_seed_targets.json'
+      - 'tools/build_anime_metadata_seed.dart'
+      - '.github/workflows/anime_metadata_cache.yml'
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_CHANNEL: stable
+  FLUTTER_VERSION: 3.44.1
+
+jobs:
+  build-seed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: false
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Discover current season MAL IDs via AniList
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import time
+          import urllib.request
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          path = Path('tools/anime_metadata_seed_targets.json')
+          payload = json.loads(path.read_text(encoding='utf-8'))
+          targets = payload.setdefault('targets', [])
+          existing = {
+              target.get('malId')
+              for target in targets
+              if isinstance(target, dict) and isinstance(target.get('malId'), int)
+          }
+
+          now = datetime.now(timezone.utc)
+          season = (
+              'WINTER' if now.month <= 3 else
+              'SPRING' if now.month <= 6 else
+              'SUMMER' if now.month <= 9 else
+              'FALL'
+          )
+          query = '''
+          query ($page: Int!, $year: Int!, $season: MediaSeason!) {
+            Page(page: $page, perPage: 50) {
+              pageInfo { hasNextPage }
+              media(
+                type: ANIME
+                seasonYear: $year
+                season: $season
+                isAdult: false
+                sort: POPULARITY_DESC
+              ) {
+                idMal
+                title { english romaji }
+              }
+            }
+          }
+          '''
+
+          discovered = []
+          for page_number in range(1, 5):
+              body = json.dumps({
+                  'query': query,
+                  'variables': {
+                      'page': page_number,
+                      'year': now.year,
+                      'season': season,
+                  },
+              }).encode('utf-8')
+              last_error = None
+              document = None
+              for attempt in range(1, 4):
+                  try:
+                      request = urllib.request.Request(
+                          'https://graphql.anilist.co',
+                          data=body,
+                          headers={
+                              'Content-Type': 'application/json',
+                              'Accept': 'application/json',
+                              'User-Agent': 'GoAnime-Mobile-metadata-builder/1.0',
+                          },
+                          method='POST',
+                      )
+                      with urllib.request.urlopen(request, timeout=30) as response:
+                          document = json.loads(response.read().decode('utf-8'))
+                      break
+                  except Exception as error:
+                      last_error = error
+                      if attempt < 3:
+                          time.sleep(attempt * 2)
+              if document is None:
+                  raise RuntimeError(
+                      f'AniList discovery failed on page {page_number}: {last_error}'
+                  )
+              if document.get('errors'):
+                  raise RuntimeError(f"AniList GraphQL errors: {document['errors']}")
+
+              page = document['data']['Page']
+              for media in page.get('media') or []:
+                  mal_id = media.get('idMal')
+                  if not isinstance(mal_id, int) or mal_id <= 0:
+                      continue
+                  title_data = media.get('title') or {}
+                  title = title_data.get('english') or title_data.get('romaji')
+                  if not isinstance(title, str) or not title.strip():
+                      title = f'MAL {mal_id}'
+                  discovered.append((mal_id, title.strip()))
+                  if mal_id not in existing:
+                      targets.append({'malId': mal_id, 'title': title.strip()})
+                      existing.add(mal_id)
+              if not page.get('pageInfo', {}).get('hasNextPage'):
+                  break
+
+          unique_discovered = {mal_id for mal_id, _ in discovered}
+          if len(unique_discovered) < 20:
+              raise RuntimeError(
+                  f'AniList returned only {len(unique_discovered)} current-season MAL IDs'
+              )
+
+          path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+          print(
+              f'AniList discovery: year={now.year} season={season.lower()} '
+              f'malIds={len(unique_discovered)} targets={len(targets)}'
+          )
+          PY
+
+      - name: Build anime metadata seed
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'git checkout -- tools/anime_metadata_seed_targets.json' EXIT
+          dart run tools/build_anime_metadata_seed.dart
+
+      - name: Validate seed outputs
+        run: |
+          set -euo pipefail
+          cd dist/anime_metadata_cache
+          test -f anime_metadata_seed.json
+          test -f anime_metadata_seed.json.sha256
+          test -f anime_metadata_seed.json.gz
+          test -f anime_metadata_seed.sha256
+          test -f anime_metadata_manifest.json
+          test -f broadcast_schedule.json
+          gzip -t anime_metadata_seed.json.gz
+          printf '%s  %s\n' "$(cat anime_metadata_seed.json.sha256)" anime_metadata_seed.json | sha256sum -c -
+          sha256sum -c anime_metadata_seed.sha256
+          python - <<'PY'
+          import gzip
+          import hashlib
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          manifest = json.load(open('anime_metadata_manifest.json', encoding='utf-8'))
+          payload = json.load(gzip.open('anime_metadata_seed.json.gz', mode='rt', encoding='utf-8'))
+          compressed = Path('anime_metadata_seed.json.gz').read_bytes()
+          broadcast = json.load(open('broadcast_schedule.json', encoding='utf-8'))
+          asset = manifest['asset']
+          entries = payload['entries']
+
+          assert manifest['schemaVersion'] == 1
+          assert payload['schemaVersion'] == 1
+          assert len(entries) >= 40, 'seed requires at least 40 entries'
+          entries_with_images = sum(
+              1 for entry in entries if str(entry.get('imageUrl') or '').strip()
+          )
+          assert entries_with_images >= 40, 'seed requires at least 40 cover images'
+          available_genres = {
+              str(genre).strip().lower()
+              for entry in entries
+              for genre in entry.get('genres', [])
+          }
+          required_genres = {'action', 'comedy', 'fantasy', 'romance'}
+          assert required_genres <= available_genres, (
+              f'missing Home genres: {sorted(required_genres - available_genres)}'
+          )
+
+          now = datetime.now(timezone.utc)
+          current_season = (
+              'winter' if now.month <= 3 else
+              'spring' if now.month <= 6 else
+              'summer' if now.month <= 9 else
+              'fall'
+          )
+          current_entries = [
+              entry for entry in entries
+              if entry.get('year') == now.year
+              and str(entry.get('season') or '').strip().lower() == current_season
+          ]
+          assert len(current_entries) >= 10, (
+              f'seed requires at least 10 {current_season} {now.year} entries; '
+              f'got {len(current_entries)}'
+          )
+          assert len(broadcast.get('entries', {})) >= 5, (
+              'broadcast snapshot requires at least 5 current-season entries'
+          )
+          assert broadcast['generatedAt'] == payload['generatedAt']
+          assert asset['sizeBytes'] == len(compressed)
+          assert asset['sha256'].lower() == hashlib.sha256(compressed).hexdigest()
+          assert manifest['generatedAt'] == payload['generatedAt']
+          print(
+              f'validated entries={len(entries)} currentSeason={len(current_entries)} '
+              f'broadcasts={len(broadcast.get("entries", {}))}'
+          )
+          PY
+
+      - name: Upload short-lived metadata diagnostics
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: anime-metadata-cache
+          path: dist/anime_metadata_cache/
+          if-no-files-found: ignore
+          retention-days: 1
+
+      - name: Commit validated bundled seed
+        shell: bash
+        env:
+          REPOSITORY_WRITE_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p assets/data
+          cp dist/anime_metadata_cache/anime_metadata_seed.json \
+            assets/data/anime_metadata_seed.json
+          cp dist/anime_metadata_cache/anime_metadata_seed.json.sha256 \
+            assets/data/anime_metadata_seed.json.sha256
+          cp dist/anime_metadata_cache/broadcast_schedule.json \
+            assets/data/broadcast_schedule.json
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add assets/data/anime_metadata_seed.json \
+            assets/data/anime_metadata_seed.json.sha256 \
+            assets/data/broadcast_schedule.json
+          if git diff --cached --quiet; then
+            echo 'Bundled seed is already current.'
+            exit 0
+          fi
+          git commit -m 'chore(metadata): refresh bundled anime seed [skip ci]'
+          auth="$(printf 'x-access-token:%s' "$REPOSITORY_WRITE_TOKEN" | base64 -w0)"
+          extraheader="AUTHORIZATION: basic $auth"
+          git -c http.https://github.com/.extraheader="$extraheader" pull --rebase origin main
+          git -c http.https://github.com/.extraheader="$extraheader" push origin HEAD:main
+          unset auth extraheader REPOSITORY_WRITE_TOKEN
+
+      - name: Upload anime metadata seed to R2
+        env:
+          ANIME_METADATA_PUBLIC_BASE_URL: ${{ secrets.ANIME_METADATA_PUBLIC_BASE_URL }}
+          ANIME_METADATA_R2_ACCOUNT_ID: ${{ secrets.ANIME_METADATA_R2_ACCOUNT_ID }}
+          ANIME_METADATA_R2_ACCESS_KEY_ID: ${{ secrets.ANIME_METADATA_R2_ACCESS_KEY_ID }}
+          ANIME_METADATA_R2_SECRET_ACCESS_KEY: ${{ secrets.ANIME_METADATA_R2_SECRET_ACCESS_KEY }}
+          ANIME_METADATA_R2_BUCKET: ${{ secrets.ANIME_METADATA_R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.ANIME_METADATA_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.ANIME_METADATA_R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+        run: |
+          set -euo pipefail
+          if [ -z "${ANIME_METADATA_PUBLIC_BASE_URL:-}" ] || \
+             [ -z "${ANIME_METADATA_R2_ACCOUNT_ID:-}" ] || \
+             [ -z "${ANIME_METADATA_R2_ACCESS_KEY_ID:-}" ] || \
+             [ -z "${ANIME_METADATA_R2_SECRET_ACCESS_KEY:-}" ] || \
+             [ -z "${ANIME_METADATA_R2_BUCKET:-}" ]; then
+            echo 'R2 publication secrets are incomplete; skipping external metadata publication.'
+            exit 0
+          fi
+          endpoint="https://${ANIME_METADATA_R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          aws s3 cp dist/anime_metadata_cache/anime_metadata_manifest.json "s3://${ANIME_METADATA_R2_BUCKET}/latest/anime_metadata_manifest.json" --endpoint-url "$endpoint"
+          aws s3 cp dist/anime_metadata_cache/anime_metadata_seed.json.gz "s3://${ANIME_METADATA_R2_BUCKET}/latest/anime_metadata_seed.json.gz" --endpoint-url "$endpoint"
+
+      - name: Remove generated publication data
+        if: always()
+        run: rm -rf dist/anime_metadata_cache
