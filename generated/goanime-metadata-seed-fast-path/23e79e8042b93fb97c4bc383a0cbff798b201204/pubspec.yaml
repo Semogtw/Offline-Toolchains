@@ -1,0 +1,157 @@
+name: goanime
+description: "GoAnime Mobile - Flutter anime streaming app"
+# The following line prevents the package from being accidentally published to
+# pub.dev using `flutter pub publish`. This is preferred for private packages.
+publish_to: 'none' # Remove this line if you wish to publish to pub.dev
+
+# The following defines the version and build number for your application.
+# A version number is three numbers separated by dots, like 1.2.43
+# followed by an optional build number separated by a +.
+# Both the version and the builder number may be overridden in flutter
+# build by specifying --build-name and --build-number, respectively.
+# In Android, build-name is used as versionName while build-number used as versionCode.
+# Read more about Android versioning at https://developer.android.com/studio/publish/versioning
+# In iOS, build-name is used as CFBundleShortVersionString while build-number is used as CFBundleVersion.
+# Read more about iOS versioning at
+# https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
+# In Windows, build-name is used as the major, minor, and patch parts
+# of the product and file versions while build-number is used as the build suffix.
+version: 1.24.2+29
+
+environment:
+  sdk: ">=3.10.0 <4.0.0"
+
+# Dependencies specify other packages that your package needs in order to work.
+# To automatically upgrade your package dependencies to the latest versions
+# consider running `flutter pub upgrade --major-versions`. Alternatively,
+# dependencies can be manually updated by changing the version numbers below to
+# the latest version available on pub.dev. To see which dependencies have newer
+# versions available, run `flutter pub outdated`.
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # The following adds the Cupertino Icons font to your application.
+  # Use with the CupertinoIcons class for iOS style icons.
+  cupertino_icons: ^1.0.8
+  # Video player dependencies
+  chewie: ^1.8.5
+  video_player: ^2.8.7
+  # HTTP requests
+  http: ^1.1.0
+  crypto: ^3.0.6
+  goanime_core:
+    path: packages/goanime_core
+  # HTML parsing
+  html: ^0.15.4
+  # Database
+  sqflite: ^2.3.0
+  sqflite_common_ffi: ^2.4.0+3
+  # Path provider
+  path: ^1.8.3
+  path_provider: ^2.1.1
+  # WebView fallback for iOS playback
+  webview_flutter: ^4.5.0
+  # Image caching for better performance
+  cached_network_image: ^3.3.1
+  # Local storage for search history
+  shared_preferences: ^2.2.2
+  # Protected storage for sync credentials
+  flutter_secure_storage: ^10.3.1
+  # State management
+  provider: ^6.1.1
+  # Internationalization support
+  flutter_localizations:
+    sdk: flutter
+  intl: any
+  # Bottom navigation bar
+  bottom_navy_bar: ^6.0.0
+  # Local notifications for download progress
+  flutter_local_notifications: ^21.0.0
+  # Desktop backends for package:video_player
+  video_player_media_kit: ^2.0.0
+  media_kit_libs_windows_video: ^1.0.11
+  media_kit_libs_linux: ^1.2.1
+  media_kit_libs_android_video: ^1.3.7
+  # Ionicons icons
+  ionicons:
+    path: third_party/ionicons_compat
+  # Lucide icons
+  lucide_icons:
+    path: third_party/lucide_icons_compat
+  # Animated widgets
+  animated_item: ^0.0.2
+  google_fonts: ^8.0.2
+  file_picker: 12.0.0-beta.3
+  wakelock_plus: ^1.6.0
+  media_kit: ^1.2.6
+  media_kit_video: ^2.0.1
+  flutter_discord_rpc:
+    path: third_party/flutter_discord_rpc_desktop
+  package_info_plus: ^10.1.0
+  shorebird_code_push: ^2.0.6
+  auto_updater: ^1.0.0
+  url_launcher: ^6.3.2
+  webview_windows:
+    path: third_party/webview_windows
+  webview_all_linux: ^0.5.4
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  # The "flutter_lints" package below contains a set of recommended lints to
+  # encourage good coding practices. The lint set provided by the package is
+  # activated in the `analysis_options.yaml` file located at the root of the
+  # package. See that file for information on activating/deactivating specific lints.
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
+
+# Force update of transitive dependencies to latest versions
+dependency_overrides:
+  flutter_rust_bridge: 2.11.1
+  characters: ^1.4.1
+  flutter_local_notifications_windows:
+    path: third_party/flutter_local_notifications_windows_stub
+  material_color_utilities: ^0.13.0
+  meta: ^1.17.0
+  test_api: ^0.7.7
+
+hooks:
+  user_defines:
+    sqlite3:
+      source: system
+      name_windows: winsqlite3
+      name: sqlite3
+
+# For information about the generic Dart part of this file, see the
+# following page: https://dart.dev/tools/pub/pubspec
+
+# The following section is specific to Flutter packages.
+flutter:
+
+  # The following line ensures that the Material Icons font is
+  # included with your application, so that you can use the icons in the
+  # application. The Material Icons font is described in the Icons class.
+  uses-material-design: true
+
+  assets:
+    - assets/data/available_animes.json
+    - assets/data/available_anime_modes.json
+    - assets/data/mal_availability_map.json
+    - assets/data/mal_provider_availability_map.json
+    - assets/data/franchise_availability.db
+    - assets/data/franchise_availability.db.sha256
+    - assets/data/title_availability.db
+    - assets/data/title_availability.db.sha256
+    - assets/data/patch_notes.json
+    - assets/data/broadcast_schedule.json
+    - assets/data/anime_metadata_seed.json
+    - assets/data/anime_metadata_seed.json.sha256
+    - android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+
+  # An image asset can refer to one or more resolution-specific "variants", see
+  # https://flutter.dev/to/resolution-aware-images
+
+  # For details regarding fonts from package dependencies, see
+  # https://flutter.dev/to/resolution-aware-images
