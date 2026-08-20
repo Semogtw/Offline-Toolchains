@@ -4,18 +4,20 @@ on:
   push:
     branches: [main]
     paths:
-      - '.github/workflows/prepare-goanime-format-fix.yml'
+      - triggers/private-goanime-format.json
 
 permissions:
   contents: read
+
+concurrency:
+  group: private-goanime-format-fix
+  cancel-in-progress: true
 
 jobs:
   prepare:
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
     timeout-minutes: 26
-    env:
-      SOURCE_REF: 3f6e59565c11a627950e23c231e5c6dbd4f9ba1d
     steps:
       - name: Checkout trusted Toolchains source
         uses: actions/checkout@v6
@@ -24,19 +26,37 @@ jobs:
           path: trusted-source
           persist-credentials: false
 
-      - name: Checkout exact private GoAnime source read-only
+      - name: Read exact source request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$GITHUB_WORKSPACE/trusted-source/triggers/private-goanime-format.json"
+          python3 - "$request" "$GITHUB_OUTPUT" <<'PY'
+          import json,re,sys
+          payload=json.load(open(sys.argv[1],encoding='utf-8'))
+          sha=str(payload.get('ref') or '').strip().lower()
+          branch=str(payload.get('branch') or '').strip()
+          if not re.fullmatch(r'[0-9a-f]{40}',sha): raise SystemExit('ref must be an exact SHA')
+          if not re.fullmatch(r'[A-Za-z0-9._/-]{1,200}',branch) or branch.startswith('/') or branch.endswith('/') or '..' in branch:
+              raise SystemExit('branch must be a safe existing branch name')
+          with open(sys.argv[2],'a',encoding='utf-8') as out:
+              out.write(f'ref={sha}\nbranch={branch}\n')
+          PY
+
+      - name: Checkout exact private GoAnime source
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
-          ref: ${{ env.SOURCE_REF }}
+          ref: ${{ steps.request.outputs.ref }}
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
-          persist-credentials: false
+          persist-credentials: true
           fetch-depth: 1
 
       - name: Verify exact private commit
         shell: bash
-        run: test "$(git -C private-source rev-parse HEAD)" = "$SOURCE_REF"
+        run: test "$(git -C private-source rev-parse HEAD)" = '${{ steps.request.outputs.ref }}'
 
       - name: Set up Flutter 3.44.1
         uses: subosito/flutter-action@v2
@@ -48,76 +68,61 @@ jobs:
         working-directory: private-source
         run: flutter pub get
 
-      - name: Format unified catalog files
+      - name: Format only known global-gate debt
         working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
-          dart format \
-            lib/services/anime_metadata_cache_service.dart \
-            lib/services/runtime_home_catalog_service.dart \
-            tools/anilist_metadata_bulk_loader.dart \
-            tools/build_anime_metadata_seed.dart \
-            test/services/anime_metadata_home_candidates_test.dart \
-            test/services/runtime_home_catalog_partial_cache_repair_test.dart \
-            test/tools/anilist_metadata_bulk_loader_test.dart \
-            test/tools/build_anime_metadata_seed_catalog_sources_test.dart
+          files=(
+            test/services/providers/goyabu_quality_propagation_test.dart
+            test/tools/super_animes_anilist_envelope_test.dart
+            test/tools/super_animes_completion_policy_test.dart
+            test/tools/super_animes_partial_batch_progress_test.dart
+            tools/super_animes_anilist_mal_resolver.dart
+          )
+          dart format "${files[@]}"
           git diff --check
-          changed="$(git diff --name-only)"
-          expected="$(printf '%s\n' \
-            tools/anilist_metadata_bulk_loader.dart \
-            test/services/anime_metadata_home_candidates_test.dart | sort)"
-          test "$(printf '%s\n' "$changed" | sort)" = "$expected" || {
-            echo 'Unexpected formatter change set:'
-            printf '%s\n' "$changed"
+          changed="$(git diff --name-only | sort)"
+          expected="$(printf '%s\n' "${files[@]}" | sort)"
+          test "$changed" = "$expected" || {
+            echo 'Unexpected formatter change set:' >&2
+            printf '%s\n' "$changed" >&2
             exit 1
           }
 
-      - name: Run focused tests against formatted workspace
+      - name: Verify project-wide formatting after cleanup
+        working-directory: private-source
+        run: dart format --output=none --set-exit-if-changed lib test packages tools
+
+      - name: Publish scoped formatting fix
+        id: publish
         working-directory: private-source
         shell: bash
-        run: |
-          set -euo pipefail
-          flutter test --no-pub \
-            test/services/anime_metadata_home_candidates_test.dart \
-            test/services/runtime_home_catalog_seed_fallback_test.dart \
-            test/services/runtime_home_catalog_partial_cache_repair_test.dart \
-            test/services/runtime_home_catalog_resilience_test.dart \
-            test/tools/anilist_metadata_bulk_loader_test.dart \
-            test/tools/build_anime_metadata_seed_catalog_sources_test.dart
-
-      - name: Encrypt formatted handoff
-        shell: bash
         env:
-          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+          EXPECTED_REF: ${{ steps.request.outputs.ref }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
         run: |
           set -euo pipefail
-          work="$RUNNER_TEMP/goanime-format-fix"
-          mkdir -p "$work/gpg" "$work/out" "$work/payload/tools" "$work/payload/test/services"
-          chmod 700 "$work/gpg"
-          export GNUPGHOME="$work/gpg"
-          cp private-source/tools/anilist_metadata_bulk_loader.dart "$work/payload/tools/"
-          cp private-source/test/services/anime_metadata_home_candidates_test.dart "$work/payload/test/services/"
-          tar -C "$work/payload" -czf "$work/formatted-files.tar.gz" .
-          gpg --batch --import trusted-source/keys/source-bundles-public.asc
-          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1=="fpr"{print $10;exit}')"
-          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
-          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" \
-            --output "$work/out/formatted-files.tar.gz.gpg" --encrypt "$work/formatted-files.tar.gz"
-          sha256sum "$work/formatted-files.tar.gz" > "$work/out/formatted-files.tar.gz.sha256"
-          printf '%s\n' "$SOURCE_REF" > "$work/out/source-ref.txt"
+          git fetch origin "$TARGET_BRANCH"
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_REF" || {
+            echo 'Source branch moved during formatting; refusing to overwrite it.' >&2
+            exit 1
+          }
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            test/services/providers/goyabu_quality_propagation_test.dart \
+            test/tools/super_animes_anilist_envelope_test.dart \
+            test/tools/super_animes_completion_policy_test.dart \
+            test/tools/super_animes_partial_batch_progress_test.dart \
+            tools/super_animes_anilist_mal_resolver.dart
+          if git diff --cached --quiet; then
+            echo "published_sha=$EXPECTED_REF" >> "$GITHUB_OUTPUT"
+          else
+            git commit -m 'style: satisfy project-wide Dart formatting gate'
+            git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+            echo "published_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Upload encrypted verified formatting handoff
-        uses: actions/upload-artifact@v7
-        with:
-          name: goanime-unified-catalog-format-fix
-          path: ${{ runner.temp }}/goanime-format-fix/out
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
-
-      - name: Cleanup private source
-        if: always()
-        shell: bash
-        run: |
-          rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source" "$RUNNER_TEMP/goanime-format-fix"
+      - name: Summary
+        run: echo "Published formatting SHA ${{ steps.publish.outputs.published_sha }}"
