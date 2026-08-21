@@ -1,0 +1,35 @@
+name: Report GoAnime runtime performance checkpoint
+
+on:
+  workflow_run:
+    workflows: ['Apply GoAnime runtime performance checkpoint']
+    types: [completed]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Publish sanitized run receipt
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const body = [
+              `<!-- goanime-runtime-perf-run:${run.id} -->`,
+              '### GoAnime runtime performance checkpoint',
+              '',
+              `- Run: ${run.id}`,
+              `- Conclusion: \`${run.conclusion}\``,
+              `- Trigger SHA: \`${run.head_sha}\``,
+              `- Attempt: ${run.run_attempt}`,
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 4,
+              body,
+            });
