@@ -102,12 +102,10 @@ jobs:
               for line in lines[start:]:
                   if line.strip() == 'PY':
                       break
-                  if line == '':
-                      script_lines.append('')
-                      continue
-                  if not line.startswith('          '):
-                      raise SystemExit(f'unexpected indentation in {step_name}: {line!r}')
-                  script_lines.append(line[10:])
+                  if line.startswith('          '):
+                      script_lines.append(line[10:])
+                  else:
+                      script_lines.append(line)
               else:
                   raise SystemExit(f'missing python patch end for {step_name}')
               code = '\n'.join(script_lines) + '\n'
