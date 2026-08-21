@@ -102,6 +102,9 @@ jobs:
               for line in lines[start:]:
                   if line.strip() == 'PY':
                       break
+                  if line == '':
+                      script_lines.append('')
+                      continue
                   if not line.startswith('          '):
                       raise SystemExit(f'unexpected indentation in {step_name}: {line!r}')
                   script_lines.append(line[10:])
