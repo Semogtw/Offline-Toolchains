@@ -1,0 +1,33 @@
+name: Report GoAnime final Home performance publish
+
+on:
+  workflow_run:
+    workflows: ['Apply GoAnime final Home performance patches']
+    types: [completed]
+
+permissions:
+  contents: write
+
+jobs:
+  report:
+    if: github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+      - name: Publish sanitized result
+        env:
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports/goanime-home-final-perf
+          printf '{\n  "schemaVersion": 1,\n  "runId": %s,\n  "runAttempt": %s,\n  "conclusion": "%s"\n}\n' "$RUN_ID" "$ATTEMPT" "$CONCLUSION" > "reports/goanime-home-final-perf/${RUN_ID}.json"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "reports/goanime-home-final-perf/${RUN_ID}.json"
+          git commit -m "ci(goanime): report Home perf run ${RUN_ID}"
+          git push
