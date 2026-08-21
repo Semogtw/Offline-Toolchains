@@ -1,0 +1,152 @@
+name: Apply GoAnime final Home performance patches
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-home-final-perf/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-home-final-perf
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact GoAnime revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-home-final-perf/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          test "$branch" = 'perf/app-wide-optimization-20260819'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble reviewed Home patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat \
+            trusted-source/payloads/goanime-home-final.patch.b64.part1 \
+            trusted-source/payloads/goanime-home-final.patch.b64.part2 \
+            | base64 -d > "$RUNNER_TEMP/goanime-home-final.patch"
+          echo '90ca8d65ec2e33cebbed1005cd88ef5fc032af64f9aa925085abde0d35572772  '"$RUNNER_TEMP/goanime-home-final.patch" | sha256sum -c -
+
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify current remote head
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+
+      - name: Apply reviewed Home commits
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git am "$RUNNER_TEMP/goanime-home-final.patch"
+          test -z "$(git status --porcelain)"
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: |
+          flutter config --no-analytics
+          flutter pub get
+
+      - name: Validate Home performance patch
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/validate_project_health_files.py
+          python3 tools/validate_repository_guards.py
+          git diff --check ${{ steps.request.outputs.sha }}..HEAD
+          dart format --output=none --set-exit-if-changed \
+            lib/screens/home_screen.dart \
+            lib/screens/home_screen_data.dart \
+            lib/screens/home_screen_presentation.dart \
+            test/widgets/home_banner_rotation_perf_test.dart
+          flutter analyze --no-pub
+          flutter test --no-pub --concurrency=2 \
+            test/widgets/home_banner_rotation_perf_test.dart \
+            test/widgets/home_lazy_sections_test.dart \
+            test/widgets/classic_home_polish_test.dart \
+            test/widgets/goanime_home_components_test.dart
+
+      - name: Fast-forward private optimization branch
+        id: publish
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          new_sha="$(git rev-parse HEAD)"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/goanime-mobile.git "HEAD:refs/heads/$TARGET_BRANCH"
+          echo "sha=$new_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        run: echo "Published final Home perf SHA ${{ steps.publish.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove private checkout and patch
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source" "$RUNNER_TEMP/goanime-home-final.patch"
