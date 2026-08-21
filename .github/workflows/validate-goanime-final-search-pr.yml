@@ -78,7 +78,6 @@ jobs:
           set -euo pipefail
           python3 - <<'PYRUN'
           from pathlib import Path
-          import re, textwrap
 
           workflows = [
               ('../trusted-source/.github/workflows/validate-goanime-availability-search-index.yml', 'Apply precomputed title-key index'),
@@ -86,15 +85,29 @@ jobs:
               ('../trusted-source/.github/workflows/validate-goanime-search-metadata-reuse.yml', 'Reuse metadata search result'),
           ]
           for workflow_path, step_name in workflows:
-              text = Path(workflow_path).read_text()
-              marker = f'- name: {step_name}'
-              if marker not in text:
-                  raise SystemExit(f'missing step {step_name}')
-              tail = text.split(marker, 1)[1]
-              match = re.search(r"python3 - <<'PY'\n(.*?)\n          PY", tail, re.S)
-              if not match:
-                  raise SystemExit(f'missing python patch block for {step_name}')
-              code = textwrap.dedent(match.group(1))
+              lines = Path(workflow_path).read_text().splitlines()
+              marker = f'      - name: {step_name}'
+              try:
+                  marker_index = lines.index(marker)
+              except ValueError as error:
+                  raise SystemExit(f'missing step {step_name}') from error
+              start = None
+              for index in range(marker_index + 1, len(lines)):
+                  if lines[index].strip() == "python3 - <<'PY'":
+                      start = index + 1
+                      break
+              if start is None:
+                  raise SystemExit(f'missing python patch start for {step_name}')
+              script_lines = []
+              for line in lines[start:]:
+                  if line.strip() == 'PY':
+                      break
+                  if not line.startswith('          '):
+                      raise SystemExit(f'unexpected indentation in {step_name}: {line!r}')
+                  script_lines.append(line[10:])
+              else:
+                  raise SystemExit(f'missing python patch end for {step_name}')
+              code = '\n'.join(script_lines) + '\n'
               exec(compile(code, workflow_path, 'exec'), {'__name__': '__main__'})
           PYRUN
 
