@@ -46,7 +46,7 @@ jobs:
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
           printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
 
-      - name: Assemble and verify reviewed commit bundle
+      - name: Assemble reviewed commit bundle
         shell: bash
         run: |
           set -euo pipefail
@@ -54,7 +54,7 @@ jobs:
             trusted-source/payloads/goanime-perf-runtime-final.bundle.b64.part1 \
             trusted-source/payloads/goanime-perf-runtime-final.bundle.b64.part2 \
             | base64 -d > "$RUNNER_TEMP/goanime-perf-runtime.bundle"
-          git bundle verify "$RUNNER_TEMP/goanime-perf-runtime.bundle"
+          echo '4b9caec5e2555e2204e620e1051cd2f8735d79f850c5462a77687044f365262a  '"$RUNNER_TEMP/goanime-perf-runtime.bundle" | sha256sum -c -
 
       - name: Checkout exact private GoAnime revision
         uses: actions/checkout@v6
@@ -69,7 +69,7 @@ jobs:
           submodules: false
           show-progress: false
 
-      - name: Verify current remote head
+      - name: Verify current remote head and reviewed bundle
         working-directory: private-source
         shell: bash
         env:
@@ -79,6 +79,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git bundle verify "$RUNNER_TEMP/goanime-perf-runtime.bundle"
           auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
           remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
           test "$remote" = "$EXPECTED_SHA"
