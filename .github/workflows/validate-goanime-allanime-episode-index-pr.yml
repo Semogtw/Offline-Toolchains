@@ -97,6 +97,23 @@ jobs:
           { git diff --name-only; git ls-files --others --exclude-standard; } | sort > "$RUNNER_TEMP/actual.txt"
           diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
 
+      - name: Integrate validated outputs into GoAnime branch
+        id: integrate
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name 'GoAnime Toolchains'
+          git config user.email 'actions@users.noreply.github.com'
+          git add lib/services/allanime_service.dart test/services/allanime_episode_index_test.dart
+          git commit -m 'perf(allanime): index episode metadata linearly'
+          integrated_sha="$(git rev-parse HEAD)"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/goanime-mobile.git HEAD:refs/heads/perf/app-wide-optimization-20260819
+          printf 'sha=%s\n' "$integrated_sha" >> "$GITHUB_OUTPUT"
+
       - name: Publish validated outputs
         shell: bash
         env:
