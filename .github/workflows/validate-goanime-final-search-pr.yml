@@ -71,46 +71,14 @@ jobs:
           remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git refs/heads/perf/app-wide-optimization-20260819 | awk '{print $1}')"
           test "$remote" = "$EXPECTED_SHA"
 
-      - name: Apply the three validated Search transformations
+      - name: Apply final Search transformations
         working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PYRUN'
-          from pathlib import Path
-
-          workflows = [
-              ('../trusted-source/.github/workflows/validate-goanime-availability-search-index.yml', 'Apply precomputed title-key index'),
-              ('../trusted-source/.github/workflows/validate-goanime-franchise-batch-lookup-v2.yml', 'Apply batch franchise lookup'),
-              ('../trusted-source/.github/workflows/validate-goanime-search-metadata-reuse.yml', 'Reuse metadata search result'),
-          ]
-          for workflow_path, step_name in workflows:
-              lines = Path(workflow_path).read_text().splitlines()
-              marker = f'      - name: {step_name}'
-              try:
-                  marker_index = lines.index(marker)
-              except ValueError as error:
-                  raise SystemExit(f'missing step {step_name}') from error
-              start = None
-              for index in range(marker_index + 1, len(lines)):
-                  if lines[index].strip() == "python3 - <<'PY'":
-                      start = index + 1
-                      break
-              if start is None:
-                  raise SystemExit(f'missing python patch start for {step_name}')
-              script_lines = []
-              for line in lines[start:]:
-                  if line.strip() == 'PY':
-                      break
-                  if line.startswith('          '):
-                      script_lines.append(line[10:])
-                  else:
-                      script_lines.append(line)
-              else:
-                  raise SystemExit(f'missing python patch end for {step_name}')
-              code = '\n'.join(script_lines) + '\n'
-              exec(compile(code, workflow_path, 'exec'), {'__name__': '__main__'})
-          PYRUN
+          python3 ../trusted-source/scripts/prepare-goanime-availability-search-index.py
+          python3 ../trusted-source/scripts/prepare-goanime-franchise-batch-lookup-v2.py
+          python3 ../trusted-source/scripts/prepare-goanime-search-metadata-reuse.py
 
       - name: Set up Flutter 3.44.1
         uses: subosito/flutter-action@v2
@@ -211,14 +179,10 @@ jobs:
           )"
           encoded="$(printf '%s\n' "$body" | base64 -w0)"
           destination='status/goanime-final-search-pr.json'
-          for attempt in 1 2 3 4 5; do
-            current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$destination?ref=$OUTPUT_BRANCH" --jq .sha 2>/dev/null || true)"
-            args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$destination" -f message='ci(goanime): record final Search PR status' -f content="$encoded" -f branch="$OUTPUT_BRANCH")
-            if [ -n "$current" ]; then args+=(-f sha="$current"); fi
-            if gh api "${args[@]}" >/dev/null 2>&1; then exit 0; fi
-            sleep "$attempt"
-          done
-          exit 1
+          current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$destination?ref=$OUTPUT_BRANCH" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$destination" -f message='ci(goanime): record final Search PR status' -f content="$encoded" -f branch="$OUTPUT_BRANCH")
+          if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+          gh api "${args[@]}" >/dev/null
 
       - name: Cleanup
         if: always()
