@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "runId": 32536681936,
+  "runAttempt": 1,
+  "conclusion": "failure",
+  "jobs": [
+    {
+      "name": "diagnose",
+      "conclusion": "failure",
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Checkout trusted Toolchains source",
+          "conclusion": "success"
+        },
+        {
+          "name": "Resolve exact GoAnime revision",
+          "conclusion": "success"
+        },
+        {
+          "name": "Assemble reviewed runtime bundle",
+          "conclusion": "success"
+        },
+        {
+          "name": "Checkout exact private GoAnime revision",
+          "conclusion": "success"
+        },
+        {
+          "name": "Apply reviewed runtime changes",
+          "conclusion": "success"
+        },
+        {
+          "name": "Set up Flutter 3.44.1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Resolve dependencies and format",
+          "conclusion": "success"
+        },
+        {
+          "name": "Test player lifecycle performance contract",
+          "conclusion": "success"
+        },
+        {
+          "name": "Test download progress throttling",
+          "conclusion": "success"
+        },
+        {
+          "name": "Test playback resolver concurrency",
+          "conclusion": "success"
+        },
+        {
+          "name": "Test hero image cache contract",
+          "conclusion": "success"
+        },
+        {
+          "name": "Test lazy navigation contract",
+          "conclusion": "failure"
+        },
+        {
+          "name": "Cleanup private checkout",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Set up Flutter 3.44.1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Checkout exact private GoAnime revision",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Checkout trusted Toolchains source",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    }
+  ]
+}
