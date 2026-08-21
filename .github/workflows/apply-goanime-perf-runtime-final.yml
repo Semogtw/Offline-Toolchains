@@ -48,13 +48,16 @@ jobs:
 
       - name: Assemble reviewed commit bundle
         shell: bash
+        env:
+          BUNDLE_SOURCE_SHA: 1e2adb9cd95ee70adc25702d901c8b95ce5534f6
         run: |
           set -euo pipefail
-          cat \
-            trusted-source/payloads/goanime-perf-runtime-final.bundle.b64.part1 \
-            trusted-source/payloads/goanime-perf-runtime-final.bundle.b64.part2 \
-            | base64 -d > "$RUNNER_TEMP/goanime-perf-runtime.bundle"
-          echo 'ea8a4018be9865377c78f44b1155656f8c9502e9789283ec67de2b3e1068e5f4  '"$RUNNER_TEMP/goanime-perf-runtime.bundle" | sha256sum -c -
+          git -C trusted-source fetch --no-tags --depth=1 origin "$BUNDLE_SOURCE_SHA"
+          git -C trusted-source show "$BUNDLE_SOURCE_SHA:payloads/goanime-perf-runtime-final.bundle.b64.part1" > "$RUNNER_TEMP/perf.part1"
+          git -C trusted-source show "$BUNDLE_SOURCE_SHA:payloads/goanime-perf-runtime-final.bundle.b64.part2" > "$RUNNER_TEMP/perf.part2"
+          cat "$RUNNER_TEMP/perf.part1" "$RUNNER_TEMP/perf.part2" | base64 -d > "$RUNNER_TEMP/goanime-perf-runtime.bundle"
+          echo '4b9caec5e2555e2204e620e1051cd2f8735d79f850c5462a77687044f365262a  '"$RUNNER_TEMP/goanime-perf-runtime.bundle" | sha256sum -c -
+          echo '1f0b203c5f40f883f60937c3eeb9c8ef5676ea69a0071d85ca2e1715c98767f0  trusted-source/payloads/goanime-runtime-guard-format-fix.patch' | sha256sum -c -
 
       - name: Checkout exact private GoAnime revision
         uses: actions/checkout@v6
@@ -98,8 +101,8 @@ jobs:
             63b69c8f9b6d4d9625d5780c15bd529c8ddea989 \
             0e1bc3537c712c642c0d7acd2206ad9de7888a32 \
             12f2fca0c7d41ef8e388bfb032365db62b5c7766 \
-            951e3533fd0aaa65dc41cd5d4da6cc83720a5a86 \
-            1b28b03f5ee5d4eb80502445815cbab81ca954c9
+            951e3533fd0aaa65dc41cd5d4da6cc83720a5a86
+          git am "$GITHUB_WORKSPACE/trusted-source/payloads/goanime-runtime-guard-format-fix.patch"
           test -z "$(git status --porcelain)"
 
       - name: Set up Flutter 3.44.1
@@ -177,4 +180,4 @@ jobs:
       - name: Remove private checkout and bundle
         if: always()
         shell: bash
-        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source" "$RUNNER_TEMP/goanime-perf-runtime.bundle"
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source" "$RUNNER_TEMP/goanime-perf-runtime.bundle" "$RUNNER_TEMP/perf.part1" "$RUNNER_TEMP/perf.part2"
