@@ -53,18 +53,18 @@ index 00000000..8eccdc40
 +
 +if __name__ == "__main__":
 +    unittest.main()
-+diff --git a/tools/validate_external_future_ownership.py b/tools/validate_external_future_ownership.py
-+index 72f81de0..bee15fac 100644
-+--- a/tools/validate_external_future_ownership.py
-++++ b/tools/validate_external_future_ownership.py
-+@@ -15,7 +15,7 @@ CHECKS = {
-+     ],
-+     "lib/platform/desktop/screens/desktop_video_player_screen_methods_2.dart": [
-+         r"_progressSaveQueue\s*=\s*_progressSaveQueue",
-+-        r"\.catchError\(\(Object _\) \{\}\)\s*\.then\(\(_\) async",
-++        r"\.catchError\(\s*\(Object _\)\s*\{\}\s*,?\s*\)\s*\.then\(\s*\(_\)\s*async",
-+         r"final prefs = await SharedPreferences\.getInstance\(\);",
-+         r"await prefs\.setInt\(_positionKey, pos\);",
-+         r"await prefs\.remove\(_positionKey\);",
-+-- 
-+2.47.3
+diff --git a/tools/validate_external_future_ownership.py b/tools/validate_external_future_ownership.py
+index 72f81de0..bee15fac 100644
+--- a/tools/validate_external_future_ownership.py
++++ b/tools/validate_external_future_ownership.py
+@@ -15,7 +15,7 @@ CHECKS = {
+     ],
+     "lib/platform/desktop/screens/desktop_video_player_screen_methods_2.dart": [
+         r"_progressSaveQueue\s*=\s*_progressSaveQueue",
+-        r"\.catchError\(\(Object _\) \{\}\)\s*\.then\(\(_\) async",
++        r"\.catchError\(\s*\(Object _\)\s*\{\}\s*,?\s*\)\s*\.then\(\s*\(_\)\s*async",
+         r"final prefs = await SharedPreferences\.getInstance\(\);",
+         r"await prefs\.setInt\(_positionKey, pos\);",
+         r"await prefs\.remove\(_positionKey\);",
+-- 
+2.47.3
