@@ -1,0 +1,88 @@
+name: Diagnose GoAnime perf test failure
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/diagnose-goanime-perf-tests.yml
+      - triggers/goanime-perf-test-diagnostic/*.request
+
+permissions:
+  contents: read
+
+concurrency:
+  group: diagnose-goanime-perf-tests
+  cancel-in-progress: true
+
+env:
+  FLUTTER_CHANNEL: stable
+  FLUTTER_VERSION: 3.44.1
+  GOANIME_SHA: 35ab72bdda1cf992d254bfba973f26eff3b7d620
+
+jobs:
+  diagnose:
+    name: Capture Flutter test failure
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout private GoAnime source read-only
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.GOANIME_SHA }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up pinned Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: false
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+
+      - name: Run Flutter tests and preserve output
+        id: tests
+        working-directory: private-source
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          flutter test --no-pub 2>&1 | tee "$RUNNER_TEMP/goanime-flutter-test.log"
+          code=${PIPESTATUS[0]}
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit "$code"
+
+      - name: Upload diagnostic test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: goanime-flutter-test-diagnostic
+          path: ${{ runner.temp }}/goanime-flutter-test.log
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
