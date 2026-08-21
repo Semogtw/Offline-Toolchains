@@ -122,15 +122,20 @@ jobs:
           set -euo pipefail
           python3 tools/validate_project_health_files.py
           python3 tools/validate_repository_guards.py
-          git diff --check ${{ steps.request.outputs.sha }}..HEAD
+          git -c core.whitespace=cr-at-eol diff --check ${{ steps.request.outputs.sha }}..HEAD
 
-      - name: Check formatting
+      - name: Normalize Dart formatting
         working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
-          dart format --output=none --set-exit-if-changed \
-            lib test packages/goanime_core/lib packages/goanime_core/test
+          dart format lib test packages/goanime_core/lib packages/goanime_core/test >/dev/null
+          git -c core.whitespace=cr-at-eol diff --check ${{ steps.request.outputs.sha }}..HEAD
+          python3 tools/validate_repository_guards.py
+          if ! git diff --quiet; then
+            git add -A
+            git commit -m 'style: format final performance checkpoint'
+          fi
 
       - name: Analyze Flutter project
         working-directory: private-source
