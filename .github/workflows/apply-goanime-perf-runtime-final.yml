@@ -102,6 +102,7 @@ jobs:
             12f2fca0c7d41ef8e388bfb032365db62b5c7766 \
             951e3533fd0aaa65dc41cd5d4da6cc83720a5a86
           git am "$GITHUB_WORKSPACE/trusted-source/payloads/goanime-runtime-guard-format-fix.patch"
+          git am "$GITHUB_WORKSPACE/trusted-source/payloads/goanime-history-nullability-fix.patch"
           test -z "$(git status --porcelain)"
 
       - name: Set up Flutter 3.44.1
@@ -118,6 +119,7 @@ jobs:
           set -euo pipefail
           flutter config --no-analytics
           flutter pub get
+          (cd packages/goanime_core && dart pub get)
 
       - name: Validate repository contracts
         working-directory: private-source
