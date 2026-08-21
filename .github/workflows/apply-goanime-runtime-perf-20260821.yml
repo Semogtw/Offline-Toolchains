@@ -85,6 +85,13 @@ jobs:
           git -C private-source apply --check --whitespace=nowarn /tmp/goanime-runtime-perf.patch
           git -C private-source apply --whitespace=nowarn /tmp/goanime-runtime-perf.patch
 
+      - name: Apply validated runtime fixups
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile trusted-source/scripts/finalize-goanime-runtime-perf-20260821.py
+          python3 trusted-source/scripts/finalize-goanime-runtime-perf-20260821.py private-source
+
       - name: Set up Flutter 3.44.1
         uses: subosito/flutter-action@v2
         with:
@@ -92,10 +99,13 @@ jobs:
           flutter-version: 3.44.1
           cache: true
 
-      - name: Resolve dependencies
+      - name: Resolve app and core dependencies
         working-directory: private-source
         shell: bash
-        run: flutter pub get
+        run: |
+          set -euo pipefail
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
 
       - name: Format changed Dart sources
         working-directory: private-source
@@ -128,11 +138,14 @@ jobs:
           flutter test --no-pub --concurrency=1 \
             test/models/anime_franchise_models_test.dart \
             test/models/anime_franchise_runtime_visibility_perf_test.dart \
+            test/models/unified_anime_model_test.dart \
+            test/screens/history_navigation_safety_static_test.dart \
             test/services/franchise_availability_database_service_test.dart \
             test/services/episode_thumbnail_service_test.dart \
             test/services/download_service_test.dart \
             test/services/unified_source_service_test.dart \
             test/widgets/goanime_hero_image_cache_contract_test.dart
+          (cd packages/goanime_core && dart test)
 
       - name: Guard changed file set
         working-directory: private-source
