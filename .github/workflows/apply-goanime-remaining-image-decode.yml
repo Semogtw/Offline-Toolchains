@@ -1,0 +1,150 @@
+name: Apply GoAnime remaining image decode bounds
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-remaining-image-decode/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-remaining-image-decode
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact GoAnime revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-remaining-image-decode/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          test "$branch" = 'perf/app-wide-optimization-20260819'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Validate patcher syntax
+        working-directory: trusted-source
+        run: python3 -m py_compile scripts/prepare-goanime-remaining-image-decode.py
+
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify current remote head
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+
+      - name: Apply deterministic patch
+        run: python3 trusted-source/scripts/prepare-goanime-remaining-image-decode.py --root private-source
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+
+      - name: Validate remaining image decode bounds
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format \
+            lib/screens/unified_episode_list_screen.dart \
+            lib/screens/unified_episode_list_presentation_6.dart \
+            lib/screens/downloads_screen.dart \
+            lib/screens/downloads_screen_cards.dart \
+            lib/screens/downloads_screen_editorial_cards.dart \
+            lib/widgets/home/goanime_continue_watching_card.dart \
+            test/widgets/remaining_image_cache_bounds_test.dart >/dev/null
+          git diff --check
+          flutter analyze --no-pub
+          flutter test --no-pub --concurrency=1 \
+            test/widgets/remaining_image_cache_bounds_test.dart \
+            test/utils/image_cache_dimensions_test.dart
+
+      - name: Commit and fast-forward private branch
+        id: publish
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- \
+            lib/screens/unified_episode_list_screen.dart \
+            lib/screens/unified_episode_list_presentation_6.dart \
+            lib/screens/downloads_screen.dart \
+            lib/screens/downloads_screen_cards.dart \
+            lib/screens/downloads_screen_editorial_cards.dart \
+            lib/widgets/home/goanime_continue_watching_card.dart \
+            test/widgets/remaining_image_cache_bounds_test.dart
+          git commit -m 'perf(images): bound remaining list thumbnail decodes'
+          new_sha="$(git rev-parse HEAD)"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/goanime-mobile.git "HEAD:refs/heads/$TARGET_BRANCH"
+          echo "sha=$new_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        run: echo "Published GoAnime image decode SHA ${{ steps.publish.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
