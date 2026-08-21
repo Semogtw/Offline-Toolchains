@@ -58,7 +58,7 @@ jobs:
           submodules: false
           show-progress: false
 
-      - name: Verify source branch still matches target SHA
+      - name: Verify exact source
         working-directory: private-source
         shell: bash
         env:
@@ -73,7 +73,6 @@ jobs:
 
       - name: Apply final Search transformations
         working-directory: private-source
-        shell: bash
         run: |
           set -euo pipefail
           python3 ../trusted-source/scripts/prepare-goanime-availability-search-index.py
@@ -87,7 +86,7 @@ jobs:
           flutter-version: 3.44.1
           cache: true
 
-      - name: Format, analyze and test final Search composition
+      - name: Validate final Search composition
         working-directory: private-source
         shell: bash
         run: |
@@ -95,6 +94,12 @@ jobs:
           flutter config --no-analytics
           flutter pub get
           (cd packages/goanime_core && dart pub get)
+          git restore -- \
+            linux/flutter/generated_plugin_registrant.cc \
+            linux/flutter/generated_plugins.cmake \
+            macos/Flutter/GeneratedPluginRegistrant.swift \
+            windows/flutter/generated_plugin_registrant.cc \
+            windows/flutter/generated_plugins.cmake
           dart format \
             lib/services/availability_service.dart \
             lib/services/anime_franchise_cache_service.dart \
@@ -122,8 +127,7 @@ jobs:
           git diff --name-only | sort > "$RUNNER_TEMP/actual.txt"
           diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
 
-      - name: Publish validated files to PR branch
-        id: publish
+      - name: Publish validated outputs
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -133,16 +137,12 @@ jobs:
           set -euo pipefail
           prefix="generated/goanime-final-search/$TARGET_SHA"
           put_content() {
-            local destination="$1" source="$2" encoded current attempt
+            local destination="$1" source="$2" encoded current
             encoded="$(base64 -w0 "$source")"
-            for attempt in 1 2 3 4 5; do
-              current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$destination?ref=$OUTPUT_BRANCH" --jq .sha 2>/dev/null || true)"
-              args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$destination" -f message='ci(goanime): publish validated final Search output' -f content="$encoded" -f branch="$OUTPUT_BRANCH")
-              if [ -n "$current" ]; then args+=(-f sha="$current"); fi
-              if gh api "${args[@]}" >/dev/null 2>&1; then return 0; fi
-              sleep "$attempt"
-            done
-            return 1
+            current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$destination?ref=$OUTPUT_BRANCH" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$destination" -f message='ci(goanime): publish validated final Search output' -f content="$encoded" -f branch="$OUTPUT_BRANCH")
+            if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+            gh api "${args[@]}" >/dev/null
           }
           for file in \
             lib/services/availability_service.dart \
@@ -154,35 +154,6 @@ jobs:
             test/services/jikan_service_search_test_cases_1.dart; do
             put_content "$prefix/$file" "private-source/$file"
           done
-          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
-
-      - name: Publish gate status to PR branch
-        if: always()
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GATE_STATUS: ${{ job.status }}
-          TARGET_SHA: ${{ steps.request.outputs.sha }}
-          OUTPUT_PREFIX: ${{ steps.publish.outputs.prefix }}
-          OUTPUT_BRANCH: ${{ github.head_ref }}
-        run: |
-          set -euo pipefail
-          body="$(python3 - <<'PY'
-          import json, os
-          print(json.dumps({
-            'status': os.environ['GATE_STATUS'],
-            'targetSha': os.environ.get('TARGET_SHA') or None,
-            'outputPrefix': os.environ.get('OUTPUT_PREFIX') or None,
-            'runId': os.environ.get('GITHUB_RUN_ID'),
-          }, indent=2))
-          PY
-          )"
-          encoded="$(printf '%s\n' "$body" | base64 -w0)"
-          destination='status/goanime-final-search-pr.json'
-          current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$destination?ref=$OUTPUT_BRANCH" --jq .sha 2>/dev/null || true)"
-          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$destination" -f message='ci(goanime): record final Search PR status' -f content="$encoded" -f branch="$OUTPUT_BRANCH")
-          if [ -n "$current" ]; then args+=(-f sha="$current"); fi
-          gh api "${args[@]}" >/dev/null
 
       - name: Cleanup
         if: always()
