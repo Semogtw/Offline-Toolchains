@@ -25,6 +25,8 @@ jobs:
     name: Capture Flutter test failure
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    outputs:
+      test_exit_code: ${{ steps.tests.outputs.exit_code }}
 
     steps:
       - name: Require private repository token
@@ -86,3 +88,47 @@ jobs:
         if: always()
         shell: bash
         run: rm -rf "$GITHUB_WORKSPACE/private-source"
+
+  report:
+    name: Publish diagnostic metadata
+    if: always()
+    needs: diagnose
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+
+    steps:
+      - name: Publish run id and sanitized result
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RESULT: ${{ needs.diagnose.result }}
+          TEST_EXIT_CODE: ${{ needs.diagnose.outputs.test_exit_code }}
+          TRIGGER_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/diagnostic.json"
+          python3 - "$report" <<'PY'
+          import json
+          import os
+          import sys
+          payload = {
+              "schemaVersion": 1,
+              "runId": int(os.environ["RUN_ID"]),
+              "runAttempt": int(os.environ["RUN_ATTEMPT"]),
+              "result": os.environ["RESULT"],
+              "testExitCode": os.environ.get("TEST_EXIT_CODE", ""),
+              "toolchainsTriggerSha": os.environ["TRIGGER_SHA"],
+          }
+          with open(sys.argv[1], "w", encoding="utf-8") as stream:
+              json.dump(payload, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          PY
+          encoded="$(base64 -w0 < "$report")"
+          path="reports/goanime-perf-test-diagnostic/${RUN_ID}.json"
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/${path}" \
+            -f "message=ci(goanime): report diagnostic run ${RUN_ID}" \
+            -f "content=${encoded}" >/dev/null
