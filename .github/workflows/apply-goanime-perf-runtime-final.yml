@@ -1,0 +1,172 @@
+name: Apply GoAnime final runtime performance patches
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-perf-runtime-final/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-perf-runtime-final
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact GoAnime revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-perf-runtime-final/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          test "$branch" = 'perf/app-wide-optimization-20260819'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble and verify reviewed commit bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat \
+            trusted-source/payloads/goanime-perf-runtime-final.bundle.b64.part1 \
+            trusted-source/payloads/goanime-perf-runtime-final.bundle.b64.part2 \
+            | base64 -d > "$RUNNER_TEMP/goanime-perf-runtime.bundle"
+          git bundle verify "$RUNNER_TEMP/goanime-perf-runtime.bundle"
+
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify current remote head
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+
+      - name: Apply reviewed performance commits
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch "$RUNNER_TEMP/goanime-perf-runtime.bundle" HEAD:refs/remotes/reviewed/perf-runtime
+          git cherry-pick \
+            519c4cf19553376950e0f8ae8f7d83ea6f0e1933 \
+            4fa461a113ab9d552e7c44fd7760ab6634f2d82a \
+            63b69c8f9b6d4d9625d5780c15bd529c8ddea989 \
+            0e1bc3537c712c642c0d7acd2206ad9de7888a32 \
+            12f2fca0c7d41ef8e388bfb032365db62b5c7766 \
+            951e3533fd0aaa65dc41cd5d4da6cc83720a5a86
+          test -z "$(git status --porcelain)"
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+
+      - name: Validate repository contracts
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/validate_project_health_files.py
+          python3 tools/validate_repository_guards.py
+          git diff --check ${{ steps.request.outputs.sha }}..HEAD
+
+      - name: Check formatting
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format --output=none --set-exit-if-changed \
+            lib test packages/goanime_core/lib packages/goanime_core/test
+
+      - name: Analyze Flutter project
+        working-directory: private-source
+        run: flutter analyze --no-pub
+
+      - name: Test Flutter application
+        working-directory: private-source
+        run: flutter test --no-pub --concurrency=2
+
+      - name: Test GoAnime core
+        working-directory: private-source/packages/goanime_core
+        run: dart test
+
+      - name: Fast-forward private optimization branch
+        id: publish
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          new_sha="$(git rev-parse HEAD)"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/goanime-mobile.git "HEAD:refs/heads/$TARGET_BRANCH"
+          echo "sha=$new_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        run: |
+          echo "Published reviewed GoAnime runtime performance commits." >> "$GITHUB_STEP_SUMMARY"
+          echo "New private head: ${{ steps.publish.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove private checkout and bundle
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source" "$RUNNER_TEMP/goanime-perf-runtime.bundle"
