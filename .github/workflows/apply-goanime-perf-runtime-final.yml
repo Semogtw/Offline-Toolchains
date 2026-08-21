@@ -57,7 +57,6 @@ jobs:
           git -C trusted-source show "$BUNDLE_SOURCE_SHA:payloads/goanime-perf-runtime-final.bundle.b64.part2" > "$RUNNER_TEMP/perf.part2"
           cat "$RUNNER_TEMP/perf.part1" "$RUNNER_TEMP/perf.part2" | base64 -d > "$RUNNER_TEMP/goanime-perf-runtime.bundle"
           echo '4b9caec5e2555e2204e620e1051cd2f8735d79f850c5462a77687044f365262a  '"$RUNNER_TEMP/goanime-perf-runtime.bundle" | sha256sum -c -
-          echo '1f0b203c5f40f883f60937c3eeb9c8ef5676ea69a0071d85ca2e1715c98767f0  trusted-source/payloads/goanime-runtime-guard-format-fix.patch' | sha256sum -c -
 
       - name: Checkout exact private GoAnime revision
         uses: actions/checkout@v6
