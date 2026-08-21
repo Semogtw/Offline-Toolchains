@@ -1,20 +1,20 @@
-From 1b28b03f5ee5d4eb80502445815cbab81ca954c9 Mon Sep 17 00:00:00 2001
+From ed6688c637d03aa60e9e0867d62011fb58b20dd1 Mon Sep 17 00:00:00 2001
 From: ChatGPT Agent <agent@local.invalid>
-Date: Fri, 21 Aug 2026 22:36:32 +0000
-Subject: [PATCH] test(perf): tolerate dart-formatted save queue guard
+Date: Fri, 21 Aug 2026 22:46:42 +0000
+Subject: [PATCH] test(perf): make save queue guard format-independent
 
 ---
- ...test_validate_external_future_ownership.py | 38 +++++++++++++++++++
+ ...test_validate_external_future_ownership.py | 66 +++++++++++++++++++
  tools/validate_external_future_ownership.py   |  2 +-
- 2 files changed, 39 insertions(+), 1 deletion(-)
+ 2 files changed, 67 insertions(+), 1 deletion(-)
  create mode 100644 tools/tests/test_validate_external_future_ownership.py
 
 diff --git a/tools/tests/test_validate_external_future_ownership.py b/tools/tests/test_validate_external_future_ownership.py
 new file mode 100644
-index 00000000..8eccdc40
+index 00000000..1a4fbf6f
 --- /dev/null
 +++ b/tools/tests/test_validate_external_future_ownership.py
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,66 @@
 +from __future__ import annotations
 +
 +import re
@@ -28,8 +28,11 @@ index 00000000..8eccdc40
 +        patterns = CHECKS[
 +            "lib/platform/desktop/screens/desktop_video_player_screen_methods_2.dart"
 +        ]
-+        queue_pattern = next(pattern for pattern in patterns if "catchError" in pattern)
-+        formatted = """
++        queue_pattern = next(
++            pattern for pattern in patterns if "catchError" in pattern
++        )
++        variants = [
++            """
 +_progressSaveQueue = _progressSaveQueue
 +    .catchError(
 +      (Object _) {},
@@ -37,24 +40,49 @@ index 00000000..8eccdc40
 +    .then((_) async {
 +      // serial save work
 +    });
-+"""
++""",
++            """
++_progressSaveQueue = _progressSaveQueue
++    .catchError((Object _) {
++    })
++    .then(
++      (_) async {
++        // serial save work
++      },
++    );
++""",
++        ]
 +
-+        self.assertIsNotNone(re.search(queue_pattern, formatted, re.DOTALL))
++        for formatted in variants:
++            with self.subTest(formatted=formatted):
++                self.assertIsNotNone(re.search(queue_pattern, formatted, re.DOTALL))
 +
 +    def test_progress_save_queue_guard_rejects_unhandled_chain(self) -> None:
 +        patterns = CHECKS[
 +            "lib/platform/desktop/screens/desktop_video_player_screen_methods_2.dart"
 +        ]
-+        queue_pattern = next(pattern for pattern in patterns if "catchError" in pattern)
-+        unsafe = "_progressSaveQueue = _progressSaveQueue.then((_) async {});"
++        queue_pattern = next(
++            pattern for pattern in patterns if "catchError" in pattern
++        )
++        unsafe_variants = [
++            "_progressSaveQueue = _progressSaveQueue.then((_) async {});",
++            """
++_progressSaveQueue = _progressSaveQueue
++    .then((_) async {
++      catchError(someOtherFuture);
++    });
++""",
++        ]
 +
-+        self.assertIsNone(re.search(queue_pattern, unsafe, re.DOTALL))
++        for unsafe in unsafe_variants:
++            with self.subTest(unsafe=unsafe):
++                self.assertIsNone(re.search(queue_pattern, unsafe, re.DOTALL))
 +
 +
 +if __name__ == "__main__":
 +    unittest.main()
 diff --git a/tools/validate_external_future_ownership.py b/tools/validate_external_future_ownership.py
-index 72f81de0..bee15fac 100644
+index 72f81de0..6497dff5 100644
 --- a/tools/validate_external_future_ownership.py
 +++ b/tools/validate_external_future_ownership.py
 @@ -15,7 +15,7 @@ CHECKS = {
@@ -62,7 +90,7 @@ index 72f81de0..bee15fac 100644
      "lib/platform/desktop/screens/desktop_video_player_screen_methods_2.dart": [
          r"_progressSaveQueue\s*=\s*_progressSaveQueue",
 -        r"\.catchError\(\(Object _\) \{\}\)\s*\.then\(\(_\) async",
-+        r"\.catchError\(\s*\(Object _\)\s*\{\}\s*,?\s*\)\s*\.then\(\s*\(_\)\s*async",
++        r"_progressSaveQueue\s*=\s*_progressSaveQueue(?:(?!;).){0,500}?\.catchError\s*\((?:(?!;).){0,300}?\)\s*\.then\s*\(\s*\(_\)\s*async",
          r"final prefs = await SharedPreferences\.getInstance\(\);",
          r"await prefs\.setInt\(_positionKey, pos\);",
          r"await prefs\.remove\(_positionKey\);",
