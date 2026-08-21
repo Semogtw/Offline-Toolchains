@@ -1,0 +1,120 @@
+name: Validate GoAnime AllAnime episode indexing PR
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-allanime-episode-index-pr/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-allanime-episode-index-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout Toolchains PR head
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: trusted-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(find trusted-source/triggers/goanime-allanime-episode-index-pr -type f -name '*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "$request"
+          test "$project" = goanime
+          test "$branch" = 'perf/app-wide-optimization-20260819'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify exact remote head
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git refs/heads/perf/app-wide-optimization-20260819 | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+
+      - name: Apply linear episode index
+        run: python3 trusted-source/scripts/prepare-goanime-allanime-episode-index.py --root private-source
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Validate AllAnime transformation
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          dart format lib/services/allanime_service.dart test/services/allanime_episode_index_test.dart >/dev/null
+          git checkout -- linux/flutter/generated_plugin_registrant.cc linux/flutter/generated_plugins.cmake macos/Flutter/GeneratedPluginRegistrant.swift windows/flutter/generated_plugin_registrant.cc windows/flutter/generated_plugins.cmake 2>/dev/null || true
+          git -c core.whitespace=cr-at-eol diff --check
+          dart analyze lib/services/allanime_service.dart test/services/allanime_episode_index_test.dart
+          flutter test --no-pub --concurrency=1 test/services/allanime_episode_index_test.dart
+          printf '%s\n' lib/services/allanime_service.dart test/services/allanime_episode_index_test.dart | sort > "$RUNNER_TEMP/expected.txt"
+          { git diff --name-only; git ls-files --others --exclude-standard; } | sort > "$RUNNER_TEMP/actual.txt"
+          diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
+
+      - name: Publish validated outputs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+          OUTPUT_BRANCH: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          prefix="generated/goanime-allanime-episode-index/$TARGET_SHA"
+          for file in lib/services/allanime_service.dart test/services/allanime_episode_index_test.dart; do
+            output="$prefix/$file"
+            encoded="$(base64 -w0 "private-source/$file")"
+            current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$output?ref=$OUTPUT_BRANCH" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$output" -f message='ci(goanime): publish exact-head AllAnime output' -f content="$encoded" -f branch="$OUTPUT_BRANCH")
+            if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+            gh api "${args[@]}" >/dev/null
+          done
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
