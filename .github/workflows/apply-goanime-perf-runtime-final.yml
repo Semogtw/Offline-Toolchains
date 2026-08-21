@@ -54,7 +54,7 @@ jobs:
             trusted-source/payloads/goanime-perf-runtime-final.bundle.b64.part1 \
             trusted-source/payloads/goanime-perf-runtime-final.bundle.b64.part2 \
             | base64 -d > "$RUNNER_TEMP/goanime-perf-runtime.bundle"
-          echo '4b9caec5e2555e2204e620e1051cd2f8735d79f850c5462a77687044f365262a  '"$RUNNER_TEMP/goanime-perf-runtime.bundle" | sha256sum -c -
+          echo 'ea8a4018be9865377c78f44b1155656f8c9502e9789283ec67de2b3e1068e5f4  '"$RUNNER_TEMP/goanime-perf-runtime.bundle" | sha256sum -c -
 
       - name: Checkout exact private GoAnime revision
         uses: actions/checkout@v6
@@ -98,7 +98,8 @@ jobs:
             63b69c8f9b6d4d9625d5780c15bd529c8ddea989 \
             0e1bc3537c712c642c0d7acd2206ad9de7888a32 \
             12f2fca0c7d41ef8e388bfb032365db62b5c7766 \
-            951e3533fd0aaa65dc41cd5d4da6cc83720a5a86
+            951e3533fd0aaa65dc41cd5d4da6cc83720a5a86 \
+            1b28b03f5ee5d4eb80502445815cbab81ca954c9
           test -z "$(git status --porcelain)"
 
       - name: Set up Flutter 3.44.1
@@ -122,6 +123,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 tools/validate_project_health_files.py
+          python3 -m unittest discover -s tools/tests -p 'test_*.py'
           python3 tools/validate_repository_guards.py
           git -c core.whitespace=cr-at-eol diff --check ${{ steps.request.outputs.sha }}..HEAD
 
