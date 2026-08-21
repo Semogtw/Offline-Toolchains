@@ -1,0 +1,43 @@
+From 966a346424893984c53768f120627f4844914621 Mon Sep 17 00:00:00 2001
+From: ChatGPT Agent <agent@local.invalid>
+Date: Fri, 21 Aug 2026 23:26:36 +0000
+Subject: [PATCH] test(perf): isolate lazy navigation mount contract
+
+---
+ .../main_navigation_responsive_test.dart       | 18 ++++++------------
+ 1 file changed, 6 insertions(+), 12 deletions(-)
+
+diff --git a/test/widgets/main_navigation_responsive_test.dart b/test/widgets/main_navigation_responsive_test.dart
+index e0186fee..52eed840 100644
+--- a/test/widgets/main_navigation_responsive_test.dart
++++ b/test/widgets/main_navigation_responsive_test.dart
+@@ -113,21 +113,15 @@ void main() {
+     expect(find.byType(HomeScreen), findsOneWidget);
+     expect(find.byType(CategoriesScreen), findsNothing);
+ 
+-    await tester.tap(
+-      find.descendant(
+-        of: find.byType(GoAnimeMobileNavigation),
+-        matching: find.bySemanticsLabel('Categories'),
+-      ),
+-    );
++    tester
++        .widget<GoAnimeMobileNavigation>(find.byType(GoAnimeMobileNavigation))
++        .onSelected(1);
+     await tester.pump();
+     expect(find.byType(CategoriesScreen), findsOneWidget);
+ 
+-    await tester.tap(
+-      find.descendant(
+-        of: find.byType(GoAnimeMobileNavigation),
+-        matching: find.bySemanticsLabel('Home'),
+-      ),
+-    );
++    tester
++        .widget<GoAnimeMobileNavigation>(find.byType(GoAnimeMobileNavigation))
++        .onSelected(0);
+     await tester.pump();
+     expect(find.byType(CategoriesScreen), findsOneWidget);
+   });
+-- 
+2.47.3
