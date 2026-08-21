@@ -142,10 +142,28 @@ jobs:
           grep -q 'isMinifyEnabled = true' android/app/build.gradle.kts
           grep -q 'isShrinkResources = true' android/app/build.gradle.kts
           flutter build apk --release --no-pub
-          apk='build/app/outputs/flutter-apk/goanime.apk'
+
+          apk=''
+          for candidate in \
+            build/app/outputs/flutter-apk/goanime.apk \
+            build/app/outputs/flutter-apk/app-release.apk \
+            build/app/outputs/apk/release/goanime.apk \
+            build/app/outputs/apk/release/app-release.apk; do
+            if [ -f "$candidate" ]; then
+              apk="$candidate"
+              break
+            fi
+          done
+          if [ -z "$apk" ]; then
+            apk="$(find build/app/outputs -type f -name '*.apk' -path '*release*' -print -quit)"
+          fi
+          test -n "$apk"
           test -f "$apk"
           bytes="$(stat -c %s "$apk")"
+          test "$bytes" -le 150000000
+          echo "apk=$apk" >> "$GITHUB_OUTPUT"
           echo "bytes=$bytes" >> "$GITHUB_OUTPUT"
+          echo "Release APK: $apk ($bytes bytes)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish final validation status to PR branch
         if: always()
