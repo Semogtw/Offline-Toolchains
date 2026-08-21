@@ -90,7 +90,7 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git am "$RUNNER_TEMP/goanime-home-final.patch"
+          git am --3way "$RUNNER_TEMP/goanime-home-final.patch"
           test -z "$(git status --porcelain)"
 
       - name: Set up Flutter 3.44.1
