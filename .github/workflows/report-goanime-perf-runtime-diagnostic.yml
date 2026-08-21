@@ -1,0 +1,48 @@
+name: Report GoAnime runtime performance diagnostics
+
+on:
+  workflow_run:
+    workflows: ['Diagnose GoAnime runtime performance tests']
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  report:
+    if: github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Toolchains
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Publish sanitized diagnostic result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports/goanime-perf-runtime-diagnostic
+          jobs_json="$(curl --fail-with-body -sS \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${REPOSITORY}/actions/runs/${RUN_ID}/jobs?per_page=20")"
+          printf '%s' "$jobs_json" | jq \
+            --argjson runId "$RUN_ID" \
+            --argjson runAttempt "$ATTEMPT" \
+            --arg conclusion "$CONCLUSION" \
+            '{schemaVersion: 1, runId: $runId, runAttempt: $runAttempt, conclusion: $conclusion, jobs: [.jobs[] | {name, conclusion, steps: [.steps[] | {name, conclusion}]}]}' \
+            > "reports/goanime-perf-runtime-diagnostic/${RUN_ID}.json"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "reports/goanime-perf-runtime-diagnostic/${RUN_ID}.json"
+          git commit -m "ci(goanime): report runtime diagnostic run ${RUN_ID}"
+          git push
