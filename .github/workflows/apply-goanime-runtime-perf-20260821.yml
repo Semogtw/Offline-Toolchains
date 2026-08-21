@@ -1,0 +1,208 @@
+name: Apply GoAnime runtime performance checkpoint
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-runtime-perf-20260821/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-runtime-perf-20260821
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact GoAnime revision
+        id: request
+        working-directory: trusted-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t requests < <(git diff-tree --no-commit-id --name-only --diff-filter=AM -r HEAD^ HEAD -- 'triggers/goanime-runtime-perf-20260821/*.request')
+          test "${#requests[@]}" -eq 1
+          read -r project branch sha extra < "${requests[0]}"
+          test "$project" = goanime
+          test "$branch" = 'perf/app-wide-optimization-20260819'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          test -z "${extra:-}"
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify exact source and remote head
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Decode and verify deterministic patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d trusted-source/patches/goanime-runtime-perf-20260821.patch.gz.b64 | gzip -dc > /tmp/goanime-runtime-perf.patch
+          echo 'f5de4c62ad06fbe43d3576d4b6594a8479ce92491d4940bd5ea8546706dc1478  /tmp/goanime-runtime-perf.patch' | sha256sum -c -
+          git -C private-source apply --check --whitespace=nowarn /tmp/goanime-runtime-perf.patch
+          git -C private-source apply --whitespace=nowarn /tmp/goanime-runtime-perf.patch
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: flutter pub get
+
+      - name: Format changed Dart sources
+        working-directory: private-source
+        shell: bash
+        run: |
+          dart format \
+            lib/models/anime_franchise_models.dart \
+            lib/platform/desktop/screens/desktop_calendar_view.dart \
+            lib/platform/desktop/screens/desktop_unified_episode_view.dart \
+            lib/platform/desktop/screens/desktop_video_player_screen_methods_3.dart \
+            lib/platform/mobile/screens/mobile_media_kit_video_player_screen_methods_1.dart \
+            lib/screens/anime_detail_screen_presentation_1.dart \
+            lib/screens/anime_detail_screen_presentation_4.dart \
+            lib/screens/history_screen.dart \
+            lib/screens/unified_episode_list_presentation_1.dart \
+            lib/services/download/download_queue_manager.dart \
+            lib/services/download/download_queue_manager_hls.dart \
+            lib/services/episode_thumbnail_service.dart \
+            lib/services/franchise_availability_database_service.dart \
+            lib/services/unified_source_service.dart \
+            test/services/download_service_test.dart >/dev/null
+          git -c core.whitespace=cr-at-eol diff --check
+
+      - name: Validate focused runtime performance changes
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter analyze --no-pub
+          flutter test --no-pub --concurrency=1 \
+            test/models/anime_franchise_models_test.dart \
+            test/models/anime_franchise_runtime_visibility_perf_test.dart \
+            test/services/franchise_availability_database_service_test.dart \
+            test/services/episode_thumbnail_service_test.dart \
+            test/services/download_service_test.dart \
+            test/services/unified_source_service_test.dart \
+            test/widgets/goanime_hero_image_cache_contract_test.dart
+
+      - name: Guard changed file set
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(git diff --name-only | sort)
+          printf '%s\n' "${changed[@]}"
+          cat > /tmp/expected-files <<'EOF'
+          lib/models/anime_franchise_models.dart
+          lib/platform/desktop/screens/desktop_calendar_view.dart
+          lib/platform/desktop/screens/desktop_unified_episode_view.dart
+          lib/platform/desktop/screens/desktop_video_player_screen_methods_3.dart
+          lib/platform/mobile/screens/mobile_media_kit_video_player_screen_methods_1.dart
+          lib/screens/anime_detail_screen_presentation_1.dart
+          lib/screens/anime_detail_screen_presentation_4.dart
+          lib/screens/history_screen.dart
+          lib/screens/unified_episode_list_presentation_1.dart
+          lib/services/download/download_queue_manager.dart
+          lib/services/download/download_queue_manager_hls.dart
+          lib/services/episode_thumbnail_service.dart
+          lib/services/franchise_availability_database_service.dart
+          lib/services/unified_source_service.dart
+          test/services/download_service_test.dart
+          EOF
+          sort -o /tmp/expected-files /tmp/expected-files
+          diff -u /tmp/expected-files <(printf '%s\n' "${changed[@]}")
+
+      - name: Commit and fast-forward private performance branch
+        id: publish
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- \
+            lib/models/anime_franchise_models.dart \
+            lib/platform/desktop/screens/desktop_calendar_view.dart \
+            lib/platform/desktop/screens/desktop_unified_episode_view.dart \
+            lib/platform/desktop/screens/desktop_video_player_screen_methods_3.dart \
+            lib/platform/mobile/screens/mobile_media_kit_video_player_screen_methods_1.dart \
+            lib/screens/anime_detail_screen_presentation_1.dart \
+            lib/screens/anime_detail_screen_presentation_4.dart \
+            lib/screens/history_screen.dart \
+            lib/screens/unified_episode_list_presentation_1.dart \
+            lib/services/download/download_queue_manager.dart \
+            lib/services/download/download_queue_manager_hls.dart \
+            lib/services/episode_thumbnail_service.dart \
+            lib/services/franchise_availability_database_service.dart \
+            lib/services/unified_source_service.dart \
+            test/services/download_service_test.dart
+          git commit -m 'perf(runtime): trim remaining decode and hot-path churn'
+          new_sha="$(git rev-parse HEAD)"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/goanime-mobile.git "HEAD:refs/heads/$TARGET_BRANCH"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+          echo "sha=$new_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        shell: bash
+        run: echo "Published GoAnime runtime performance SHA ${{ steps.publish.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove private checkout and patch
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source" /tmp/goanime-runtime-perf.patch
