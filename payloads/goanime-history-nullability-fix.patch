@@ -1,0 +1,34 @@
+From 44fc6250f18c892e4daf6f3261f7a97dae0387e8 Mon Sep 17 00:00:00 2001
+From: ChatGPT Agent <agent@local.invalid>
+Date: Fri, 21 Aug 2026 22:54:48 +0000
+Subject: [PATCH] fix(history): promote resolved episode before playback
+
+---
+ lib/screens/history_screen.dart | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/lib/screens/history_screen.dart b/lib/screens/history_screen.dart
+index 0c391e18..aa2085d8 100644
+--- a/lib/screens/history_screen.dart
++++ b/lib/screens/history_screen.dart
+@@ -141,7 +141,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
+ 
+       if (!mounted) return;
+ 
+-      if (targetEpisode == null) {
++      final selectedEpisode = targetEpisode;
++      if (selectedEpisode == null) {
+         ScaffoldMessenger.of(context).showSnackBar(
+           SnackBar(
+             content: Text(
+@@ -161,7 +162,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
+         MaterialPageRoute(
+           builder: (context) => buildPlatformVideoPlayerScreen(
+             context: context,
+-            unifiedEpisode: targetEpisode,
++            unifiedEpisode: selectedEpisode,
+             animeTitle: anime.title,
+             jikanAnime: jikanAnime,
+             isDubMode: mode,
+-- 
+2.47.3
