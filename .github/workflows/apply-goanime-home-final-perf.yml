@@ -102,9 +102,12 @@ jobs:
 
       - name: Resolve dependencies
         working-directory: private-source
+        shell: bash
         run: |
+          set -euo pipefail
           flutter config --no-analytics
           flutter pub get
+          (cd packages/goanime_core && dart pub get)
 
       - name: Validate and normalize Home performance patch
         working-directory: private-source
