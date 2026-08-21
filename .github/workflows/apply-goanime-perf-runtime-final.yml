@@ -103,6 +103,7 @@ jobs:
             951e3533fd0aaa65dc41cd5d4da6cc83720a5a86
           git am "$GITHUB_WORKSPACE/trusted-source/payloads/goanime-runtime-guard-format-fix.patch"
           git am "$GITHUB_WORKSPACE/trusted-source/payloads/goanime-history-nullability-fix.patch"
+          git am "$GITHUB_WORKSPACE/trusted-source/payloads/goanime-lazy-nav-test-fix.patch"
           test -z "$(git status --porcelain)"
 
       - name: Set up Flutter 3.44.1
