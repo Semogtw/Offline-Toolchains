@@ -1,0 +1,170 @@
+name: Validate GoAnime final Search scripts PR
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-final-search-scripts-pr/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout Toolchains PR head
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: trusted-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(find trusted-source/triggers/goanime-final-search-scripts-pr -type f -name '*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "$request"
+          test "$project" = goanime
+          test "$branch" = 'perf/app-wide-optimization-20260819'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact GoAnime head
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify branch head
+        working-directory: private-source
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git refs/heads/perf/app-wide-optimization-20260819 | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+
+      - name: Apply final Search patches
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          python3 ../trusted-source/scripts/prepare-goanime-availability-search-index.py
+          python3 ../trusted-source/scripts/prepare-goanime-franchise-batch-lookup-v2.py
+          python3 ../trusted-source/scripts/prepare-goanime-search-metadata-reuse.py
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Format, analyze and test
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+          dart format \
+            lib/services/availability_service.dart \
+            lib/services/anime_franchise_cache_service.dart \
+            lib/services/catalog_franchise_display_service.dart \
+            lib/services/jikan_service.dart \
+            test/services/catalog_franchise_display_service_test.dart \
+            test/services/jikan_service_search_test_helpers.dart \
+            test/services/jikan_service_search_test_cases_1.dart >/dev/null
+          git -c core.whitespace=cr-at-eol diff --check
+          flutter analyze --no-pub
+          flutter test --no-pub --concurrency=1 \
+            test/services/availability_service_test.dart \
+            test/services/runtime_home_catalog_resilience_test.dart \
+            test/services/catalog_franchise_display_service_test.dart \
+            test/services/jikan_service_search_test.dart
+          cat > "$RUNNER_TEMP/expected.txt" <<'EOF'
+          lib/services/anime_franchise_cache_service.dart
+          lib/services/availability_service.dart
+          lib/services/catalog_franchise_display_service.dart
+          lib/services/jikan_service.dart
+          test/services/catalog_franchise_display_service_test.dart
+          test/services/jikan_service_search_test_cases_1.dart
+          test/services/jikan_service_search_test_helpers.dart
+          EOF
+          git diff --name-only | sort > "$RUNNER_TEMP/actual.txt"
+          diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
+
+      - name: Publish validated outputs to PR branch
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+          OUTPUT_BRANCH: ${{ github.head_ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix="generated/goanime-final-search/$TARGET_SHA"
+          for file in \
+            lib/services/availability_service.dart \
+            lib/services/anime_franchise_cache_service.dart \
+            lib/services/catalog_franchise_display_service.dart \
+            lib/services/jikan_service.dart \
+            test/services/catalog_franchise_display_service_test.dart \
+            test/services/jikan_service_search_test_helpers.dart \
+            test/services/jikan_service_search_test_cases_1.dart; do
+            destination="$prefix/$file"
+            encoded="$(base64 -w0 "private-source/$file")"
+            current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$destination?ref=$OUTPUT_BRANCH" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$destination" -f message='ci(goanime): publish validated final Search output' -f content="$encoded" -f branch="$OUTPUT_BRANCH")
+            if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+            gh api "${args[@]}" >/dev/null
+          done
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+
+      - name: Record status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_STATUS: ${{ job.status }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+          OUTPUT_PREFIX: ${{ steps.publish.outputs.prefix }}
+          OUTPUT_BRANCH: ${{ github.head_ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          body="$(python3 - <<'PY'
+          import json, os
+          print(json.dumps({'status': os.environ['GATE_STATUS'], 'targetSha': os.environ.get('TARGET_SHA'), 'outputPrefix': os.environ.get('OUTPUT_PREFIX'), 'runId': os.environ.get('GITHUB_RUN_ID')}, indent=2))
+          PY
+          )"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          destination='status/goanime-final-search-scripts-pr.json'
+          current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$destination?ref=$OUTPUT_BRANCH" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$destination" -f message='ci(goanime): record script Search validation' -f content="$encoded" -f branch="$OUTPUT_BRANCH")
+          if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+          gh api "${args[@]}" >/dev/null
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
