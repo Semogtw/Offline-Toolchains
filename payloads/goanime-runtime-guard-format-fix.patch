@@ -1,36 +1,29 @@
-From ed6688c637d03aa60e9e0867d62011fb58b20dd1 Mon Sep 17 00:00:00 2001
+From ce2982a176b5e4443f2415a3136a9aceee820e75 Mon Sep 17 00:00:00 2001
 From: ChatGPT Agent <agent@local.invalid>
-Date: Fri, 21 Aug 2026 22:46:42 +0000
+Date: Fri, 21 Aug 2026 22:52:02 +0000
 Subject: [PATCH] test(perf): make save queue guard format-independent
 
 ---
- ...test_validate_external_future_ownership.py | 66 +++++++++++++++++++
- tools/validate_external_future_ownership.py   |  2 +-
- 2 files changed, 67 insertions(+), 1 deletion(-)
+ ...test_validate_external_future_ownership.py | 53 +++++++++++++++++++
+ tools/validate_external_future_ownership.py   | 23 +++++++-
+ 2 files changed, 75 insertions(+), 1 deletion(-)
  create mode 100644 tools/tests/test_validate_external_future_ownership.py
 
 diff --git a/tools/tests/test_validate_external_future_ownership.py b/tools/tests/test_validate_external_future_ownership.py
 new file mode 100644
-index 00000000..1a4fbf6f
+index 00000000..ee8c87e8
 --- /dev/null
 +++ b/tools/tests/test_validate_external_future_ownership.py
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,53 @@
 +from __future__ import annotations
 +
-+import re
 +import unittest
 +
-+from tools.validate_external_future_ownership import CHECKS
++from tools.validate_external_future_ownership import _has_owned_progress_save_queue
 +
 +
 +class ExternalFutureOwnershipValidatorTest(unittest.TestCase):
-+    def test_progress_save_queue_guard_accepts_dart_formatted_callback(self) -> None:
-+        patterns = CHECKS[
-+            "lib/platform/desktop/screens/desktop_video_player_screen_methods_2.dart"
-+        ]
-+        queue_pattern = next(
-+            pattern for pattern in patterns if "catchError" in pattern
-+        )
++    def test_progress_save_queue_accepts_dart_format_variants(self) -> None:
 +        variants = [
 +            """
 +_progressSaveQueue = _progressSaveQueue
@@ -38,61 +31,90 @@ index 00000000..1a4fbf6f
 +      (Object _) {},
 +    )
 +    .then((_) async {
-+      // serial save work
++      final prefs = await SharedPreferences.getInstance();
 +    });
 +""",
 +            """
 +_progressSaveQueue = _progressSaveQueue
-+    .catchError((Object _) {
-+    })
++    .catchError((Object _) {})
 +    .then(
 +      (_) async {
-+        // serial save work
++        final prefs = await SharedPreferences.getInstance();
 +      },
 +    );
 +""",
 +        ]
++        for source in variants:
++            with self.subTest(source=source):
++                self.assertTrue(_has_owned_progress_save_queue(source))
 +
-+        for formatted in variants:
-+            with self.subTest(formatted=formatted):
-+                self.assertIsNotNone(re.search(queue_pattern, formatted, re.DOTALL))
-+
-+    def test_progress_save_queue_guard_rejects_unhandled_chain(self) -> None:
-+        patterns = CHECKS[
-+            "lib/platform/desktop/screens/desktop_video_player_screen_methods_2.dart"
-+        ]
-+        queue_pattern = next(
-+            pattern for pattern in patterns if "catchError" in pattern
-+        )
++    def test_progress_save_queue_rejects_unhandled_or_late_catch(self) -> None:
 +        unsafe_variants = [
 +            "_progressSaveQueue = _progressSaveQueue.then((_) async {});",
 +            """
-+_progressSaveQueue = _progressSaveQueue
-+    .then((_) async {
-+      catchError(someOtherFuture);
-+    });
++_progressSaveQueue = _progressSaveQueue.then((_) async {
++  someOtherFuture.catchError((Object _) {});
++});
++""",
++            """
++_progressSaveQueue = _progressSaveQueue;
++_progressSaveQueue.catchError((Object _) {}).then((_) async {});
 +""",
 +        ]
-+
-+        for unsafe in unsafe_variants:
-+            with self.subTest(unsafe=unsafe):
-+                self.assertIsNone(re.search(queue_pattern, unsafe, re.DOTALL))
++        for source in unsafe_variants:
++            with self.subTest(source=source):
++                self.assertFalse(_has_owned_progress_save_queue(source))
 +
 +
 +if __name__ == "__main__":
 +    unittest.main()
 diff --git a/tools/validate_external_future_ownership.py b/tools/validate_external_future_ownership.py
-index 72f81de0..6497dff5 100644
+index 72f81de0..82fcc03b 100644
 --- a/tools/validate_external_future_ownership.py
 +++ b/tools/validate_external_future_ownership.py
-@@ -15,7 +15,7 @@ CHECKS = {
+@@ -15,7 +15,6 @@ CHECKS = {
      ],
      "lib/platform/desktop/screens/desktop_video_player_screen_methods_2.dart": [
          r"_progressSaveQueue\s*=\s*_progressSaveQueue",
 -        r"\.catchError\(\(Object _\) \{\}\)\s*\.then\(\(_\) async",
-+        r"_progressSaveQueue\s*=\s*_progressSaveQueue(?:(?!;).){0,500}?\.catchError\s*\((?:(?!;).){0,300}?\)\s*\.then\s*\(\s*\(_\)\s*async",
          r"final prefs = await SharedPreferences\.getInstance\(\);",
          r"await prefs\.setInt\(_positionKey, pos\);",
          r"await prefs\.remove\(_positionKey\);",
+@@ -56,6 +55,23 @@ CHECKS = {
+ }
+ 
+ 
++def _has_owned_progress_save_queue(source: str) -> bool:
++    assignment = "_progressSaveQueue = _progressSaveQueue"
++    start = source.find(assignment)
++    if start < 0:
++        return False
++
++    catch_error = source.find(".catchError", start + len(assignment))
++    then = source.find(".then", start + len(assignment))
++    statement_end = source.find(";", start + len(assignment))
++
++    if catch_error < 0 or then < 0:
++        return False
++    if not (start < catch_error < then):
++        return False
++    return statement_end < 0 or then < statement_end
++
++
+ def main() -> int:
+     failures: list[str] = []
+     for relative, patterns in CHECKS.items():
+@@ -63,6 +79,11 @@ def main() -> int:
+         for pattern in patterns:
+             if not re.search(pattern, source, re.DOTALL):
+                 failures.append(f"{relative}: missing /{pattern}/")
++        if relative.endswith("desktop_video_player_screen_methods_2.dart"):
++            if not _has_owned_progress_save_queue(source):
++                failures.append(
++                    f"{relative}: progress save queue must catch errors before chaining then"
++                )
+ 
+     if failures:
+         print("FAIL external-future-ownership", file=sys.stderr)
 -- 
 2.47.3
