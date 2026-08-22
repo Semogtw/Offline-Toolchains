@@ -1,0 +1,56 @@
+name: Report GoAnime history undo trigger
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-history-undo-diagnostic/*.request'
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Record sibling workflow runs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tmp="$RUNNER_TEMP/runs.json"
+          for attempt in 1 2 3 4 5; do
+            gh api --method GET "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&per_page=100" > "$tmp"
+            if jq -e '.workflow_runs[]? | select(.name == "Diagnose GoAnime history undo")' "$tmp" >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          report="$RUNNER_TEMP/report.json"
+          python3 - "$tmp" "$report" "$GITHUB_SHA" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          source = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+          rows = []
+          for run in source.get('workflow_runs', []):
+              rows.append({
+                  'id': run.get('id'),
+                  'name': run.get('name'),
+                  'status': run.get('status'),
+                  'conclusion': run.get('conclusion'),
+                  'run_number': run.get('run_number'),
+                  'run_attempt': run.get('run_attempt'),
+              })
+          payload = {'trigger_sha': sys.argv[3], 'runs': rows}
+          Path(sys.argv[2]).write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          PY
+          encoded="$(base64 -w0 "$report")"
+          path="reports/goanime-history-undo-trigger/$GITHUB_SHA.json"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" \
+            -f message="ci(goanime): report history undo trigger $GITHUB_SHA" \
+            -f content="$encoded" \
+            -f branch=main >/dev/null
