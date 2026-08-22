@@ -1,0 +1,58 @@
+name: Stage GoAnime font assets
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-font-assets/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  stage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout pinned Epilogue
+        uses: actions/checkout@v6
+        with:
+          repository: Etcetera-Type-Co/Epilogue
+          ref: 76bd97a82f0105535fb06e6940f2140b2c1a660c
+          path: epilogue-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout pinned Manrope
+        uses: actions/checkout@v6
+        with:
+          repository: aaronbell/manrope
+          ref: 6f81ebecdf65e4463b798cc07b16a4f8d5216917
+          path: manrope-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Stage production font subset
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p payload/assets/fonts/licenses
+          cp epilogue-source/fonts/ttf/Epilogue-ExtraBold.ttf payload/assets/fonts/Epilogue-ExtraBold.ttf
+          cp epilogue-source/fonts/ttf/Epilogue-Black.ttf payload/assets/fonts/Epilogue-Black.ttf
+          cp epilogue-source/OFL.txt payload/assets/fonts/licenses/Epilogue-OFL.txt
+          cp manrope-source/fonts/ttf/manrope-regular.ttf payload/assets/fonts/Manrope-Regular.ttf
+          cp manrope-source/fonts/ttf/manrope-semibold.ttf payload/assets/fonts/Manrope-SemiBold.ttf
+          cp manrope-source/fonts/ttf/manrope-bold.ttf payload/assets/fonts/Manrope-Bold.ttf
+          cp manrope-source/fonts/ttf/manrope-extrabold.ttf payload/assets/fonts/Manrope-ExtraBold.ttf
+          cp manrope-source/OFL.txt payload/assets/fonts/licenses/Manrope-OFL.txt
+          find payload -type f -print0 | sort -z | xargs -0 sha256sum > payload/SHA256SUMS
+          test "$(find payload/assets/fonts -type f | wc -l)" -eq 8
+
+      - name: Upload pinned font payload
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-pinned-font-assets
+          path: payload
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
