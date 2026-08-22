@@ -1,0 +1,148 @@
+name: Apply GoAnime premium splash handoff
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-premium-splash/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-premium-splash-handoff
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+          path: trusted-source
+
+      - name: Resolve exact request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-premium-splash/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project sha < "trusted-source/$request"
+          test "$project" = goanime
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact GoAnime main
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 2
+          persist-credentials: true
+
+      - name: Verify request is still main HEAD
+        working-directory: source
+        env:
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          remote_main="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+          test "$remote_main" = "$EXPECTED_SHA"
+
+      - name: Disable Android 12 splash exit fade
+        working-directory: source
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('android/app/src/main/kotlin/com/example/goanime_mobile/MainActivity.kt')
+          text = path.read_text()
+
+          if 'import android.os.Bundle\n' not in text:
+              needle = 'import android.os.Build\n'
+              assert needle in text
+              text = text.replace(needle, needle + 'import android.os.Bundle\n', 1)
+
+          block = '''    override fun onCreate(savedInstanceState: Bundle?) {
+              // Flutter draws a matching first frame. Removing Android 12's
+              // default splash fade avoids a brief double-fade/flicker between
+              // the native launch surface and the branded Flutter opening.
+              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                  splashScreen.setOnExitAnimationListener { splashScreenView ->
+                      splashScreenView.remove()
+                  }
+              }
+              super.onCreate(savedInstanceState)
+          }
+
+          '''
+          marker = '    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {'
+          assert marker in text
+          if 'override fun onCreate(savedInstanceState: Bundle?)' not in text:
+              text = text.replace(marker, block + marker, 1)
+
+          assert text.count('override fun onCreate(savedInstanceState: Bundle?)') == 1
+          assert text.count('splashScreen.setOnExitAnimationListener') == 1
+          path.write_text(text)
+
+      - name: Check patch
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git diff -- android/app/src/main/kotlin/com/example/goanime_mobile/MainActivity.kt
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Validate Android build before publication
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          flutter build apk --debug --no-pub
+
+      - name: Commit and push guarded main update
+        working-directory: source
+        env:
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote_main="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+          test "$remote_main" = "$EXPECTED_SHA"
+          git config user.name "goanime-toolchains[bot]"
+          git config user.email "goanime-toolchains[bot]@users.noreply.github.com"
+          git add android/app/src/main/kotlin/com/example/goanime_mobile/MainActivity.kt
+          git commit -m "fix(android): remove duplicate splash exit fade"
+          git push origin HEAD:refs/heads/main
