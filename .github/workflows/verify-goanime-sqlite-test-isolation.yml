@@ -7,7 +7,7 @@ on:
       - '.github/workflows/verify-goanime-sqlite-test-isolation.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   verify:
@@ -53,11 +53,13 @@ jobs:
           flutter pub get
 
       - name: Verify isolated SQLite harness contract
+        id: focused
         working-directory: private-source
         shell: bash
         run: flutter test --no-pub test/architecture/sqlite_test_isolation_contract_test.dart
 
       - name: Run full Flutter suite with default concurrency
+        id: full
         working-directory: private-source
         shell: bash
         run: |
@@ -97,7 +99,49 @@ jobs:
 
           tail -n 30 "$RUNNER_TEMP/goanime-parallel-flutter-test.log"
 
-      - name: Record result
+      - name: Publish sanitized exact-SHA report
+        if: always()
+        uses: actions/github-script@v8
+        env:
+          FOCUSED_OUTCOME: ${{ steps.focused.outcome }}
+          FULL_OUTCOME: ${{ steps.full.outcome }}
+        with:
+          script: |
+            const path = `reports/goanime-sqlite-isolation/${process.env.GOANIME_SHA}.json`;
+            const document = {
+              schemaVersion: 1,
+              goanimeSha: process.env.GOANIME_SHA,
+              workflowCommit: context.sha,
+              runId: context.runId,
+              focusedIsolationContract: process.env.FOCUSED_OUTCOME || 'not_run',
+              fullFlutterDefaultConcurrency: process.env.FULL_OUTCOME || 'not_run',
+              generatedAt: new Date().toISOString(),
+              note: 'Focused validation only; does not replace canonical full CI/release gates.'
+            };
+            const encoded = Buffer.from(`${JSON.stringify(document, null, 2)}\n`).toString('base64');
+            let existingSha;
+            try {
+              const existing = await github.rest.repos.getContent({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                path,
+                ref: 'main'
+              });
+              if (!Array.isArray(existing.data)) existingSha = existing.data.sha;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            await github.rest.repos.createOrUpdateFileContents({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              path,
+              message: `ci(result): record GoAnime SQLite isolation ${process.env.GOANIME_SHA.slice(0, 8)}`,
+              content: encoded,
+              branch: 'main',
+              ...(existingSha ? {sha: existingSha} : {})
+            });
+
+      - name: Record result summary
         if: always()
         shell: bash
         run: |
@@ -106,6 +150,7 @@ jobs:
             echo
             echo '- Exact private revision was checked out read-only.'
             echo '- Focused isolation contract and full Flutter suite used normal Flutter concurrency.'
+            echo '- A sanitized result is persisted under reports/goanime-sqlite-isolation/.'
             echo '- This focused gate does not replace the canonical full CI/release gate.'
           } >> "$GITHUB_STEP_SUMMARY"
 
