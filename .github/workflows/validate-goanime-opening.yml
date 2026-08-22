@@ -115,6 +115,10 @@ jobs:
             dart analyze "$target"
           done
 
+      - name: Validate opening asset publication
+        working-directory: private-source
+        run: python3 tools/tests/test_flutter_asset_boundaries.py
+
       - name: Run opening widget tests
         working-directory: private-source
         run: flutter test --no-pub test/widgets/goanime_opening_test.dart
