@@ -7,7 +7,7 @@ on:
       - 'triggers/goanime-font-assets/*.request'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   stage:
@@ -56,3 +56,21 @@ jobs:
           retention-days: 7
           compression-level: 0
           if-no-files-found: error
+
+      - name: Publish staging receipt
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATE: ${{ job.status }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          body="$(jq -cn \
+            --arg state "$STATE" \
+            --argjson runId "$GITHUB_RUN_ID" \
+            '{schemaVersion:1,state:$state,runId:$runId,artifactName:"goanime-pinned-font-assets"}')"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          path="results/goanime-font-assets/$GITHUB_RUN_ID.json"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" \
+            -f message="ci(result): record GoAnime font asset staging $GITHUB_RUN_ID" \
+            -f content="$encoded" >/dev/null
