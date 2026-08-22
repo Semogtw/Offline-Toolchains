@@ -97,7 +97,6 @@ jobs:
             lib/widgets/goanime_opening.dart \
             lib/app/app.dart \
             test/widgets/goanime_opening_test.dart \
-            test/widget_test.dart \
             test/widgets/frontend_foundation_test.dart
           git diff --check
 
@@ -110,7 +109,6 @@ jobs:
             lib/widgets/goanime_opening.dart \
             lib/app/app.dart \
             test/widgets/goanime_opening_test.dart \
-            test/widget_test.dart \
             test/widgets/frontend_foundation_test.dart; do
             dart analyze "$target"
           done
