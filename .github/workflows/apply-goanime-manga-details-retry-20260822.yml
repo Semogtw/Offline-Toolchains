@@ -1,0 +1,274 @@
+name: Apply GoAnime Manga details retry
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-details-retry-20260822/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-details-retry-20260822
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact GoAnime revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-details-retry-20260822/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          test "$branch" = 'feature/manga-platform'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify current remote head
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+
+      - name: Apply reviewed Manga details recovery change
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              if text.count(old) != 1:
+                  raise SystemExit(f'{path}: expected exactly one reviewed anchor, found {text.count(old)}')
+              file.write_text(text.replace(old, new, 1))
+
+          details = 'lib/screens/manga/manga_details_screen.dart'
+          replace_once(
+              details,
+              "import '../../widgets/manga/manga_chapter_list.dart';\nimport '../../widgets/manga/manga_merge_warning.dart';",
+              "import '../../widgets/manga/manga_chapter_list.dart';\nimport '../../widgets/manga/manga_load_error_view.dart';\nimport '../../widgets/manga/manga_merge_warning.dart';",
+          )
+          replace_once(
+              details,
+              "  Future<void> _refreshLibraryEntry() async {",
+              "  void _retryLoad() {\n    final source = _activeSource;\n    if (source == null || _loading) return;\n    _generation += 1;\n    unawaited(_load(source, _generation));\n  }\n\n  Future<void> _refreshLibraryEntry() async {",
+          )
+          replace_once(
+              details,
+              "            ? Center(child: Text(l10n.readableSourcesUnavailable))",
+              "            ? MangaLoadErrorView(onRetry: _retryLoad)",
+          )
+
+          test = 'test/widgets/manga/manga_details_library_test.dart'
+          test_case = r'''
+
+  testWidgets('initial load failure is retryable', (tester) async {
+    var calls = 0;
+    final snapshot = MangaDetailsSnapshot(
+      availability: availability,
+      chapters: const [
+        CanonicalChapter(
+          canonicalChapterId: 'mc_library_1',
+          workId: 'mw_library',
+          title: 'Chapter 1',
+          number: 1,
+        ),
+      ],
+      variantsByChapter: const {},
+      progressByChapter: const {},
+      sourcePreference: const MangaSourcePreference(
+        mode: MangaSourceMode.automatic,
+      ),
+    );
+    final source = _HandlerDetailsDataSource((_) async {
+      calls += 1;
+      if (calls == 1) throw StateError('temporary details failure');
+      return snapshot;
+    });
+
+    await _pump(
+      tester,
+      MangaDetailsScreen(
+        availability: availability,
+        dataSource: source,
+        libraryRepository: library,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Manga content could not be loaded.'), findsOneWidget);
+    expect(find.text('Try again'), findsOneWidget);
+
+    await tester.tap(find.text('Try again'));
+    await tester.pumpAndSettle();
+
+    expect(calls, 2);
+    expect(find.text('Manga content could not be loaded.'), findsNothing);
+    expect(find.text('Chapter 1'), findsOneWidget);
+  });
+'''
+          replace_once(
+              test,
+              "    expect(find.text('Add to library'), findsOneWidget);\n  });\n}\n\nfinal class _FakeDetailsDataSource",
+              "    expect(find.text('Add to library'), findsOneWidget);\n  });" + test_case + "}\n\nfinal class _FakeDetailsDataSource",
+          )
+          helper = r'''
+
+final class _HandlerDetailsDataSource implements MangaDetailsDataSource {
+  const _HandlerDetailsDataSource(this.handler);
+
+  final Future<MangaDetailsSnapshot> Function(MangaAvailabilityRecord) handler;
+
+  @override
+  Future<MangaDetailsSnapshot> load(MangaAvailabilityRecord availability) =>
+      handler(availability);
+
+  @override
+  Future<void> saveSourcePreference(
+    String workId,
+    MangaSourcePreference preference,
+  ) async {}
+}
+'''
+          replace_once(
+              test,
+              "\nFuture<void> _pump(WidgetTester tester, Widget child) async {",
+              helper + "\nFuture<void> _pump(WidgetTester tester, Widget child) async {",
+          )
+
+          parity = 'docs/manga_product_parity.md'
+          replace_once(
+              parity,
+              'Home, Categorias, Biblioteca, Histórico e Downloads distinguem falha sem snapshot de vazio real e expõem retry. Detalhes ainda precisa adotar o mesmo padrão de erro recuperável; Busca precisa de revisão final para não mascarar falha total como vazio real.',
+              'Home, Categorias, Busca, Detalhes, Biblioteca, Histórico e Downloads distinguem falha sem snapshot de vazio real e expõem retry quando a superfície possui carregamento inicial. Na Busca, falhas parciais de local/live preservam resultados úteis e apenas a falha total vira erro recuperável.',
+          )
+          replace_once(parity, '- [ ] Dar retry recuperável a Detalhes em falha de carregamento.', '- [x] Dar retry recuperável a Detalhes em falha de carregamento.')
+          replace_once(parity, '- [ ] Revisar Busca para diferenciar falha total de vazio real sem transformar falha parcial de provider em erro global.', '- [x] Revisar Busca para diferenciar falha total de vazio real sem transformar falha parcial de provider em erro global.')
+
+          issues = 'docs/known_issues_and_deferred_work.md'
+          replace_once(
+              issues,
+              '- distinção entre falha total e vazio real na Busca;\n',
+              '- distinção entre falha total e vazio real na Busca;\n- retry recuperável de carregamento em Detalhes;\n',
+          )
+          PY
+          git diff --check
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Format and validate Manga details checkpoint
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format lib/screens/manga/manga_details_screen.dart test/widgets/manga/manga_details_library_test.dart >/dev/null
+          python3 -m unittest discover -s tools/tests -p 'test_*.py'
+          python3 -m compileall -q tools
+          python3 tools/validate_repository_guards.py
+          bash tools/validate_release_workflows.sh
+          bash tools/validate_project_health.sh
+          git diff --check
+          flutter analyze --no-pub
+          flutter test --no-pub --concurrency=1 \
+            test/widgets/manga/manga_details_library_test.dart \
+            test/widgets/manga/manga_readable_search_view_test.dart
+
+      - name: Commit reviewed checkpoint
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            lib/screens/manga/manga_details_screen.dart \
+            test/widgets/manga/manga_details_library_test.dart \
+            docs/manga_product_parity.md \
+            docs/known_issues_and_deferred_work.md
+          git commit -m 'fix(manga): make details loading recoverable'
+          test -z "$(git status --porcelain)"
+
+      - name: Fast-forward private Manga branch
+        id: publish
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          new_sha="$(git rev-parse HEAD)"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/goanime-mobile.git "HEAD:refs/heads/$TARGET_BRANCH"
+          echo "sha=$new_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        run: echo "Published Manga details recovery SHA ${{ steps.publish.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
