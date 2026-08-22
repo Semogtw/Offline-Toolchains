@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   diagnose:
-    name: Export encrypted history diagnostics
+    name: Export encrypted prepared-tree history diagnostics
     runs-on: ubuntu-24.04
     timeout-minutes: 20
 
@@ -25,6 +25,7 @@ jobs:
       - name: Checkout trusted toolchains
         uses: actions/checkout@v6
         with:
+          fetch-depth: 2
           persist-credentials: false
 
       - name: Read exact GoAnime revision
@@ -32,7 +33,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          request_file="$(find triggers/goanime-history-undo-diagnostic -maxdepth 1 -type f -name '*.request' -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)"
+          request_file="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-history-undo-diagnostic/*.request' | head -n1)"
           test -n "$request_file"
           revision="$(tr -d '[:space:]' < "$request_file")"
           [[ "$revision" =~ ^[0-9a-fA-F]{40}$ ]]
@@ -44,6 +45,18 @@ jobs:
           PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
         run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
 
+      - name: Assemble reviewed runtime bundle
+        shell: bash
+        env:
+          BUNDLE_SOURCE_SHA: 1e2adb9cd95ee70adc25702d901c8b95ce5534f6
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BUNDLE_SOURCE_SHA"
+          git show "$BUNDLE_SOURCE_SHA:payloads/goanime-perf-runtime-final.bundle.b64.part1" > "$RUNNER_TEMP/perf.part1"
+          git show "$BUNDLE_SOURCE_SHA:payloads/goanime-perf-runtime-final.bundle.b64.part2" > "$RUNNER_TEMP/perf.part2"
+          cat "$RUNNER_TEMP/perf.part1" "$RUNNER_TEMP/perf.part2" | base64 -d > "$RUNNER_TEMP/goanime-perf-runtime.bundle"
+          echo '4b9caec5e2555e2204e620e1051cd2f8735d79f850c5462a77687044f365262a  '"$RUNNER_TEMP/goanime-perf-runtime.bundle" | sha256sum -c -
+
       - name: Checkout exact private GoAnime revision
         uses: actions/checkout@v6
         with:
@@ -51,13 +64,42 @@ jobs:
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           ref: ${{ steps.request.outputs.revision }}
           path: goanime
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
           lfs: false
           submodules: false
           show-progress: false
 
-      - name: Verify and package minimal diagnostic source
+      - name: Reconstruct exact runtime prepared tree
+        working-directory: goanime
+        shell: bash
+        env:
+          EXPECTED_REVISION: ${{ steps.request.outputs.revision }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_REVISION"
+          git bundle verify "$RUNNER_TEMP/goanime-perf-runtime.bundle"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch "$RUNNER_TEMP/goanime-perf-runtime.bundle" HEAD:refs/remotes/reviewed/perf-runtime
+          git cherry-pick \
+            519c4cf19553376950e0f8ae8f7d83ea6f0e1933 \
+            4fa461a113ab9d552e7c44fd7760ab6634f2d82a \
+            63b69c8f9b6d4d9625d5780c15bd529c8ddea989 \
+            0e1bc3537c712c642c0d7acd2206ad9de7888a32 \
+            12f2fca0c7d41ef8e388bfb032365db62b5c7766 \
+            951e3533fd0aaa65dc41cd5d4da6cc83720a5a86
+          git am "$GITHUB_WORKSPACE/payloads/goanime-runtime-guard-format-fix.patch"
+          git am "$GITHUB_WORKSPACE/payloads/goanime-history-nullability-fix.patch"
+          git am "$GITHUB_WORKSPACE/payloads/goanime-lazy-nav-test-fix.patch"
+          test -z "$(git status --porcelain)"
+
+          echo 'Prepared-tree ownership metadata:'
+          git ls-files --stage test/widgets/history_delete_undo_test.dart || true
+          git log --oneline --all -- test/widgets/history_delete_undo_test.dart | head -n 12 || true
+          test -f test/widgets/history_delete_undo_test.dart
+
+      - name: Package encrypted minimal prepared-tree source
         id: package
         shell: bash
         env:
@@ -65,9 +107,6 @@ jobs:
           EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
         run: |
           set -euo pipefail
-          actual_revision="$(git -C goanime rev-parse HEAD)"
-          test "$actual_revision" = "$EXPECTED_REVISION"
-
           diagnostic_dir="$RUNNER_TEMP/goanime-history-undo-diagnostic"
           package_dir="$diagnostic_dir/package"
           archive="$diagnostic_dir/history-undo.tar.zst"
@@ -79,7 +118,9 @@ jobs:
           cp goanime/test/widgets/history_delete_undo_test.dart "$package_dir/test/widgets/"
           cp goanime/lib/screens/history_screen.dart "$package_dir/lib/screens/"
           cp goanime/lib/services/watch_history_service.dart "$package_dir/lib/services/"
-          printf '%s\n' "$actual_revision" > "$package_dir/REVISION.txt"
+          printf '%s\n' "$EXPECTED_REVISION" > "$package_dir/BASE_REVISION.txt"
+          git -C goanime rev-parse HEAD > "$package_dir/PREPARED_REVISION.txt"
+          git -C goanime log --format='%H %P %s' --all -- test/widgets/history_delete_undo_test.dart > "$package_dir/HISTORY_TEST_COMMITS.txt"
           tar -C "$package_dir" -I 'zstd -T0 -6' -cf "$archive" .
 
           export GNUPGHOME="$gpg_home"
@@ -111,13 +152,13 @@ jobs:
           artifacts_json="$RUNNER_TEMP/artifacts.json"
           for attempt in 1 2 3 4 5; do
             gh api --method GET "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" > "$artifacts_json"
-            if jq -e --arg prefix "goanime-history-undo-diagnostic-$GITHUB_RUN_ID" '.artifacts[]? | select(.name == $prefix)' "$artifacts_json" >/dev/null; then
+            if jq -e --arg artifact_name "goanime-history-undo-diagnostic-$GITHUB_RUN_ID" '.artifacts[]? | select(.name == $artifact_name)' "$artifacts_json" >/dev/null; then
               break
             fi
             sleep 2
           done
-          artifact_id="$(jq -er --arg name "goanime-history-undo-diagnostic-$GITHUB_RUN_ID" '.artifacts[] | select(.name == $name) | .id' "$artifacts_json" | head -n1)"
           artifact_name="goanime-history-undo-diagnostic-$GITHUB_RUN_ID"
+          artifact_id="$(jq -er --arg name "$artifact_name" '.artifacts[] | select(.name == $name) | .id' "$artifacts_json" | head -n1)"
           artifact_size="$(jq -er --arg name "$artifact_name" '.artifacts[] | select(.name == $name) | .size_in_bytes' "$artifacts_json" | head -n1)"
           report_path="reports/goanime-history-undo-diagnostic/$GITHUB_RUN_ID.json"
           report_file="$RUNNER_TEMP/report.json"
@@ -148,3 +189,4 @@ jobs:
         run: |
           rm -rf "$GITHUB_WORKSPACE/goanime"
           rm -rf "$RUNNER_TEMP/goanime-history-undo-diagnostic"
+          rm -f "$RUNNER_TEMP/goanime-perf-runtime.bundle" "$RUNNER_TEMP/perf.part1" "$RUNNER_TEMP/perf.part2"
