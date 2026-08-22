@@ -96,7 +96,9 @@ jobs:
           dart format --output=none --set-exit-if-changed \
             lib/widgets/goanime_opening.dart \
             lib/app/app.dart \
-            test/widgets/goanime_opening_test.dart
+            test/widgets/goanime_opening_test.dart \
+            test/widget_test.dart \
+            test/widgets/frontend_foundation_test.dart
           git diff --check
 
       - name: Analyze opening integration
@@ -107,13 +109,23 @@ jobs:
           for target in \
             lib/widgets/goanime_opening.dart \
             lib/app/app.dart \
-            test/widgets/goanime_opening_test.dart; do
+            test/widgets/goanime_opening_test.dart \
+            test/widget_test.dart \
+            test/widgets/frontend_foundation_test.dart; do
             dart analyze "$target"
           done
 
       - name: Run opening widget tests
         working-directory: private-source
         run: flutter test --no-pub test/widgets/goanime_opening_test.dart
+
+      - name: Run app regression widget tests
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter test --no-pub test/widget_test.dart
+          flutter test --no-pub test/widgets/frontend_foundation_test.dart
 
       - name: Build Android debug APK
         working-directory: private-source
