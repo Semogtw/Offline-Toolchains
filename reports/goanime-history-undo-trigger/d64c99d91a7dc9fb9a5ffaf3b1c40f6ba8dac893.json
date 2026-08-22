@@ -1,0 +1,61 @@
+{
+  "runs": [
+    {
+      "conclusion": null,
+      "id": 32540110584,
+      "name": "Report GoAnime history undo trigger",
+      "run_attempt": 1,
+      "run_number": 1,
+      "status": "in_progress"
+    },
+    {
+      "conclusion": null,
+      "id": 32540110586,
+      "name": "Diagnose GoAnime history undo",
+      "run_attempt": 1,
+      "run_number": 2,
+      "status": "in_progress"
+    },
+    {
+      "conclusion": null,
+      "id": 32540110577,
+      "name": "Toolchain security gates",
+      "run_attempt": 1,
+      "run_number": 2034,
+      "status": "in_progress"
+    },
+    {
+      "conclusion": "failure",
+      "id": 32540109922,
+      "name": ".github/workflows/validate-goanime-availability-search-index.yml",
+      "run_attempt": 1,
+      "run_number": 123,
+      "status": "completed"
+    },
+    {
+      "conclusion": "failure",
+      "id": 32540108857,
+      "name": ".github/workflows/validate-goanime-franchise-batch-lookup-v2.yml",
+      "run_attempt": 1,
+      "run_number": 119,
+      "status": "completed"
+    },
+    {
+      "conclusion": "failure",
+      "id": 32540109376,
+      "name": ".github/workflows/validate-goanime-franchise-batch-lookup.yml",
+      "run_attempt": 1,
+      "run_number": 121,
+      "status": "completed"
+    },
+    {
+      "conclusion": "failure",
+      "id": 32540108376,
+      "name": ".github/workflows/validate-goanime-search-metadata-reuse.yml",
+      "run_attempt": 1,
+      "run_number": 117,
+      "status": "completed"
+    }
+  ],
+  "trigger_sha": "d64c99d91a7dc9fb9a5ffaf3b1c40f6ba8dac893"
+}
