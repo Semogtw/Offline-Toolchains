@@ -45,6 +45,7 @@ jobs:
           ref: ${{ github.sha }}
           path: trusted-source
           persist-credentials: false
+          fetch-depth: 2
           sparse-checkout: |
             scripts/private_ci_request.py
             triggers/goanime-full-ci
@@ -62,6 +63,7 @@ jobs:
           python3 - "$request" "$INPUT_REF" "$EVENT_NAME" "$GITHUB_EVENT_PATH" <<'PY'
           import json
           import re
+          import subprocess
           import sys
           from pathlib import Path
 
@@ -80,6 +82,32 @@ jobs:
               for commit in commits:
                   changed.extend(commit.get("added", []))
                   changed.extend(commit.get("modified", []))
+
+              # Pushes created through the Contents API can omit per-file lists
+              # from the webhook payload even though path filtering still fires.
+              # Derive the authoritative change list from the checked-out commit
+              # as a fallback so an exact-SHA request can never silently become
+              # a validation of `main`.
+              try:
+                  changed.extend(
+                      subprocess.check_output(
+                          [
+                              "git",
+                              "-C",
+                              "trusted-source",
+                              "diff-tree",
+                              "--no-commit-id",
+                              "--name-only",
+                              "-r",
+                              "HEAD^",
+                              "HEAD",
+                          ],
+                          text=True,
+                      ).splitlines()
+                  )
+              except subprocess.CalledProcessError:
+                  pass
+
               pattern = re.compile(
                   r"^triggers/goanime-full-ci/[A-Za-z0-9._-]+\.request$"
               )
