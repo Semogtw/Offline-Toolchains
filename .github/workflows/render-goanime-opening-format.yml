@@ -1,0 +1,95 @@
+name: Render GoAnime opening format
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-opening-format-render/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-opening-format-render
+  cancel-in-progress: false
+
+jobs:
+  render:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+          path: trusted-source
+
+      - name: Resolve exact request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-opening-format-render/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project sha < "trusted-source/$request"
+          test "$project" = goanime
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Render canonical formatting
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format lib/widgets/goanime_opening.dart test/widgets/goanime_opening_test.dart
+          git diff --check
+
+      - name: Publish formatted source snapshots
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="results/goanime-opening-format-render/$GITHUB_RUN_ID"
+          for pair in \
+            "opening.dart:source/lib/widgets/goanime_opening.dart" \
+            "opening_test.dart:source/test/widgets/goanime_opening_test.dart"; do
+            name="${pair%%:*}"
+            source_path="${pair#*:}"
+            encoded="$(base64 -w0 < "$source_path")"
+            gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$root/$name" \
+              -f message="ci(result): render GoAnime opening format $GITHUB_RUN_ID $name" \
+              -f content="$encoded" >/dev/null
+          done
+          body="$(jq -cn \
+            --arg sha "$TARGET_SHA" \
+            --argjson runId "$GITHUB_RUN_ID" \
+            '{schemaVersion:1,sourceSha:$sha,state:"success",runId:$runId}')"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$root/receipt.json" \
+            -f message="ci(result): record GoAnime format render $GITHUB_RUN_ID" \
+            -f content="$encoded" >/dev/null
