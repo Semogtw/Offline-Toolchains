@@ -1,0 +1,207 @@
+name: Apply GoAnime Manga search terminal error fix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-search-terminal-error-20260822/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-search-terminal-error-20260822
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact GoAnime revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-search-terminal-error-20260822/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          test "$branch" = 'feature/manga-platform'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify current remote head
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+
+      - name: Apply reviewed search terminal error fix
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one reviewed anchor, found {count}')
+              file.write_text(text.replace(old, new, 1))
+
+          view = 'lib/widgets/manga/manga_readable_search_view.dart'
+          replace_once(
+              view,
+              "    late final StreamSubscription<MangaSearchUpdate> subscription;\n    try {",
+              "    late final StreamSubscription<MangaSearchUpdate> subscription;\n    var liveFailed = false;\n    try {",
+          )
+          replace_once(
+              view,
+              "        onError: (_, _) {\n          if (mounted && generation == _generation) {\n            setState(() {\n              _loading = false;\n              _searchFailed = _localSearchFailed && _results.isEmpty;\n            });\n          }\n        },\n        onDone: () {\n          if (mounted && generation == _generation) {\n            setState(() {\n              _loading = false;\n              // A clean live completion is evidence that at least one search\n              // path executed successfully, even when it legitimately found\n              // no readable records.\n              _searchFailed = false;\n            });\n          }\n        },",
+              "        onError: (_, _) {\n          liveFailed = true;\n          if (mounted && generation == _generation) {\n            setState(() {\n              _loading = false;\n              _searchFailed = _localSearchFailed && _results.isEmpty;\n            });\n          }\n        },\n        onDone: () {\n          if (mounted && generation == _generation) {\n            setState(() {\n              _loading = false;\n              // Closing a stream after addError is not a clean success. Keep\n              // the total-failure state when both local and live paths failed.\n              _searchFailed =\n                  _localSearchFailed && liveFailed && _results.isEmpty;\n            });\n          }\n        },",
+          )
+
+          test = 'test/widgets/manga/manga_readable_search_view_test.dart'
+          new_test = r'''
+
+  testWidgets('local plus terminal live failure stays retryable', (tester) async {
+    final source = _HandlerAvailabilitySource((query) async {
+      throw StateError('local unavailable');
+    });
+    final live = StreamController<MangaSearchUpdate>();
+    addTearDown(live.close);
+
+    await _pump(
+      tester,
+      MangaReadableSearchView(
+        availability: source,
+        liveSearch: (query, ownerToken) => live.stream,
+        debounceDuration: Duration.zero,
+        labels: const MangaReadableSearchLabels(
+          hint: 'Search manga',
+          prompt: 'Type to search',
+          empty: 'No results',
+          unreadable: 'Unavailable',
+          clear: 'Clear',
+        ),
+      ),
+    );
+
+    await tester.enterText(find.byType(TextField), 'vinland');
+    await tester.pump();
+    await tester.pump();
+    live.addError(StateError('live unavailable'));
+    await live.close();
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('Manga content could not be loaded.'), findsOneWidget);
+    expect(find.text('Try again'), findsOneWidget);
+    expect(find.text('No results'), findsNothing);
+  });
+'''
+          replace_once(
+              test,
+              "  testWidgets('live failure does not hide successful local empty result', (\n",
+              new_test + "\n  testWidgets('live failure does not hide successful local empty result', (\n",
+          )
+          PY
+          git diff --check
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Validate search checkpoint
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format lib/widgets/manga/manga_readable_search_view.dart test/widgets/manga/manga_readable_search_view_test.dart >/dev/null
+          python3 tools/validate_repository_guards.py
+          bash tools/validate_project_health.sh
+          git diff --check
+          flutter analyze --no-pub
+          flutter test --no-pub --concurrency=1 test/widgets/manga/manga_readable_search_view_test.dart
+
+      - name: Commit reviewed checkpoint
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/widgets/manga/manga_readable_search_view.dart test/widgets/manga/manga_readable_search_view_test.dart
+          git commit -m 'fix(manga): preserve terminal search failures'
+          test -z "$(git status --porcelain)"
+
+      - name: Fast-forward private Manga branch
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/goanime-mobile.git "HEAD:refs/heads/$TARGET_BRANCH"
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
