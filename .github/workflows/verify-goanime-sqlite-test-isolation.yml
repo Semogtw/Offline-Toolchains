@@ -1,0 +1,117 @@
+name: Verify GoAnime SQLite test isolation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/verify-goanime-sqlite-test-isolation.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      GOANIME_SHA: 141e1c4b287420088b84e0df1911631b8afadf2f
+      FLUTTER_VERSION: 3.44.1
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout exact private GoAnime revision read-only
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.GOANIME_SHA }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up pinned Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: false
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+
+      - name: Verify isolated SQLite harness contract
+        working-directory: private-source
+        shell: bash
+        run: flutter test --no-pub test/architecture/sqlite_test_isolation_contract_test.dart
+
+      - name: Run full Flutter suite with default concurrency
+        working-directory: private-source
+        shell: bash
+        run: |
+          set +e
+          flutter test --no-pub > "$RUNNER_TEMP/goanime-parallel-flutter-test.log" 2>&1
+          status=$?
+          set -e
+
+          if [ "$status" -ne 0 ]; then
+            echo '===== sanitized parallel-suite failure diagnostics ====='
+            python3 - "$RUNNER_TEMP/goanime-parallel-flutter-test.log" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          lines = Path(sys.argv[1]).read_text(errors='replace').splitlines()
+          pattern = re.compile(
+              r'(FAILED|Test failed|Some tests failed|Expected:|Actual:|Which:|'
+              r'Exception|Error|database|sqlite|_test\.dart(?::\d+)?|\+\d+ -\d+)'
+          )
+          hits = [i for i, line in enumerate(lines) if pattern.search(line)]
+          selected = set()
+          for index in hits:
+              selected.update(range(max(0, index - 5), min(len(lines), index + 10)))
+          selected.update(range(max(0, len(lines) - 100), len(lines)))
+          last = -2
+          for index in sorted(selected):
+              if index > last + 1:
+                  print('---')
+              line = lines[index]
+              line = re.sub(r'/home/runner/work/[^ ]+', '<workspace>', line)
+              print(f'{index + 1:05d}: {line}')
+              last = index
+          PY
+            exit "$status"
+          fi
+
+          tail -n 30 "$RUNNER_TEMP/goanime-parallel-flutter-test.log"
+
+      - name: Record result
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## GoAnime SQLite isolation validation'
+            echo
+            echo '- Exact private revision was checked out read-only.'
+            echo '- Focused isolation contract and full Flutter suite used normal Flutter concurrency.'
+            echo '- This focused gate does not replace the canonical full CI/release gate.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup private material
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source"
+          rm -f "$RUNNER_TEMP/goanime-parallel-flutter-test.log"
