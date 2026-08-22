@@ -104,10 +104,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          flutter analyze --no-pub \
+          for target in \
             lib/widgets/goanime_opening.dart \
             lib/app/app.dart \
-            test/widgets/goanime_opening_test.dart
+            test/widgets/goanime_opening_test.dart; do
+            dart analyze "$target"
+          done
 
       - name: Run opening widget tests
         working-directory: private-source
