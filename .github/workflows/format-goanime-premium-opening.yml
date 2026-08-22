@@ -7,7 +7,7 @@ on:
       - 'triggers/goanime-opening-format/*.request'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: goanime-premium-opening-format
@@ -79,10 +79,10 @@ jobs:
             lib/widgets/goanime_opening.dart \
             test/widgets/goanime_opening_test.dart
           git diff --check
-          git diff --exit-code -- test/widgets/goanime_opening_test.dart || true
           git diff -- lib/widgets/goanime_opening.dart test/widgets/goanime_opening_test.dart
 
       - name: Commit and push guarded formatting
+        id: push
         working-directory: source
         env:
           EXPECTED_SHA: ${{ steps.request.outputs.sha }}
@@ -96,4 +96,28 @@ jobs:
           git config user.email "goanime-toolchains[bot]@users.noreply.github.com"
           git add lib/widgets/goanime_opening.dart test/widgets/goanime_opening_test.dart
           git commit -m "style(ui): format premium startup opening"
+          pushed_sha="$(git rev-parse HEAD)"
           git push origin HEAD:refs/heads/main
+          printf 'pushed_sha=%s\n' "$pushed_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Publish sanitized receipt
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+          PUSHED_SHA: ${{ steps.push.outputs.pushed_sha }}
+          STATE: ${{ job.status }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          body="$(jq -cn \
+            --arg sha "$TARGET_SHA" \
+            --arg pushedSha "$PUSHED_SHA" \
+            --arg state "$STATE" \
+            --argjson runId "$GITHUB_RUN_ID" \
+            '{schemaVersion:1,sourceSha:$sha,pushedSha:$pushedSha,state:$state,runId:$runId}')"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          path="results/goanime-opening-format/$GITHUB_RUN_ID.json"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" \
+            -f message="ci(result): record GoAnime opening format $GITHUB_RUN_ID" \
+            -f content="$encoded" >/dev/null
