@@ -1,0 +1,260 @@
+name: Apply GoAnime bundled fonts
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-bundled-fonts/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-bundled-fonts
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+          path: trusted-source
+
+      - name: Resolve exact request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-bundled-fonts/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project sha < "trusted-source/$request"
+          test "$project" = goanime
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact GoAnime main
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 2
+          persist-credentials: true
+
+      - name: Verify request is still main HEAD
+        working-directory: source
+        env:
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          remote_main="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+          test "$remote_main" = "$EXPECTED_SHA"
+
+      - name: Checkout pinned Epilogue
+        uses: actions/checkout@v6
+        with:
+          repository: Etcetera-Type-Co/Epilogue
+          ref: 76bd97a82f0105535fb06e6940f2140b2c1a660c
+          path: epilogue-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout pinned Manrope
+        uses: actions/checkout@v6
+        with:
+          repository: aaronbell/manrope
+          ref: 6f81ebecdf65e4463b798cc07b16a4f8d5216917
+          path: manrope-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Vendor only used font weights and licenses
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p source/assets/fonts/licenses
+          cp epilogue-source/fonts/ttf/Epilogue-ExtraBold.ttf source/assets/fonts/Epilogue-ExtraBold.ttf
+          cp epilogue-source/fonts/ttf/Epilogue-Black.ttf source/assets/fonts/Epilogue-Black.ttf
+          cp epilogue-source/OFL.txt source/assets/fonts/licenses/Epilogue-OFL.txt
+          cp manrope-source/fonts/ttf/manrope-regular.ttf source/assets/fonts/Manrope-Regular.ttf
+          cp manrope-source/fonts/ttf/manrope-semibold.ttf source/assets/fonts/Manrope-SemiBold.ttf
+          cp manrope-source/fonts/ttf/manrope-bold.ttf source/assets/fonts/Manrope-Bold.ttf
+          cp manrope-source/fonts/ttf/manrope-extrabold.ttf source/assets/fonts/Manrope-ExtraBold.ttf
+          cp manrope-source/OFL.txt source/assets/fonts/licenses/Manrope-OFL.txt
+          test "$(find source/assets/fonts -type f | wc -l)" -eq 8
+
+      - name: Replace runtime Google Fonts with bundled families
+        working-directory: source
+        shell: python
+        run: |
+          from pathlib import Path
+
+          theme = Path('lib/theme/app_theme.dart')
+          text = theme.read_text()
+          text = text.replace("import 'package:google_fonts/google_fonts.dart';\n", '')
+          text = text.replace("GoogleFonts.epilogue(", "TextStyle(fontFamily: 'Epilogue',")
+          text = text.replace("GoogleFonts.manrope(", "TextStyle(fontFamily: 'Manrope',")
+          assert 'GoogleFonts.' not in text
+          theme.write_text(text)
+
+          pubspec = Path('pubspec.yaml')
+          text = pubspec.read_text()
+          assert '  google_fonts: ^8.0.2\n' in text
+          text = text.replace('  google_fonts: ^8.0.2\n', '')
+          asset_anchor = '    - web/icons/Icon-512.png\n'
+          assert asset_anchor in text
+          text = text.replace(
+              asset_anchor,
+              asset_anchor
+              + '    - assets/fonts/licenses/Epilogue-OFL.txt\n'
+              + '    - assets/fonts/licenses/Manrope-OFL.txt\n',
+              1,
+          )
+          font_block = '''\n  fonts:\n    - family: Epilogue\n      fonts:\n        - asset: assets/fonts/Epilogue-ExtraBold.ttf\n          weight: 800\n        - asset: assets/fonts/Epilogue-Black.ttf\n          weight: 900\n    - family: Manrope\n      fonts:\n        - asset: assets/fonts/Manrope-Regular.ttf\n          weight: 400\n        - asset: assets/fonts/Manrope-SemiBold.ttf\n          weight: 600\n        - asset: assets/fonts/Manrope-Bold.ttf\n          weight: 700\n        - asset: assets/fonts/Manrope-ExtraBold.ttf\n          weight: 800\n'''
+          marker = '\n  # An image asset can refer to one or more resolution-specific "variants", see\n'
+          assert marker in text
+          text = text.replace(marker, font_block + marker, 1)
+          pubspec.write_text(text)
+
+          bootstrap = Path('lib/app/bootstrap.dart')
+          text = bootstrap.read_text()
+          material_import = "import 'package:flutter/material.dart';\n"
+          assert material_import in text
+          if "import 'package:flutter/foundation.dart';\n" not in text:
+              text = text.replace(
+                  material_import,
+                  "import 'package:flutter/foundation.dart';\n" + material_import,
+                  1,
+              )
+          ensure = '  WidgetsFlutterBinding.ensureInitialized();\n'
+          assert ensure in text
+          text = text.replace(
+              ensure,
+              ensure + '  _registerBundledFontLicenses();\n',
+              1,
+          )
+          helper = '''\nvoid _registerBundledFontLicenses() {\n  LicenseRegistry.addLicense(() async* {\n    final epilogueLicense = await rootBundle.loadString(\n      'assets/fonts/licenses/Epilogue-OFL.txt',\n    );\n    yield LicenseEntryWithLineBreaks(['Epilogue'], epilogueLicense);\n\n    final manropeLicense = await rootBundle.loadString(\n      'assets/fonts/licenses/Manrope-OFL.txt',\n    );\n    yield LicenseEntryWithLineBreaks(['Manrope'], manropeLicense);\n  });\n}\n'''
+          marker = '\nFuture<void> _updateRuntimeDatabasesAndReloadAvailability() async {\n'
+          assert marker in text
+          assert '_registerBundledFontLicenses() {' not in text
+          text = text.replace(marker, helper + marker, 1)
+          bootstrap.write_text(text)
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Format and resolve dependencies
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format lib/theme/app_theme.dart lib/app/bootstrap.dart
+          flutter config --no-analytics
+          flutter pub get
+          git diff --check
+
+      - name: Prove runtime fetching was removed
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -R "GoogleFonts\." -n lib --include='*.dart'
+          ! grep -q '^  google_fonts:' pubspec.yaml
+          for asset in \
+            assets/fonts/Epilogue-ExtraBold.ttf \
+            assets/fonts/Epilogue-Black.ttf \
+            assets/fonts/Manrope-Regular.ttf \
+            assets/fonts/Manrope-SemiBold.ttf \
+            assets/fonts/Manrope-Bold.ttf \
+            assets/fonts/Manrope-ExtraBold.ttf \
+            assets/fonts/licenses/Epilogue-OFL.txt \
+            assets/fonts/licenses/Manrope-OFL.txt; do
+            test -s "$asset"
+          done
+
+      - name: Analyze and test typography integration
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart analyze lib/theme/app_theme.dart
+          dart analyze lib/app/bootstrap.dart
+          dart analyze lib/widgets/goanime_opening.dart
+          flutter test --no-pub test/widgets/goanime_opening_test.dart
+          flutter test --no-pub test/widget_test.dart
+          flutter test --no-pub test/widgets/frontend_foundation_test.dart
+
+      - name: Build Android debug APK
+        working-directory: source
+        run: flutter build apk --debug --no-pub
+
+      - name: Commit and push guarded font bundle
+        id: push
+        working-directory: source
+        env:
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote_main="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+          test "$remote_main" = "$EXPECTED_SHA"
+          git config user.name "goanime-toolchains[bot]"
+          git config user.email "goanime-toolchains[bot]@users.noreply.github.com"
+          git add \
+            assets/fonts \
+            lib/theme/app_theme.dart \
+            lib/app/bootstrap.dart \
+            pubspec.yaml \
+            pubspec.lock
+          git commit -m "perf(ui): bundle deterministic production fonts"
+          pushed_sha="$(git rev-parse HEAD)"
+          git push origin HEAD:refs/heads/main
+          printf 'pushed_sha=%s\n' "$pushed_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Publish sanitized receipt
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+          PUSHED_SHA: ${{ steps.push.outputs.pushed_sha }}
+          STATE: ${{ job.status }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          body="$(jq -cn \
+            --arg sha "$TARGET_SHA" \
+            --arg pushedSha "$PUSHED_SHA" \
+            --arg state "$STATE" \
+            --argjson runId "$GITHUB_RUN_ID" \
+            '{schemaVersion:1,sourceSha:$sha,pushedSha:$pushedSha,state:$state,runId:$runId}')"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          path="results/goanime-bundled-fonts/$GITHUB_RUN_ID.json"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" \
+            -f message="ci(result): record GoAnime bundled fonts $GITHUB_RUN_ID" \
+            -f content="$encoded" >/dev/null
