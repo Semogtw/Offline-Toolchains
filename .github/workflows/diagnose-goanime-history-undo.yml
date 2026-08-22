@@ -8,7 +8,7 @@ on:
       - 'triggers/goanime-history-undo-diagnostic/*.request'
 
 permissions:
-  contents: read
+  contents: write
   actions: write
 
 concurrency:
@@ -100,6 +100,47 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
+
+      - name: Publish artifact receipt
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVISION: ${{ steps.request.outputs.revision }}
+        run: |
+          set -euo pipefail
+          artifacts_json="$RUNNER_TEMP/artifacts.json"
+          for attempt in 1 2 3 4 5; do
+            gh api --method GET "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" > "$artifacts_json"
+            if jq -e --arg prefix "goanime-history-undo-diagnostic-$GITHUB_RUN_ID" '.artifacts[]? | select(.name == $prefix)' "$artifacts_json" >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          artifact_id="$(jq -er --arg name "goanime-history-undo-diagnostic-$GITHUB_RUN_ID" '.artifacts[] | select(.name == $name) | .id' "$artifacts_json" | head -n1)"
+          artifact_name="goanime-history-undo-diagnostic-$GITHUB_RUN_ID"
+          artifact_size="$(jq -er --arg name "$artifact_name" '.artifacts[] | select(.name == $name) | .size_in_bytes' "$artifacts_json" | head -n1)"
+          report_path="reports/goanime-history-undo-diagnostic/$GITHUB_RUN_ID.json"
+          report_file="$RUNNER_TEMP/report.json"
+          python3 - "$report_file" "$GITHUB_RUN_ID" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$REVISION" "$artifact_id" "$artifact_name" "$artifact_size" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          path, run_id, run_url, revision, artifact_id, artifact_name, artifact_size = sys.argv[1:]
+          Path(path).write_text(json.dumps({
+              "schema_version": 1,
+              "run_id": int(run_id),
+              "run_url": run_url,
+              "goanime_revision": revision,
+              "artifact_id": int(artifact_id),
+              "artifact_name": artifact_name,
+              "artifact_size_bytes": int(artifact_size),
+          }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+          encoded="$(base64 -w0 "$report_file")"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$report_path" \
+            -f message="ci(goanime): report history undo diagnostic run $GITHUB_RUN_ID" \
+            -f content="$encoded" \
+            -f branch=main >/dev/null
 
       - name: Remove transient private data
         if: always()
