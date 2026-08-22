@@ -1,0 +1,116 @@
+name: Validate GoAnime Manga stabilization checkpoint
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-stabilization-validation-20260822/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-stabilization-validation-20260822
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact GoAnime revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-stabilization-validation-20260822/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          test "$branch" = 'feature/manga-platform'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify exact checkout
+        working-directory: private-source
+        run: test "$(git rev-parse HEAD)" = '${{ steps.request.outputs.sha }}'
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Validate repository and formatting
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tools/tests -p 'test_*.py'
+          python3 tools/validate_repository_guards.py
+          bash tools/validate_release_workflows.sh
+          bash tools/validate_project_health.sh
+          dart format --output=none --set-exit-if-changed \
+            lib/widgets/manga/manga_browse_library_view.dart \
+            lib/widgets/manga/manga_browse_categories_view.dart \
+            lib/widgets/manga/manga_readable_search_view.dart \
+            test/widgets/manga/manga_browse_library_view_test.dart \
+            test/widgets/manga/manga_browse_categories_view_test.dart \
+            test/widgets/manga/manga_readable_search_view_test.dart
+
+      - name: Analyze Flutter project
+        working-directory: private-source
+        run: flutter analyze --no-pub
+
+      - name: Test Manga stabilization surfaces
+        working-directory: private-source
+        run: |
+          flutter test --no-pub --concurrency=1 \
+            test/widgets/manga/manga_browse_library_view_test.dart \
+            test/widgets/manga/manga_browse_categories_view_test.dart \
+            test/widgets/manga/manga_readable_search_view_test.dart \
+            test/widgets/manga/manga_reader_screen_test.dart \
+            test/widgets/manga/manga_details_library_test.dart
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
