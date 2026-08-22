@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "goanimeSha": "141e1c4b287420088b84e0df1911631b8afadf2f",
+  "workflowCommit": "38f414c9a8182e2c9728d626039da5181f784787",
+  "runId": 32588216304,
+  "focusedIsolationContract": "failure",
+  "fullFlutterDefaultConcurrency": "skipped",
+  "generatedAt": "2026-08-22T17:37:36.939Z",
+  "note": "Focused validation only; does not replace canonical full CI/release gates."
+}
