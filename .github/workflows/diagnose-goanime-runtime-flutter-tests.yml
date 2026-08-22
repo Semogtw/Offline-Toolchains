@@ -1,0 +1,148 @@
+name: Diagnose GoAnime runtime Flutter tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-runtime-test-diagnose/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-runtime-test-diagnose
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact GoAnime revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-runtime-test-diagnose/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          test "$branch" = 'perf/app-wide-optimization-20260819'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble reviewed commit bundle
+        shell: bash
+        env:
+          BUNDLE_SOURCE_SHA: 1e2adb9cd95ee70adc25702d901c8b95ce5534f6
+        run: |
+          set -euo pipefail
+          git -C trusted-source fetch --no-tags --depth=1 origin "$BUNDLE_SOURCE_SHA"
+          git -C trusted-source show "$BUNDLE_SOURCE_SHA:payloads/goanime-perf-runtime-final.bundle.b64.part1" > "$RUNNER_TEMP/perf.part1"
+          git -C trusted-source show "$BUNDLE_SOURCE_SHA:payloads/goanime-perf-runtime-final.bundle.b64.part2" > "$RUNNER_TEMP/perf.part2"
+          cat "$RUNNER_TEMP/perf.part1" "$RUNNER_TEMP/perf.part2" | base64 -d > "$RUNNER_TEMP/goanime-perf-runtime.bundle"
+          echo '4b9caec5e2555e2204e620e1051cd2f8735d79f850c5462a77687044f365262a  '"$RUNNER_TEMP/goanime-perf-runtime.bundle" | sha256sum -c -
+
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Apply exact runtime patch set
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch "$RUNNER_TEMP/goanime-perf-runtime.bundle" HEAD:refs/remotes/reviewed/perf-runtime
+          git cherry-pick \
+            519c4cf19553376950e0f8ae8f7d83ea6f0e1933 \
+            4fa461a113ab9d552e7c44fd7760ab6634f2d82a \
+            63b69c8f9b6d4d9625d5780c15bd529c8ddea989 \
+            0e1bc3537c712c642c0d7acd2206ad9de7888a32 \
+            12f2fca0c7d41ef8e388bfb032365db62b5c7766 \
+            951e3533fd0aaa65dc41cd5d4da6cc83720a5a86
+          git am "$GITHUB_WORKSPACE/trusted-source/payloads/goanime-runtime-guard-format-fix.patch"
+          git am "$GITHUB_WORKSPACE/trusted-source/payloads/goanime-history-nullability-fix.patch"
+          git am "$GITHUB_WORKSPACE/trusted-source/payloads/goanime-lazy-nav-test-fix.patch"
+          dart=true
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies and format
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+          dart format lib test packages/goanime_core/lib packages/goanime_core/test >/dev/null
+
+      - name: Run full Flutter suite with concise failure output
+        working-directory: private-source
+        shell: bash
+        run: |
+          set +e
+          flutter test --no-pub --concurrency=2 > "$RUNNER_TEMP/flutter-test.log" 2>&1
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo '===== concise Flutter failure diagnostics ====='
+            python3 - "$RUNNER_TEMP/flutter-test.log" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          lines = Path(sys.argv[1]).read_text(errors='replace').splitlines()
+          needles = re.compile(r'(FAILED|Test failed|Some tests failed|Expected:|Actual:|Which:|Exception|Error|_test\.dart(?::\d+)?|\+\d+ -\d+)')
+          hits = [i for i, line in enumerate(lines) if needles.search(line)]
+          selected = set()
+          for i in hits:
+              selected.update(range(max(0, i - 5), min(len(lines), i + 10)))
+          # Also preserve the tail where package:test prints the final failing test summary.
+          selected.update(range(max(0, len(lines) - 120), len(lines)))
+          last = -2
+          for i in sorted(selected):
+              if i > last + 1:
+                  print('---')
+              print(f'{i+1:05d}: {lines[i]}')
+              last = i
+          PY
+            exit "$status"
+          fi
+          tail -n 40 "$RUNNER_TEMP/flutter-test.log"
+
+      - name: Remove private checkout and bundle
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source" "$RUNNER_TEMP/goanime-perf-runtime.bundle" "$RUNNER_TEMP/perf.part1" "$RUNNER_TEMP/perf.part2" "$RUNNER_TEMP/flutter-test.log"
