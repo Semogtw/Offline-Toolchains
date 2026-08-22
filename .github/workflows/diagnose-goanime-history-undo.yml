@@ -1,0 +1,109 @@
+name: Diagnose GoAnime history undo
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-history-undo-diagnostic/*.request'
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: goanime-history-undo-diagnostic
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    name: Export encrypted history diagnostics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout trusted toolchains
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Read exact GoAnime revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request_file="$(find triggers/goanime-history-undo-diagnostic -maxdepth 1 -type f -name '*.request' -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)"
+          test -n "$request_file"
+          revision="$(tr -d '[:space:]' < "$request_file")"
+          [[ "$revision" =~ ^[0-9a-fA-F]{40}$ ]]
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          ref: ${{ steps.request.outputs.revision }}
+          path: goanime
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify and package minimal diagnostic source
+        id: package
+        shell: bash
+        env:
+          EXPECTED_REVISION: ${{ steps.request.outputs.revision }}
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          actual_revision="$(git -C goanime rev-parse HEAD)"
+          test "$actual_revision" = "$EXPECTED_REVISION"
+
+          diagnostic_dir="$RUNNER_TEMP/goanime-history-undo-diagnostic"
+          package_dir="$diagnostic_dir/package"
+          archive="$diagnostic_dir/history-undo.tar.zst"
+          encrypted="$diagnostic_dir/history-undo.gpg"
+          gpg_home="$diagnostic_dir/gnupg"
+          mkdir -p "$package_dir/test/widgets" "$package_dir/lib/screens" "$package_dir/lib/services" "$gpg_home"
+          chmod 700 "$gpg_home"
+
+          cp goanime/test/widgets/history_delete_undo_test.dart "$package_dir/test/widgets/"
+          cp goanime/lib/screens/history_screen.dart "$package_dir/lib/screens/"
+          cp goanime/lib/services/watch_history_service.dart "$package_dir/lib/services/"
+          printf '%s\n' "$actual_revision" > "$package_dir/REVISION.txt"
+          tar -C "$package_dir" -I 'zstd -T0 -6' -cf "$archive" .
+
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import keys/source-bundles-public.asc
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" --output "$encrypted" --encrypt "$archive"
+          test -s "$encrypted"
+
+          rm -rf "$package_dir" "$archive" "$gpg_home" goanime
+          echo "encrypted=$encrypted" >> "$GITHUB_OUTPUT"
+
+      - name: Upload ciphertext-only diagnostic
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-history-undo-diagnostic-${{ github.run_id }}
+          path: ${{ steps.package.outputs.encrypted }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Remove transient private data
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/goanime"
+          rm -rf "$RUNNER_TEMP/goanime-history-undo-diagnostic"
