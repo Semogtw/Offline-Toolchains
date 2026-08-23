@@ -1,0 +1,55 @@
+name: GoAnime finalizer provider-map self patch
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-finalizer-provider-map-selfpatch/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    name: Add provider map to atomic R2 publication
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: true
+
+      - name: Patch finalizer publication block
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('.github/workflows/goanime-global-catalog-finalize.yml')
+          text = path.read_text(encoding='utf-8')
+          needle = '''          aws s3 cp dist/runtime_database_cache/title_availability.db "s3://${R2_BUCKET}/latest/title_availability.db" --endpoint-url "$endpoint"\n'''
+          addition = needle + '''          aws s3 cp assets/data/mal_provider_availability_map.json "s3://${R2_BUCKET}/latest/mal_provider_availability_map.json" --endpoint-url "$endpoint"\n'''
+          if 'latest/mal_provider_availability_map.json' in text:
+              raise SystemExit(0)
+          if needle not in text:
+              raise SystemExit('R2 title availability upload line not found')
+          path.write_text(text.replace(needle, addition, 1), encoding='utf-8')
+          PY
+          git diff --check
+          grep -F 'latest/mal_provider_availability_map.json' .github/workflows/goanime-global-catalog-finalize.yml
+
+      - name: Commit trusted workflow change
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'Finalizer already publishes provider map.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/goanime-global-catalog-finalize.yml
+          git commit -m 'ci(goanime): publish provider map with runtime cache'
+          git push origin HEAD:main
