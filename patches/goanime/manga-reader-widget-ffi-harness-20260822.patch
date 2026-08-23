@@ -37,7 +37,7 @@ index 7116d5f..7e96d4a 100644
      try {
        final override = await _preferencesRepository.readerModeOverrideForWork(
 diff --git a/test/widgets/manga/manga_reader_screen_test.dart b/test/widgets/manga/manga_reader_screen_test.dart
-index d514fef..5a4c281 100644
+index d514fef..a20ffbf 100644
 --- a/test/widgets/manga/manga_reader_screen_test.dart
 +++ b/test/widgets/manga/manga_reader_screen_test.dart
 @@ -69,10 +69,14 @@ void main() {
@@ -59,7 +59,7 @@ index d514fef..5a4c281 100644
      );
  
      await tester.pumpWidget(
-@@ -82,24 +86,30 @@ void main() {
+@@ -82,24 +86,31 @@ void main() {
          loader: (_) async => MangaLocalImageReaderContent(<File>[pageFile]),
        ),
      );
@@ -68,6 +68,7 @@ index d514fef..5a4c281 100644
  
      await tester.tap(find.byTooltip('Reading mode'));
      await _pumpUntilFound(tester, find.text('Use default mode'));
++    await tester.pump(const Duration(milliseconds: 350));
  
      expect(find.text('Use default mode'), findsOneWidget);
 -    await tester.tap(find.text('Use default mode'));
@@ -96,7 +97,7 @@ index d514fef..5a4c281 100644
    });
  
    testWidgets('local package failure exposes retry and reloads the package', (
-@@ -131,7 +141,11 @@ void main() {
+@@ -131,7 +142,11 @@ void main() {
        findsOneWidget,
      );
      expect(find.text('Try again'), findsOneWidget);
@@ -109,7 +110,7 @@ index d514fef..5a4c281 100644
  
      await tester.tap(find.text('Try again'));
      await _pumpUntil(
-@@ -153,7 +167,9 @@ void main() {
+@@ -153,7 +168,9 @@ void main() {
      MangaChapterProgress? saved;
      for (var i = 0; i < 40 && saved == null; i += 1) {
        await tester.pump(const Duration(milliseconds: 50));
@@ -120,7 +121,7 @@ index d514fef..5a4c281 100644
      }
      expect(saved, isNotNull);
      expect(saved!.bookmark, isNotNull);
-@@ -162,6 +178,9 @@ void main() {
+@@ -162,6 +179,9 @@ void main() {
      expect(saved.bookmark!.chapterId, 'chapter-source-1');
      expect(saved.bookmark!.pageIndex, 0);
      expect(saved.bookmark!.pageCount, 1);
@@ -130,7 +131,7 @@ index d514fef..5a4c281 100644
    });
  }
  
-@@ -177,10 +196,36 @@ Future<void> _pumpUntil(
+@@ -177,10 +197,36 @@ Future<void> _pumpUntil(
    for (var i = 0; i < maxPumps; i += 1) {
      await tester.pump(const Duration(milliseconds: 50));
      if (condition()) return;
