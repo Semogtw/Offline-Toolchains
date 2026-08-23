@@ -1,0 +1,199 @@
+name: Diagnose GoAnime post-10 R2 machine failure
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/diagnose-goanime-post10-r2-machine/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: diagnose-goanime-post10-r2-machine
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve request
+        id: req
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/diagnose-goanime-post10-r2-machine/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project expected_main base_candidate patch_sha < "control/$request"
+          test "$project" = goanime
+          for value in "$expected_main" "$base_candidate" "$patch_sha"; do [[ "$value" =~ ^[0-9a-f]{40}$ ]]; done
+          printf 'expected_main=%s\nbase_candidate=%s\npatch_sha=%s\n' "$expected_main" "$base_candidate" "$patch_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact main
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.req.outputs.expected_main }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+
+      - name: Reproduce exact R2 hardening snapshot
+        working-directory: source
+        env:
+          EXPECTED_MAIN: ${{ steps.req.outputs.expected_main }}
+          BASE_CANDIDATE: ${{ steps.req.outputs.base_candidate }}
+          PATCH_SHA: ${{ steps.req.outputs.patch_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_MAIN"
+          test "$(git ls-remote origin refs/heads/main | awk '{print $1}')" = "$EXPECTED_MAIN"
+          git cat-file -e "$BASE_CANDIDATE^{commit}" || git fetch --no-tags origin "$BASE_CANDIDATE"
+          git cat-file -e "$PATCH_SHA^{commit}" || git fetch --no-tags origin "$PATCH_SHA"
+          hardening_paths=(
+            docs/README.md
+            docs/checkpoint_41_download_completion_policy_2026-08-23.md
+            docs/checkpoint_69_post_merge_hardening_2026-08-23.md
+            lib/services/download/download_completion_policy.dart
+            lib/services/download/download_queue_manager_http.dart
+            lib/services/source/shared_cancellable_work.dart
+            lib/services/unified_source_service.dart
+            test/services/download/download_completion_policy_test.dart
+            test/services/download/download_identity_transfer_test.dart
+            test/services/download_service_test.dart
+            test/services/source/shared_cancellable_work_test.dart
+            tools/tests/test_validate_project_health_credentials.py
+            tools/tests/test_validate_project_health_files.py
+            tools/validate_project_health_files.py
+          )
+          for path in "${hardening_paths[@]}"; do git show "$BASE_CANDIDATE:$path" > "$path"; done
+          for path in \
+            test/services/source/unified_source_stale_fallback_cache_test.dart \
+            test/services/unified_source_shared_cancellation_test.dart
+          do
+            git show "$PATCH_SHA:$path" > "$path"
+          done
+          chmod 0644 tools/validate_project_health_files.py
+          git diff --check
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: false
+
+      - name: Resolve dependencies and normalize snapshot
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get >/dev/null
+          dart format \
+            lib/services/download/download_completion_policy.dart \
+            lib/services/download/download_queue_manager_http.dart \
+            lib/services/source/shared_cancellable_work.dart \
+            lib/services/unified_source_service.dart \
+            test/services/download/download_completion_policy_test.dart \
+            test/services/download/download_identity_transfer_test.dart \
+            test/services/download_service_test.dart \
+            test/services/source/shared_cancellable_work_test.dart \
+            test/services/source/unified_source_stale_fallback_cache_test.dart \
+            test/services/unified_source_shared_cancellation_test.dart >/dev/null
+          git diff --check
+
+      - name: Run full machine suite and extract first failure
+        working-directory: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set +e
+          flutter test --no-pub --concurrency=1 --machine > "$RUNNER_TEMP/flutter-machine.jsonl" 2> "$RUNNER_TEMP/flutter-machine.err"
+          rc=$?
+          set -e
+          python3 - "$RUNNER_TEMP/flutter-machine.jsonl" "$RUNNER_TEMP/flutter-machine.err" "$RUNNER_TEMP/report.json" "$rc" <<'PY'
+          import json, re, sys
+          events=[]
+          with open(sys.argv[1], encoding='utf-8', errors='replace') as f:
+              for raw in f:
+                  try:
+                      obj=json.loads(raw)
+                  except Exception:
+                      continue
+                  if isinstance(obj, dict):
+                      events.append(obj)
+                  elif isinstance(obj, list):
+                      events.extend(item for item in obj if isinstance(item, dict))
+          tests={}
+          first_error=None
+          first_failed_done=None
+          for e in events:
+              typ=e.get('type')
+              if typ == 'testStart':
+                  t=e.get('test') or {}
+                  tests[t.get('id')]={
+                      'name': t.get('name'),
+                      'url': t.get('url'),
+                      'line': t.get('line'),
+                      'column': t.get('column'),
+                  }
+              elif typ == 'error' and first_error is None:
+                  tid=e.get('testID', e.get('testId'))
+                  first_error={
+                      'test': tests.get(tid),
+                      'testID': tid,
+                      'error': e.get('error'),
+                      'stackTrace': e.get('stackTrace'),
+                      'isFailure': e.get('isFailure'),
+                  }
+              elif typ == 'testDone' and e.get('result') in ('failure','error') and first_failed_done is None:
+                  tid=e.get('testID', e.get('testId'))
+                  first_failed_done={
+                      'test': tests.get(tid),
+                      'testID': tid,
+                      'result': e.get('result'),
+                      'hidden': e.get('hidden'),
+                      'skipped': e.get('skipped'),
+                  }
+          err=open(sys.argv[2], encoding='utf-8', errors='replace').read()[-6000:]
+          err=re.sub(r'(?i)(token|secret|password|authorization)(\s*[:=]\s*)\S+', r'\1\2[redacted]', err)
+          payload={
+              'schemaVersion': 1,
+              'exitCode': int(sys.argv[4]),
+              'firstError': first_error,
+              'firstFailedDone': first_failed_done,
+              'stderrTail': err,
+              'eventCount': len(events),
+          }
+          with open(sys.argv[3], 'w', encoding='utf-8') as f:
+              json.dump(payload, f, ensure_ascii=False, indent=2)
+              f.write('\n')
+          PY
+          encoded="$(base64 -w0 < "$RUNNER_TEMP/report.json")"
+          path="results/diagnose-goanime-post10-r2-machine/${GITHUB_RUN_ID}.json"
+          gh api --method PUT "repos/$REPO/contents/$path" -f message="ci(diagnose): record GoAnime post-10 R2 failure $GITHUB_RUN_ID" -f content="$encoded" >/dev/null
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/source" "$GITHUB_WORKSPACE/control"
