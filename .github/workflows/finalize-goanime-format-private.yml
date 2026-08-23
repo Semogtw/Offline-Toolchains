@@ -76,7 +76,10 @@ jobs:
       - name: Resolve dependencies privately
         working-directory: private-source
         shell: bash
-        run: flutter pub get >/dev/null 2>&1
+        run: |
+          set -euo pipefail
+          flutter pub get >/dev/null 2>&1
+          (cd packages/goanime_core && dart pub get >/dev/null 2>&1)
 
       - name: Apply scoped lint fix and repository formatter
         id: format
@@ -92,17 +95,31 @@ jobs:
           echo "changed_count=$count" >> "$GITHUB_OUTPUT"
           dart format --output=none --set-exit-if-changed lib test packages tools >/dev/null
 
-      - name: Preserve manga functional guarantees after formatting
+      - name: Preserve manga and shared-media functional guarantees
         working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
-          flutter analyze --no-pub lib/services/manga lib/screens/manga test/services/manga test/widgets/manga test/architecture
+          flutter analyze --no-pub \
+            lib/services/manga \
+            lib/screens/manga \
+            lib/services/media \
+            lib/controllers/media \
+            lib/services/providers/provider_health_service.dart \
+            test/services/manga \
+            test/widgets/manga \
+            test/services/media \
+            test/controllers/media \
+            test/architecture
           flutter test --no-pub test/services/manga/download
           flutter test --no-pub test/services/manga/offline
           flutter test --no-pub test/services/manga/archive
           flutter test --no-pub test/widgets/manga
+          flutter test --no-pub test/services/media
+          flutter test --no-pub test/controllers/media
+          flutter test --no-pub test/architecture/shared_media_infrastructure_guard_test.dart
           flutter test --no-pub test/architecture/manga_offline_persistence_boundary_test.dart
+          (cd packages/goanime_core && dart test test/media)
 
       - name: Commit formatting and scoped lint fixes
         id: commit
