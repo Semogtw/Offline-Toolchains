@@ -309,6 +309,37 @@ jobs:
         if: steps.policy.outputs.publish_runtime == 'true' && steps.policy.outputs.r2_configured != 'true'
         run: echo '::warning::Runtime publication requested, but R2 credentials/public base URL are incomplete in Offline-Toolchains.'
 
+      - name: Publish sanitized validation receipt
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          REQUEST_SOURCE_SHA: ${{ steps.request.outputs.source_hint }}
+          TARGET_REF: ${{ steps.request.outputs.target_branch }}
+          FIRESTORE_CONFIGURED: ${{ steps.policy.outputs.firestore_configured }}
+          R2_CONFIGURED: ${{ steps.policy.outputs.r2_configured }}
+          PUBLISH_RUNTIME: ${{ steps.policy.outputs.publish_runtime }}
+          STATE: ${{ job.status }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha="${SOURCE_SHA:-${REQUEST_SOURCE_SHA:-unknown}}"
+          target_ref="${TARGET_REF:-unknown}"
+          body="$(jq -cn \
+            --arg sourceSha "$source_sha" \
+            --arg targetRef "$target_ref" \
+            --arg state "$STATE" \
+            --arg firestoreConfigured "${FIRESTORE_CONFIGURED:-unknown}" \
+            --arg r2Configured "${R2_CONFIGURED:-unknown}" \
+            --arg publishRuntime "${PUBLISH_RUNTIME:-false}" \
+            --argjson runId "$GITHUB_RUN_ID" \
+            '{schemaVersion:1,sourceSha:$sourceSha,targetRef:$targetRef,state:$state,firestoreConfigured:$firestoreConfigured,r2Configured:$r2Configured,publishRuntime:$publishRuntime,runId:$runId}')"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          path="results/goanime-global-catalog-finalize/${source_sha}-${GITHUB_RUN_ID}.json"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" \
+            -f message="ci(result): record global catalog finalizer $GITHUB_RUN_ID" \
+            -f content="$encoded" >/dev/null
+
       - name: Write workflow summary
         if: always()
         working-directory: private-source
