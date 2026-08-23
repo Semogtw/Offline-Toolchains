@@ -74,25 +74,54 @@ jobs:
           python3 - "$RUNNER_TEMP/tests.jsonl" "$RUNNER_TEMP/tests.err" "$RUNNER_TEMP/report.json" "$rc" <<'PY'
           import json,re,sys
           events=[]
+          stdout_lines=[]
           for raw in open(sys.argv[1],encoding='utf-8',errors='replace'):
-              try: events.append(json.loads(raw))
-              except Exception: pass
+              stdout_lines.append(raw)
+              try:
+                  decoded=json.loads(raw)
+              except Exception:
+                  continue
+              if isinstance(decoded,dict):
+                  events.append(decoded)
+              elif isinstance(decoded,list):
+                  events.extend(item for item in decoded if isinstance(item,dict))
           tests={}
           current=None
           failure=None
           for e in events:
               typ=e.get('type')
               if typ=='testStart':
-                  t=e.get('test',{}); tests[t.get('id')]=t.get('name'); current=t.get('name')
+                  t=e.get('test') or {}
+                  if isinstance(t,dict):
+                      tests[t.get('id')]=t.get('name')
+                      current=t.get('name') or current
               elif typ in ('error','testDone'):
-                  tid=e.get('testID') or e.get('testId'); name=tests.get(tid,current)
+                  tid=e.get('testID') or e.get('testId')
+                  name=tests.get(tid,current)
                   if typ=='error' or (typ=='testDone' and e.get('result') in ('failure','error')):
-                      failure={'type':typ,'test':name,'error':e.get('error'),'stackTrace':e.get('stackTrace'),'result':e.get('result')}; break
-          err=open(sys.argv[2],encoding='utf-8',errors='replace').read()[-8000:]
-          err=re.sub(r'(?i)(token|secret|password|authorization)(\s*[:=]\s*)\S+',r'\1\2[redacted]',err)
-          payload={'schemaVersion':1,'exitCode':int(sys.argv[4]),'firstFailure':failure,'stderrTail':err[:8000]}
+                      failure={
+                          'type':typ,
+                          'test':name,
+                          'error':e.get('error'),
+                          'stackTrace':e.get('stackTrace'),
+                          'result':e.get('result'),
+                      }
+                      break
+          secret_re=re.compile(r'(?i)(token|secret|password|authorization)(\s*[:=]\s*)\S+')
+          err=''.join(open(sys.argv[2],encoding='utf-8',errors='replace').readlines())[-8000:]
+          out=''.join(stdout_lines)[-12000:]
+          err=secret_re.sub(r'\1\2[redacted]',err)
+          out=secret_re.sub(r'\1\2[redacted]',out)
+          payload={
+              'schemaVersion':2,
+              'exitCode':int(sys.argv[4]),
+              'firstFailure':failure,
+              'stderrTail':err,
+              'stdoutTail':out,
+          }
           open(sys.argv[3],'w',encoding='utf-8').write(json.dumps(payload,ensure_ascii=False,indent=2)+'\n')
           PY
           encoded="$(base64 -w0 < "$RUNNER_TEMP/report.json")"
           path="results/diagnose-goanime-post10-machine/${GITHUB_RUN_ID}.json"
-          gh api --method PUT "repos/$REPO/contents/$path" -f message="ci(diagnose): record post-10 machine failure $GITHUB_RUN_ID" -f content="$encoded" >/dev/null
+          gh api --method PUT "repos/$REPO/contents/$path" -f message="ci(diagnose): record post-10 machine result $GITHUB_RUN_ID" -f content="$encoded" >/dev/null
+          exit "$rc"
