@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 1,
+  "exitCode": 0,
+  "tail": "\n✅ metadata seed rejects an invalid manifest URL before request\n✅ metadata seed rejects embedded URL credentials before asset request\n✅ runtime updater rejects non-HTTP database URLs before download\n\n🎉 3 tests passed.\n"
+}
