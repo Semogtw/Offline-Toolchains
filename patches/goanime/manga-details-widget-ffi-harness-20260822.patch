@@ -1,0 +1,91 @@
+--- a/test/widgets/manga/manga_details_library_test.dart
++++ b/test/widgets/manga/manga_details_library_test.dart
+@@ -104,35 +104,42 @@
+     await _pumpUntilFound(tester, find.text('Add to library'));
+ 
+     expect(find.text('Add to library'), findsOneWidget);
+-    expect(await library.entryForWork('mw_library'), isNull);
++    expect(
++      await tester.runAsync(() => library.entryForWork('mw_library')),
++      isNull,
++    );
+ 
+     await tester.tap(find.text('Add to library'));
+-    await tester.pumpAndSettle();
++    await _pumpUntilFound(tester, find.text('Library status'));
+     expect(find.text('Library status'), findsOneWidget);
+ 
+     await tester.tap(find.text('Reading'));
+-    await tester.pumpAndSettle();
++    await _pumpUntilFound(tester, find.textContaining('Manage library'));
+     expect(
+-      (await library.entryForWork('mw_library'))?.status,
++      (await tester.runAsync(() => library.entryForWork('mw_library')))
++          ?.status,
+       MangaLibraryStatus.reading,
+     );
+     expect(find.textContaining('Manage library'), findsOneWidget);
+ 
+     await tester.tap(find.textContaining('Manage library'));
+-    await tester.pumpAndSettle();
++    await _pumpUntilFound(tester, find.text('Library status'));
+     await tester.tap(find.text('Completed'));
+-    await tester.pumpAndSettle();
+-    expect(
+-      (await library.entryForWork('mw_library'))?.status,
++    await _pumpUntilLibraryStatus(
++      tester,
++      library,
+       MangaLibraryStatus.completed,
+     );
+ 
+     await tester.tap(find.textContaining('Manage library'));
+-    await tester.pumpAndSettle();
++    await _pumpUntilFound(tester, find.text('Remove from library'));
+     await tester.tap(find.text('Remove from library'));
+-    await tester.pumpAndSettle();
++    await _pumpUntilFound(tester, find.text('Add to library'));
+ 
+-    expect(await library.entryForWork('mw_library'), isNull);
++    expect(
++      await tester.runAsync(() => library.entryForWork('mw_library')),
++      isNull,
++    );
+     expect(find.text('Add to library'), findsOneWidget);
+   });
+ 
+@@ -283,10 +290,34 @@
+   for (var i = 0; i < 80; i += 1) {
+     await tester.pump(const Duration(milliseconds: 50));
+     if (finder.evaluate().isNotEmpty) return;
++    await _yieldToIo(tester);
+   }
+   throw TestFailure('Timed out waiting for Manga details content.');
+ }
+ 
++
++Future<void> _pumpUntilLibraryStatus(
++  WidgetTester tester,
++  MangaLibraryRepository library,
++  MangaLibraryStatus expected,
++) async {
++  for (var i = 0; i < 80; i += 1) {
++    await tester.pump(const Duration(milliseconds: 50));
++    await _yieldToIo(tester);
++    final entry = await tester.runAsync(
++      () => library.entryForWork('mw_library'),
++    );
++    if (entry?.status == expected) return;
++  }
++  throw TestFailure('Timed out waiting for manga library status.');
++}
++
++Future<void> _yieldToIo(WidgetTester tester) async {
++  await tester.runAsync(() async {
++    await Future<void>.delayed(const Duration(milliseconds: 10));
++  });
++}
++
+ Future<void> _pump(WidgetTester tester, Widget child) async {
+   tester.view.devicePixelRatio = 1;
+   await tester.binding.setSurfaceSize(const Size(800, 1100));
