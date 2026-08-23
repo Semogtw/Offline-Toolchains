@@ -37,7 +37,7 @@ index 7116d5f..7e96d4a 100644
      try {
        final override = await _preferencesRepository.readerModeOverrideForWork(
 diff --git a/test/widgets/manga/manga_reader_screen_test.dart b/test/widgets/manga/manga_reader_screen_test.dart
-index d514fef..176eb75 100644
+index d514fef..5a4c281 100644
 --- a/test/widgets/manga/manga_reader_screen_test.dart
 +++ b/test/widgets/manga/manga_reader_screen_test.dart
 @@ -69,10 +69,14 @@ void main() {
@@ -59,7 +59,7 @@ index d514fef..176eb75 100644
      );
  
      await tester.pumpWidget(
-@@ -82,7 +86,7 @@ void main() {
+@@ -82,24 +86,30 @@ void main() {
          loader: (_) async => MangaLocalImageReaderContent(<File>[pageFile]),
        ),
      );
@@ -68,7 +68,13 @@ index d514fef..176eb75 100644
  
      await tester.tap(find.byTooltip('Reading mode'));
      await _pumpUntilFound(tester, find.text('Use default mode'));
-@@ -95,11 +99,17 @@ void main() {
+ 
+     expect(find.text('Use default mode'), findsOneWidget);
+-    await tester.tap(find.text('Use default mode'));
++    await _tapVisible(tester, find.text('Use default mode'));
+     await _pumpUntilFound(
+       tester,
+       find.text('This work now uses the default mode.'),
      );
  
      expect(find.text('This work now uses the default mode.'), findsOneWidget);
@@ -78,10 +84,10 @@ index d514fef..176eb75 100644
 -      MangaReaderMode.pagedRtl,
 +    final override = await tester.runAsync(
 +      () => preferences.readerModeOverrideForWork('work-1'),
-     );
++    );
 +    final effectiveMode = await tester.runAsync(
 +      () => preferences.readerModeForWork('work-1'),
-+    );
+     );
 +    expect(override, isNull);
 +    expect(effectiveMode, MangaReaderMode.pagedRtl);
 +
@@ -124,7 +130,7 @@ index d514fef..176eb75 100644
    });
  }
  
-@@ -177,10 +196,17 @@ Future<void> _pumpUntil(
+@@ -177,10 +196,36 @@ Future<void> _pumpUntil(
    for (var i = 0; i < maxPumps; i += 1) {
      await tester.pump(const Duration(milliseconds: 50));
      if (condition()) return;
@@ -133,6 +139,25 @@ index d514fef..176eb75 100644
    throw TestFailure('Timed out waiting for the expected reader state.');
  }
  
++Future<void> _tapVisible(WidgetTester tester, Finder finder) async {
++  final scrollable = find.ancestor(
++    of: finder,
++    matching: find.byType(Scrollable),
++  );
++  if (scrollable.evaluate().isNotEmpty) {
++    await tester.scrollUntilVisible(
++      finder,
++      180,
++      scrollable: scrollable.first,
++      maxScrolls: 20,
++    );
++  } else {
++    await tester.ensureVisible(finder);
++  }
++  await tester.pump();
++  await tester.tap(finder);
++}
++
 +Future<void> _yieldToIo(WidgetTester tester) async {
 +  await tester.runAsync(() async {
 +    await Future<void>.delayed(const Duration(milliseconds: 10));
