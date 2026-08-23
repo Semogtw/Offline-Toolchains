@@ -33,10 +33,14 @@ jobs:
           set -euo pipefail
           request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-lockfile/*.request' | head -n 1)"
           test -n "$request"
-          read -r project sha < "trusted-source/$request"
+          read -r project sha target_branch < "trusted-source/$request"
           test "$project" = goanime
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          if [ -n "${target_branch:-}" ]; then
+            [[ "$target_branch" =~ ^[A-Za-z0-9._/-]+$ ]]
+          fi
           printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"
+          printf 'target_branch=%s\n' "${target_branch:-}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout exact private GoAnime source
         uses: actions/checkout@v6
@@ -67,6 +71,28 @@ jobs:
           grep -q '^packages:' pubspec.lock
           grep -q '^sdks:' pubspec.lock
           git diff --check -- pubspec.lock
+
+      - name: Publish generated lockfile to requested branch
+        if: ${{ steps.request.outputs.target_branch != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          SOURCE_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.target_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_sha="$(gh api --method GET 'repos/Semogtw/goanime-mobile/commits' -f sha="$TARGET_BRANCH" -f per_page=1 --jq '.[0].sha')"
+          if [ "$current_sha" != "$SOURCE_SHA" ]; then
+            echo "::error::GoAnime branch moved from requested SHA $SOURCE_SHA to $current_sha; refusing to publish a stale lockfile."
+            exit 1
+          fi
+          current_lock_sha="$(gh api --method GET 'repos/Semogtw/goanime-mobile/contents/pubspec.lock' -f ref="$TARGET_BRANCH" --jq '.sha')"
+          encoded="$(base64 -w0 < private-source/pubspec.lock)"
+          gh api --method PUT 'repos/Semogtw/goanime-mobile/contents/pubspec.lock' \
+            -f message='chore(deps): refresh generated pubspec lockfile' \
+            -f content="$encoded" \
+            -f sha="$current_lock_sha" \
+            -f branch="$TARGET_BRANCH" >/dev/null
 
       - name: Upload generated lockfile
         uses: actions/upload-artifact@v7
