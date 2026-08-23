@@ -24,14 +24,25 @@ def main() -> int:
     elif "echo 'commit=false' >> \"$GITHUB_OUTPUT\"" not in text:
         raise SystemExit('publication commit policy block not found')
 
-    provider_upload = '''          aws s3 cp assets/data/mal_provider_availability_map.json "s3://${R2_BUCKET}/latest/mal_provider_availability_map.json" --endpoint-url "$endpoint"
+    old_uploads = '''          aws s3 cp dist/runtime_database_cache/runtime_database_manifest.json "s3://${R2_BUCKET}/latest/runtime_database_manifest.json" --endpoint-url "$endpoint"
+          aws s3 cp dist/runtime_database_cache/franchise_availability.db "s3://${R2_BUCKET}/latest/franchise_availability.db" --endpoint-url "$endpoint"
+          aws s3 cp dist/runtime_database_cache/title_availability.db "s3://${R2_BUCKET}/latest/title_availability.db" --endpoint-url "$endpoint"
 '''
-    if provider_upload not in text:
-        title_upload = '''          aws s3 cp dist/runtime_database_cache/title_availability.db "s3://${R2_BUCKET}/latest/title_availability.db" --endpoint-url "$endpoint"
+    old_uploads_with_map = old_uploads + '''          aws s3 cp assets/data/mal_provider_availability_map.json "s3://${R2_BUCKET}/latest/mal_provider_availability_map.json" --endpoint-url "$endpoint"
 '''
-        if title_upload not in text:
-            raise SystemExit('R2 title availability upload line not found')
-        text = text.replace(title_upload, title_upload + provider_upload, 1)
+    new_uploads = '''          # Publish payloads first and the manifest last. Clients only observe a
+          # new generation after every referenced database has reached R2.
+          aws s3 cp dist/runtime_database_cache/franchise_availability.db "s3://${R2_BUCKET}/latest/franchise_availability.db" --endpoint-url "$endpoint"
+          aws s3 cp dist/runtime_database_cache/title_availability.db "s3://${R2_BUCKET}/latest/title_availability.db" --endpoint-url "$endpoint"
+          aws s3 cp assets/data/mal_provider_availability_map.json "s3://${R2_BUCKET}/latest/mal_provider_availability_map.json" --endpoint-url "$endpoint"
+          aws s3 cp dist/runtime_database_cache/runtime_database_manifest.json "s3://${R2_BUCKET}/latest/runtime_database_manifest.json" --endpoint-url "$endpoint"
+'''
+    if old_uploads_with_map in text:
+        text = text.replace(old_uploads_with_map, new_uploads, 1)
+    elif old_uploads in text:
+        text = text.replace(old_uploads, new_uploads, 1)
+    elif new_uploads not in text:
+        raise SystemExit('R2 publication block not found')
 
     PATH.write_text(text, encoding='utf-8')
     return 0
