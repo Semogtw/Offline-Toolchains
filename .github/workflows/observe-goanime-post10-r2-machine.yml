@@ -1,0 +1,28 @@
+name: Observe GoAnime post-10 R2 machine diagnostic
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/observe-goanime-post10-r2-machine/*.request'
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Capture diagnostic state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          response="$(gh api "repos/$REPO/actions/workflows/diagnose-goanime-post10-r2-machine.yml/runs?per_page=5")"
+          report="$(jq -c '{schemaVersion:1,runs:[.workflow_runs[] | {id,status,conclusion,event,head_sha,created_at,updated_at}]}' <<<"$response")"
+          encoded="$(printf '%s\n' "$report" | base64 -w0)"
+          path="results/observe-goanime-post10-r2-machine/${GITHUB_RUN_ID}.json"
+          gh api --method PUT "repos/$REPO/contents/$path" -f message="ci(observe): record R2 diagnostic state $GITHUB_RUN_ID" -f content="$encoded" >/dev/null
