@@ -1,0 +1,59 @@
+diff --git a/lib/screens/manga/manga_categories_screen.dart b/lib/screens/manga/manga_categories_screen.dart
+index 33d65bfd..c0118fa4 100644
+--- a/lib/screens/manga/manga_categories_screen.dart
++++ b/lib/screens/manga/manga_categories_screen.dart
+@@ -57,7 +57,10 @@ class _MangaCategoriesScreenState extends State<MangaCategoriesScreen> {
+   void _retryLoad() {
+     final source = _activeSource;
+     if (source == null || !mounted) return;
+-    setState(() => _loadFuture = source.loadCategories());
++    final nextFuture = source.loadCategories();
++    setState(() {
++      _loadFuture = nextFuture;
++    });
+   }
+ 
+   void _openWork(MangaAvailabilityRecord record) {
+diff --git a/lib/screens/manga/manga_home_screen.dart b/lib/screens/manga/manga_home_screen.dart
+index 59dab0a9..2e4024df 100644
+--- a/lib/screens/manga/manga_home_screen.dart
++++ b/lib/screens/manga/manga_home_screen.dart
+@@ -73,7 +73,10 @@ class _MangaHomeScreenState extends State<MangaHomeScreen> {
+   void _retryLoad() {
+     final source = _activeSource;
+     if (source == null || !mounted) return;
+-    setState(() => _loadFuture = source.loadHome());
++    final nextFuture = source.loadHome();
++    setState(() {
++      _loadFuture = nextFuture;
++    });
+   }
+ 
+   Future<void> _refreshDiscovery({bool userInitiated = false}) async {
+@@ -98,7 +101,9 @@ class _MangaHomeScreenState extends State<MangaHomeScreen> {
+         }
+         lastVisibleCount = update.results.length;
+         final refreshed = source.loadHome();
+-        setState(() => _loadFuture = refreshed);
++        setState(() {
++          _loadFuture = refreshed;
++        });
+         await refreshed;
+       }
+     } catch (_) {
+diff --git a/lib/screens/manga/manga_library_screen.dart b/lib/screens/manga/manga_library_screen.dart
+index 86b625ae..98929acd 100644
+--- a/lib/screens/manga/manga_library_screen.dart
++++ b/lib/screens/manga/manga_library_screen.dart
+@@ -105,7 +105,10 @@ class _MangaLibraryScreenState extends State<MangaLibraryScreen> {
+   void _reloadLibrary() {
+     final source = _activeSource;
+     if (source == null || !mounted) return;
+-    setState(() => _loadFuture = source.loadLibrary());
++    final nextFuture = source.loadLibrary();
++    setState(() {
++      _loadFuture = nextFuture;
++    });
+   }
+ 
+   @override
