@@ -1,5 +1,5 @@
 diff --git a/test/widgets/manga/manga_details_library_test.dart b/test/widgets/manga/manga_details_library_test.dart
-index 067c0b3..65ab55d 100644
+index 067c0b3..560468e 100644
 --- a/test/widgets/manga/manga_details_library_test.dart
 +++ b/test/widgets/manga/manga_details_library_test.dart
 @@ -10,7 +10,6 @@ import 'package:goanime/services/manga/manga_details_data_source.dart';
@@ -87,7 +87,7 @@ index 067c0b3..65ab55d 100644
      await _pumpUntilFound(tester, find.text('Chapter 2'));
  
      expect(refreshCalls, 2);
-@@ -283,10 +288,51 @@ Future<void> _pumpUntilFound(WidgetTester tester, Finder finder) async {
+@@ -283,10 +288,49 @@ Future<void> _pumpUntilFound(WidgetTester tester, Finder finder) async {
    for (var i = 0; i < 80; i += 1) {
      await tester.pump(const Duration(milliseconds: 50));
      if (finder.evaluate().isNotEmpty) return;
@@ -117,7 +117,7 @@ index 067c0b3..65ab55d 100644
 +  if (scrollables.evaluate().isNotEmpty) {
 +    await tester.scrollUntilVisible(
 +      finder,
-+      240,
++      180,
 +      scrollable: scrollables.last,
 +      maxScrolls: 20,
 +    );
@@ -137,12 +137,16 @@ index 067c0b3..65ab55d 100644
  Future<void> _pump(WidgetTester tester, Widget child) async {
    tester.view.devicePixelRatio = 1;
    await tester.binding.setSurfaceSize(const Size(800, 1100));
-@@ -305,7 +351,7 @@ Future<void> _pump(WidgetTester tester, Widget child) async {
+@@ -305,9 +349,9 @@ Future<void> _pump(WidgetTester tester, Widget child) async {
          GlobalWidgetsLocalizations.delegate,
          GlobalCupertinoLocalizations.delegate,
        ],
 -      theme: AppTheme.darkTheme.copyWith(
-+      theme: ThemeData.dark(useMaterial3: true).copyWith(
-         extensions: [GoAnimeThemeTokens.fromCurrentStyle()],
-       ),
+-        extensions: [GoAnimeThemeTokens.fromCurrentStyle()],
+-      ),
++      theme: ThemeData.dark(
++        useMaterial3: true,
++      ).copyWith(extensions: [GoAnimeThemeTokens.fromCurrentStyle()]),
        home: child,
+     ),
+   );
