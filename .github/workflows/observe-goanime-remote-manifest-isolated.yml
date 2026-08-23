@@ -1,0 +1,27 @@
+name: Observe GoAnime remote manifest isolated checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/observe-goanime-remote-manifest-isolated/*.request'
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          response="$(gh api "repos/$REPO/actions/workflows/check-goanime-remote-manifest-isolated.yml/runs?per_page=5")"
+          report="$(jq -c '{schemaVersion:1,runs:[.workflow_runs[] | {id,status,conclusion,head_sha,created_at,updated_at}]}' <<<"$response")"
+          encoded="$(printf '%s\n' "$report" | base64 -w0)"
+          path="results/observe-goanime-remote-manifest-isolated/${GITHUB_RUN_ID}.json"
+          gh api --method PUT "repos/$REPO/contents/$path" -f message="ci(observe): record remote manifest isolated state $GITHUB_RUN_ID" -f content="$encoded" >/dev/null
