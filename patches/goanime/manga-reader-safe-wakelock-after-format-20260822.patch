@@ -1,0 +1,37 @@
+diff --git a/lib/screens/manga/manga_reader_screen.dart b/lib/screens/manga/manga_reader_screen.dart
+--- a/lib/screens/manga/manga_reader_screen.dart
++++ b/lib/screens/manga/manga_reader_screen.dart
+@@ -113,7 +113,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+       }
+     }
+     unawaited(_loadReaderMode());
+-    unawaited(WakelockPlus.enable());
++    unawaited(_setWakelock(enabled: true));
+     if (widget.manifest is! LocalPackageContentManifest) {
+       _recordPage(_pageIndex, _pageCount);
+     }
+@@ -137,10 +137,23 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+     _imageController?.dispose();
+     _continuousController?.dispose();
+     _pdfController = null;
+-    unawaited(WakelockPlus.disable());
++    unawaited(_setWakelock(enabled: false));
+     super.dispose();
+   }
+ 
++  Future<void> _setWakelock({required bool enabled}) async {
++    try {
++      if (enabled) {
++        await WakelockPlus.enable();
++      } else {
++        await WakelockPlus.disable();
++      }
++    } catch (_) {
++      // Wakelock is supplemental. Unsupported platform integration must not
++      // prevent a chapter from opening or closing cleanly.
++    }
++  }
++
+   Future<void> _loadReaderMode() async {
+     try {
+       final override = await _preferencesRepository.readerModeOverrideForWork(
