@@ -1,0 +1,3 @@
+target_branch=feat/global-anime-cache-refresh-20260823
+source_hint=e40b09986f90c1668862d51833b5c82ff3f416db
+reason=Apply Dart 3.44.1 formatting only to the four files identified by global cache validation.
