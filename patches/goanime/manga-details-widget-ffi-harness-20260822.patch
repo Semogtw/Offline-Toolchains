@@ -113,15 +113,13 @@ index 067c0b3..65ab55d 100644
 +}
 +
 +Future<void> _tapVisible(WidgetTester tester, Finder finder) async {
-+  final modalScrollable = find.descendant(
-+    of: find.byType(BottomSheet),
-+    matching: find.byType(Scrollable),
-+  );
-+  if (modalScrollable.evaluate().isNotEmpty) {
++  final scrollables = find.byType(Scrollable);
++  if (scrollables.evaluate().isNotEmpty) {
 +    await tester.scrollUntilVisible(
 +      finder,
-+      180,
-+      scrollable: modalScrollable.last,
++      240,
++      scrollable: scrollables.last,
++      maxScrolls: 20,
 +    );
 +  } else {
 +    await tester.ensureVisible(finder);
