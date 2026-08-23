@@ -10,7 +10,7 @@ on:
       target_branch:
         description: GoAnime branch that owns the external Scrapling pipeline
         required: true
-        default: feat/scrapling-provider-pipeline
+        default: main
       source_hint:
         description: Optional exact 40-character GoAnime source SHA
         required: false
