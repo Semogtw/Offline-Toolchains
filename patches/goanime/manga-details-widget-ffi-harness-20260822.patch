@@ -1,6 +1,16 @@
+diff --git a/test/widgets/manga/manga_details_library_test.dart b/test/widgets/manga/manga_details_library_test.dart
+index 067c0b3..36d2760 100644
 --- a/test/widgets/manga/manga_details_library_test.dart
 +++ b/test/widgets/manga/manga_details_library_test.dart
-@@ -104,35 +104,42 @@
+@@ -10,7 +10,6 @@ import 'package:goanime/services/manga/manga_details_data_source.dart';
+ import 'package:goanime/services/manga/storage/manga_catalog_repository.dart';
+ import 'package:goanime/services/manga/storage/manga_database.dart';
+ import 'package:goanime/services/manga/storage/manga_library_repository.dart';
+-import 'package:goanime/theme/app_theme.dart';
+ import 'package:goanime/theme/goanime_theme_tokens.dart';
+ import 'package:goanime_core/goanime_core.dart';
+ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+@@ -104,35 +103,41 @@ void main() {
      await _pumpUntilFound(tester, find.text('Add to library'));
  
      expect(find.text('Add to library'), findsOneWidget);
@@ -10,40 +20,45 @@
 +      isNull,
 +    );
  
-     await tester.tap(find.text('Add to library'));
+-    await tester.tap(find.text('Add to library'));
 -    await tester.pumpAndSettle();
++    await _tapVisible(tester, find.text('Add to library'));
 +    await _pumpUntilFound(tester, find.text('Library status'));
      expect(find.text('Library status'), findsOneWidget);
  
-     await tester.tap(find.text('Reading'));
+-    await tester.tap(find.text('Reading'));
 -    await tester.pumpAndSettle();
++    await _tapVisible(tester, find.text('Reading'));
 +    await _pumpUntilFound(tester, find.textContaining('Manage library'));
      expect(
 -      (await library.entryForWork('mw_library'))?.status,
-+      (await tester.runAsync(() => library.entryForWork('mw_library')))
-+          ?.status,
++      (await tester.runAsync(() => library.entryForWork('mw_library')))?.status,
        MangaLibraryStatus.reading,
      );
      expect(find.textContaining('Manage library'), findsOneWidget);
  
-     await tester.tap(find.textContaining('Manage library'));
+-    await tester.tap(find.textContaining('Manage library'));
 -    await tester.pumpAndSettle();
-+    await _pumpUntilFound(tester, find.text('Library status'));
-     await tester.tap(find.text('Completed'));
+-    await tester.tap(find.text('Completed'));
 -    await tester.pumpAndSettle();
 -    expect(
 -      (await library.entryForWork('mw_library'))?.status,
++    await _tapVisible(tester, find.textContaining('Manage library'));
++    await _pumpUntilFound(tester, find.text('Library status'));
++    await _tapVisible(tester, find.text('Completed'));
 +    await _pumpUntilLibraryStatus(
 +      tester,
 +      library,
        MangaLibraryStatus.completed,
      );
  
-     await tester.tap(find.textContaining('Manage library'));
+-    await tester.tap(find.textContaining('Manage library'));
 -    await tester.pumpAndSettle();
+-    await tester.tap(find.text('Remove from library'));
+-    await tester.pumpAndSettle();
++    await _tapVisible(tester, find.textContaining('Manage library'));
 +    await _pumpUntilFound(tester, find.text('Remove from library'));
-     await tester.tap(find.text('Remove from library'));
--    await tester.pumpAndSettle();
++    await _tapVisible(tester, find.text('Remove from library'));
 +    await _pumpUntilFound(tester, find.text('Add to library'));
  
 -    expect(await library.entryForWork('mw_library'), isNull);
@@ -54,7 +69,25 @@
      expect(find.text('Add to library'), findsOneWidget);
    });
  
-@@ -283,10 +290,34 @@
+@@ -161,7 +166,7 @@ void main() {
+     expect(find.text('Manga content could not be loaded.'), findsOneWidget);
+     expect(find.text('Try again'), findsOneWidget);
+ 
+-    await tester.tap(find.text('Try again'));
++    await _tapVisible(tester, find.text('Try again'));
+     await _pumpUntilFound(tester, find.text('Chapter 1'));
+ 
+     expect(calls, 2);
+@@ -213,7 +218,7 @@ void main() {
+       findsOneWidget,
+     );
+ 
+-    await tester.tap(find.text('Try again'));
++    await _tapVisible(tester, find.text('Try again'));
+     await _pumpUntilFound(tester, find.text('Chapter 2'));
+ 
+     expect(refreshCalls, 2);
+@@ -283,10 +288,39 @@ Future<void> _pumpUntilFound(WidgetTester tester, Finder finder) async {
    for (var i = 0; i < 80; i += 1) {
      await tester.pump(const Duration(milliseconds: 50));
      if (finder.evaluate().isNotEmpty) return;
@@ -63,7 +96,6 @@
    throw TestFailure('Timed out waiting for Manga details content.');
  }
  
-+
 +Future<void> _pumpUntilLibraryStatus(
 +  WidgetTester tester,
 +  MangaLibraryRepository library,
@@ -80,6 +112,12 @@
 +  throw TestFailure('Timed out waiting for manga library status.');
 +}
 +
++Future<void> _tapVisible(WidgetTester tester, Finder finder) async {
++  await tester.ensureVisible(finder);
++  await tester.pump();
++  await tester.tap(finder);
++}
++
 +Future<void> _yieldToIo(WidgetTester tester) async {
 +  await tester.runAsync(() async {
 +    await Future<void>.delayed(const Duration(milliseconds: 10));
@@ -89,3 +127,12 @@
  Future<void> _pump(WidgetTester tester, Widget child) async {
    tester.view.devicePixelRatio = 1;
    await tester.binding.setSurfaceSize(const Size(800, 1100));
+@@ -305,7 +339,7 @@ Future<void> _pump(WidgetTester tester, Widget child) async {
+         GlobalWidgetsLocalizations.delegate,
+         GlobalCupertinoLocalizations.delegate,
+       ],
+-      theme: AppTheme.darkTheme.copyWith(
++      theme: ThemeData.dark(useMaterial3: true).copyWith(
+         extensions: [GoAnimeThemeTokens.fromCurrentStyle()],
+       ),
+       home: child,
