@@ -1,0 +1,164 @@
+diff --git a/test/widgets/manga/manga_categories_screen_test.dart b/test/widgets/manga/manga_categories_screen_test.dart
+index 26c9f7e8..6cea7ddf 100644
+--- a/test/widgets/manga/manga_categories_screen_test.dart
++++ b/test/widgets/manga/manga_categories_screen_test.dart
+@@ -60,6 +60,27 @@ void main() {
+     expect(find.text('Romance Work'), findsOneWidget);
+     expect(find.text('Action Work'), findsNothing);
+   });
++
++  testWidgets('retry after initial failure loads categories', (tester) async {
++    final source = _RetryCategoriesBrowseDataSource([
++      _item(
++        'mw_retry',
++        'Retry Category Work',
++        metadata: const MangaBrowseMetadata(genres: ['Action']),
++      ),
++    ]);
++
++    await _pump(tester, MangaCategoriesScreen(dataSource: source));
++    await tester.pumpAndSettle();
++
++    expect(find.text('Manga content could not be loaded.'), findsOneWidget);
++    await tester.tap(find.text('Try again'));
++    await tester.pumpAndSettle();
++
++    expect(source.categoryCalls, 2);
++    expect(find.text('Manga content could not be loaded.'), findsNothing);
++    expect(find.text('Retry Category Work'), findsOneWidget);
++  });
+ }
+ 
+ final class _FakeBrowseDataSource implements MangaBrowseDataSource {
+@@ -143,3 +164,23 @@ Future<void> _pump(WidgetTester tester, Widget child) async {
+     ),
+   );
+ }
++
++final class _RetryCategoriesBrowseDataSource implements MangaBrowseDataSource {
++  _RetryCategoriesBrowseDataSource(this.items);
++
++  final List<MangaBrowseItem> items;
++  int categoryCalls = 0;
++
++  @override
++  Future<MangaHomeSnapshot> loadHome() async => const MangaHomeSnapshot();
++
++  @override
++  Future<List<MangaBrowseItem>> loadCategories() async {
++    categoryCalls += 1;
++    if (categoryCalls == 1) throw StateError('initial categories failure');
++    return items;
++  }
++
++  @override
++  Future<List<MangaBrowseItem>> loadLibrary() async => const [];
++}
+diff --git a/test/widgets/manga/manga_home_screen_test.dart b/test/widgets/manga/manga_home_screen_test.dart
+index 9bbcdfa3..87972f6b 100644
+--- a/test/widgets/manga/manga_home_screen_test.dart
++++ b/test/widgets/manga/manga_home_screen_test.dart
+@@ -58,6 +58,23 @@ void main() {
+     await tester.pump();
+     expect(opened, ['mw_catalog']);
+   });
++
++  testWidgets('retry after initial failure loads home content', (tester) async {
++    final source = _RetryHomeBrowseDataSource(
++      MangaHomeSnapshot(availableCatalog: [_item('mw_retry', 'Retry Work')]),
++    );
++
++    await _pump(tester, MangaHomeScreen(dataSource: source));
++    await tester.pumpAndSettle();
++
++    expect(find.text('Manga content could not be loaded.'), findsOneWidget);
++    await tester.tap(find.text('Try again'));
++    await tester.pumpAndSettle();
++
++    expect(source.homeCalls, 2);
++    expect(find.text('Manga content could not be loaded.'), findsNothing);
++    expect(find.text('Retry Work'), findsOneWidget);
++  });
+ }
+ 
+ final class _FakeBrowseDataSource implements MangaBrowseDataSource {
+@@ -143,3 +160,23 @@ Future<void> _pump(WidgetTester tester, Widget child) async {
+     ),
+   );
+ }
++
++final class _RetryHomeBrowseDataSource implements MangaBrowseDataSource {
++  _RetryHomeBrowseDataSource(this.snapshot);
++
++  final MangaHomeSnapshot snapshot;
++  int homeCalls = 0;
++
++  @override
++  Future<MangaHomeSnapshot> loadHome() async {
++    homeCalls += 1;
++    if (homeCalls == 1) throw StateError('initial home failure');
++    return snapshot;
++  }
++
++  @override
++  Future<List<MangaBrowseItem>> loadCategories() async => const [];
++
++  @override
++  Future<List<MangaBrowseItem>> loadLibrary() async => const [];
++}
+diff --git a/test/widgets/manga/manga_library_screen_test.dart b/test/widgets/manga/manga_library_screen_test.dart
+index 64ad401b..e5783f8a 100644
+--- a/test/widgets/manga/manga_library_screen_test.dart
++++ b/test/widgets/manga/manga_library_screen_test.dart
+@@ -51,6 +51,27 @@ void main() {
+ 
+     expect(find.textContaining('ptbr.'), findsNothing);
+   });
++
++  testWidgets('retry after initial failure loads library content', (tester) async {
++    final source = _RetryLibraryBrowseDataSource([
++      _item(
++        'mw_retry',
++        'Retry Library Work',
++        MangaLibraryStatus.reading,
++      ),
++    ]);
++
++    await _pump(tester, MangaLibraryScreen(dataSource: source));
++    await tester.pumpAndSettle();
++
++    expect(find.text('Manga content could not be loaded.'), findsOneWidget);
++    await tester.tap(find.text('Try again'));
++    await tester.pumpAndSettle();
++
++    expect(source.libraryCalls, 2);
++    expect(find.text('Manga content could not be loaded.'), findsNothing);
++    expect(find.text('Retry Library Work'), findsOneWidget);
++  });
+ }
+ 
+ final class _FakeBrowseDataSource implements MangaBrowseDataSource {
+@@ -138,3 +159,23 @@ Future<void> _pump(WidgetTester tester, Widget child) async {
+     ),
+   );
+ }
++
++final class _RetryLibraryBrowseDataSource implements MangaBrowseDataSource {
++  _RetryLibraryBrowseDataSource(this.items);
++
++  final List<MangaBrowseItem> items;
++  int libraryCalls = 0;
++
++  @override
++  Future<MangaHomeSnapshot> loadHome() async => const MangaHomeSnapshot();
++
++  @override
++  Future<List<MangaBrowseItem>> loadCategories() async => const [];
++
++  @override
++  Future<List<MangaBrowseItem>> loadLibrary() async {
++    libraryCalls += 1;
++    if (libraryCalls == 1) throw StateError('initial library failure');
++    return items;
++  }
++}
