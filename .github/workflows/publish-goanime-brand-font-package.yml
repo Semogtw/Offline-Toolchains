@@ -1,0 +1,187 @@
+name: Publish GoAnime brand font package
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-brand-font-package/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-goanime-brand-font-package
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Toolchains
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Checkout pinned Epilogue
+        uses: actions/checkout@v6
+        with:
+          repository: Etcetera-Type-Co/Epilogue
+          ref: 76bd97a82f0105535fb06e6940f2140b2c1a660c
+          path: .font-source/epilogue
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout pinned Manrope
+        uses: actions/checkout@v6
+        with:
+          repository: aaronbell/manrope
+          ref: 6f81ebecdf65e4463b798cc07b16a4f8d5216917
+          path: .font-source/manrope
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Materialize deterministic package
+        shell: bash
+        run: |
+          set -euo pipefail
+          package=packages/goanime_brand_fonts
+          rm -rf "$package"
+          mkdir -p "$package/assets/fonts" "$package/assets/licenses" "$package/lib"
+
+          cp .font-source/epilogue/fonts/ttf/Epilogue-ExtraBold.ttf "$package/assets/fonts/Epilogue-ExtraBold.ttf"
+          cp .font-source/epilogue/fonts/ttf/Epilogue-Black.ttf "$package/assets/fonts/Epilogue-Black.ttf"
+          cp .font-source/epilogue/OFL.txt "$package/assets/licenses/Epilogue-OFL.txt"
+          cp .font-source/manrope/fonts/ttf/manrope-regular.ttf "$package/assets/fonts/Manrope-Regular.ttf"
+          cp .font-source/manrope/fonts/ttf/manrope-semibold.ttf "$package/assets/fonts/Manrope-SemiBold.ttf"
+          cp .font-source/manrope/fonts/ttf/manrope-bold.ttf "$package/assets/fonts/Manrope-Bold.ttf"
+          cp .font-source/manrope/fonts/ttf/manrope-extrabold.ttf "$package/assets/fonts/Manrope-ExtraBold.ttf"
+          cp .font-source/manrope/OFL.txt "$package/assets/licenses/Manrope-OFL.txt"
+
+          cat > "$package/pubspec.yaml" <<'YAML'
+          name: goanime_brand_fonts
+          description: Deterministic locally bundled Epilogue and Manrope subset for GoAnime Mobile.
+          version: 1.0.0
+          publish_to: none
+          environment:
+            sdk: ">=3.10.0 <4.0.0"
+          dependencies:
+            flutter:
+              sdk: flutter
+          flutter:
+            assets:
+              - assets/licenses/Epilogue-OFL.txt
+              - assets/licenses/Manrope-OFL.txt
+            fonts:
+              - family: Epilogue
+                fonts:
+                  - asset: assets/fonts/Epilogue-ExtraBold.ttf
+                    weight: 800
+                  - asset: assets/fonts/Epilogue-Black.ttf
+                    weight: 900
+              - family: Manrope
+                fonts:
+                  - asset: assets/fonts/Manrope-Regular.ttf
+                    weight: 400
+                  - asset: assets/fonts/Manrope-SemiBold.ttf
+                    weight: 600
+                  - asset: assets/fonts/Manrope-Bold.ttf
+                    weight: 700
+                  - asset: assets/fonts/Manrope-ExtraBold.ttf
+                    weight: 800
+          YAML
+
+          cat > "$package/lib/goanime_brand_fonts.dart" <<'DART'
+          import 'package:flutter/foundation.dart';
+          import 'package:flutter/services.dart';
+
+          const goAnimeFontPackage = 'goanime_brand_fonts';
+          const goAnimeDisplayFontFamily = 'Epilogue';
+          const goAnimeBodyFontFamily = 'Manrope';
+
+          bool _licensesRegistered = false;
+
+          /// Registers the OFL license text for the bundled GoAnime font families.
+          ///
+          /// Registration is idempotent and does not block startup: the license
+          /// assets are loaded lazily only when Flutter's license registry is read.
+          void registerGoAnimeBrandFontLicenses() {
+            if (_licensesRegistered) return;
+            _licensesRegistered = true;
+            LicenseRegistry.addLicense(() async* {
+              final epilogue = await rootBundle.loadString(
+                'packages/goanime_brand_fonts/assets/licenses/Epilogue-OFL.txt',
+              );
+              yield LicenseEntryWithLineBreaks(['Epilogue'], epilogue);
+
+              final manrope = await rootBundle.loadString(
+                'packages/goanime_brand_fonts/assets/licenses/Manrope-OFL.txt',
+              );
+              yield LicenseEntryWithLineBreaks(['Manrope'], manrope);
+            });
+          }
+          DART
+
+          cat > "$package/README.md" <<'MD'
+          # GoAnime brand fonts
+
+          Deterministic production subset used by GoAnime Mobile to avoid runtime font downloads and cold-start font swaps.
+
+          Sources are pinned and copied without modification:
+
+          - Epilogue: `Etcetera-Type-Co/Epilogue@76bd97a82f0105535fb06e6940f2140b2c1a660c`
+          - Manrope: `aaronbell/manrope@6f81ebecdf65e4463b798cc07b16a4f8d5216917`
+
+          Both families are distributed under the SIL Open Font License; the upstream OFL files are included in `assets/licenses/`.
+          MD
+
+          (
+            cd "$package"
+            find assets -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+          )
+          test "$(find "$package/assets/fonts" -type f | wc -l)" -eq 6
+          test "$(find "$package/assets/licenses" -type f | wc -l)" -eq 2
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.44.1'
+          cache: true
+
+      - name: Validate package
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          dart format packages/goanime_brand_fonts/lib/goanime_brand_fonts.dart
+          flutter pub get --directory packages/goanime_brand_fonts
+          dart analyze packages/goanime_brand_fonts/lib/goanime_brand_fonts.dart
+          git diff --check
+
+      - name: Commit package with upstream pins
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .font-source
+          git config user.name 'goanime-toolchains[bot]'
+          git config user.email 'goanime-toolchains[bot]@users.noreply.github.com'
+          git add packages/goanime_brand_fonts
+          if git diff --cached --quiet; then
+            echo "No package changes to publish"
+          else
+            git commit -m 'build(goanime): publish pinned brand font package'
+          fi
+
+          for attempt in 1 2 3 4 5; do
+            git fetch origin main
+            git rebase origin/main
+            if git push origin HEAD:main; then
+              echo "package_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
