@@ -1,0 +1,195 @@
+name: Format and validate GoAnime Manga Downloads staging
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-downloads-format-validation-20260822/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-downloads-format-validation-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      validation_result: ${{ steps.validation.outputs.result }}
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact validation request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-downloads-format-validation-20260822/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          test "$branch" = 'staging/manga-downloads-race-20260822'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private staging revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify staging remote head
+        working-directory: private-source
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies and format Downloads files
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+          dart format \
+            lib/screens/manga/manga_downloads_screen.dart \
+            lib/screens/manga/manga_downloads_screen_lifecycle.dart \
+            lib/screens/manga/manga_downloads_screen_operations.dart \
+            lib/screens/manga/manga_downloads_screen_presentation.dart \
+            lib/screens/manga/manga_downloads_screen_support_widgets.dart \
+            lib/screens/manga/manga_downloads_screen_download_widgets.dart \
+            lib/screens/manga/manga_downloads_screen_helpers.dart \
+            lib/screens/manga/manga_downloads_screen_state_widgets.dart \
+            test/widgets/manga/manga_downloads_screen_test.dart >/dev/null
+          git diff --check
+
+      - name: Analyze and test formatted staging
+        id: validation
+        working-directory: private-source
+        shell: bash
+        run: |
+          set +e
+          flutter analyze --no-pub >/dev/null 2>&1
+          analyze=$?
+          flutter test --no-pub test/widgets/manga/manga_downloads_screen_test.dart >/dev/null 2>&1
+          tests=$?
+          set -e
+          if [[ $analyze -eq 0 && $tests -eq 0 ]]; then
+            echo 'result=success' >> "$GITHUB_OUTPUT"
+          else
+            echo 'result=failure' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Encrypt formatted Downloads files
+        id: transfer
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/downloads-formatted-transfer"
+          package="$work/package"
+          gpg_home="$work/gpg"
+          archive="$work/downloads-formatted.tar.gz"
+          encrypted="$work/downloads-formatted.tar.gz.gpg"
+          rm -rf "$work"
+          mkdir -p "$package/lib/screens/manga" "$package/test/widgets/manga" "$gpg_home"
+          chmod 700 "$gpg_home"
+          for file in \
+            manga_downloads_screen.dart \
+            manga_downloads_screen_lifecycle.dart \
+            manga_downloads_screen_operations.dart \
+            manga_downloads_screen_presentation.dart \
+            manga_downloads_screen_support_widgets.dart \
+            manga_downloads_screen_download_widgets.dart \
+            manga_downloads_screen_helpers.dart \
+            manga_downloads_screen_state_widgets.dart; do
+            cp "$GITHUB_WORKSPACE/private-source/lib/screens/manga/$file" "$package/lib/screens/manga/$file"
+          done
+          cp "$GITHUB_WORKSPACE/private-source/test/widgets/manga/manga_downloads_screen_test.dart" "$package/test/widgets/manga/"
+          tar -C "$package" -czf "$archive" .
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import "$GITHUB_WORKSPACE/trusted-source/keys/source-bundles-public.asc" >/dev/null 2>&1
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          test -z "$(gpg --batch --with-colons --list-secret-keys 2>/dev/null | awk -F: '$1 == "sec" { print $1 }')"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" --output "$encrypted" --encrypt "$archive"
+          test -s "$encrypted"
+          rm -rf "$package" "$archive" "$gpg_home"
+          echo "path=$encrypted" >> "$GITHUB_OUTPUT"
+
+      - name: Upload ciphertext-only formatted transfer
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-manga-downloads-formatted-${{ steps.request.outputs.sha }}
+          path: ${{ steps.transfer.outputs.path }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Remove private and transient data
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
+          rm -rf "$RUNNER_TEMP/downloads-formatted-transfer"
+
+  report:
+    if: always()
+    needs: [validate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Publish sanitized result
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_RESULT: ${{ needs.validate.result }}
+          VALIDATION_RESULT: ${{ needs.validate.outputs.validation_result }}
+          TOOLCHAINS_TRIGGER_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          validation="${VALIDATION_RESULT:-not-run}"
+          payload="$(printf '{\"schemaVersion\":1,\"runId\":%s,\"jobResult\":\"%s\",\"validationResult\":\"%s\",\"toolchainsTriggerSha\":\"%s\"}\n' "$RUN_ID" "$JOB_RESULT" "$validation" "$TOOLCHAINS_TRIGGER_SHA" | base64 -w0)"
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/reports/goanime-manga-downloads-format-validation/${RUN_ID}.json" \
+            -f "message=ci(goanime): report Downloads format validation ${RUN_ID}" \
+            -f "content=${payload}" >/dev/null
