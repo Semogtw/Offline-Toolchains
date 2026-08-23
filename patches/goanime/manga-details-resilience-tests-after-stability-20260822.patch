@@ -1,0 +1,139 @@
+diff --git a/test/widgets/manga/manga_details_library_test.dart b/test/widgets/manga/manga_details_library_test.dart
+index 2359ef35..530ee893 100644
+--- a/test/widgets/manga/manga_details_library_test.dart
++++ b/test/widgets/manga/manga_details_library_test.dart
+@@ -135,6 +135,89 @@ void main() {
+     expect(await library.entryForWork('mw_library'), isNull);
+     expect(find.text('Add to library'), findsOneWidget);
+   });
++
++  testWidgets('initial load failure is retryable', (tester) async {
++    var calls = 0;
++    final snapshot = _snapshot(availability, 'Chapter 1');
++    final source = _HandlerDetailsDataSource((_) async {
++      calls += 1;
++      if (calls == 1) throw StateError('temporary details failure');
++      return snapshot;
++    });
++
++    await _pump(
++      tester,
++      MangaDetailsScreen(
++        availability: availability,
++        dataSource: source,
++        libraryRepository: library,
++      ),
++    );
++    await _pumpUntilFound(
++      tester,
++      find.text('Manga content could not be loaded.'),
++    );
++
++    expect(find.text('Manga content could not be loaded.'), findsOneWidget);
++    expect(find.text('Try again'), findsOneWidget);
++
++    await tester.tap(find.text('Try again'));
++    await _pumpUntilFound(tester, find.text('Chapter 1'));
++
++    expect(calls, 2);
++    expect(find.text('Manga content could not be loaded.'), findsNothing);
++    expect(find.text('Chapter 1'), findsOneWidget);
++  });
++
++  testWidgets('refresh failure preserves stale details and can retry', (
++    tester,
++  ) async {
++    final initial = _FakeDetailsDataSource(_snapshot(availability, 'Chapter 1'));
++    var refreshCalls = 0;
++    final refreshed = _HandlerDetailsDataSource((_) async {
++      refreshCalls += 1;
++      if (refreshCalls == 1) throw StateError('refresh failed');
++      return _snapshot(availability, 'Chapter 2');
++    });
++    final source = ValueNotifier<MangaDetailsDataSource>(initial);
++    addTearDown(source.dispose);
++
++    await _pump(
++      tester,
++      ValueListenableBuilder<MangaDetailsDataSource>(
++        valueListenable: source,
++        builder: (context, value, _) => MangaDetailsScreen(
++          availability: availability,
++          dataSource: value,
++          libraryRepository: library,
++        ),
++      ),
++    );
++    await _pumpUntilFound(tester, find.text('Chapter 1'));
++
++    source.value = refreshed;
++    await _pumpUntilFound(
++      tester,
++      find.text(
++        'Manga details could not be refreshed. Showing already loaded data.',
++      ),
++    );
++
++    expect(find.text('Chapter 1'), findsOneWidget);
++    expect(
++      find.text(
++        'Manga details could not be refreshed. Showing already loaded data.',
++      ),
++      findsOneWidget,
++    );
++
++    await tester.tap(find.text('Try again'));
++    await _pumpUntilFound(tester, find.text('Chapter 2'));
++
++    expect(refreshCalls, 2);
++    expect(find.text('Chapter 1'), findsNothing);
++    expect(find.text('Chapter 2'), findsOneWidget);
++  });
+ }
+ 
+ final class _FakeDetailsDataSource implements MangaDetailsDataSource {
+@@ -155,6 +238,44 @@ final class _FakeDetailsDataSource implements MangaDetailsDataSource {
+ }
+ 
+ 
++MangaDetailsSnapshot _snapshot(
++  MangaAvailabilityRecord availability,
++  String chapterTitle,
++) {
++  return MangaDetailsSnapshot(
++    availability: availability,
++    chapters: [
++      CanonicalChapter(
++        canonicalChapterId: 'mc_${chapterTitle.replaceAll(' ', '_')}',
++        workId: availability.work.workId,
++        title: chapterTitle,
++        number: chapterTitle == 'Chapter 1' ? 1.0 : 2.0,
++      ),
++    ],
++    variantsByChapter: const {},
++    progressByChapter: const {},
++    sourcePreference: const MangaSourcePreference(
++      mode: MangaSourceMode.automatic,
++    ),
++  );
++}
++
++final class _HandlerDetailsDataSource implements MangaDetailsDataSource {
++  const _HandlerDetailsDataSource(this.handler);
++
++  final Future<MangaDetailsSnapshot> Function(MangaAvailabilityRecord) handler;
++
++  @override
++  Future<MangaDetailsSnapshot> load(MangaAvailabilityRecord availability) =>
++      handler(availability);
++
++  @override
++  Future<void> saveSourcePreference(
++    String workId,
++    MangaSourcePreference preference,
++  ) async {}
++}
++
+ Future<void> _pumpUntilFound(WidgetTester tester, Finder finder) async {
+   for (var i = 0; i < 80; i += 1) {
+     await tester.pump(const Duration(milliseconds: 50));
