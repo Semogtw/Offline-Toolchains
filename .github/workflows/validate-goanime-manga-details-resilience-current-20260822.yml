@@ -1,0 +1,198 @@
+name: Validate GoAnime Manga Details resilience current
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-details-resilience-current-20260822/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-details-resilience-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    outputs:
+      analyze_result: ${{ steps.validation.outputs.analyze_result }}
+      tests_result: ${{ steps.validation.outputs.tests_result }}
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-details-resilience-current-20260822/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          [[ "$branch" =~ ^(feature/manga-platform|staging/manga-downloads-race-20260822|staging/manga-reader-progress-20260822|staging/manga-details-resilience-20260822)$ ]]
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify requested remote head
+        working-directory: private-source
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+
+      - name: Apply Details resilience patch
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          patch="$GITHUB_WORKSPACE/trusted-source/patches/goanime/manga-details-current-resilience-20260822.patch"
+          git apply --check "$patch"
+          git apply "$patch"
+          git diff --check
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies and format patch
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+          dart format \
+            lib/screens/manga/manga_details_screen.dart \
+            test/widgets/manga/manga_details_library_test.dart >/dev/null
+          git diff --check
+
+      - name: Analyze and test Details resilience
+        id: validation
+        working-directory: private-source
+        shell: bash
+        run: |
+          set +e
+          flutter analyze --no-pub > "$RUNNER_TEMP/details-analyze.log" 2>&1
+          analyze=$?
+          flutter test --no-pub test/widgets/manga/manga_details_library_test.dart > "$RUNNER_TEMP/details-tests.log" 2>&1
+          tests=$?
+          set -e
+          if [[ $analyze -eq 0 ]]; then analyze_result=success; else analyze_result=failure; fi
+          if [[ $tests -eq 0 ]]; then tests_result=success; else tests_result=failure; fi
+          printf 'analyze_result=%s\ntests_result=%s\n' "$analyze_result" "$tests_result" >> "$GITHUB_OUTPUT"
+
+      - name: Encrypt formatted Details files and diagnostics
+        id: transfer
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/details-transfer"
+          package="$work/package"
+          gpg_home="$work/gpg"
+          archive="$work/details-resilience.tar.gz"
+          encrypted="$work/details-resilience.tar.gz.gpg"
+          rm -rf "$work"
+          mkdir -p "$package/lib/screens/manga" "$package/test/widgets/manga" "$package/diagnostics" "$gpg_home"
+          chmod 700 "$gpg_home"
+          cp "$GITHUB_WORKSPACE/private-source/lib/screens/manga/manga_details_screen.dart" "$package/lib/screens/manga/"
+          cp "$GITHUB_WORKSPACE/private-source/test/widgets/manga/manga_details_library_test.dart" "$package/test/widgets/manga/"
+          cp "$RUNNER_TEMP/details-analyze.log" "$package/diagnostics/analyze.log"
+          cp "$RUNNER_TEMP/details-tests.log" "$package/diagnostics/tests.log"
+          tar -C "$package" -czf "$archive" .
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import "$GITHUB_WORKSPACE/trusted-source/keys/source-bundles-public.asc" >/dev/null 2>&1
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          test -z "$(gpg --batch --with-colons --list-secret-keys 2>/dev/null | awk -F: '$1 == "sec" { print $1 }')"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" --output "$encrypted" --encrypt "$archive"
+          test -s "$encrypted"
+          rm -rf "$package" "$archive" "$gpg_home"
+          echo "path=$encrypted" >> "$GITHUB_OUTPUT"
+
+      - name: Upload ciphertext-only Details transfer
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-manga-details-resilience-${{ steps.request.outputs.sha }}
+          path: ${{ steps.transfer.outputs.path }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Enforce validation result
+        env:
+          ANALYZE_RESULT: ${{ steps.validation.outputs.analyze_result }}
+          TESTS_RESULT: ${{ steps.validation.outputs.tests_result }}
+        run: |
+          test "$ANALYZE_RESULT" = success
+          test "$TESTS_RESULT" = success
+
+      - name: Remove private and transient data
+        if: always()
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
+          rm -rf "$RUNNER_TEMP/details-transfer" "$RUNNER_TEMP/details-analyze.log" "$RUNNER_TEMP/details-tests.log"
+
+  report:
+    if: always()
+    needs: [validate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Publish sanitized Details result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_RESULT: ${{ needs.validate.result }}
+          ANALYZE_RESULT: ${{ needs.validate.outputs.analyze_result }}
+          TESTS_RESULT: ${{ needs.validate.outputs.tests_result }}
+          TOOLCHAINS_TRIGGER_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          analyze="${ANALYZE_RESULT:-not-run}"
+          tests="${TESTS_RESULT:-not-run}"
+          payload="$(printf '{\"schemaVersion\":1,\"runId\":%s,\"jobResult\":\"%s\",\"analyzeResult\":\"%s\",\"testsResult\":\"%s\",\"toolchainsTriggerSha\":\"%s\"}\n' "$RUN_ID" "$JOB_RESULT" "$analyze" "$tests" "$TOOLCHAINS_TRIGGER_SHA" | base64 -w0)"
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/reports/goanime-manga-details-resilience/${RUN_ID}.json" \
+            -f "message=ci(goanime): report Details resilience ${RUN_ID}" \
+            -f "content=${payload}" >/dev/null
