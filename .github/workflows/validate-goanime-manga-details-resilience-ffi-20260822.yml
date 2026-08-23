@@ -69,17 +69,14 @@ jobs:
           remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
           test "$remote" = "$EXPECTED_SHA"
 
-      - name: Apply Details resilience and FFI harness patches
+      - name: Apply Details base resilience patch
         working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
           base="$GITHUB_WORKSPACE/trusted-source/patches/goanime/manga-details-current-resilience-20260822.patch"
-          harness="$GITHUB_WORKSPACE/trusted-source/patches/goanime/manga-details-widget-ffi-harness-20260822.patch"
           git apply --check "$base"
           git apply "$base"
-          git apply --check "$harness"
-          git apply "$harness"
           git diff --check
 
       - name: Set up Flutter 3.44.1
@@ -89,16 +86,27 @@ jobs:
           flutter-version: 3.44.1
           cache: true
 
-      - name: Validate Details resilience
+      - name: Format base then apply FFI harness
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics >/dev/null 2>&1
+          flutter pub get >/dev/null 2>&1
+          (cd packages/goanime_core && dart pub get >/dev/null 2>&1)
+          dart format lib/screens/manga/manga_details_screen.dart test/widgets/manga/manga_details_library_test.dart >/dev/null
+          harness="$GITHUB_WORKSPACE/trusted-source/patches/goanime/manga-details-widget-ffi-harness-20260822.patch"
+          git apply --check "$harness"
+          git apply "$harness"
+          dart format test/widgets/manga/manga_details_library_test.dart >/dev/null
+          git diff --check
+
+      - name: Analyze and test Details resilience
         id: validation
         working-directory: private-source
         shell: bash
         run: |
           set +e
-          flutter config --no-analytics >/dev/null 2>&1
-          flutter pub get >/dev/null 2>&1
-          (cd packages/goanime_core && dart pub get >/dev/null 2>&1)
-          dart format lib/screens/manga/manga_details_screen.dart test/widgets/manga/manga_details_library_test.dart >/dev/null 2>&1
           flutter analyze --no-pub > "$RUNNER_TEMP/details-analyze.log" 2>&1
           analyze=$?
           flutter test --no-pub test/widgets/manga/manga_details_library_test.dart > "$RUNNER_TEMP/details-tests.log" 2>&1
