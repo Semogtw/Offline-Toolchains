@@ -1,0 +1,96 @@
+name: Generate GoAnime lockfile
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-lockfile/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve exact request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-lockfile/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project sha < "trusted-source/$request"
+          test "$project" = goanime
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.44.1'
+          cache: true
+
+      - name: Generate and validate lockfile
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          grep -q '^  goanime_brand_fonts:' pubspec.lock
+          grep -q 'resolved-ref: cb00271f6e51bb971504b499939781895832a7f1' pubspec.lock
+          ! grep -q '^  google_fonts:' pubspec.lock
+
+      - name: Upload generated lockfile
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-lockfile-${{ steps.request.outputs.sha }}
+          path: private-source/pubspec.lock
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Publish sanitized receipt
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+          STATE: ${{ job.status }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          body="$(jq -cn --arg sha "$TARGET_SHA" --arg state "$STATE" --argjson runId "$GITHUB_RUN_ID" '{schemaVersion:1,sourceSha:$sha,state:$state,runId:$runId}')"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          path="results/goanime-lockfile/$GITHUB_RUN_ID.json"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" \
+            -f message="ci(result): record GoAnime lockfile generation $GITHUB_RUN_ID" \
+            -f content="$encoded" >/dev/null
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
