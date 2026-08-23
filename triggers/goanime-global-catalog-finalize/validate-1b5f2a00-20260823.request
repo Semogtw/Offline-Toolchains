@@ -1,0 +1,3 @@
+target_branch=feat/global-catalog-refresh-final-20260823
+source_hint=1b5f2a00b45ba91195bb98753a6f4df122f6d588
+reason=pre-merge-final-validation-after-scorecard-refresh
