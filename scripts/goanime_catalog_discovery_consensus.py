@@ -236,19 +236,21 @@ def _load_service_account(encoded: str) -> dict[str, Any]:
     return decoded
 
 
-def fetch_firestore_documents(service_account: dict[str, Any]) -> list[dict[str, Any]]:
+def fetch_firestore_documents(
+    service_account_info: dict[str, Any],
+) -> list[dict[str, Any]]:
     try:
         from google.auth.transport.requests import Request
-        from google.oauth2 import service_account
+        from google.oauth2 import service_account as google_service_account
     except ImportError as error:  # pragma: no cover - environment contract
         raise RuntimeError("google-auth is required for Firestore collection") from error
 
-    credentials = service_account.Credentials.from_service_account_info(
-        service_account,
+    credentials = google_service_account.Credentials.from_service_account_info(
+        service_account_info,
         scopes=["https://www.googleapis.com/auth/datastore"],
     )
     credentials.refresh(Request())
-    project_id = str(service_account["project_id"]).strip()
+    project_id = str(service_account_info["project_id"]).strip()
     url = (
         f"https://firestore.googleapis.com/v1/projects/{project_id}/"
         "databases/(default)/documents:runQuery"
