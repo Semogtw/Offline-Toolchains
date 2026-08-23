@@ -47,11 +47,11 @@ jobs:
           [[ "$patch_sha" =~ ^[0-9a-f]{40}$ ]]
           printf 'expected_main=%s\nbase_candidate=%s\npatch_sha=%s\n' "$expected_main" "$base_candidate" "$patch_sha" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout exact rebased candidate
+      - name: Checkout exact current main
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
-          ref: ${{ steps.request.outputs.base_candidate }}
+          ref: ${{ steps.request.outputs.expected_main }}
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: source
           fetch-depth: 0
@@ -60,7 +60,7 @@ jobs:
           submodules: false
           show-progress: false
 
-      - name: Verify base and main are unchanged
+      - name: Verify source commits and non-overlap
         working-directory: source
         env:
           EXPECTED_MAIN: ${{ steps.request.outputs.expected_main }}
@@ -69,39 +69,56 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$BASE_CANDIDATE"
-          test "$(git rev-parse HEAD^)" = "$EXPECTED_MAIN"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_MAIN"
           test "$(git ls-remote origin refs/heads/main | awk '{print $1}')" = "$EXPECTED_MAIN"
-          git cat-file -e "$PATCH_SHA^{commit}" || git fetch --no-tags origin "$PATCH_SHA"
-          git cat-file -e "$PATCH_SHA^{commit}"
-          git diff-tree --check --no-commit-id -r HEAD
+          for sha in "$BASE_CANDIDATE" "$PATCH_SHA"; do
+            git cat-file -e "$sha^{commit}" || git fetch --no-tags origin "$sha"
+            git cat-file -e "$sha^{commit}"
+          done
+          old_base="$(git rev-parse "$BASE_CANDIDATE^")"
+          incoming="$RUNNER_TEMP/incoming.txt"
+          main_delta="$RUNNER_TEMP/main-delta.txt"
+          overlap="$RUNNER_TEMP/overlap.txt"
+          git diff --name-only "$old_base".."$BASE_CANDIDATE" | sort > "$incoming"
+          git diff --name-only "$old_base".."$EXPECTED_MAIN" | sort > "$main_delta"
+          comm -12 "$incoming" "$main_delta" > "$overlap"
+          test ! -s "$overlap"
 
-      - name: Apply only reviewed final deltas
+      - name: Apply only reviewed hardening files
         working-directory: source
         env:
+          BASE_CANDIDATE: ${{ steps.request.outputs.base_candidate }}
           PATCH_SHA: ${{ steps.request.outputs.patch_sha }}
         shell: bash
         run: |
           set -euo pipefail
+          hardening_paths=(
+            docs/README.md
+            docs/checkpoint_41_download_completion_policy_2026-08-23.md
+            docs/checkpoint_69_post_merge_hardening_2026-08-23.md
+            lib/services/download/download_completion_policy.dart
+            lib/services/download/download_queue_manager_http.dart
+            lib/services/source/shared_cancellable_work.dart
+            lib/services/unified_source_service.dart
+            test/services/download/download_completion_policy_test.dart
+            test/services/download/download_identity_transfer_test.dart
+            test/services/download_service_test.dart
+            test/services/source/shared_cancellable_work_test.dart
+            test/services/source/unified_source_stale_fallback_cache_test.dart
+            test/services/unified_source_shared_cancellation_test.dart
+            tools/tests/test_validate_project_health_credentials.py
+            tools/tests/test_validate_project_health_files.py
+            tools/validate_project_health_files.py
+          )
+          for path in "${hardening_paths[@]}"; do
+            git show "$BASE_CANDIDATE:$path" > "$path"
+          done
           for path in \
             test/services/unified_source_shared_cancellation_test.dart \
             test/services/source/unified_source_stale_fallback_cache_test.dart
           do
             git show "$PATCH_SHA:$path" > "$path"
           done
-          python3 - <<'PY'
-          from pathlib import Path
-          removals = {
-              'lib/widgets/goanime_opening.dart': "import 'package:flutter/foundation.dart';\n",
-              'test/widgets/goanime_opening_test.dart': "import 'package:flutter/painting.dart';\n",
-          }
-          for name, line in removals.items():
-              path = Path(name)
-              text = path.read_text(encoding='utf-8')
-              if line in text:
-                  text = text.replace(line, '', 1)
-              path.write_text(text, encoding='utf-8')
-          PY
           chmod 0644 tools/validate_project_health_files.py
           git diff --check
 
@@ -131,14 +148,8 @@ jobs:
           flutter config --no-analytics
           flutter pub get
           (cd packages/goanime_core && dart pub get)
-          mapfile -t dart_files < <(git diff --name-only "$EXPECTED_MAIN"..HEAD -- '*.dart')
-          dart_files+=(
-            test/services/unified_source_shared_cancellation_test.dart
-            test/services/source/unified_source_stale_fallback_cache_test.dart
-            lib/widgets/goanime_opening.dart
-            test/widgets/goanime_opening_test.dart
-          )
-          mapfile -t dart_files < <(printf '%s\n' "${dart_files[@]}" | sort -u)
+          mapfile -t dart_files < <(git diff --name-only "$EXPECTED_MAIN" -- '*.dart' | sort -u)
+          test "${#dart_files[@]}" -gt 0
           dart format "${dart_files[@]}" >/dev/null
           git diff --check
 
@@ -167,14 +178,12 @@ jobs:
           lib/services/download/download_queue_manager_http.dart
           lib/services/source/shared_cancellable_work.dart
           lib/services/unified_source_service.dart
-          lib/widgets/goanime_opening.dart
           test/services/download/download_completion_policy_test.dart
           test/services/download/download_identity_transfer_test.dart
           test/services/download_service_test.dart
           test/services/source/shared_cancellable_work_test.dart
           test/services/source/unified_source_stale_fallback_cache_test.dart
           test/services/unified_source_shared_cancellation_test.dart
-          test/widgets/goanime_opening_test.dart
           tools/tests/test_validate_project_health_credentials.py
           tools/tests/test_validate_project_health_files.py
           tools/validate_project_health_files.py
@@ -256,7 +265,7 @@ jobs:
           STATE: ${{ job.status }}
         run: |
           set -euo pipefail
-          body="$(jq -cn --arg sourceMain "$SOURCE_MAIN" --arg baseCandidate "$BASE_CANDIDATE" --arg patchSha "$PATCH_SHA" --arg finalSha "$FINAL_SHA" --arg pushedSha "$PUSHED_SHA" --arg state "$STATE" --argjson runId "$GITHUB_RUN_ID" '{schemaVersion:1,sourceMain:$sourceMain,baseCandidate:$baseCandidate,patchSha:$patchSha,finalSha:$finalSha,pushedSha:$pushedSha,state:$state,runId:$runId}')"
+          body="$(jq -cn --arg sourceMain "$SOURCE_MAIN" --arg baseCandidate "$BASE_CANDIDATE" --arg patchSha "$PATCH_SHA" --arg finalSha "$FINAL_SHA" --arg pushedSha "$PUSHED_SHA" --arg state "$STATE" --argjson runId "$GITHUB_RUN_ID" '{schemaVersion:2,sourceMain:$sourceMain,baseCandidate:$baseCandidate,patchSha:$patchSha,finalSha:$finalSha,pushedSha:$pushedSha,state:$state,runId:$runId}')"
           encoded="$(printf '%s\n' "$body" | base64 -w0)"
           path="results/goanime-post10-final-squash/$GITHUB_RUN_ID.json"
           gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): record GoAnime post-10 final squash $GITHUB_RUN_ID" -f content="$encoded" >/dev/null
