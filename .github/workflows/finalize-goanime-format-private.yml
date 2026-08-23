@@ -169,10 +169,16 @@ jobs:
             lib/services/media \
             lib/controllers/media \
             lib/services/providers/provider_health_service.dart \
+            lib/services/providers/anime_browse_adapter.dart \
+            lib/screens/categories_screen.dart \
+            lib/screens/categories_screen_data.dart \
+            lib/screens/categories_screen_presentation.dart \
             test/services/manga \
             test/widgets/manga \
             test/services/media \
             test/controllers/media \
+            test/widgets/catalog_resilience_test.dart \
+            test/widgets/catalog_filter_staging_test.dart \
             test/architecture
           flutter test --no-pub test/services/manga/manga_request_scheduler_test.dart
           flutter test --no-pub test/services/manga/manga_request_scheduler_health_outcome_test.dart
@@ -183,6 +189,8 @@ jobs:
           flutter test --no-pub test/widgets/manga
           flutter test --no-pub test/services/media
           flutter test --no-pub test/controllers/media
+          flutter test --no-pub test/widgets/catalog_resilience_test.dart
+          flutter test --no-pub test/widgets/catalog_filter_staging_test.dart
           flutter test --no-pub test/architecture/shared_media_infrastructure_guard_test.dart
           flutter test --no-pub test/architecture/manga_offline_persistence_boundary_test.dart
           (cd packages/goanime_core && dart test test/media)
