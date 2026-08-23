@@ -1,0 +1,29 @@
+name: Observe GoAnime full CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/observe-goanime-full-ci/*.request'
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Capture sanitized workflow state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          target='run-private-goanime-ci.yml'
+          response="$(gh api "repos/$REPO/actions/workflows/$target/runs?per_page=10")"
+          report="$(jq -c '{schemaVersion:1,runs:[.workflow_runs[] | {id,status,conclusion,event,head_sha,created_at,updated_at}]}' <<<"$response")"
+          encoded="$(printf '%s\n' "$report" | base64 -w0)"
+          path="results/observe-goanime-full-ci/${GITHUB_RUN_ID}.json"
+          gh api --method PUT "repos/$REPO/contents/$path" -f message="ci(observe): record GoAnime full CI state $GITHUB_RUN_ID" -f content="$encoded" >/dev/null
