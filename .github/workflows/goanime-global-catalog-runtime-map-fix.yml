@@ -1,0 +1,201 @@
+name: GoAnime global catalog runtime-map hardening
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-global-catalog-runtime-map/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-global-catalog-runtime-map
+  cancel-in-progress: true
+
+jobs:
+  harden:
+    name: Harden remote provider map propagation
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve exact private revision
+        id: request
+        env:
+          GITHUB_EVENT_NAME: push
+        run: |
+          set -euo pipefail
+          python scripts/goanime_resolve_request.py \
+            --request-dir triggers/goanime-global-catalog-runtime-map \
+            --workspace .
+
+      - name: Require private write token
+        env:
+          WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: test -n "$WRITE_TOKEN"
+
+      - name: Checkout exact GoAnime candidate
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.source_hint }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify immutable source revision
+        working-directory: private-source
+        env:
+          EXPECTED_SHA: ${{ steps.request.outputs.source_hint }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Apply runtime provider-map hardening
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          service = Path('lib/services/mal_provider_availability_service.dart')
+          text = service.read_text(encoding='utf-8')
+          old = """  static const String configuredUrl = String.fromEnvironment(\n    'MAL_PROVIDER_AVAILABILITY_URL',\n    defaultValue: '',\n  );\n"""
+          new = """  static const String configuredUrl = String.fromEnvironment(\n    'MAL_PROVIDER_AVAILABILITY_URL',\n    defaultValue: '',\n  );\n  static const String _updateManifestUrl = String.fromEnvironment(\n    'UPDATE_MANIFEST_URL',\n    defaultValue: '',\n  );\n"""
+          if old not in text:
+              raise SystemExit('configuredUrl block not found')
+          text = text.replace(old, new, 1)
+          old = """  static Future<MalProviderAvailabilityRefreshResult>\n  refreshConfiguredFromNetwork() {\n    if (configuredUrl.trim().isEmpty) {\n      return Future.value(MalProviderAvailabilityRefreshResult.skipped);\n    }\n    return refreshFromNetwork(url: configuredUrl);\n  }\n"""
+          new = """  static Future<MalProviderAvailabilityRefreshResult>\n  refreshConfiguredFromNetwork() {\n    final url = resolvedConfiguredUrl();\n    if (url.isEmpty) {\n      return Future.value(MalProviderAvailabilityRefreshResult.skipped);\n    }\n    return refreshFromNetwork(url: url);\n  }\n\n  /// Resolves the provider map from its explicit define first. Release builds\n  /// that already know only the update Worker URL can use the sibling\n  /// `/latest/mal_provider_availability_map.json` route without another define.\n  /// Query parameters (for private release channels) are preserved.\n  static String resolvedConfiguredUrl({\n    String? configuredUrlOverride,\n    String? updateManifestUrlOverride,\n  }) {\n    final explicit = (configuredUrlOverride ?? configuredUrl).trim();\n    if (explicit.isNotEmpty) return explicit;\n\n    final update = (updateManifestUrlOverride ?? _updateManifestUrl).trim();\n    final uri = Uri.tryParse(update);\n    if (uri == null ||\n        !{'http', 'https'}.contains(uri.scheme.toLowerCase()) ||\n        uri.host.isEmpty ||\n        !uri.path.endsWith('/latest/update.json')) {\n      return '';\n    }\n    final nextPath = uri.path.substring(\n          0,\n          uri.path.length - 'update.json'.length,\n        ) +\n        'mal_provider_availability_map.json';\n    return uri.replace(path: nextPath, fragment: '').toString();\n  }\n"""
+          if old not in text:
+              raise SystemExit('refreshConfiguredFromNetwork block not found')
+          service.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          test = Path('test/services/mal_provider_availability_service_test.dart')
+          text = test.read_text(encoding='utf-8')
+          marker = """  test('reads provider ownership, modes, status, and counts by MAL ID', () {\n"""
+          extra = """  test('derives provider map URL from update Worker URL', () {\n    expect(\n      MalProviderAvailabilityService.resolvedConfiguredUrl(\n        configuredUrlOverride: '',\n        updateManifestUrlOverride:\n            'https://updates.example.dev/latest/update.json?token=private',\n      ),\n      'https://updates.example.dev/latest/mal_provider_availability_map.json?token=private',\n    );\n  });\n\n  test('explicit provider map URL wins over derived Worker URL', () {\n    expect(\n      MalProviderAvailabilityService.resolvedConfiguredUrl(\n        configuredUrlOverride: 'https://cache.example/provider-map.json',\n        updateManifestUrlOverride:\n            'https://updates.example.dev/latest/update.json',\n      ),\n      'https://cache.example/provider-map.json',\n    );\n  });\n\n  test('does not derive provider map from an unrelated URL', () {\n    expect(\n      MalProviderAvailabilityService.resolvedConfiguredUrl(\n        configuredUrlOverride: '',\n        updateManifestUrlOverride: 'https://example.dev/not-an-update.json',\n      ),\n      isEmpty,\n    );\n  });\n\n"""
+          if marker not in text:
+              raise SystemExit('provider service test marker not found')
+          test.write_text(text.replace(marker, extra + marker, 1), encoding='utf-8')
+
+          worker = Path('cloudflare/updates-worker/src/index.js')
+          text = worker.read_text(encoding='utf-8')
+          marker = '''  if (path === "latest/runtime_database_manifest.json") {\n    return "latest/runtime_database_manifest.json";\n  }\n'''
+          replacement = marker + '''  if (path === "latest/mal_provider_availability_map.json") {\n    return "latest/mal_provider_availability_map.json";\n  }\n'''
+          if marker not in text:
+              raise SystemExit('Worker runtime manifest route not found')
+          worker.write_text(text.replace(marker, replacement, 1), encoding='utf-8')
+
+          opening = Path('lib/widgets/goanime_opening.dart')
+          text = opening.read_text(encoding='utf-8')
+          import_line = "import 'package:flutter/foundation.dart';\n"
+          if import_line not in text:
+              raise SystemExit('opening foundation import not found')
+          opening.write_text(text.replace(import_line, '', 1), encoding='utf-8')
+
+          opening_test = Path('test/widgets/goanime_opening_test.dart')
+          text = opening_test.read_text(encoding='utf-8')
+          import_line = "import 'package:flutter/painting.dart';\n"
+          if import_line not in text:
+              raise SystemExit('opening painting import not found')
+          opening_test.write_text(text.replace(import_line, '', 1), encoding='utf-8')
+
+          doc = Path('docs/global_catalog_refresh_and_discovery_plan.md')
+          text = doc.read_text(encoding='utf-8')
+          appendix = """\n## Runtime provider provenance propagation\n\nThe global finalizer publishes `mal_provider_availability_map.json` beside the\nruntime SQLite artifacts. The update Worker exposes it as a read-only `/latest`\nobject. `MalProviderAvailabilityService` prefers an explicit\n`MAL_PROVIDER_AVAILABILITY_URL`, but otherwise derives the sibling map URL from\n`UPDATE_MANIFEST_URL`, preserving private-channel query parameters. This keeps\nprovider-specific MAL/title provenance fresh on installed clients without a new\nAPK release.\n\nSUB and DUB are promoted independently: each mode requires the configured\nreporter quorum. Total candidate quorum alone cannot promote either mode.\n"""
+          if '## Runtime provider provenance propagation' not in text:
+              doc.write_text(text.rstrip() + '\n' + appendix, encoding='utf-8')
+          PY
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve app and core dependencies
+        working-directory: private-source
+        run: |
+          flutter config --no-analytics
+          flutter pub get --enforce-lockfile
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Format changed Dart files
+        working-directory: private-source
+        run: >-
+          dart format
+          lib/services/mal_provider_availability_service.dart
+          test/services/mal_provider_availability_service_test.dart
+          lib/widgets/goanime_opening.dart
+          test/widgets/goanime_opening_test.dart
+
+      - name: Validate focused changes
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          git diff --check
+          node --check cloudflare/updates-worker/src/index.js
+          flutter analyze --no-pub
+          flutter test --no-pub --concurrency=1 \
+            test/services/mal_provider_availability_service_test.dart \
+            test/widgets/goanime_opening_test.dart \
+            test/services/catalog_discovery_reporting_service_test.dart
+          python -m unittest tools/tests/test_apply_catalog_discovery_consensus.py -v
+
+      - name: Publish hardened candidate
+        id: publish
+        working-directory: private-source
+        env:
+          TARGET_BRANCH: ${{ steps.request.outputs.target_branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.source_hint }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "$TARGET_BRANCH"
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_SHA" || {
+            echo 'Candidate branch moved during validation; refusing stale push.' >&2
+            exit 1
+          }
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            lib/services/mal_provider_availability_service.dart \
+            test/services/mal_provider_availability_service_test.dart \
+            cloudflare/updates-worker/src/index.js \
+            lib/widgets/goanime_opening.dart \
+            test/widgets/goanime_opening_test.dart \
+            docs/global_catalog_refresh_and_discovery_plan.md
+          git commit -m 'fix(catalog): propagate global provider map at runtime'
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+          echo "published_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Record result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.request.outputs.source_hint }}
+          PUBLISHED_SHA: ${{ steps.publish.outputs.published_sha }}
+          RESULT: ${{ job.status }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha="${SOURCE_SHA:-unknown-${GITHUB_RUN_ID}}"
+          report="$(jq -cn --arg sourceSha "$source_sha" --arg publishedSha "${PUBLISHED_SHA:-}" --arg result "$RESULT" --argjson runId "$GITHUB_RUN_ID" '{schemaVersion:1,sourceSha:$sourceSha,publishedSha:$publishedSha,result:$result,runId:$runId}')"
+          encoded="$(printf '%s\n' "$report" | base64 -w0)"
+          path="reports/goanime-global-catalog-runtime-map/${source_sha}.json"
+          existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f "message=ci(goanime): record runtime-map hardening ${source_sha}" -f "content=$encoded" -f "branch=main")
+          if [ -n "$existing" ]; then args+=( -f "sha=$existing" ); fi
+          gh api "${args[@]}" >/dev/null
