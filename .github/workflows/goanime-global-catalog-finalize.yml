@@ -95,11 +95,9 @@ jobs:
           fi
           echo "publish_runtime=$publish_runtime" >> "$GITHUB_OUTPUT"
 
-          if [ -n "$WRITE_TOKEN" ] && [ "$TARGET_REF" = 'main' ] && [ "$GITHUB_EVENT_NAME" = 'workflow_run' ]; then
-            echo 'commit=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'commit=false' >> "$GITHUB_OUTPUT"
-          fi
+          # Community consensus is a runtime overlay, not crawler truth.
+          # The provider-cache workflow alone owns canonical git artifacts.
+          echo 'commit=false' >> "$GITHUB_OUTPUT"
 
           base_url="${RUNTIME_BASE_URL%/}"
           if [ -z "$base_url" ] && [ -n "$UPDATE_MANIFEST_URL" ]; then
@@ -301,9 +299,12 @@ jobs:
         run: |
           set -euo pipefail
           endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          aws s3 cp dist/runtime_database_cache/runtime_database_manifest.json "s3://${R2_BUCKET}/latest/runtime_database_manifest.json" --endpoint-url "$endpoint"
+          # Publish payloads first and the manifest last. Clients only observe a
+          # new generation after every referenced database has reached R2.
           aws s3 cp dist/runtime_database_cache/franchise_availability.db "s3://${R2_BUCKET}/latest/franchise_availability.db" --endpoint-url "$endpoint"
           aws s3 cp dist/runtime_database_cache/title_availability.db "s3://${R2_BUCKET}/latest/title_availability.db" --endpoint-url "$endpoint"
+          aws s3 cp assets/data/mal_provider_availability_map.json "s3://${R2_BUCKET}/latest/mal_provider_availability_map.json" --endpoint-url "$endpoint"
+          aws s3 cp dist/runtime_database_cache/runtime_database_manifest.json "s3://${R2_BUCKET}/latest/runtime_database_manifest.json" --endpoint-url "$endpoint"
 
       - name: Warn when runtime publication is requested but unavailable
         if: steps.policy.outputs.publish_runtime == 'true' && steps.policy.outputs.r2_configured != 'true'
