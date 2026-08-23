@@ -1,0 +1,112 @@
+diff --git a/lib/screens/manga/manga_reader_screen.dart b/lib/screens/manga/manga_reader_screen.dart
+index d2d6c2bd..1c3265fd 100644
+--- a/lib/screens/manga/manga_reader_screen.dart
++++ b/lib/screens/manga/manga_reader_screen.dart
+@@ -82,6 +82,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+   bool _navigationStarted = false;
+   bool _openingReaderRoute = false;
+   bool _hasReaderModeOverride = false;
++  bool _localImageInitialProgressScheduled = false;
+ 
+   @override
+   void initState() {
+@@ -119,7 +120,9 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+     }
+     unawaited(_loadReaderMode());
+     unawaited(WakelockPlus.enable());
+-    _recordPage(_pageIndex, _pageCount);
++    if (widget.manifest is ImageSequenceContentManifest) {
++      _recordPage(_pageIndex, _pageCount);
++    }
+   }
+@@ -715,6 +718,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+   Widget _buildLocalImageReader(
+     MangaLocalImageReaderContent content,
+     UiMangaLocalizations l10n,
+   ) {
++    _scheduleLocalImageInitialProgress(content.pages.length);
+     if (_pageCount != content.pages.length) {
+       WidgetsBinding.instance.addPostFrameCallback((_) {
+         if (mounted) setState(() => _pageCount = content.pages.length);
+@@ -785,6 +789,20 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+     );
+   }
+ 
++  void _scheduleLocalImageInitialProgress(int pageCount) {
++    if (_localImageInitialProgressScheduled || pageCount <= 0) return;
++    _localImageInitialProgressScheduled = true;
++    WidgetsBinding.instance.addPostFrameCallback((_) {
++      if (!mounted) return;
++      final safeIndex = _pageIndex.clamp(0, pageCount - 1).toInt();
++      _recordPage(safeIndex, pageCount);
++    });
++  }
++
+   Widget _buildLocalPdfReader(MangaLocalPdfReaderContent content) {
+     _pdfController ??= PdfViewerController();
+     return PdfViewer.file(
+@@ -919,24 +937,17 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+     _progressWrites = _progressWrites
+         .then((_) async {
+           final now = DateTime.now().toUtc();
+-          await _progressRepository.saveBookmark(
++          await _progressRepository.saveReadingProgress(
+             workId: widget.chapter.workId,
+             canonicalChapterId: widget.chapter.canonicalChapterId,
+             bookmark: MangaVariantBookmark(
+               sourceId: manifest.sourceId,
+               mangaId: manifest.mangaId,
+               chapterId: manifest.chapterId,
+               pageIndex: pageIndex,
+               pageCount: pageCount,
+             ),
+-            lastReadAt: now,
+-          );
+-          await _progressRepository.saveLogicalProgress(
+-            workId: widget.chapter.workId,
+-            canonicalChapterId: widget.chapter.canonicalChapterId,
+             completed: _completedInSession,
+             lastReadAt: now,
+           );
+         })
+diff --git a/lib/services/manga/storage/manga_progress_repository.dart b/lib/services/manga/storage/manga_progress_repository.dart
+index d9e7443d..d67fed56 100644
+--- a/lib/services/manga/storage/manga_progress_repository.dart
++++ b/lib/services/manga/storage/manga_progress_repository.dart
+@@ -1,3 +1,5 @@
++import 'package:sqflite/sqflite.dart';
++
+ import 'manga_database.dart';
+@@ -129,6 +131,36 @@ final class MangaProgressRepository {
+     });
+   }
+ 
++  Future<void> saveReadingProgress({
++    required String workId,
++    required String canonicalChapterId,
++    required MangaVariantBookmark bookmark,
++    required bool completed,
++    required DateTime lastReadAt,
++  }) async {
++    _validateIdentity(workId, canonicalChapterId);
++    final database = await _database.database;
++    await database.insert(
++      'manga_progress',
++      <String, Object?>{
++        'workId': workId,
++        'canonicalChapterId': canonicalChapterId,
++        'completed': completed ? 1 : 0,
++        'lastReadAt': lastReadAt.toUtc().toIso8601String(),
++        'sourceId': bookmark.sourceId,
++        'mangaId': bookmark.mangaId,
++        'chapterId': bookmark.chapterId,
++        'pageIndex': bookmark.pageIndex,
++        'pageCount': bookmark.pageCount,
++      },
++      conflictAlgorithm: ConflictAlgorithm.replace,
++    );
++  }
++
+   Future<MangaChapterProgress?> progressForChapter(
+     String workId,
+     String canonicalChapterId,
