@@ -1,0 +1,266 @@
+name: Publish GoAnime post-10 final squash
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-post10-final-squash/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-post10-final-squash
+  cancel-in-progress: true
+
+jobs:
+  validate-publish:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-post10-final-squash/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project expected_main base_candidate patch_sha < "control/$request"
+          test "$project" = goanime
+          [[ "$expected_main" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$base_candidate" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$patch_sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'expected_main=%s\nbase_candidate=%s\npatch_sha=%s\n' "$expected_main" "$base_candidate" "$patch_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact rebased candidate
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.base_candidate }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify base and main are unchanged
+        working-directory: source
+        env:
+          EXPECTED_MAIN: ${{ steps.request.outputs.expected_main }}
+          BASE_CANDIDATE: ${{ steps.request.outputs.base_candidate }}
+          PATCH_SHA: ${{ steps.request.outputs.patch_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_CANDIDATE"
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_MAIN"
+          test "$(git ls-remote origin refs/heads/main | awk '{print $1}')" = "$EXPECTED_MAIN"
+          git cat-file -e "$PATCH_SHA^{commit}" || git fetch --no-tags origin "$PATCH_SHA"
+          git cat-file -e "$PATCH_SHA^{commit}"
+          git diff-tree --check --no-commit-id -r HEAD
+
+      - name: Apply only reviewed final deltas
+        working-directory: source
+        env:
+          PATCH_SHA: ${{ steps.request.outputs.patch_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for path in \
+            test/services/unified_source_shared_cancellation_test.dart \
+            test/services/source/unified_source_stale_fallback_cache_test.dart
+          do
+            git show "$PATCH_SHA:$path" > "$path"
+          done
+          python3 - <<'PY'
+          from pathlib import Path
+          removals = {
+              'lib/widgets/goanime_opening.dart': "import 'package:flutter/foundation.dart';\n",
+              'test/widgets/goanime_opening_test.dart': "import 'package:flutter/painting.dart';\n",
+          }
+          for name, line in removals.items():
+              path = Path(name)
+              text = path.read_text(encoding='utf-8')
+              if line in text:
+                  text = text.replace(line, '', 1)
+              path.write_text(text, encoding='utf-8')
+          PY
+          chmod 0644 tools/validate_project_health_files.py
+          git diff --check
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Expose Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: false
+
+      - name: Resolve dependencies and format candidate
+        working-directory: source
+        env:
+          EXPECTED_MAIN: ${{ steps.request.outputs.expected_main }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+          mapfile -t dart_files < <(git diff --name-only "$EXPECTED_MAIN"..HEAD -- '*.dart')
+          dart_files+=(
+            test/services/unified_source_shared_cancellation_test.dart
+            test/services/source/unified_source_stale_fallback_cache_test.dart
+            lib/widgets/goanime_opening.dart
+            test/widgets/goanime_opening_test.dart
+          )
+          mapfile -t dart_files < <(printf '%s\n' "${dart_files[@]}" | sort -u)
+          dart format "${dart_files[@]}" >/dev/null
+          git diff --check
+
+      - name: Build exact one-commit squash
+        id: squash
+        working-directory: source
+        env:
+          EXPECTED_MAIN: ${{ steps.request.outputs.expected_main }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "goanime-toolchains[bot]"
+          git config user.email "goanime-toolchains[bot]@users.noreply.github.com"
+          git add -A
+          tree_sha="$(git write-tree)"
+          final_sha="$(printf '%s\n' 'fix: finalize post-10 correctness hardening' | git commit-tree "$tree_sha" -p "$EXPECTED_MAIN")"
+          git reset --hard "$final_sha"
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_MAIN"
+          allowed="$RUNNER_TEMP/allowed.txt"
+          actual="$RUNNER_TEMP/actual.txt"
+          cat > "$allowed" <<'EOF'
+          docs/README.md
+          docs/checkpoint_41_download_completion_policy_2026-08-23.md
+          docs/checkpoint_69_post_merge_hardening_2026-08-23.md
+          lib/services/download/download_completion_policy.dart
+          lib/services/download/download_queue_manager_http.dart
+          lib/services/source/shared_cancellable_work.dart
+          lib/services/unified_source_service.dart
+          lib/widgets/goanime_opening.dart
+          test/services/download/download_completion_policy_test.dart
+          test/services/download/download_identity_transfer_test.dart
+          test/services/download_service_test.dart
+          test/services/source/shared_cancellable_work_test.dart
+          test/services/source/unified_source_stale_fallback_cache_test.dart
+          test/services/unified_source_shared_cancellation_test.dart
+          test/widgets/goanime_opening_test.dart
+          tools/tests/test_validate_project_health_credentials.py
+          tools/tests/test_validate_project_health_files.py
+          tools/validate_project_health_files.py
+          EOF
+          sed -i 's/^          //' "$allowed"
+          git diff --name-only "$EXPECTED_MAIN"..HEAD | sort > "$actual"
+          diff -u "$allowed" "$actual"
+          git diff --check "$EXPECTED_MAIN"..HEAD
+          printf 'final_sha=%s\n' "$final_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Validate project health
+        working-directory: source
+        shell: bash
+        run: bash ./tools/validate_project_health.sh
+
+      - name: Test Python tooling
+        working-directory: source
+        shell: bash
+        run: python3 -m unittest discover -s tools/tests -p 'test_*.py'
+
+      - name: Validate repository guards
+        working-directory: source
+        shell: bash
+        run: python3 tools/validate_repository_guards.py
+
+      - name: Analyze Flutter project
+        working-directory: source
+        shell: bash
+        run: flutter analyze --no-pub
+
+      - name: Test Flutter application serially
+        working-directory: source
+        shell: bash
+        run: flutter test --no-pub --concurrency=1
+
+      - name: Test GoAnime core
+        working-directory: source/packages/goanime_core
+        shell: bash
+        run: dart test --concurrency=1
+
+      - name: Validate release workflow invariants
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/validate_release_workflow.py
+          python3 tools/validate_quality_scorecard.py
+
+      - name: Build Android debug APK
+        working-directory: source
+        shell: bash
+        run: flutter build apk --debug --no-pub
+
+      - name: Publish exact validated squash to main
+        id: publish
+        working-directory: source
+        env:
+          EXPECTED_MAIN: ${{ steps.request.outputs.expected_main }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/heads/main | awk '{print $1}')" = "$EXPECTED_MAIN"
+          final_sha="$(git rev-parse HEAD)"
+          git push origin "HEAD:refs/heads/main"
+          pushed="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+          test "$pushed" = "$final_sha"
+          printf 'pushed_sha=%s\n' "$pushed" >> "$GITHUB_OUTPUT"
+
+      - name: Publish sanitized receipt
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_MAIN: ${{ steps.request.outputs.expected_main }}
+          BASE_CANDIDATE: ${{ steps.request.outputs.base_candidate }}
+          PATCH_SHA: ${{ steps.request.outputs.patch_sha }}
+          FINAL_SHA: ${{ steps.squash.outputs.final_sha }}
+          PUSHED_SHA: ${{ steps.publish.outputs.pushed_sha }}
+          STATE: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          body="$(jq -cn --arg sourceMain "$SOURCE_MAIN" --arg baseCandidate "$BASE_CANDIDATE" --arg patchSha "$PATCH_SHA" --arg finalSha "$FINAL_SHA" --arg pushedSha "$PUSHED_SHA" --arg state "$STATE" --argjson runId "$GITHUB_RUN_ID" '{schemaVersion:1,sourceMain:$sourceMain,baseCandidate:$baseCandidate,patchSha:$patchSha,finalSha:$finalSha,pushedSha:$pushedSha,state:$state,runId:$runId}')"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          path="results/goanime-post10-final-squash/$GITHUB_RUN_ID.json"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): record GoAnime post-10 final squash $GITHUB_RUN_ID" -f content="$encoded" >/dev/null
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/source" "$GITHUB_WORKSPACE/control"
