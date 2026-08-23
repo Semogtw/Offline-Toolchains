@@ -1,0 +1,100 @@
+diff --git a/lib/screens/manga/manga_reader_screen.dart b/lib/screens/manga/manga_reader_screen.dart
+index d2d6c2bd..d0c77b09 100644
+--- a/lib/screens/manga/manga_reader_screen.dart
++++ b/lib/screens/manga/manga_reader_screen.dart
+@@ -278,8 +278,8 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+   Future<void> _useDefaultReaderMode() async {
+     if (!_supportsImageModes || !_hasReaderModeOverride) return;
+     try {
+-      await _preferencesRepository.clearReaderMode(widget.chapter.workId);
+       final defaultMode = await _preferencesRepository.defaultReaderMode();
++      await _preferencesRepository.clearReaderMode(widget.chapter.workId);
+       if (!mounted) return;
+       setState(() => _hasReaderModeOverride = false);
+       _applyReaderMode(defaultMode, persist: false);
+@@ -695,7 +695,9 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+             onRetry: loader == null
+                 ? null
+                 : () {
+-                    setState(() => _localContentFuture = loader(manifest));
++                    setState(() {
++                      _localContentFuture = loader(manifest);
++                    });
+                   },
+           );
+         }
+diff --git a/test/widgets/manga/manga_reader_screen_test.dart b/test/widgets/manga/manga_reader_screen_test.dart
+index bfb79fe9..552d18d5 100644
+--- a/test/widgets/manga/manga_reader_screen_test.dart
++++ b/test/widgets/manga/manga_reader_screen_test.dart
+@@ -90,14 +90,17 @@ void main() {
+         loader: (_) async => MangaLocalImageReaderContent(<File>[pageFile]),
+       ),
+     );
+-    await tester.pumpAndSettle();
++    await _pumpUntilFound(tester, find.byTooltip('Reading mode'));
+ 
+     await tester.tap(find.byTooltip('Reading mode'));
+-    await tester.pumpAndSettle();
++    await _pumpUntilFound(tester, find.text('Use default mode'));
+ 
+     expect(find.text('Use default mode'), findsOneWidget);
+     await tester.tap(find.text('Use default mode'));
+-    await tester.pumpAndSettle();
++    await _pumpUntilFound(
++      tester,
++      find.text('This work now uses the default mode.'),
++    );
+ 
+     expect(
+       find.text('This work now uses the default mode.'),
+@@ -131,7 +134,10 @@ void main() {
+         },
+       ),
+     );
+-    await tester.pumpAndSettle();
++    await _pumpUntilFound(
++      tester,
++      find.text('This offline package could not be opened.'),
++    );
+ 
+     expect(attempts, 1);
+     expect(
+@@ -141,7 +147,12 @@ void main() {
+     expect(find.text('Try again'), findsOneWidget);
+ 
+     await tester.tap(find.text('Try again'));
+-    await tester.pumpAndSettle();
++    await _pumpUntil(
++      tester,
++      () =>
++          attempts == 2 &&
++          find.text('This offline package could not be opened.').evaluate().isEmpty,
++    );
+ 
+     expect(attempts, 2);
+     expect(
+@@ -151,6 +162,23 @@ void main() {
+   });
+ }
+ 
++
++Future<void> _pumpUntilFound(WidgetTester tester, Finder finder) async {
++  await _pumpUntil(tester, () => finder.evaluate().isNotEmpty);
++}
++
++Future<void> _pumpUntil(
++  WidgetTester tester,
++  bool Function() condition, {
++  int maxPumps = 80,
++}) async {
++  for (var i = 0; i < maxPumps; i += 1) {
++    await tester.pump(const Duration(milliseconds: 50));
++    if (condition()) return;
++  }
++  throw TestFailure('Timed out waiting for the expected reader state.');
++}
++
+ Widget _readerApp({
+   required MangaPreferencesRepository preferences,
+   required MangaProgressRepository progress,
