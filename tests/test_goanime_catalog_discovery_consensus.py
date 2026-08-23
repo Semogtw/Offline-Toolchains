@@ -28,6 +28,8 @@ class CatalogDiscoveryConsensusTest(unittest.TestCase):
         title: str = "Example Anime",
         verified_at: datetime | None = None,
         playback_verified: bool = True,
+        has_sub: bool = True,
+        has_dub: bool = False,
     ) -> dict[str, object]:
         verified = (verified_at or (self.now - timedelta(minutes=5))).isoformat().replace(
             "+00:00", "Z"
@@ -45,8 +47,8 @@ class CatalogDiscoveryConsensusTest(unittest.TestCase):
                 "providerId": {"stringValue": provider},
                 "providerName": {"stringValue": provider.title()},
                 "providerTitle": {"stringValue": title},
-                "hasSub": {"booleanValue": True},
-                "hasDub": {"booleanValue": False},
+                "hasSub": {"booleanValue": has_sub},
+                "hasDub": {"booleanValue": has_dub},
                 "verifiedAt": {"stringValue": verified},
                 "playbackVerified": {"booleanValue": playback_verified},
                 "verificationSource": {"stringValue": "dynamicAvailabilityCache"},
@@ -65,6 +67,10 @@ class CatalogDiscoveryConsensusTest(unittest.TestCase):
         self.assertEqual(result["candidateCount"], 1)
         candidate = result["candidates"][0]
         self.assertEqual(candidate["reporterCount"], 2)
+        self.assertEqual(candidate["subReporterCount"], 2)
+        self.assertEqual(candidate["dubReporterCount"], 0)
+        self.assertTrue(candidate["hasSub"])
+        self.assertFalse(candidate["hasDub"])
         self.assertEqual(candidate["malId"], 123)
         self.assertEqual(candidate["providerId"], "goyabu")
 
@@ -78,6 +84,32 @@ class CatalogDiscoveryConsensusTest(unittest.TestCase):
         )
         self.assertEqual(result["acceptedReportCount"], 2)
         self.assertEqual(result["candidateCount"], 0)
+
+    def test_mixed_single_mode_reports_do_not_promote_either_mode(self) -> None:
+        result = module.build_consensus(
+            [
+                self._document("uid-a", has_sub=True, has_dub=False),
+                self._document("uid-b", has_sub=False, has_dub=True),
+            ],
+            now=self.now,
+        )
+        self.assertEqual(result["acceptedReportCount"], 2)
+        self.assertEqual(result["candidateCount"], 0)
+
+    def test_two_dub_reporters_promote_dub_only(self) -> None:
+        result = module.build_consensus(
+            [
+                self._document("uid-a", has_sub=False, has_dub=True),
+                self._document("uid-b", has_sub=False, has_dub=True),
+            ],
+            now=self.now,
+        )
+        self.assertEqual(result["candidateCount"], 1)
+        candidate = result["candidates"][0]
+        self.assertFalse(candidate["hasSub"])
+        self.assertTrue(candidate["hasDub"])
+        self.assertEqual(candidate["subReporterCount"], 0)
+        self.assertEqual(candidate["dubReporterCount"], 2)
 
     def test_stale_and_unverified_reports_are_rejected(self) -> None:
         result = module.build_consensus(
