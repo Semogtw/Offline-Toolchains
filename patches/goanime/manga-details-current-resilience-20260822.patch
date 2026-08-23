@@ -1,0 +1,311 @@
+diff --git a/lib/screens/manga/manga_details_screen.dart b/lib/screens/manga/manga_details_screen.dart
+index c9facd57..d509ff98 100644
+--- a/lib/screens/manga/manga_details_screen.dart
++++ b/lib/screens/manga/manga_details_screen.dart
+@@ -16,6 +16,7 @@ import '../../services/manga/storage/manga_library_repository.dart';
+ import '../../services/manga/storage/manga_progress_repository.dart';
+ import '../../theme/app_colors.dart';
+ import '../../widgets/manga/manga_chapter_list.dart';
++import '../../widgets/manga/manga_load_error_view.dart';
+ import '../../widgets/manga/manga_merge_warning.dart';
+ import '../../widgets/manga/manga_source_selector.dart';
+ import 'manga_reader_screen.dart';
+@@ -54,6 +55,7 @@ class _MangaDetailsScreenState extends State<MangaDetailsScreen> {
+   bool _savingLibrary = false;
+   bool _resolvingChapter = false;
+   bool _refreshingDownloadStatuses = false;
++  int? _downloadStatusGeneration;
+   int _generation = 0;
+   Map<String, MangaChapterDownloadStatus> _downloadStatusByChapter = const {};
+   Timer? _downloadPollTimer;
+@@ -107,6 +109,11 @@ class _MangaDetailsScreenState extends State<MangaDetailsScreen> {
+     _generation += 1;
+     _downloadPollTimer?.cancel();
+     _downloadStatusByChapter = const {};
++    if (forceReload) {
++      _snapshot = null;
++      _libraryEntry = null;
++      _loadError = null;
++    }
+     if (next == null) {
+       _snapshot = null;
+       _loadError = null;
+@@ -148,13 +155,21 @@ class _MangaDetailsScreenState extends State<MangaDetailsScreen> {
+     } catch (error) {
+       if (!mounted || generation != _generation) return;
+       setState(() {
+-        _snapshot = null;
++        // A refresh failure must not erase an already useful same-work
++        // snapshot. Full-screen error is reserved for the initial load.
+         _loadError = error;
+         _loading = false;
+       });
+     }
+   }
+ 
++  void _retryLoad() {
++    final source = _activeSource;
++    if (source == null || _loading) return;
++    final generation = ++_generation;
++    unawaited(_load(source, generation));
++  }
++
+   Future<void> _refreshLibraryEntry() async {
+     final snapshot = _snapshot;
+     final workId = snapshot?.availability.work.workId ??
+@@ -450,11 +465,15 @@ class _MangaDetailsScreenState extends State<MangaDetailsScreen> {
+     MangaDetailsSnapshot snapshot,
+     int generation,
+   ) async {
+-    if (_refreshingDownloadStatuses) return;
++    if (_refreshingDownloadStatuses &&
++        _downloadStatusGeneration == generation) {
++      return;
++    }
+     final runtime = _runtimeService;
+     if (runtime == null || !runtime.catalogReady) return;
+ 
+     _refreshingDownloadStatuses = true;
++    _downloadStatusGeneration = generation;
+     try {
+       final manager = await runtime.downloadManager();
+       final statuses = await MangaChapterDownloadStatusService(manager).statuses(
+@@ -480,7 +499,10 @@ class _MangaDetailsScreenState extends State<MangaDetailsScreen> {
+     } catch (_) {
+       // Download state is supplemental; details and reading remain usable.
+     } finally {
+-      _refreshingDownloadStatuses = false;
++      if (_downloadStatusGeneration == generation) {
++        _refreshingDownloadStatuses = false;
++        _downloadStatusGeneration = null;
++      }
+     }
+   }
+ 
+@@ -526,8 +548,10 @@ class _MangaDetailsScreenState extends State<MangaDetailsScreen> {
+       body: SafeArea(
+         child: _loading && _snapshot == null
+             ? const Center(child: CircularProgressIndicator())
+-            : _loadError != null || _snapshot == null
+-            ? Center(child: Text(l10n.readableSourcesUnavailable))
++            : _loadError != null && _snapshot == null
++            ? MangaLoadErrorView(onRetry: _retryLoad)
++            : _snapshot == null
++            ? MangaLoadErrorView(onRetry: _retryLoad)
+             : _buildContent(context, _snapshot!, l10n),
+       ),
+     );
+@@ -555,6 +579,10 @@ class _MangaDetailsScreenState extends State<MangaDetailsScreen> {
+     return ListView(
+       padding: const EdgeInsets.fromLTRB(20, 16, 20, 36),
+       children: [
++        if (_loadError != null) ...[
++          _DetailsRefreshWarning(onRetry: _retryLoad),
++          const SizedBox(height: 16),
++        ],
+         _MangaDetailsHeader(
+           work: snapshot.availability.work,
+           sourceCount: sourceIds.length,
+@@ -735,6 +763,45 @@ class _MangaDetailsScreenState extends State<MangaDetailsScreen> {
+   }
+ }
+ 
++class _DetailsRefreshWarning extends StatelessWidget {
++  const _DetailsRefreshWarning({required this.onRetry});
++
++  final VoidCallback onRetry;
++
++  @override
++  Widget build(BuildContext context) {
++    final colors = Theme.of(context).colorScheme;
++    final portuguese = Localizations.localeOf(context).languageCode == 'pt';
++    return Card(
++      margin: EdgeInsets.zero,
++      color: colors.errorContainer,
++      child: Padding(
++        padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
++        child: Row(
++          children: [
++            Icon(Icons.sync_problem_rounded, color: colors.onErrorContainer),
++            const SizedBox(width: 10),
++            Expanded(
++              child: Text(
++                portuguese
++                    ? 'Não foi possível atualizar os detalhes. Exibindo os dados já carregados.'
++                    : 'Manga details could not be refreshed. Showing already loaded data.',
++                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
++                  color: colors.onErrorContainer,
++                ),
++              ),
++            ),
++            TextButton(
++              onPressed: onRetry,
++              child: Text(portuguese ? 'Tentar novamente' : 'Try again'),
++            ),
++          ],
++        ),
++      ),
++    );
++  }
++}
++
+ class _MangaDetailsHeader extends StatelessWidget {
+   const _MangaDetailsHeader({
+     required this.work,
+diff --git a/test/widgets/manga/manga_details_library_test.dart b/test/widgets/manga/manga_details_library_test.dart
+index fc72a458..530ee893 100644
+--- a/test/widgets/manga/manga_details_library_test.dart
++++ b/test/widgets/manga/manga_details_library_test.dart
+@@ -101,7 +101,7 @@ void main() {
+         libraryRepository: library,
+       ),
+     );
+-    await tester.pumpAndSettle();
++    await _pumpUntilFound(tester, find.text('Add to library'));
+ 
+     expect(find.text('Add to library'), findsOneWidget);
+     expect(await library.entryForWork('mw_library'), isNull);
+@@ -135,6 +135,89 @@ void main() {
+     expect(await library.entryForWork('mw_library'), isNull);
+     expect(find.text('Add to library'), findsOneWidget);
+   });
++
++  testWidgets('initial load failure is retryable', (tester) async {
++    var calls = 0;
++    final snapshot = _snapshot(availability, 'Chapter 1');
++    final source = _HandlerDetailsDataSource((_) async {
++      calls += 1;
++      if (calls == 1) throw StateError('temporary details failure');
++      return snapshot;
++    });
++
++    await _pump(
++      tester,
++      MangaDetailsScreen(
++        availability: availability,
++        dataSource: source,
++        libraryRepository: library,
++      ),
++    );
++    await _pumpUntilFound(
++      tester,
++      find.text('Manga content could not be loaded.'),
++    );
++
++    expect(find.text('Manga content could not be loaded.'), findsOneWidget);
++    expect(find.text('Try again'), findsOneWidget);
++
++    await tester.tap(find.text('Try again'));
++    await _pumpUntilFound(tester, find.text('Chapter 1'));
++
++    expect(calls, 2);
++    expect(find.text('Manga content could not be loaded.'), findsNothing);
++    expect(find.text('Chapter 1'), findsOneWidget);
++  });
++
++  testWidgets('refresh failure preserves stale details and can retry', (
++    tester,
++  ) async {
++    final initial = _FakeDetailsDataSource(_snapshot(availability, 'Chapter 1'));
++    var refreshCalls = 0;
++    final refreshed = _HandlerDetailsDataSource((_) async {
++      refreshCalls += 1;
++      if (refreshCalls == 1) throw StateError('refresh failed');
++      return _snapshot(availability, 'Chapter 2');
++    });
++    final source = ValueNotifier<MangaDetailsDataSource>(initial);
++    addTearDown(source.dispose);
++
++    await _pump(
++      tester,
++      ValueListenableBuilder<MangaDetailsDataSource>(
++        valueListenable: source,
++        builder: (context, value, _) => MangaDetailsScreen(
++          availability: availability,
++          dataSource: value,
++          libraryRepository: library,
++        ),
++      ),
++    );
++    await _pumpUntilFound(tester, find.text('Chapter 1'));
++
++    source.value = refreshed;
++    await _pumpUntilFound(
++      tester,
++      find.text(
++        'Manga details could not be refreshed. Showing already loaded data.',
++      ),
++    );
++
++    expect(find.text('Chapter 1'), findsOneWidget);
++    expect(
++      find.text(
++        'Manga details could not be refreshed. Showing already loaded data.',
++      ),
++      findsOneWidget,
++    );
++
++    await tester.tap(find.text('Try again'));
++    await _pumpUntilFound(tester, find.text('Chapter 2'));
++
++    expect(refreshCalls, 2);
++    expect(find.text('Chapter 1'), findsNothing);
++    expect(find.text('Chapter 2'), findsOneWidget);
++  });
+ }
+ 
+ final class _FakeDetailsDataSource implements MangaDetailsDataSource {
+@@ -154,6 +237,53 @@ final class _FakeDetailsDataSource implements MangaDetailsDataSource {
+   ) async {}
+ }
+ 
++
++MangaDetailsSnapshot _snapshot(
++  MangaAvailabilityRecord availability,
++  String chapterTitle,
++) {
++  return MangaDetailsSnapshot(
++    availability: availability,
++    chapters: [
++      CanonicalChapter(
++        canonicalChapterId: 'mc_${chapterTitle.replaceAll(' ', '_')}',
++        workId: availability.work.workId,
++        title: chapterTitle,
++        number: chapterTitle == 'Chapter 1' ? 1.0 : 2.0,
++      ),
++    ],
++    variantsByChapter: const {},
++    progressByChapter: const {},
++    sourcePreference: const MangaSourcePreference(
++      mode: MangaSourceMode.automatic,
++    ),
++  );
++}
++
++final class _HandlerDetailsDataSource implements MangaDetailsDataSource {
++  const _HandlerDetailsDataSource(this.handler);
++
++  final Future<MangaDetailsSnapshot> Function(MangaAvailabilityRecord) handler;
++
++  @override
++  Future<MangaDetailsSnapshot> load(MangaAvailabilityRecord availability) =>
++      handler(availability);
++
++  @override
++  Future<void> saveSourcePreference(
++    String workId,
++    MangaSourcePreference preference,
++  ) async {}
++}
++
++Future<void> _pumpUntilFound(WidgetTester tester, Finder finder) async {
++  for (var i = 0; i < 80; i += 1) {
++    await tester.pump(const Duration(milliseconds: 50));
++    if (finder.evaluate().isNotEmpty) return;
++  }
++  throw TestFailure('Timed out waiting for Manga details content.');
++}
++
+ Future<void> _pump(WidgetTester tester, Widget child) async {
+   tester.view.devicePixelRatio = 1;
+   await tester.binding.setSurfaceSize(const Size(800, 1100));
