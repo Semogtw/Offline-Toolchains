@@ -11,6 +11,12 @@ def replace_once(path: Path, old: str, new: str, label: str) -> None:
     path.write_text(text.replace(old, new, 1), encoding='utf-8')
 
 
+def remove_if_present(path: Path, text_to_remove: str) -> None:
+    text = path.read_text(encoding='utf-8')
+    if text_to_remove in text:
+        path.write_text(text.replace(text_to_remove, '', 1), encoding='utf-8')
+
+
 def main() -> int:
     service = Path('lib/services/mal_provider_availability_service.dart')
     replace_once(
@@ -134,17 +140,15 @@ def main() -> int:
         'Worker runtime route',
     )
 
-    replace_once(
+    # These imports were already removed by the startup-fix PR on newer bases.
+    # Keep this patch source-compatible with both pre- and post-#209 revisions.
+    remove_if_present(
         Path('lib/widgets/goanime_opening.dart'),
         "import 'package:flutter/foundation.dart';\n",
-        '',
-        'unnecessary foundation import',
     )
-    replace_once(
+    remove_if_present(
         Path('test/widgets/goanime_opening_test.dart'),
         "import 'package:flutter/painting.dart';\n",
-        '',
-        'unnecessary painting import',
     )
 
     doc = Path('docs/global_catalog_refresh_and_discovery_plan.md')
