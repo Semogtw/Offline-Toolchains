@@ -1,0 +1,496 @@
+name: Apply GoAnime Manga source replacement race fix v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-source-race-fix-v2-20260822/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-source-race-fix-v2-20260822
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact GoAnime revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-source-race-fix-v2-20260822/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          test "$branch" = 'feature/manga-platform'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify current remote head
+        working-directory: private-source
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+
+      - name: Apply source replacement race patch
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          from textwrap import dedent
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              old = dedent(old)
+              new = dedent(new)
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one reviewed anchor, found {count}')
+              file.write_text(text.replace(old, new, 1))
+
+          history = 'lib/screens/manga/manga_history_screen.dart'
+          replace_once(history, '''
+              _dataSource = widget.dataSource ?? MangaRepositoryHistoryDataSource();
+              _items = null;
+              _error = null;
+              unawaited(_load());
+          ''', '''
+              _dataSource = widget.dataSource ?? MangaRepositoryHistoryDataSource();
+              _items = null;
+              _error = null;
+              unawaited(_load(force: true));
+          ''')
+          replace_once(history, '''
+            Future<void> _load() async {
+              if (_loading) return;
+              final generation = ++_generation;
+              _loading = true;
+          ''', '''
+            Future<void> _load({bool force = false}) async {
+              if (_loading && !force) return;
+              final generation = ++_generation;
+              _loading = true;
+          ''')
+          replace_once(history, '''
+              } finally {
+                _loading = false;
+              }
+            }
+          ''', '''
+              } finally {
+                if (generation == _generation) {
+                  _loading = false;
+                }
+              }
+            }
+          ''')
+
+          downloads = 'lib/screens/manga/manga_downloads_screen.dart'
+          replace_once(downloads, '''
+            bool _loading = false;
+            bool _binding = false;
+          ''', '''
+            bool _loading = false;
+            bool _binding = false;
+            int? _bindingGeneration;
+          ''')
+          replace_once(downloads, '''
+              final runtime = Provider.of<MangaPlatformRuntimeService?>(context);
+              if (identical(runtime, _runtimeService) && _dataSource != null) return;
+              _runtimeService = runtime;
+          ''', '''
+              final runtime = Provider.of<MangaPlatformRuntimeService?>(context);
+              final runtimeChanged = !identical(runtime, _runtimeService);
+              if (!runtimeChanged && _dataSource != null) return;
+              _runtimeService = runtime;
+          ''')
+          replace_once(downloads, '''
+              _pollTimer?.cancel();
+              if (_dataSource != null) {
+                unawaited(_load(showSpinner: true));
+              } else if (runtime?.catalogReady == true) {
+                unawaited(_bindRuntime(runtime!, _generation));
+              }
+            }
+
+            @override
+            void didUpdateWidget(covariant MangaDownloadsScreen oldWidget) {
+          ''', '''
+              _pollTimer?.cancel();
+              if (_dataSource != null) {
+                unawaited(_load(showSpinner: true, force: runtimeChanged));
+              } else if (runtime?.catalogReady == true) {
+                unawaited(
+                  _bindRuntime(runtime!, _generation, force: runtimeChanged),
+                );
+              }
+            }
+
+            @override
+            void didUpdateWidget(covariant MangaDownloadsScreen oldWidget) {
+          ''')
+          replace_once(downloads, '''
+              final runtime = _runtimeService;
+              if (_dataSource != null) {
+                unawaited(_load(showSpinner: true));
+              } else if (runtime?.catalogReady == true) {
+                unawaited(_bindRuntime(runtime!, _generation));
+              }
+            }
+
+            @override
+            void dispose() {
+          ''', '''
+              final runtime = _runtimeService;
+              if (_dataSource != null) {
+                unawaited(_load(showSpinner: true, force: true));
+              } else if (runtime?.catalogReady == true) {
+                unawaited(_bindRuntime(runtime!, _generation, force: true));
+              }
+            }
+
+            @override
+            void dispose() {
+          ''')
+          replace_once(downloads, '''
+            Future<void> _bindRuntime(
+              MangaPlatformRuntimeService runtime,
+              int generation,
+            ) async {
+              if (_binding) return;
+              _binding = true;
+          ''', '''
+            Future<void> _bindRuntime(
+              MangaPlatformRuntimeService runtime,
+              int generation, {
+              bool force = false,
+            }) async {
+              if (_binding && !force) return;
+              _binding = true;
+              _bindingGeneration = generation;
+          ''')
+          replace_once(downloads, '      await _load(showSpinner: true);\n', '      await _load(showSpinner: true, force: true);\n')
+          replace_once(downloads, '''
+              } finally {
+                _binding = false;
+              }
+            }
+
+            Future<void> _load({bool showSpinner = false}) async {
+              final source = _dataSource;
+              if (source == null || _loading) return;
+          ''', '''
+              } finally {
+                if (_bindingGeneration == generation) {
+                  _binding = false;
+                  _bindingGeneration = null;
+                }
+              }
+            }
+
+            Future<void> _load({bool showSpinner = false, bool force = false}) async {
+              final source = _dataSource;
+              if (source == null || (_loading && !force)) return;
+          ''')
+          replace_once(downloads, '''
+              } catch (error) {
+                if (!mounted || generation != _generation) return;
+                setState(() => _error = error);
+                _syncPolling(false);
+              } finally {
+                _loading = false;
+              }
+            }
+
+            Future<void> _verifyOffline() async {
+          ''', '''
+              } catch (error) {
+                if (!mounted || generation != _generation) return;
+                setState(() => _error = error);
+                _syncPolling(false);
+              } finally {
+                if (generation == _generation) {
+                  _loading = false;
+                }
+              }
+            }
+
+            Future<void> _verifyOffline() async {
+          ''')
+
+          history_test = 'test/widgets/manga/manga_history_screen_test.dart'
+          replace_once(history_test, "import 'package:flutter/material.dart';\n", "import 'dart:async';\n\nimport 'package:flutter/material.dart';\n")
+          history_case = dedent(r'''
+
+            testWidgets('source replacement wins while previous load is pending', (
+              tester,
+            ) async {
+              final pending = Completer<List<MangaReadingHistoryItem>>();
+              final first = _HandlerHistoryDataSource((_) => pending.future);
+              final replacementItem = MangaReadingHistoryItem(
+                workId: 'work-new',
+                workTitle: 'Replacement Work',
+                canonicalChapterId: 'chapter-new',
+                chapterNumber: 7,
+                completed: false,
+                lastReadAt: DateTime.utc(2026, 8, 22),
+              );
+              final source = ValueNotifier<MangaHistoryDataSource>(first);
+              addTearDown(source.dispose);
+
+              await tester.pumpWidget(
+                MaterialApp(
+                  locale: const Locale('pt', 'BR'),
+                  supportedLocales: AppLocalizations.supportedLocales,
+                  localizationsDelegates: const <LocalizationsDelegate<dynamic>>[
+                    AppLocalizations.delegate,
+                    GlobalMaterialLocalizations.delegate,
+                    GlobalWidgetsLocalizations.delegate,
+                    GlobalCupertinoLocalizations.delegate,
+                  ],
+                  home: ValueListenableBuilder<MangaHistoryDataSource>(
+                    valueListenable: source,
+                    builder: (context, value, _) =>
+                        MangaHistoryScreen(dataSource: value),
+                  ),
+                ),
+              );
+              await tester.pump();
+
+              source.value = _FakeHistoryDataSource(<MangaReadingHistoryItem>[
+                replacementItem,
+              ]);
+              await tester.pump();
+              await tester.pump();
+              expect(find.text('Replacement Work'), findsOneWidget);
+
+              pending.complete(const <MangaReadingHistoryItem>[]);
+              await tester.pump();
+              await tester.pump();
+              expect(find.text('Replacement Work'), findsOneWidget);
+            });
+          ''')
+          replace_once(history_test, "\n  testWidgets('optional callback makes history row actionable', (tester) async {", history_case + "\n  testWidgets('optional callback makes history row actionable', (tester) async {")
+          history_helper = dedent(r'''
+
+          final class _HandlerHistoryDataSource implements MangaHistoryDataSource {
+            const _HandlerHistoryDataSource(this.handler);
+
+            final Future<List<MangaReadingHistoryItem>> Function(int limit) handler;
+
+            @override
+            Future<List<MangaReadingHistoryItem>> load({int limit = 100}) =>
+                handler(limit);
+          }
+          ''')
+          replace_once(history_test, "\nfinal class _FakeHistoryDataSource implements MangaHistoryDataSource {", history_helper + "\nfinal class _FakeHistoryDataSource implements MangaHistoryDataSource {")
+
+          downloads_test = 'test/widgets/manga/manga_downloads_screen_test.dart'
+          replace_once(downloads_test, "import 'package:flutter/material.dart';\n", "import 'dart:async';\n\nimport 'package:flutter/material.dart';\n")
+          downloads_case = dedent(r'''
+
+            testWidgets('source replacement wins while previous load is pending', (
+              tester,
+            ) async {
+              final pending = Completer<MangaDownloadsSnapshot>();
+              final source = ValueNotifier<MangaDownloadsDataSource>(
+                _HandlerDownloadsDataSource(() => pending.future),
+              );
+              addTearDown(source.dispose);
+
+              await tester.pumpWidget(
+                MaterialApp(
+                  locale: const Locale('pt', 'BR'),
+                  supportedLocales: AppLocalizations.supportedLocales,
+                  localizationsDelegates: const <LocalizationsDelegate<dynamic>>[
+                    AppLocalizations.delegate,
+                    GlobalMaterialLocalizations.delegate,
+                    GlobalWidgetsLocalizations.delegate,
+                    GlobalCupertinoLocalizations.delegate,
+                  ],
+                  home: ValueListenableBuilder<MangaDownloadsDataSource>(
+                    valueListenable: source,
+                    builder: (context, value, _) =>
+                        MangaDownloadsScreen(dataSource: value),
+                  ),
+                ),
+              );
+              await tester.pump();
+
+              source.value = _FakeDownloadsDataSource(
+                MangaDownloadsSnapshot(
+                  const <MangaDownloadListItem>[],
+                  importedWorks: <MangaImportedOfflineWorkItem>[
+                    MangaImportedOfflineWorkItem(
+                      workId: 'work-replacement',
+                      workTitle: 'Replacement Offline Work',
+                      packages: <MangaLocalPackageRecord>[
+                        _package('replacement-package', 'replacement-chapter'),
+                      ],
+                    ),
+                  ],
+                ),
+              );
+              await tester.pump();
+              await tester.pump();
+              expect(find.text('Replacement Offline Work'), findsOneWidget);
+
+              pending.complete(
+                MangaDownloadsSnapshot(const <MangaDownloadListItem>[]),
+              );
+              await tester.pump();
+              await tester.pump();
+              expect(find.text('Replacement Offline Work'), findsOneWidget);
+            });
+          ''')
+          replace_once(downloads_test, "\n  testWidgets('empty state points to both download and import entry points', (", downloads_case + "\n  testWidgets('empty state points to both download and import entry points', (")
+          downloads_helper = dedent(r'''
+
+          final class _HandlerDownloadsDataSource implements MangaDownloadsDataSource {
+            const _HandlerDownloadsDataSource(this.handler);
+
+            final Future<MangaDownloadsSnapshot> Function() handler;
+
+            @override
+            Future<MangaDownloadsSnapshot> load() => handler();
+          }
+          ''')
+          replace_once(downloads_test, "\nfinal class _FakeDownloadsDataSource implements MangaDownloadsDataSource {", downloads_helper + "\nfinal class _FakeDownloadsDataSource implements MangaDownloadsDataSource {")
+          PY
+          git diff --check
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Format checkpoint
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          dart format \
+            lib/widgets/manga/manga_browse_library_view.dart \
+            lib/widgets/manga/manga_browse_categories_view.dart \
+            lib/widgets/manga/manga_readable_search_view.dart \
+            lib/screens/manga/manga_history_screen.dart \
+            lib/screens/manga/manga_downloads_screen.dart \
+            test/widgets/manga/manga_browse_library_view_test.dart \
+            test/widgets/manga/manga_browse_categories_view_test.dart \
+            test/widgets/manga/manga_readable_search_view_test.dart \
+            test/widgets/manga/manga_reader_screen_test.dart \
+            test/widgets/manga/manga_history_screen_test.dart \
+            test/widgets/manga/manga_downloads_screen_test.dart >/dev/null
+          git diff --check
+
+      - name: Validate checkpoint
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tools/tests -p 'test_*.py'
+          python3 tools/validate_repository_guards.py
+          bash tools/validate_release_workflows.sh
+          bash tools/validate_project_health.sh
+          flutter analyze --no-pub
+          flutter test --no-pub --concurrency=1 \
+            test/widgets/manga/manga_browse_library_view_test.dart \
+            test/widgets/manga/manga_browse_categories_view_test.dart \
+            test/widgets/manga/manga_readable_search_view_test.dart \
+            test/widgets/manga/manga_reader_screen_test.dart \
+            test/widgets/manga/manga_details_library_test.dart \
+            test/widgets/manga/manga_history_screen_test.dart \
+            test/widgets/manga/manga_downloads_screen_test.dart
+
+      - name: Commit checkpoint
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            lib/widgets/manga/manga_browse_library_view.dart \
+            lib/widgets/manga/manga_browse_categories_view.dart \
+            lib/widgets/manga/manga_readable_search_view.dart \
+            lib/screens/manga/manga_history_screen.dart \
+            lib/screens/manga/manga_downloads_screen.dart \
+            test/widgets/manga/manga_browse_library_view_test.dart \
+            test/widgets/manga/manga_browse_categories_view_test.dart \
+            test/widgets/manga/manga_readable_search_view_test.dart \
+            test/widgets/manga/manga_reader_screen_test.dart \
+            test/widgets/manga/manga_history_screen_test.dart \
+            test/widgets/manga/manga_downloads_screen_test.dart
+          git commit -m 'fix(manga): prevent stale source replacement races'
+          test -z "$(git status --porcelain)"
+
+      - name: Fast-forward private Manga branch
+        id: publish
+        working-directory: private-source
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          new_sha="$(git rev-parse HEAD)"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/goanime-mobile.git "HEAD:refs/heads/$TARGET_BRANCH"
+          echo "sha=$new_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        run: echo "Published Manga source-race v2 SHA ${{ steps.publish.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
