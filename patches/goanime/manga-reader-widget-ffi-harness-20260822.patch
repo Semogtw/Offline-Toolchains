@@ -1,0 +1,95 @@
+--- a/test/widgets/manga/manga_reader_screen_test.dart
++++ b/test/widgets/manga/manga_reader_screen_test.dart
+@@ -69,10 +69,14 @@
+   testWidgets('can clear a work override and return to the global mode', (
+     tester,
+   ) async {
+-    await preferences.saveDefaultReaderMode(MangaReaderMode.pagedRtl);
+-    await preferences.saveReaderMode(
+-      'work-1',
+-      MangaReaderMode.continuousVertical,
++    await tester.runAsync(
++      () => preferences.saveDefaultReaderMode(MangaReaderMode.pagedRtl),
++    );
++    await tester.runAsync(
++      () => preferences.saveReaderMode(
++        'work-1',
++        MangaReaderMode.continuousVertical,
++      ),
+     );
+ 
+     await tester.pumpWidget(
+@@ -95,11 +99,17 @@
+     );
+ 
+     expect(find.text('This work now uses the default mode.'), findsOneWidget);
+-    expect(await preferences.readerModeOverrideForWork('work-1'), isNull);
+-    expect(
+-      await preferences.readerModeForWork('work-1'),
+-      MangaReaderMode.pagedRtl,
++    final override = await tester.runAsync(
++      () => preferences.readerModeOverrideForWork('work-1'),
+     );
++    final effectiveMode = await tester.runAsync(
++      () => preferences.readerModeForWork('work-1'),
++    );
++    expect(override, isNull);
++    expect(effectiveMode, MangaReaderMode.pagedRtl);
++
++    await tester.pumpWidget(const SizedBox.shrink());
++    await _yieldToIo(tester);
+   });
+ 
+   testWidgets('local package failure exposes retry and reloads the package', (
+@@ -131,7 +141,11 @@
+       findsOneWidget,
+     );
+     expect(find.text('Try again'), findsOneWidget);
+-    expect(await progress.progressForChapter('work-1', 'chapter-1'), isNull);
++    await _yieldToIo(tester);
++    final failedProgress = await tester.runAsync(
++      () => progress.progressForChapter('work-1', 'chapter-1'),
++    );
++    expect(failedProgress, isNull);
+ 
+     await tester.tap(find.text('Try again'));
+     await _pumpUntil(
+@@ -153,7 +167,9 @@
+     MangaChapterProgress? saved;
+     for (var i = 0; i < 40 && saved == null; i += 1) {
+       await tester.pump(const Duration(milliseconds: 50));
+-      saved = await progress.progressForChapter('work-1', 'chapter-1');
++      saved = await tester.runAsync(
++        () => progress.progressForChapter('work-1', 'chapter-1'),
++      );
+     }
+     expect(saved, isNotNull);
+     expect(saved!.bookmark, isNotNull);
+@@ -162,6 +178,9 @@
+     expect(saved.bookmark!.chapterId, 'chapter-source-1');
+     expect(saved.bookmark!.pageIndex, 0);
+     expect(saved.bookmark!.pageCount, 1);
++
++    await tester.pumpWidget(const SizedBox.shrink());
++    await _yieldToIo(tester);
+   });
+ }
+ 
+@@ -177,10 +196,17 @@
+   for (var i = 0; i < maxPumps; i += 1) {
+     await tester.pump(const Duration(milliseconds: 50));
+     if (condition()) return;
++    await _yieldToIo(tester);
+   }
+   throw TestFailure('Timed out waiting for the expected reader state.');
+ }
+ 
++Future<void> _yieldToIo(WidgetTester tester) async {
++  await tester.runAsync(() async {
++    await Future<void>.delayed(const Duration(milliseconds: 10));
++  });
++}
++
+ Widget _readerApp({
+   required MangaPreferencesRepository preferences,
+   required MangaProgressRepository progress,
