@@ -1,0 +1,241 @@
+name: GoAnime hot cache publish
+
+on:
+  workflow_run:
+    workflows: ["GoAnime Scrapling provider cache"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-hot-cache-publish
+  cancel-in-progress: true
+
+env:
+  FLUTTER_CHANNEL: stable
+  FLUTTER_VERSION: 3.44.1
+  HOT_CACHE_TAG: goanime-cache-latest
+
+jobs:
+  publish:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate private source access
+        env:
+          READ_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$READ_TOKEN" || {
+            echo '::error::PRIVATE_REPOSITORIES_TOKEN is required.'
+            exit 1
+          }
+
+      - name: Checkout GoAnime main
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: main
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Record source revision
+        id: source
+        working-directory: private-source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Install locked dependencies
+        working-directory: private-source
+        run: flutter pub get --enforce-lockfile
+
+      - name: Validate provider cache contract
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          python tools/scrapling_provider_pipeline/validate_provider_cache.py \
+            --repo-root . \
+            --allow-preserved
+
+      - name: Rebuild title availability SQLite
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          dart run tools/build_title_availability_database.dart
+          test -s assets/data/title_availability.db
+          test -s assets/data/franchise_availability.db
+          test -s assets/data/mal_provider_availability_map.json
+
+      - name: Assemble stable hot-cache release
+        working-directory: private-source
+        env:
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          HOT_CACHE_TAG: ${{ env.HOT_CACHE_TAG }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          rm -rf dist/hot-cache
+          mkdir -p dist/hot-cache
+          cp assets/data/title_availability.db dist/hot-cache/title_availability.db
+          cp assets/data/franchise_availability.db dist/hot-cache/franchise_availability.db
+          cp assets/data/mal_provider_availability_map.json dist/hot-cache/mal_provider_availability_map.json
+          cp assets/data/anime_provider_catalog_manifest.json dist/hot-cache/anime_provider_catalog_manifest.json
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          out = Path('dist/hot-cache')
+          base = (
+              f"https://github.com/{os.environ['RELEASE_REPOSITORY']}"
+              f"/releases/download/{os.environ['HOT_CACHE_TAG']}"
+          )
+          assets = []
+          for database_id, filename, display_name in (
+              ('franchise_availability', 'franchise_availability.db', 'Franchise availability'),
+              ('title_availability', 'title_availability.db', 'Title availability'),
+          ):
+              path = out / filename
+              data = path.read_bytes()
+              assets.append({
+                  'databaseId': database_id,
+                  'displayName': display_name,
+                  'url': f'{base}/{filename}',
+                  'sha256': hashlib.sha256(data).hexdigest(),
+                  'sizeBytes': len(data),
+                  'schemaVersion': 1,
+              })
+          manifest = {
+              'schemaVersion': 1,
+              'generatedAt': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+              'sourceSha': os.environ['SOURCE_SHA'],
+              'assets': assets,
+          }
+          (out / 'runtime_database_manifest.json').write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2) + '\n',
+              encoding='utf-8',
+          )
+          PY
+
+      - name: Validate assembled artifacts
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          python -m json.tool dist/hot-cache/runtime_database_manifest.json >/dev/null
+          python -m json.tool dist/hot-cache/mal_provider_availability_map.json >/dev/null
+          python -m json.tool dist/hot-cache/anime_provider_catalog_manifest.json >/dev/null
+          python - <<'PY'
+          import json
+          import sqlite3
+          from pathlib import Path
+
+          root = Path('dist/hot-cache')
+          manifest = json.loads((root / 'runtime_database_manifest.json').read_text(encoding='utf-8'))
+          assert manifest['schemaVersion'] == 1
+          assert {asset['databaseId'] for asset in manifest['assets']} == {
+              'franchise_availability', 'title_availability'
+          }
+          for filename in ('franchise_availability.db', 'title_availability.db'):
+              connection = sqlite3.connect(f'file:{root / filename}?mode=ro', uri=True)
+              try:
+                  assert connection.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+              finally:
+                  connection.close()
+          provider = json.loads((root / 'mal_provider_availability_map.json').read_text(encoding='utf-8'))
+          assert provider['schemaVersion'] == 1
+          assert set(provider['providerStatuses']) == {
+              'animefire', 'animesonline', 'goyabu', 'anitube'
+          }
+          PY
+
+      - name: Publish stable public mirror
+        working-directory: private-source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ env.HOT_CACHE_TAG }}
+        run: |
+          set -euo pipefail
+          notes="GoAnime runtime cache mirror. Source: Semogtw/goanime-mobile@${{ steps.source.outputs.sha }}"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title 'GoAnime hot cache' \
+              --notes "$notes"
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title 'GoAnime hot cache' \
+              --notes "$notes"
+          fi
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            dist/hot-cache/runtime_database_manifest.json \
+            dist/hot-cache/franchise_availability.db \
+            dist/hot-cache/title_availability.db \
+            dist/hot-cache/mal_provider_availability_map.json \
+            dist/hot-cache/anime_provider_catalog_manifest.json
+
+      - name: Validate R2 publication credentials
+        env:
+          ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          test -n "$ACCOUNT_ID" || { echo '::error::CLOUDFLARE_ACCOUNT_ID is required.'; exit 1; }
+          test -n "$ACCESS_KEY_ID" || { echo '::error::R2_ACCESS_KEY_ID is required.'; exit 1; }
+          test -n "$SECRET_ACCESS_KEY" || { echo '::error::R2_SECRET_ACCESS_KEY is required.'; exit 1; }
+          test -n "$BUCKET" || { echo '::error::R2_BUCKET is required.'; exit 1; }
+
+      - name: Publish runtime cache to existing R2 channel
+        working-directory: private-source
+        env:
+          RUNTIME_DATABASE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          RUNTIME_DATABASE_R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+        run: |
+          set -euo pipefail
+          endpoint="https://${RUNTIME_DATABASE_R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          for file in \
+            runtime_database_manifest.json \
+            franchise_availability.db \
+            title_availability.db \
+            mal_provider_availability_map.json; do
+            aws s3 cp "dist/hot-cache/$file" \
+              "s3://${RUNTIME_DATABASE_R2_BUCKET}/latest/$file" \
+              --endpoint-url "$endpoint"
+          done
+
+      - name: Upload audit artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-hot-cache-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 7
+          path: |
+            private-source/dist/hot-cache/runtime_database_manifest.json
+            private-source/dist/hot-cache/anime_provider_catalog_manifest.json
+            private-source/dist/hot-cache/mal_provider_availability_map.json
