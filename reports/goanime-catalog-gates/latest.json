@@ -1,8 +1,18 @@
 {
-  "generatedAt": "2026-08-23T23:36:53.460992Z",
+  "generatedAt": "2026-08-23T23:40:30.555705Z",
   "schemaVersion": 1,
   "workflows": {
     "finalizer": [
+      {
+        "conclusion": "",
+        "createdAt": "2026-08-23T23:40:17Z",
+        "databaseId": 32674295786,
+        "displayTitle": "ci(goanime): revalidate final catalog after scorecard refresh",
+        "event": "push",
+        "headSha": "bdf3e8a77632a467bd950ada17d80a25c260e8fa",
+        "status": "in_progress",
+        "updatedAt": "2026-08-23T23:40:20Z"
+      },
       {
         "conclusion": "failure",
         "createdAt": "2026-08-23T23:35:12Z",
@@ -45,6 +55,16 @@
       }
     ],
     "fullCi": [
+      {
+        "conclusion": "",
+        "createdAt": "2026-08-23T23:40:11Z",
+        "databaseId": 32674291122,
+        "displayTitle": "ci(goanime): rerun full CI after scorecard refresh",
+        "event": "push",
+        "headSha": "93b878c50e1b931ddc7a5dc8c7976e5c51f122f5",
+        "status": "in_progress",
+        "updatedAt": "2026-08-23T23:40:21Z"
+      },
       {
         "conclusion": "failure",
         "createdAt": "2026-08-23T23:27:40Z",
@@ -94,16 +114,6 @@
         "headSha": "011114eada5d2ac8f937f75b0d38c100e74f031e",
         "status": "completed",
         "updatedAt": "2026-08-23T22:22:13Z"
-      },
-      {
-        "conclusion": "failure",
-        "createdAt": "2026-08-23T22:02:39Z",
-        "databaseId": 32669367147,
-        "displayTitle": "ci(goanime): observe anime categories refresh red",
-        "event": "push",
-        "headSha": "d3d24df20e1839c9aa2c76487c80c5eabb36b490",
-        "status": "completed",
-        "updatedAt": "2026-08-23T22:04:49Z"
       }
     ],
     "workerDeploy": [
