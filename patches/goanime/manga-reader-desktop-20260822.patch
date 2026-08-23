@@ -1,0 +1,408 @@
+diff --git a/lib/screens/manga/manga_reader_screen.dart b/lib/screens/manga/manga_reader_screen.dart
+index d2d6c2bd..7cb40674 100644
+--- a/lib/screens/manga/manga_reader_screen.dart
++++ b/lib/screens/manga/manga_reader_screen.dart
+@@ -4,6 +4,7 @@ import 'dart:typed_data';
+ 
+ import 'package:cached_network_image/cached_network_image.dart';
+ import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
+ import 'package:goanime_core/goanime_core.dart';
+ import 'package:pdfrx/pdfrx.dart';
+ import 'package:provider/provider.dart';
+@@ -11,6 +12,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
+ 
+ import '../../l10n/app_localizations.dart';
+ import '../../l10n/ui_manga_localizations.dart';
++import '../../platform/desktop/services/desktop_window_service.dart';
+ import '../../services/manga/manga_platform_runtime_service.dart';
+ import '../../services/manga/manga_reader_remote_transport.dart';
+ import '../../services/manga/offline/manga_local_package_reader_resolver.dart';
+@@ -79,6 +81,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+   bool _navigationStarted = false;
+   bool _openingReaderRoute = false;
+   bool _hasReaderModeOverride = false;
++  bool _desktopFullscreen = false;
+ 
+   @override
+   void initState() {
+@@ -111,7 +114,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+       if (loader != null) _localContentFuture = loader(manifest);
+     }
+     unawaited(_loadReaderMode());
+-    unawaited(WakelockPlus.enable());
++    unawaited(_setWakelock(enabled: true));
+     _recordPage(_pageIndex, _pageCount);
+   }
+ 
+@@ -133,10 +136,28 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+     _imageController?.dispose();
+     _continuousController?.dispose();
+     _pdfController = null;
+-    unawaited(WakelockPlus.disable());
++    if (_desktopFullscreen) {
++      unawaited(
++        DesktopWindowService.setFullScreen(false, maximizeOnExit: true),
++      );
++    }
++    unawaited(_setWakelock(enabled: false));
+     super.dispose();
+   }
+ 
++  Future<void> _setWakelock({required bool enabled}) async {
++    try {
++      if (enabled) {
++        await WakelockPlus.enable();
++      } else {
++        await WakelockPlus.disable();
++      }
++    } catch (_) {
++      // Wakelock is supplemental. Unsupported platform integration must not
++      // prevent a chapter from opening or closing cleanly.
++    }
++  }
++
+   Future<void> _loadReaderMode() async {
+     try {
+       final override = await _preferencesRepository.readerModeOverrideForWork(
+@@ -278,8 +299,8 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+   Future<void> _useDefaultReaderMode() async {
+     if (!_supportsImageModes || !_hasReaderModeOverride) return;
+     try {
+-      await _preferencesRepository.clearReaderMode(widget.chapter.workId);
+       final defaultMode = await _preferencesRepository.defaultReaderMode();
++      await _preferencesRepository.clearReaderMode(widget.chapter.workId);
+       if (!mounted) return;
+       setState(() => _hasReaderModeOverride = false);
+       _applyReaderMode(defaultMode, persist: false);
+@@ -452,12 +473,126 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+     }
+   }
+ 
++  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
++    if (event is! KeyDownEvent || _openingReaderRoute) {
++      return KeyEventResult.ignored;
++    }
++    final key = event.logicalKey;
++    if (key == LogicalKeyboardKey.f11) {
++      unawaited(_toggleDesktopFullscreen());
++      return KeyEventResult.handled;
++    }
++    if (key == LogicalKeyboardKey.escape) {
++      if (_desktopFullscreen) {
++        unawaited(_toggleDesktopFullscreen());
++      } else {
++        _toggleChrome();
++      }
++      return KeyEventResult.handled;
++    }
++    if (!_supportsImageModes) return KeyEventResult.ignored;
++
++    if (_readerMode == MangaReaderMode.continuousVertical) {
++      if (key == LogicalKeyboardKey.arrowDown ||
++          key == LogicalKeyboardKey.pageDown ||
++          key == LogicalKeyboardKey.space) {
++        _scrollContinuousBy(1);
++        return KeyEventResult.handled;
++      }
++      if (key == LogicalKeyboardKey.arrowUp ||
++          key == LogicalKeyboardKey.pageUp) {
++        _scrollContinuousBy(-1);
++        return KeyEventResult.handled;
++      }
++      return KeyEventResult.ignored;
++    }
++
++    final nextKey = switch (_readerMode) {
++      MangaReaderMode.pagedRtl => LogicalKeyboardKey.arrowLeft,
++      MangaReaderMode.pagedLtr => LogicalKeyboardKey.arrowRight,
++      MangaReaderMode.pagedVertical => LogicalKeyboardKey.arrowDown,
++      MangaReaderMode.continuousVertical => LogicalKeyboardKey.arrowDown,
++    };
++    final previousKey = switch (_readerMode) {
++      MangaReaderMode.pagedRtl => LogicalKeyboardKey.arrowRight,
++      MangaReaderMode.pagedLtr => LogicalKeyboardKey.arrowLeft,
++      MangaReaderMode.pagedVertical => LogicalKeyboardKey.arrowUp,
++      MangaReaderMode.continuousVertical => LogicalKeyboardKey.arrowUp,
++    };
++    if (key == nextKey ||
++        key == LogicalKeyboardKey.pageDown ||
++        key == LogicalKeyboardKey.space) {
++      _movePagedReader(1);
++      return KeyEventResult.handled;
++    }
++    if (key == previousKey || key == LogicalKeyboardKey.pageUp) {
++      _movePagedReader(-1);
++      return KeyEventResult.handled;
++    }
++    return KeyEventResult.ignored;
++  }
++
++  void _movePagedReader(int delta) {
++    final controller = _imageController;
++    final count = _pageCount;
++    if (controller == null ||
++        !controller.hasClients ||
++        count == null ||
++        count <= 0) {
++      return;
++    }
++    final target = (_pageIndex + delta).clamp(0, count - 1).toInt();
++    if (target == _pageIndex) return;
++    unawaited(
++      controller.animateToPage(
++        target,
++        duration: const Duration(milliseconds: 180),
++        curve: Curves.easeOutCubic,
++      ),
++    );
++  }
++
++  void _scrollContinuousBy(int direction) {
++    final controller = _continuousController;
++    if (controller == null || !controller.hasClients) return;
++    final position = controller.position;
++    final target =
++        (controller.offset + position.viewportDimension * 0.85 * direction)
++            .clamp(position.minScrollExtent, position.maxScrollExtent)
++            .toDouble();
++    unawaited(
++      controller.animateTo(
++        target,
++        duration: const Duration(milliseconds: 180),
++        curve: Curves.easeOutCubic,
++      ),
++    );
++  }
++
++  Future<void> _toggleDesktopFullscreen() async {
++    if (!DesktopWindowService.isSupported || _openingReaderRoute) return;
++    final next = !_desktopFullscreen;
++    final applied = await DesktopWindowService.setFullScreen(
++      next,
++      maximizeOnExit: !next,
++    );
++    if (!mounted || !applied) return;
++    setState(() {
++      _desktopFullscreen = next;
++      _chromeVisible = !next;
++    });
++  }
++
++
+   @override
+   Widget build(BuildContext context) {
+     final l10n = AppLocalizations.of(context).manga;
+     final title = widget.chapter.title ?? _chapterFallbackTitle(context, widget.chapter);
+-    return Scaffold(
+-      backgroundColor: Colors.black,
++    return Focus(
++      autofocus: true,
++      onKeyEvent: _handleKeyEvent,
++      child: Scaffold(
++        backgroundColor: Colors.black,
+       extendBodyBehindAppBar: !_chromeVisible,
+       extendBody: !_chromeVisible,
+       appBar: _chromeVisible
+@@ -474,6 +609,20 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+                         : () => unawaited(_selectReaderMode()),
+                     icon: Icon(_readerModeIcon(_readerMode)),
+                   ),
++                if (DesktopWindowService.isSupported)
++                  IconButton(
++                    tooltip: _desktopFullscreen
++                        ? _readerExitFullscreenLabel(context)
++                        : _readerEnterFullscreenLabel(context),
++                    onPressed: _openingReaderRoute
++                        ? null
++                        : () => unawaited(_toggleDesktopFullscreen()),
++                    icon: Icon(
++                      _desktopFullscreen
++                          ? Icons.fullscreen_exit_rounded
++                          : Icons.fullscreen_rounded,
++                    ),
++                  ),
+                 if (_pageCount != null)
+                   Padding(
+                     padding: const EdgeInsets.symmetric(horizontal: 16),
+@@ -521,6 +670,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+           ],
+         ),
+       ),
++      ),
+     );
+   }
+ 
+@@ -1206,6 +1356,18 @@ String _readerNextLabel(BuildContext context) {
+       : 'Next';
+ }
+ 
++String _readerEnterFullscreenLabel(BuildContext context) {
++  return Localizations.localeOf(context).languageCode == 'pt'
++      ? 'Entrar em tela cheia (F11)'
++      : 'Fullscreen (F11)';
++}
++
++String _readerExitFullscreenLabel(BuildContext context) {
++  return Localizations.localeOf(context).languageCode == 'pt'
++      ? 'Sair da tela cheia (F11)'
++      : 'Exit fullscreen (F11)';
++}
++
+ String _readerRetryLabel(BuildContext context) {
+   return Localizations.localeOf(context).languageCode == 'pt'
+       ? 'Tentar novamente'
+diff --git a/test/widgets/manga/manga_reader_screen_test.dart b/test/widgets/manga/manga_reader_screen_test.dart
+index 9fbd72ea..46a3d8de 100644
+--- a/test/widgets/manga/manga_reader_screen_test.dart
++++ b/test/widgets/manga/manga_reader_screen_test.dart
+@@ -2,6 +2,7 @@ import 'dart:convert';
+ import 'dart:io';
+ 
+ import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
+ import 'package:flutter_test/flutter_test.dart';
+ import 'package:goanime/l10n/app_localizations.dart';
+ import 'package:goanime/screens/manga/manga_reader_screen.dart';
+@@ -140,12 +141,116 @@ void main() {
+       findsNothing,
+     );
+   });
++
++  testWidgets('keyboard advances pages in vertical mode', (tester) async {
++    await preferences.saveReaderMode('work-1', MangaReaderMode.pagedVertical);
++    const manifest = LocalPackageContentManifest(
++      sourceId: 'local.test',
++      mangaId: 'work-source-1',
++      chapterId: 'chapter-source-1',
++      packageId: 'package-1',
++      sourceContentKind: MangaContentKind.imageSequence,
++      pageCount: 3,
++    );
++
++    await tester.pumpWidget(
++      _readerApp(
++        preferences: preferences,
++        progress: progress,
++        manifest: manifest,
++        loader: (_) async => MangaLocalImageReaderContent(
++          <File>[pageFile, pageFile, pageFile],
++        ),
++      ),
++    );
++    await tester.pumpAndSettle();
++
++    expect(find.text('Page 1 of 3'), findsOneWidget);
++    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
++    await tester.pumpAndSettle();
++    expect(find.text('Page 2 of 3'), findsOneWidget);
++
++    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
++    await tester.pumpAndSettle();
++    expect(find.text('Page 1 of 3'), findsOneWidget);
++  });
++
++  testWidgets('keyboard follows right-to-left page direction', (tester) async {
++    await preferences.saveReaderMode('work-1', MangaReaderMode.pagedRtl);
++    const manifest = LocalPackageContentManifest(
++      sourceId: 'local.test',
++      mangaId: 'work-source-1',
++      chapterId: 'chapter-source-1',
++      packageId: 'package-1',
++      sourceContentKind: MangaContentKind.imageSequence,
++      pageCount: 3,
++    );
++
++    await tester.pumpWidget(
++      _readerApp(
++        preferences: preferences,
++        progress: progress,
++        manifest: manifest,
++        loader: (_) async => MangaLocalImageReaderContent(
++          <File>[pageFile, pageFile, pageFile],
++        ),
++      ),
++    );
++    await tester.pumpAndSettle();
++
++    await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
++    await tester.pumpAndSettle();
++    expect(find.text('Page 2 of 3'), findsOneWidget);
++
++    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
++    await tester.pumpAndSettle();
++    expect(find.text('Page 1 of 3'), findsOneWidget);
++  });
++
++  testWidgets('F11 toggles desktop fullscreen through the existing channel', (
++    tester,
++  ) async {
++    final calls = <MethodCall>[];
++    const channel = MethodChannel('goanime/desktop_window');
++    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
++        .setMockMethodCallHandler(channel, (call) async {
++          calls.add(call);
++          return true;
++        });
++    addTearDown(() {
++      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
++          .setMockMethodCallHandler(channel, null);
++    });
++
++    await tester.pumpWidget(
++      _readerApp(
++        preferences: preferences,
++        progress: progress,
++        loader: (_) async => MangaLocalImageReaderContent(<File>[pageFile]),
++      ),
++    );
++    await tester.pumpAndSettle();
++
++    await tester.sendKeyEvent(LogicalKeyboardKey.f11);
++    await tester.pumpAndSettle();
++    expect(calls, isNotEmpty);
++    expect(calls.last.method, 'setFullScreen');
++    expect((calls.last.arguments as Map<Object?, Object?>)['enabled'], isTrue);
++    expect(find.byType(AppBar), findsNothing);
++
++    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
++    await tester.pumpAndSettle();
++    expect(calls.last.method, 'setFullScreen');
++    expect((calls.last.arguments as Map<Object?, Object?>)['enabled'], isFalse);
++    expect(find.byType(AppBar), findsOneWidget);
++  });
+ }
+ 
+ Widget _readerApp({
+   required MangaPreferencesRepository preferences,
+   required MangaProgressRepository progress,
+   required MangaLocalContentLoader loader,
++  ChapterContentManifest? manifest,
+ }) {
+   return MaterialApp(
+     locale: const Locale('en', 'US'),
+@@ -162,14 +267,16 @@ Widget _readerApp({
+         title: 'Chapter 1',
+         number: 1,
+       ),
+-      manifest: const LocalPackageContentManifest(
+-        sourceId: 'local.test',
+-        mangaId: 'work-source-1',
+-        chapterId: 'chapter-source-1',
+-        packageId: 'package-1',
+-        sourceContentKind: MangaContentKind.imageSequence,
+-        pageCount: 1,
+-      ),
++      manifest:
++          manifest ??
++          const LocalPackageContentManifest(
++            sourceId: 'local.test',
++            mangaId: 'work-source-1',
++            chapterId: 'chapter-source-1',
++            packageId: 'package-1',
++            sourceContentKind: MangaContentKind.imageSequence,
++            pageCount: 1,
++          ),
+       preferencesRepository: preferences,
+       progressRepository: progress,
+       localContentLoader: loader,
