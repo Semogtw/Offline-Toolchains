@@ -1,0 +1,184 @@
+name: Fix GoAnime startup artwork
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-startup-artwork-fix/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-startup-artwork-fix
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout trusted request
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact source request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-startup-artwork-fix/*.request' | head -n 1)"
+          test -n "$request"
+          read -r branch sha < "trusted-source/$request"
+          test "$branch" = 'fix/startup-logo-shape-20260823'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Require private write token
+        shell: bash
+        env:
+          GOANIME_WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: test -n "$GOANIME_WRITE_TOKEN"
+
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: true
+          show-progress: false
+
+      - name: Verify exact checkout
+        working-directory: private-source
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = '${{ steps.request.outputs.sha }}'
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Apply high-resolution startup artwork fix
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+
+          opening = Path('lib/widgets/goanime_opening.dart')
+          text = opening.read_text()
+          old = "import 'package:flutter/foundation.dart';\n"
+          assert old in text, 'expected redundant foundation import is missing'
+          opening.write_text(text.replace(old, '', 1))
+
+          splash_xml = Path('android/app/src/main/res/drawable/goanime_splash_icon.xml')
+          text = splash_xml.read_text()
+          old = 'android:drawable="@mipmap/ic_launcher"'
+          new = 'android:drawable="@drawable/goanime_splash_art"'
+          assert old in text, 'expected launcher reference is missing'
+          splash_xml.write_text(text.replace(old, new, 1))
+
+          art = Path('android/app/src/main/res/drawable-nodpi/goanime_splash_art.png')
+          art.parent.mkdir(parents=True, exist_ok=True)
+          shutil.copyfile('web/icons/Icon-512.png', art)
+
+          test = Path('test/widgets/goanime_opening_test.dart')
+          text = test.read_text()
+          old = "    expect(iconXml, contains('@mipmap/ic_launcher'));\n"
+          new = (
+              "    expect(iconXml, contains('@drawable/goanime_splash_art'));\n"
+              "    final splashArt = File(\n"
+              "      'android/app/src/main/res/drawable-nodpi/goanime_splash_art.png',\n"
+              "    );\n"
+              "    expect(splashArt.existsSync(), isTrue);\n"
+              "    expect(splashArt.lengthSync(), greaterThan(0));\n"
+          )
+          assert old in text, 'expected splash-art test assertion is missing'
+          test.write_text(text.replace(old, new, 1))
+
+          docs = Path('docs/startup_opening.md')
+          text = docs.read_text()
+          old = (
+              'Em Android 12+ o `values-v31/styles.xml` usa a SplashScreen API do sistema com fundo preto e o drawable dedicado '
+              '`@drawable/goanime_splash_icon`. Esse drawable mantém o launcher raster dentro de uma caixa central de **72dp**, evitando '
+              'que a SplashScreen API amplie diretamente o bitmap legado para toda a área reservada ao ícone. O tamanho também fica próximo '
+              'dos ~77dp do primeiro frame Flutter (`84dp × 0,92`), reduzindo o salto visual entre as duas superfícies sem a ampliação extrema '
+              'observada no splash nativo anterior. `values-night-v31/styles.xml` mantém o mesmo comportamento no modo escuro.'
+          )
+          new = (
+              'Em Android 12+ o `values-v31/styles.xml` usa a SplashScreen API do sistema com fundo preto e o drawable dedicado '
+              '`@drawable/goanime_splash_icon`. Esse drawable mantém uma cópia **512×512** da arte da marca em `drawable-nodpi` dentro de uma '
+              'caixa central de **72dp**. Assim o sistema reduz uma fonte de alta resolução para o tamanho final, em vez de ampliar o launcher '
+              'legado de 192 px, eliminando a perda de nitidez observada no cold start. O tamanho também fica próximo dos ~77dp do primeiro '
+              'frame Flutter (`84dp × 0,92`), reduzindo o salto visual entre as duas superfícies. `values-night-v31/styles.xml` mantém o mesmo '
+              'comportamento no modo escuro.'
+          )
+          assert old in text, 'expected splash documentation paragraph is missing'
+          docs.write_text(text.replace(old, new, 1))
+          PY
+
+          dart format lib/widgets/goanime_opening.dart test/widgets/goanime_opening_test.dart
+          git -c core.whitespace=cr-at-eol diff --check
+
+          allowed='android/app/src/main/res/drawable-nodpi/goanime_splash_art.png
+          android/app/src/main/res/drawable/goanime_splash_icon.xml
+          docs/startup_opening.md
+          lib/widgets/goanime_opening.dart
+          test/widgets/goanime_opening_test.dart'
+          changed="$(git diff --name-only | sort)"
+          test "$changed" = "$allowed" || {
+            echo 'Unexpected changed files:' >&2
+            printf '%s\n' "$changed" >&2
+            exit 1
+          }
+
+      - name: Validate scoped source before publish
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format --output=none --set-exit-if-changed lib/widgets/goanime_opening.dart test/widgets/goanime_opening_test.dart
+          flutter analyze lib/widgets/goanime_opening.dart
+          flutter analyze test/widgets/goanime_opening_test.dart
+
+      - name: Publish startup artwork fix
+        id: publish
+        working-directory: private-source
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$TARGET_BRANCH"
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_SHA" || {
+            echo 'Source branch moved; refusing to overwrite it.' >&2
+            exit 1
+          }
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            android/app/src/main/res/drawable-nodpi/goanime_splash_art.png \
+            android/app/src/main/res/drawable/goanime_splash_icon.xml \
+            docs/startup_opening.md \
+            lib/widgets/goanime_opening.dart \
+            test/widgets/goanime_opening_test.dart
+          git commit -m 'fix(startup): use high-resolution native splash artwork'
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+          echo "published_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
