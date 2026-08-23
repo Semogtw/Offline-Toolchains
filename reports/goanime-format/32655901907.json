@@ -1,0 +1,12 @@
+{
+  "artifactId": null,
+  "artifactName": null,
+  "changedCount": 0,
+  "finishedAt": "2026-08-23T17:46:34.072513Z",
+  "normalizeResult": "success",
+  "prepareResult": "cancelled",
+  "runAttempt": 1,
+  "runId": 32655901907,
+  "schemaVersion": 1,
+  "toolchainsTriggerSha": "d5d62017f50f14dca378369bff4da4c99b6074f3"
+}
