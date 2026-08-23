@@ -1,0 +1,117 @@
+name: GoAnime global catalog runtime-map hardening v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-global-catalog-runtime-map-v2/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  harden:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: request
+        env:
+          GITHUB_EVENT_NAME: push
+        run: >-
+          python scripts/goanime_resolve_request.py
+          --request-dir triggers/goanime-global-catalog-runtime-map-v2
+          --workspace .
+      - name: Require private write token
+        env:
+          WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: test -n "$WRITE_TOKEN"
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.source_hint }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: true
+          lfs: false
+          submodules: false
+      - name: Verify immutable candidate
+        working-directory: private-source
+        env:
+          EXPECTED_SHA: ${{ steps.request.outputs.source_hint }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Apply trusted patch
+        working-directory: private-source
+        run: python ../scripts/patch_goanime_runtime_provider_map.py
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: |
+          flutter config --no-analytics
+          flutter pub get --enforce-lockfile
+          (cd packages/goanime_core && dart pub get)
+      - name: Format and validate
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          dart format \
+            lib/services/mal_provider_availability_service.dart \
+            test/services/mal_provider_availability_service_test.dart \
+            lib/widgets/goanime_opening.dart \
+            test/widgets/goanime_opening_test.dart
+          git diff --check
+          node --check cloudflare/updates-worker/src/index.js
+          flutter analyze --no-pub
+          flutter test --no-pub --concurrency=1 \
+            test/services/mal_provider_availability_service_test.dart \
+            test/widgets/goanime_opening_test.dart \
+            test/services/catalog_discovery_reporting_service_test.dart
+          python -m unittest tools/tests/test_apply_catalog_discovery_consensus.py -v
+      - name: Publish validated candidate
+        id: publish
+        working-directory: private-source
+        env:
+          TARGET_BRANCH: ${{ steps.request.outputs.target_branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.source_hint }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$TARGET_BRANCH"
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            lib/services/mal_provider_availability_service.dart \
+            test/services/mal_provider_availability_service_test.dart \
+            cloudflare/updates-worker/src/index.js \
+            lib/widgets/goanime_opening.dart \
+            test/widgets/goanime_opening_test.dart \
+            docs/global_catalog_refresh_and_discovery_plan.md
+          git commit -m 'fix(catalog): propagate global provider map at runtime'
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+          echo "published_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Record result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.request.outputs.source_hint }}
+          PUBLISHED_SHA: ${{ steps.publish.outputs.published_sha }}
+          RESULT: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          source_sha="${SOURCE_SHA:-unknown-${GITHUB_RUN_ID}}"
+          report="$(jq -cn --arg sourceSha "$source_sha" --arg publishedSha "${PUBLISHED_SHA:-}" --arg result "$RESULT" --argjson runId "$GITHUB_RUN_ID" '{schemaVersion:1,sourceSha:$sourceSha,publishedSha:$publishedSha,result:$result,runId:$runId}')"
+          encoded="$(printf '%s\n' "$report" | base64 -w0)"
+          path="reports/goanime-global-catalog-runtime-map-v2/${source_sha}.json"
+          existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f "message=ci(goanime): record runtime-map v2 ${source_sha}" -f "content=$encoded" -f "branch=main")
+          if [ -n "$existing" ]; then args+=( -f "sha=$existing" ); fi
+          gh api "${args[@]}" >/dev/null
