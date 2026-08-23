@@ -144,17 +144,17 @@ jobs:
               text = path.read_text(encoding='utf-8')
               for old, new, expected in rules:
                   count = text.count(old)
-                  if count != expected:
+                  if count == expected:
+                      text = text.replace(old, new)
+                  elif count != 0:
                       raise SystemExit(
-                          f'{raw_path}: expected {expected} exact occurrences, found {count}: {old!r}'
+                          f'{raw_path}: expected {expected} exact occurrences or an already-fixed 0, found {count}: {old!r}'
                       )
-                  text = text.replace(old, new)
               path.write_text(text, encoding='utf-8')
           PY
           dart format lib test packages tools >/dev/null
           git diff --check
           count="$(git diff --name-only -- '*.dart' | wc -l | tr -d ' ')"
-          test "$count" -gt 0
           echo "changed_count=$count" >> "$GITHUB_OUTPUT"
           dart format --output=none --set-exit-if-changed lib test packages tools >/dev/null
 
@@ -196,9 +196,15 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- lib test packages tools
-          git commit -m "style: normalize Dart formatting and flow-control braces" >/dev/null
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if git diff --quiet -- lib test packages tools; then
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            echo "created=false" >> "$GITHUB_OUTPUT"
+          else
+            git add -- lib test packages tools
+            git commit -m "style: normalize Dart formatting and flow-control braces" >/dev/null
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            echo "created=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Push validated commit to temporary private branch
         working-directory: private-source
@@ -221,6 +227,7 @@ jobs:
         shell: bash
         run: |
           echo "Validated private commit: ${{ steps.commit.outputs.sha }}"
+          echo "Formatter commit created: ${{ steps.commit.outputs.created }}"
           echo "Formatted Dart files: ${{ steps.format.outputs.changed_count }}"
           echo "Temporary private branch: ${{ steps.request.outputs.temp_branch }}"
 
