@@ -1,0 +1,203 @@
+name: Apply GoAnime opening logo cache fix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-opening-cache-fix/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-opening-logo-cache-fix
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact GoAnime revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-opening-cache-fix/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          test "$branch" = 'feat/premium-opening-v2-20260823'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify current remote head
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+
+      - name: Apply deterministic resized-logo cache fix
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          opening = Path('lib/widgets/goanime_opening.dart')
+          text = opening.read_text()
+
+          old_import = "import 'package:flutter/foundation.dart';\n"
+          assert text.count(old_import) == 1
+          text = text.replace(old_import, '', 1)
+
+          phase = """double _phase(double progress, double begin, double end, Curve curve) {
+            return curve.transform(
+              ((progress - begin) / (end - begin)).clamp(0.0, 1.0).toDouble(),
+            );
+          }
+          """
+          helper = phase + """
+          int _openingLogoCacheWidth(MediaQueryData mediaQuery) {
+            final responsiveScale =
+                (mediaQuery.size.shortestSide / 390).clamp(0.88, 1.12).toDouble();
+            return (84 * responsiveScale * mediaQuery.devicePixelRatio)
+                .round()
+                .clamp(128, 512)
+                .toInt();
+          }
+          """
+          assert text.count(phase) == 1
+          text = text.replace(phase, helper, 1)
+
+          old_precache = """    unawaited(precacheImage(_openingLogo, context));
+          """
+          new_precache = """    final mediaQuery = MediaQuery.of(context);
+              final logoCacheWidth = _openingLogoCacheWidth(mediaQuery);
+              unawaited(
+                precacheImage(
+                  ResizeImage.resizeIfNeeded(logoCacheWidth, null, _openingLogo),
+                  context,
+                ),
+              );
+          """
+          assert text.count(old_precache) == 1
+          text = text.replace(old_precache, new_precache, 1)
+
+          old_width = """    final devicePixelRatio = MediaQuery.of(context).devicePixelRatio;
+              final logoCacheWidth = (84 * responsiveScale * devicePixelRatio)
+                  .round()
+                  .clamp(128, 512)
+                  .toInt();
+          """
+          new_width = """    final logoCacheWidth = _openingLogoCacheWidth(MediaQuery.of(context));
+          """
+          assert text.count(old_width) == 1
+          text = text.replace(old_width, new_width, 1)
+
+          opening.write_text(text)
+
+          test = Path('test/widgets/goanime_opening_test.dart')
+          test_text = test.read_text()
+          unused_import = "import 'package:flutter/painting.dart';\n"
+          assert test_text.count(unused_import) == 1
+          test.write_text(test_text.replace(unused_import, '', 1))
+          PY
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+
+      - name: Format and validate focused opening files
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format lib/widgets/goanime_opening.dart test/widgets/goanime_opening_test.dart
+          git diff --check
+          dart analyze lib/widgets/goanime_opening.dart
+          dart analyze test/widgets/goanime_opening_test.dart
+          flutter test --no-pub test/widgets/goanime_opening_test.dart
+
+      - name: Commit cache fix
+        id: commit
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/widgets/goanime_opening.dart test/widgets/goanime_opening_test.dart
+          git diff --cached --check
+          git commit -m 'perf(opening): reuse resized logo cache entry'
+          printf 'sha=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Fast-forward private opening branch
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/goanime-mobile.git "HEAD:refs/heads/$TARGET_BRANCH"
+
+      - name: Summary
+        run: echo "Published opening cache fix SHA ${{ steps.commit.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
