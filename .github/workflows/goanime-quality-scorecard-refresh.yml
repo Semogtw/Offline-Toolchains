@@ -1,0 +1,80 @@
+name: GoAnime quality scorecard refresh
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-quality-scorecard-refresh/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve exact GoAnime request
+        id: request
+        shell: bash
+        run: >-
+          python scripts/goanime_resolve_request.py
+          --request-dir triggers/goanime-quality-scorecard-refresh
+          --workspace .
+
+      - name: Require private write token
+        env:
+          WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: test -n "$WRITE_TOKEN"
+
+      - name: Checkout exact GoAnime candidate
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.source_hint }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: true
+          lfs: false
+          submodules: false
+
+      - name: Verify immutable candidate
+        working-directory: private-source
+        env:
+          EXPECTED_SHA: ${{ steps.request.outputs.source_hint }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Regenerate scorecard and validate exact drift fix
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/generate_quality_scorecard.py --write
+          python3 -m unittest tools/tests/test_generate_quality_scorecard.py -v
+          git diff --check
+          changed="$(git status --porcelain=v1 | sed -E 's/^.. //')"
+          test "$changed" = 'docs/quality_scorecard.json'
+
+      - name: Publish regenerated scorecard
+        working-directory: private-source
+        env:
+          TARGET_BRANCH: ${{ steps.request.outputs.target_branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.source_hint }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/quality_scorecard.json
+          git commit -m 'chore(quality): refresh repository scorecard'
+          git fetch origin "$TARGET_BRANCH"
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_SHA"
+          git push origin "HEAD:$TARGET_BRANCH"
