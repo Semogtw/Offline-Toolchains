@@ -1,4 +1,4 @@
-name: Observe GoAnime post-10 machine diagnostic
+name: Observe GoAnime post-10 focused diagnostic
 
 on:
   push:
@@ -14,16 +14,16 @@ jobs:
   observe:
     runs-on: ubuntu-24.04
     steps:
-      - name: Capture sanitized machine diagnostic state
+      - name: Capture sanitized focused diagnostic state
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
-          target='diagnose-goanime-post10-machine.yml'
+          target='diagnose-goanime-post10-focused.yml'
           response="$(gh api "repos/$REPO/actions/workflows/$target/runs?per_page=5")"
           report="$(jq -c '{schemaVersion:1,runs:[.workflow_runs[] | {id,status,conclusion,event,head_sha,created_at,updated_at}]}' <<<"$response")"
           encoded="$(printf '%s\n' "$report" | base64 -w0)"
           path="results/observe-goanime-post10-v2/${GITHUB_RUN_ID}.json"
-          gh api --method PUT "repos/$REPO/contents/$path" -f message="ci(observe): record GoAnime post-10 machine state $GITHUB_RUN_ID" -f content="$encoded" >/dev/null
+          gh api --method PUT "repos/$REPO/contents/$path" -f message="ci(observe): record GoAnime post-10 focused state $GITHUB_RUN_ID" -f content="$encoded" >/dev/null
