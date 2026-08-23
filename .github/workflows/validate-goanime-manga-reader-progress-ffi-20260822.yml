@@ -79,16 +79,13 @@ jobs:
           remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
           test "$remote" = "$EXPECTED_SHA"
 
-      - name: Apply validated Reader fix and FFI harness
+      - name: Apply validated Reader base fix
         working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
-          harness="$GITHUB_WORKSPACE/trusted-source/patches/goanime/manga-reader-widget-ffi-harness-20260822.patch"
           git apply --check "$RUNNER_TEMP/reader-base.patch"
           git apply "$RUNNER_TEMP/reader-base.patch"
-          git apply --check "$harness"
-          git apply "$harness"
           git diff --check
 
       - name: Set up Flutter 3.44.1
@@ -98,16 +95,27 @@ jobs:
           flutter-version: 3.44.1
           cache: true
 
-      - name: Validate Reader fix
+      - name: Format base then apply FFI harness
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics >/dev/null 2>&1
+          flutter pub get >/dev/null 2>&1
+          (cd packages/goanime_core && dart pub get >/dev/null 2>&1)
+          dart format lib/screens/manga/manga_reader_screen.dart lib/services/manga/storage/manga_progress_repository.dart test/services/manga/storage/manga_library_progress_repository_test.dart test/widgets/manga/manga_reader_screen_test.dart >/dev/null
+          harness="$GITHUB_WORKSPACE/trusted-source/patches/goanime/manga-reader-widget-ffi-harness-20260822.patch"
+          git apply --check "$harness"
+          git apply "$harness"
+          dart format test/widgets/manga/manga_reader_screen_test.dart >/dev/null
+          git diff --check
+
+      - name: Analyze and test Reader fix
         id: validation
         working-directory: private-source
         shell: bash
         run: |
           set +e
-          flutter config --no-analytics >/dev/null 2>&1
-          flutter pub get >/dev/null 2>&1
-          (cd packages/goanime_core && dart pub get >/dev/null 2>&1)
-          dart format lib/screens/manga/manga_reader_screen.dart lib/services/manga/storage/manga_progress_repository.dart test/services/manga/storage/manga_library_progress_repository_test.dart test/widgets/manga/manga_reader_screen_test.dart >/dev/null 2>&1
           flutter analyze --no-pub > "$RUNNER_TEMP/reader-analyze.log" 2>&1
           analyze=$?
           flutter test --no-pub test/services/manga/storage/manga_library_progress_repository_test.dart test/widgets/manga/manga_reader_screen_test.dart > "$RUNNER_TEMP/reader-tests.log" 2>&1
