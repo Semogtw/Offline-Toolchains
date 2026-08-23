@@ -1,0 +1,137 @@
+name: GoAnime global cache format fix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-global-cache-format/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-global-cache-format-fix
+  cancel-in-progress: true
+
+jobs:
+  format:
+    name: Format global cache feature
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve exact private revision
+        id: request
+        env:
+          GITHUB_EVENT_NAME: push
+        run: |
+          set -euo pipefail
+          python scripts/goanime_resolve_request.py \
+            --request-dir triggers/goanime-global-cache-format \
+            --workspace .
+
+      - name: Require private write token
+        env:
+          WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: test -n "$WRITE_TOKEN"
+
+      - name: Checkout exact GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.source_hint }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify immutable source revision
+        working-directory: private-source
+        env:
+          EXPECTED_SHA: ${{ steps.request.outputs.source_hint }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Format exact global cache files
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            lib/app/bootstrap.dart
+            lib/services/discovery_evidence_service.dart
+            lib/services/global_discovery_overlay_service.dart
+            test/services/discovery_evidence_service_test.dart
+          )
+          dart format "${files[@]}"
+          git diff --check
+          changed="$(git diff --name-only | sort)"
+          expected="$(printf '%s\n' "${files[@]}" | sort)"
+          test "$changed" = "$expected" || {
+            echo 'Unexpected formatter change set:' >&2
+            printf '%s\n' "$changed" >&2
+            exit 1
+          }
+
+      - name: Publish scoped formatting commit
+        id: publish
+        working-directory: private-source
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ steps.request.outputs.source_hint }}
+          TARGET_BRANCH: ${{ steps.request.outputs.target_branch }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$TARGET_BRANCH"
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_SHA" || {
+            echo 'GoAnime branch moved during formatting; refusing stale push.' >&2
+            exit 1
+          }
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            lib/app/bootstrap.dart \
+            lib/services/discovery_evidence_service.dart \
+            lib/services/global_discovery_overlay_service.dart \
+            test/services/discovery_evidence_service_test.dart
+          if git diff --cached --quiet; then
+            echo "published_sha=$EXPECTED_SHA" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git commit -m 'style(cache): apply pinned Dart formatting'
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+          echo "published_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Record formatter result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.request.outputs.source_hint }}
+          PUBLISHED_SHA: ${{ steps.publish.outputs.published_sha }}
+          RESULT: ${{ job.status }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha="${SOURCE_SHA:-unknown-${GITHUB_RUN_ID}}"
+          report="$(jq -cn --arg sourceSha "$source_sha" --arg publishedSha "${PUBLISHED_SHA:-}" --arg result "$RESULT" --argjson runId "$GITHUB_RUN_ID" '{schemaVersion:1,sourceSha:$sourceSha,publishedSha:$publishedSha,result:$result,runId:$runId}')"
+          encoded="$(printf '%s\n' "$report" | base64 -w0)"
+          path="reports/goanime-global-cache-format/${source_sha}.json"
+          existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f "message=ci(goanime): record global cache formatter ${source_sha}" -f "content=$encoded" -f "branch=main")
+          if [ -n "$existing" ]; then args+=( -f "sha=$existing" ); fi
+          gh api "${args[@]}" >/dev/null
