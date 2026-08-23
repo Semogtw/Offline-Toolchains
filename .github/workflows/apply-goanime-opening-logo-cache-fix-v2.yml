@@ -1,0 +1,146 @@
+name: Apply GoAnime opening logo cache fix v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-opening-cache-fix-v2/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-opening-logo-cache-fix-v2
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-opening-cache-fix-v2/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          test "$branch" = 'feat/premium-opening-v2-20260823'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Apply minimal resized-logo precache fix
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('lib/widgets/goanime_opening.dart')
+          text = path.read_text()
+          old = "    unawaited(precacheImage(_openingLogo, context));\n"
+          new = """    final mediaQuery = MediaQuery.of(context);
+              final responsiveScale =
+                  (mediaQuery.size.shortestSide / 390).clamp(0.88, 1.12).toDouble();
+              final logoCacheWidth = (84 * responsiveScale * mediaQuery.devicePixelRatio)
+                  .round()
+                  .clamp(128, 512)
+                  .toInt();
+              unawaited(
+                precacheImage(
+                  ResizeImage.resizeIfNeeded(logoCacheWidth, null, _openingLogo),
+                  context,
+                ),
+              );
+          """
+          assert text.count(old) == 1, text.count(old)
+          path.write_text(text.replace(old, new, 1))
+          PY
+          git diff --check
+
+      - name: Commit fix
+        id: commit
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/widgets/goanime_opening.dart
+          git diff --cached --check
+          git commit -m 'perf(opening): precache displayed logo resolution'
+          printf 'sha=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Fast-forward guarded branch
+        id: publish
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/goanime-mobile.git "HEAD:refs/heads/$TARGET_BRANCH"
+          printf 'published=true\n' >> "$GITHUB_OUTPUT"
+
+      - name: Publish sanitized receipt
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.request.outputs.sha }}
+          NEW_SHA: ${{ steps.commit.outputs.sha }}
+          PUBLISHED: ${{ steps.publish.outputs.published }}
+          STATE: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          body="$(jq -cn \
+            --arg sourceSha "$SOURCE_SHA" \
+            --arg newSha "$NEW_SHA" \
+            --arg published "$PUBLISHED" \
+            --arg state "$STATE" \
+            --argjson runId "$GITHUB_RUN_ID" \
+            '{schemaVersion:1,sourceSha:$sourceSha,newSha:$newSha,published:($published == "true"),state:$state,runId:$runId}')"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/results/goanime-opening-cache-fix/$GITHUB_RUN_ID.json" \
+            -f message="ci(result): record GoAnime opening cache fix $GITHUB_RUN_ID" \
+            -f content="$encoded" >/dev/null
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
