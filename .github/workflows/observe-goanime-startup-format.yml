@@ -23,10 +23,12 @@ jobs:
           set -euo pipefail
           formatter="$(gh api "repos/$REPO/actions/workflows/format-goanime-startup-opening-private.yml/runs?per_page=5")"
           validator="$(gh api "repos/$REPO/actions/workflows/validate-goanime-startup-opening-private.yml/runs?per_page=5")"
+          fixer="$(gh api "repos/$REPO/actions/workflows/fix-goanime-startup-artwork-private.yml/runs?per_page=5")"
           report="$(jq -cn \
             --argjson formatter "$formatter" \
             --argjson validator "$validator" \
-            '{schemaVersion:1,formatterRuns:[$formatter.workflow_runs[] | {id,status,conclusion,event,head_sha,created_at,updated_at}],validationRuns:[$validator.workflow_runs[] | {id,status,conclusion,event,head_sha,created_at,updated_at}]}')"
+            --argjson fixer "$fixer" \
+            '{schemaVersion:1,formatterRuns:[$formatter.workflow_runs[] | {id,status,conclusion,event,head_sha,created_at,updated_at}],validationRuns:[$validator.workflow_runs[] | {id,status,conclusion,event,head_sha,created_at,updated_at}],fixerRuns:[$fixer.workflow_runs[] | {id,status,conclusion,event,head_sha,created_at,updated_at}]}')"
           encoded="$(printf '%s\n' "$report" | base64 -w0)"
           path="results/observe-goanime-startup-format/${GITHUB_RUN_ID}.json"
           gh api --method PUT "repos/$REPO/contents/$path" -f message="ci(observe): record startup workflow state $GITHUB_RUN_ID" -f content="$encoded" >/dev/null
