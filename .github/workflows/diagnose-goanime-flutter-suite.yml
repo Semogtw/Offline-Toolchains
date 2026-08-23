@@ -1,0 +1,112 @@
+name: Diagnose GoAnime Flutter suite
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-flutter-suite/*.request'
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_VERSION: '3.44.1'
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve exact request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-flutter-suite/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project sha < "trusted-source/$request"
+          test "$project" = goanime
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: |
+          flutter config --no-analytics
+          flutter pub get
+
+      - name: Run complete Flutter suite and capture diagnostics
+        id: suite
+        continue-on-error: true
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -o pipefail
+          flutter test --no-pub --reporter expanded 2>&1 | tee "$RUNNER_TEMP/goanime-flutter-suite.log"
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Publish sanitized diagnostics
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+          EXIT_CODE: ${{ steps.suite.outputs.exit_code }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="$RUNNER_TEMP/goanime-flutter-suite.log"
+          test -s "$raw"
+          log_path="results/goanime-flutter-suite/$GITHUB_RUN_ID.log"
+          receipt_path="results/goanime-flutter-suite/$GITHUB_RUN_ID.json"
+          sanitized="$RUNNER_TEMP/goanime-flutter-suite-sanitized.log"
+          tail -n 1200 "$raw" \
+            | sed -E "s#${GITHUB_WORKSPACE}#<workspace>#g; s#${HOME}#<home>#g; s/(ghp_|github_pat_)[A-Za-z0-9_]+/<redacted-token>/g" \
+            > "$sanitized"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$log_path" \
+            -f message="ci(result): preserve GoAnime Flutter suite log $GITHUB_RUN_ID" \
+            -f content="$(base64 -w0 < "$sanitized")" >/dev/null
+          state=success
+          if test "${EXIT_CODE:-1}" != 0; then state=failure; fi
+          body="$(jq -cn --arg sha "$TARGET_SHA" --arg state "$state" --arg logPath "$log_path" --argjson runId "$GITHUB_RUN_ID" '{schemaVersion:1,sourceSha:$sha,state:$state,runId:$runId,logPath:$logPath}')"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$receipt_path" \
+            -f message="ci(result): record GoAnime Flutter suite $GITHUB_RUN_ID" \
+            -f content="$(printf '%s\n' "$body" | base64 -w0)" >/dev/null
+          test "$state" = success
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
