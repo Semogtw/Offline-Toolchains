@@ -1,4 +1,5 @@
 diff --git a/lib/screens/manga/manga_reader_screen.dart b/lib/screens/manga/manga_reader_screen.dart
+index 7116d5f..7e96d4a 100644
 --- a/lib/screens/manga/manga_reader_screen.dart
 +++ b/lib/screens/manga/manga_reader_screen.dart
 @@ -113,7 +113,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
@@ -36,7 +37,7 @@ diff --git a/lib/screens/manga/manga_reader_screen.dart b/lib/screens/manga/mang
      try {
        final override = await _preferencesRepository.readerModeOverrideForWork(
 diff --git a/test/widgets/manga/manga_reader_screen_test.dart b/test/widgets/manga/manga_reader_screen_test.dart
-index d514fef..82454f0 100644
+index d514fef..176eb75 100644
 --- a/test/widgets/manga/manga_reader_screen_test.dart
 +++ b/test/widgets/manga/manga_reader_screen_test.dart
 @@ -69,10 +69,14 @@ void main() {
@@ -58,6 +59,15 @@ index d514fef..82454f0 100644
      );
  
      await tester.pumpWidget(
+@@ -82,7 +86,7 @@ void main() {
+         loader: (_) async => MangaLocalImageReaderContent(<File>[pageFile]),
+       ),
+     );
+-    await _pumpUntilFound(tester, find.byTooltip('Reading mode'));
++    await _pumpUntilFound(tester, find.byIcon(Icons.view_stream_outlined));
+ 
+     await tester.tap(find.byTooltip('Reading mode'));
+     await _pumpUntilFound(tester, find.text('Use default mode'));
 @@ -95,11 +99,17 @@ void main() {
      );
  
