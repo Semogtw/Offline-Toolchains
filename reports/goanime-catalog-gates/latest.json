@@ -1,0 +1,122 @@
+{
+  "generatedAt": "2026-08-23T23:36:53.460992Z",
+  "schemaVersion": 1,
+  "workflows": {
+    "finalizer": [
+      {
+        "conclusion": "failure",
+        "createdAt": "2026-08-23T23:35:12Z",
+        "databaseId": 32674046594,
+        "displayTitle": "ci(goanime): revalidate final catalog with hardened finalizer",
+        "event": "push",
+        "headSha": "3200edbd445d07f23a776c55c9c790b33f25d840",
+        "status": "completed",
+        "updatedAt": "2026-08-23T23:36:15Z"
+      },
+      {
+        "conclusion": "failure",
+        "createdAt": "2026-08-23T23:27:23Z",
+        "databaseId": 32673655839,
+        "displayTitle": "ci(goanime): validate final global catalog integration",
+        "event": "push",
+        "headSha": "4e9c3a324a4815f4d9c4990fad831791c5c2c9c4",
+        "status": "completed",
+        "updatedAt": "2026-08-23T23:28:22Z"
+      },
+      {
+        "conclusion": "failure",
+        "createdAt": "2026-08-23T22:12:31Z",
+        "databaseId": 32669882827,
+        "displayTitle": "ci(goanime): revalidate global catalog candidate fb678795",
+        "event": "push",
+        "headSha": "c5faf8406149f569b797013157955d636200a5a0",
+        "status": "completed",
+        "updatedAt": "2026-08-23T22:13:22Z"
+      },
+      {
+        "conclusion": "success",
+        "createdAt": "2026-08-23T22:10:28Z",
+        "databaseId": 32669778184,
+        "displayTitle": "ci(goanime): validate global catalog candidate fb678795",
+        "event": "push",
+        "headSha": "e19660bf23b10238223c92252067a371b7ae5f69",
+        "status": "completed",
+        "updatedAt": "2026-08-23T22:11:31Z"
+      }
+    ],
+    "fullCi": [
+      {
+        "conclusion": "failure",
+        "createdAt": "2026-08-23T23:27:40Z",
+        "databaseId": 32673668836,
+        "displayTitle": "ci(goanime): ensure exact global catalog SHA is queued",
+        "event": "push",
+        "headSha": "2dd7af9dbf92de925ae2883e150b5b03c6a00086",
+        "status": "completed",
+        "updatedAt": "2026-08-23T23:30:06Z"
+      },
+      {
+        "conclusion": "cancelled",
+        "createdAt": "2026-08-23T23:27:20Z",
+        "databaseId": 32673653473,
+        "displayTitle": "ci(goanime): run full CI for global catalog integration",
+        "event": "push",
+        "headSha": "5c1f06c560519c6cf6a532831a4dd975cf72eecc",
+        "status": "completed",
+        "updatedAt": "2026-08-23T23:27:49Z"
+      },
+      {
+        "conclusion": "failure",
+        "createdAt": "2026-08-23T23:14:48Z",
+        "databaseId": 32673043469,
+        "displayTitle": "ci(goanime): observe anime search adapter red",
+        "event": "push",
+        "headSha": "5b8ed8e255fa2236670e3f73494405a72a0d5709",
+        "status": "completed",
+        "updatedAt": "2026-08-23T23:16:56Z"
+      },
+      {
+        "conclusion": "failure",
+        "createdAt": "2026-08-23T22:25:12Z",
+        "databaseId": 32670522655,
+        "displayTitle": "ci(goanime): validate PR 209 startup visual fix",
+        "event": "push",
+        "headSha": "466c4ee1874e63665a2c203b198d131056f956fd",
+        "status": "completed",
+        "updatedAt": "2026-08-23T22:27:20Z"
+      },
+      {
+        "conclusion": "failure",
+        "createdAt": "2026-08-23T22:20:12Z",
+        "databaseId": 32670266715,
+        "displayTitle": "ci(goanime): validate PR 209 regression tests red state",
+        "event": "push",
+        "headSha": "011114eada5d2ac8f937f75b0d38c100e74f031e",
+        "status": "completed",
+        "updatedAt": "2026-08-23T22:22:13Z"
+      },
+      {
+        "conclusion": "failure",
+        "createdAt": "2026-08-23T22:02:39Z",
+        "databaseId": 32669367147,
+        "displayTitle": "ci(goanime): observe anime categories refresh red",
+        "event": "push",
+        "headSha": "d3d24df20e1839c9aa2c76487c80c5eabb36b490",
+        "status": "completed",
+        "updatedAt": "2026-08-23T22:04:49Z"
+      }
+    ],
+    "workerDeploy": [
+      {
+        "conclusion": "failure",
+        "createdAt": "2026-08-23T23:27:32Z",
+        "databaseId": 32673662331,
+        "displayTitle": "ci(goanime): stage worker validation for global catalog",
+        "event": "push",
+        "headSha": "1e17597e22f8e4f58055207f20de9553f0871a33",
+        "status": "completed",
+        "updatedAt": "2026-08-23T23:27:50Z"
+      }
+    ]
+  }
+}
