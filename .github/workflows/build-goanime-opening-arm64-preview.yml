@@ -1,4 +1,4 @@
-name: Build GoAnime opening arm64 preview
+name: Build GoAnime opening compact preview
 
 on:
   push:
@@ -88,12 +88,12 @@ jobs:
           flutter config --no-analytics
           flutter pub get
 
-      - name: Build compact arm64 Android release APK
+      - name: Build compact Android release APK
         working-directory: private-source
         shell: bash
         run: flutter build apk --release --no-pub --target-platform android-arm64
 
-      - name: Verify compact arm64 APK
+      - name: Verify compact installable APK
         id: apk
         working-directory: private-source
         shell: bash
@@ -102,29 +102,29 @@ jobs:
           apk="$(find build/app/outputs/flutter-apk -maxdepth 1 -type f -name '*.apk' | head -n 1)"
           test -n "$apk"
           test -s "$apk"
+          unzip -tq "$apk" >/dev/null
           unzip -l "$apk" | grep -q 'lib/arm64-v8a/'
-          if unzip -l "$apk" | grep -Eq 'lib/(armeabi-v7a|x86|x86_64)/'; then
-            echo 'Unexpected non-arm64 native libraries in preview APK' >&2
-            exit 1
-          fi
           size="$(stat -c '%s' "$apk")"
           if [ "$size" -ge 100000000 ]; then
-            echo "Preview APK is still too large for Drive connector: $size bytes" >&2
+            echo "Preview APK is too large for Drive connector: $size bytes" >&2
             exit 1
           fi
+          apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -x "$apksigner"
+          "$apksigner" verify --verbose "$apk"
           sha="$(sha256sum "$apk" | awk '{print $1}')"
-          cp "$apk" build/GoAnime-Opening-Preview-arm64.apk
-          printf '%s  %s\n' "$sha" 'GoAnime-Opening-Preview-arm64.apk' > build/GoAnime-Opening-Preview-arm64.apk.sha256
+          cp "$apk" build/GoAnime-Opening-Preview.apk
+          printf '%s  %s\n' "$sha" 'GoAnime-Opening-Preview.apk' > build/GoAnime-Opening-Preview.apk.sha256
           printf 'sha256=%s\nsize=%s\n' "$sha" "$size" >> "$GITHUB_OUTPUT"
 
-      - name: Upload compact arm64 preview APK
+      - name: Upload compact preview APK
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: goanime-opening-arm64-${{ steps.request.outputs.sha }}
+          name: goanime-opening-preview-${{ steps.request.outputs.sha }}
           path: |
-            private-source/build/GoAnime-Opening-Preview-arm64.apk
-            private-source/build/GoAnime-Opening-Preview-arm64.apk.sha256
+            private-source/build/GoAnime-Opening-Preview.apk
+            private-source/build/GoAnime-Opening-Preview.apk.sha256
           retention-days: 7
           compression-level: 9
           if-no-files-found: error
