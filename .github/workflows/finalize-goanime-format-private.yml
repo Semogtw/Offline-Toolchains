@@ -175,6 +175,7 @@ jobs:
             test/controllers/media \
             test/architecture
           flutter test --no-pub test/services/manga/manga_request_scheduler_test.dart
+          flutter test --no-pub test/services/manga/manga_source_runtime_health_test.dart
           flutter test --no-pub test/services/manga/download
           flutter test --no-pub test/services/manga/offline
           flutter test --no-pub test/services/manga/archive
