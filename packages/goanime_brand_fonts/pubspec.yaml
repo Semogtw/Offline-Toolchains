@@ -1,0 +1,30 @@
+name: goanime_brand_fonts
+description: Deterministic locally bundled Epilogue and Manrope subset for GoAnime Mobile.
+version: 1.0.0
+publish_to: none
+environment:
+  sdk: ">=3.10.0 <4.0.0"
+dependencies:
+  flutter:
+    sdk: flutter
+flutter:
+  assets:
+    - assets/licenses/Epilogue-OFL.txt
+    - assets/licenses/Manrope-OFL.txt
+  fonts:
+    - family: Epilogue
+      fonts:
+        - asset: assets/fonts/Epilogue-ExtraBold.ttf
+          weight: 800
+        - asset: assets/fonts/Epilogue-Black.ttf
+          weight: 900
+    - family: Manrope
+      fonts:
+        - asset: assets/fonts/Manrope-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Manrope-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/Manrope-Bold.ttf
+          weight: 700
+        - asset: assets/fonts/Manrope-ExtraBold.ttf
+          weight: 800
