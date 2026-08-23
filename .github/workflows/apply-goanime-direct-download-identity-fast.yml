@@ -1,0 +1,162 @@
+name: Apply GoAnime direct download identity fast
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-direct-download-identity-fast/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-direct-download-identity-fast
+  cancel-in-progress: true
+
+jobs:
+  apply:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout trusted request
+        uses: actions/checkout@v6
+        with:
+          path: trusted
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve request
+        id: req
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="$(git -C trusted diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-direct-download-identity-fast/*.request' | head -1)"
+          test -n "$file"
+          read -r project branch sha < "trusted/$file"
+          test "$project" = goanime
+          test "$branch" = fix/post-10-of-10-hardening-20260823
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact GoAnime head
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.req.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 21
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify branch did not move
+        working-directory: source
+        shell: bash
+        env:
+          TARGET: ${{ steps.req.outputs.branch }}
+          EXPECTED: ${{ steps.req.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          test "$(git ls-remote origin "refs/heads/$TARGET" | awk '{print $1}')" = "$EXPECTED"
+
+      - name: Apply representation fix
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def once(path, old, new):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              if text.count(old) != 1:
+                  raise SystemExit(f'anchor mismatch: {path}')
+              p.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          http = 'lib/services/download/download_queue_manager_http.dart'
+          once(http,
+              "      final request = http.Request('GET', Uri.parse(resolvedSource.url));\n      request.headers.addAll(resolvedSource.headers);\n",
+              "      final request = http.Request('GET', Uri.parse(resolvedSource.url));\n      request.headers.addAll(resolvedSource.headers);\n      // Range offsets, Content-Length and stored bytes must describe the same\n      // representation. Prevent transparent gzip from changing byte counts.\n      request.headers[HttpHeaders.acceptEncodingHeader] = 'identity';\n")
+          once(http,
+              "      if (resumeOffset > 0 &&\n          resumeValidator != null &&\n          response.statusCode != HttpStatus.ok) {\n",
+              "      final contentEncoding = response.headers[HttpHeaders.contentEncodingHeader]\n          ?.trim();\n      if (contentEncoding != null &&\n          contentEncoding.isNotEmpty &&\n          contentEncoding.toLowerCase() != 'identity') {\n        throw const InvalidDownloadRangeFailure(\n          'Direct download response used content encoding incompatible with byte-accurate storage.',\n        );\n      }\n\n      if (resumeOffset > 0 &&\n          resumeValidator != null &&\n          response.statusCode != HttpStatus.ok) {\n")
+
+          test = 'test/services/download/download_local_http_server_contract_test.dart'
+          once(test,
+              "    server.listen((request) async {\n      expect(request.headers.value(HttpHeaders.rangeHeader), isNull);\n      final response = request.response;\n",
+              "    server.listen((request) async {\n      expect(request.headers.value(HttpHeaders.rangeHeader), isNull);\n      expect(request.headers.value(HttpHeaders.acceptEncodingHeader), 'identity');\n      final response = request.response;\n")
+          marker = "  test('resumes a partial file with a real HTTP 206 response', () async {\n"
+          addition = r'''  test('rejects non-identity direct responses before writing bytes', () async {
+    final body = payload.codeUnits;
+    server.listen((request) async {
+      expect(request.headers.value(HttpHeaders.acceptEncodingHeader), 'identity');
+      final response = request.response;
+      response.headers.set(HttpHeaders.contentEncodingHeader, 'gzip');
+      response.headers.contentLength = body.length;
+      response.add(body);
+      await response.close();
+    });
+
+    final item = await _download(
+      server: server,
+      storage: storage,
+      root: tempDir,
+      payload: body,
+      expectedStatus: DownloadStatus.failed,
+    );
+    expect(item.error, contains('content encoding'));
+  });
+
+'''
+          once(test, marker, addition + marker)
+
+          doc = 'docs/checkpoint_69_post_merge_hardening_2026-08-23.md'
+          once(doc,
+              "Regressões adicionadas cobrem explicitamente `50/100`, `98/100`, `99/100`, `100/100`, estado inválido e o modo estrito usado por resume validado.\n",
+              "Regressões adicionadas cobrem explicitamente `50/100`, `98/100`, `99/100`, `100/100`, estado inválido e o modo estrito usado por resume validado. Downloads diretos também forçam `Accept-Encoding: identity` e rejeitam respostas com representação codificada, mantendo `Content-Length`, `Range` e bytes persistidos na mesma representação.\n")
+          PY
+          git diff --check
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Validate focused delta
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          dart format lib/services/download/download_queue_manager_http.dart test/services/download/download_local_http_server_contract_test.dart >/dev/null
+          git diff --check
+          python3 -m unittest discover -s tools/tests -p 'test_*.py'
+          flutter test --no-pub --concurrency=1 test/services/download/download_completion_policy_test.dart test/services/download/download_local_http_server_contract_test.dart test/services/download_service_test.dart
+
+      - name: Commit and push exact branch
+        working-directory: source
+        shell: bash
+        env:
+          TARGET: ${{ steps.req.outputs.branch }}
+          EXPECTED: ${{ steps.req.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin "refs/heads/$TARGET" | awk '{print $1}')" = "$EXPECTED"
+          git config user.name "goanime-toolchains[bot]"
+          git config user.email "goanime-toolchains[bot]@users.noreply.github.com"
+          git add lib/services/download/download_queue_manager_http.dart test/services/download/download_local_http_server_contract_test.dart docs/checkpoint_69_post_merge_hardening_2026-08-23.md
+          git commit -m "fix(download): require byte-stable direct transfers"
+          git push origin "HEAD:refs/heads/$TARGET"
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/source" "$GITHUB_WORKSPACE/trusted"
