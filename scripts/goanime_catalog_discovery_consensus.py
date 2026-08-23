@@ -192,6 +192,17 @@ def build_consensus(
         reports = list(reports_by_uid.values())
         if len(reports) < min_reporters:
             continue
+
+        sub_reporter_count = sum(1 for report in reports if report.has_sub)
+        dub_reporter_count = sum(1 for report in reports if report.has_dub)
+        has_sub = sub_reporter_count >= min_reporters
+        has_dub = dub_reporter_count >= min_reporters
+        # Total group quorum is not sufficient to promote a mode. For example,
+        # one SUB-only report plus one DUB-only report must not globally claim
+        # either mode until that specific mode has independent corroboration.
+        if not has_sub and not has_dub:
+            continue
+
         latest = max(report.verified_at for report in reports)
         candidates.append(
             {
@@ -201,10 +212,12 @@ def build_consensus(
                 "providerId": provider_id,
                 "providerName": _pick_text(report.provider_name for report in reports),
                 "providerTitle": _pick_text(report.provider_title for report in reports),
-                "hasSub": any(report.has_sub for report in reports),
-                "hasDub": any(report.has_dub for report in reports),
+                "hasSub": has_sub,
+                "hasDub": has_dub,
                 "verifiedAt": latest.isoformat().replace("+00:00", "Z"),
                 "reporterCount": len(reports),
+                "subReporterCount": sub_reporter_count,
+                "dubReporterCount": dub_reporter_count,
             }
         )
 
