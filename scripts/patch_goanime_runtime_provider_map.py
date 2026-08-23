@@ -165,7 +165,7 @@ APK release.
 SUB and DUB are promoted independently: each mode requires the configured
 reporter quorum. Total candidate quorum alone cannot promote either mode.
 '''
-        doc.write_text(text + '\n', encoding='utf-8')
+        doc.write_text(text.rstrip() + '\n', encoding='utf-8')
     return 0
 
 
