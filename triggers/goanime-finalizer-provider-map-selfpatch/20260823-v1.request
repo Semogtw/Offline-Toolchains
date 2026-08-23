@@ -1,0 +1,1 @@
+reason=Publish mal_provider_availability_map.json atomically with runtime SQLite artifacts after successful global catalog finalization.
