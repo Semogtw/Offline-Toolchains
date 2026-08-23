@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 1,
+  "exitCode": 1,
+  "tail": "\n::group::❌ metadata seed rejects an invalid manifest URL before request (failed)\nTimeoutException after 0:00:30.000000: Test timed out after 30 seconds. See https://pub.dev/packages/test#timeouts\ndart:isolate  _RawReceivePort._handleMessage\n::endgroup::\n::group::❌ metadata seed rejects embedded URL credentials before asset request (failed)\nTimeoutException after 0:00:30.000000: Test timed out after 30 seconds. See https://pub.dev/packages/test#timeouts\ndart:isolate  _RawReceivePort._handleMessage\n::endgroup::\n✅ runtime updater rejects non-HTTP database URLs before download\n\n::error::1 test passed, 2 failed.\n"
+}
