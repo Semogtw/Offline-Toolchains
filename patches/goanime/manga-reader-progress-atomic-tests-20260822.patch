@@ -1,11 +1,11 @@
 diff --git a/test/services/manga/storage/manga_library_progress_repository_test.dart b/test/services/manga/storage/manga_library_progress_repository_test.dart
-index 235aac9a..aa567df0 100644
+index e20d1f48..42631e1a 100644
 --- a/test/services/manga/storage/manga_library_progress_repository_test.dart
 +++ b/test/services/manga/storage/manga_library_progress_repository_test.dart
-@@ -82,5 +82,37 @@ void main() {
+@@ -89,6 +89,38 @@ void main() {
      expect(progress.bookmark!.pageCount, 42);
    });
-+
+ 
 +  test('reading progress writes bookmark and logical state together', () async {
 +    final readAt = DateTime.utc(2026, 8, 22, 18, 30);
 +
@@ -37,25 +37,27 @@ index 235aac9a..aa567df0 100644
 +    expect(progress.bookmark!.pageIndex, 7);
 +    expect(progress.bookmark!.pageCount, 20);
 +  });
- 
++
    test('removing a work from library preserves canonical progress', () async {
      await libraryRepository.setStatus('mw_test', MangaLibraryStatus.reading);
+     await progressRepository.saveLogicalProgress(
 diff --git a/test/widgets/manga/manga_reader_screen_test.dart b/test/widgets/manga/manga_reader_screen_test.dart
-index b519a860..7dd4c0cf 100644
+index 9fbd72ea..fec50ea6 100644
 --- a/test/widgets/manga/manga_reader_screen_test.dart
 +++ b/test/widgets/manga/manga_reader_screen_test.dart
-@@ -124,5 +124,10 @@ void main() {
+@@ -131,6 +131,11 @@ void main() {
      );
      expect(find.text('Try again'), findsOneWidget);
-+
+ 
 +    expect(
 +      await progress.progressForChapter('work-1', 'chapter-1'),
 +      isNull,
 +    );
- 
++
      await tester.tap(find.text('Try again'));
      await tester.pumpAndSettle();
-@@ -134,5 +139,14 @@ void main() {
+ 
+@@ -139,6 +144,15 @@ void main() {
        find.text('This offline package could not be opened.'),
        findsNothing,
      );
@@ -70,3 +72,4 @@ index b519a860..7dd4c0cf 100644
 +    expect(saved.bookmark!.pageCount, 1);
    });
  }
+ 
