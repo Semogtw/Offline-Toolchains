@@ -1,0 +1,72 @@
+diff --git a/test/services/manga/storage/manga_library_progress_repository_test.dart b/test/services/manga/storage/manga_library_progress_repository_test.dart
+index 235aac9a..aa567df0 100644
+--- a/test/services/manga/storage/manga_library_progress_repository_test.dart
++++ b/test/services/manga/storage/manga_library_progress_repository_test.dart
+@@ -82,6 +82,40 @@ void main() {
+     expect(progress.bookmark!.pageCount, 42);
+   });
++
++  test('reading progress writes bookmark and logical state together', () async {
++    final readAt = DateTime.utc(2026, 8, 22, 18, 30);
++
++    await progressRepository.saveReadingProgress(
++      workId: 'mw_test',
++      canonicalChapterId: 'mc_1',
++      bookmark: MangaVariantBookmark(
++        sourceId: 'ptbr.atomic',
++        mangaId: 'work-atomic',
++        chapterId: 'chapter-atomic-1',
++        pageIndex: 7,
++        pageCount: 20,
++      ),
++      completed: true,
++      lastReadAt: readAt,
++    );
++
++    final progress = await progressRepository.progressForChapter(
++      'mw_test',
++      'mc_1',
++    );
++
++    expect(progress, isNotNull);
++    expect(progress!.completed, isTrue);
++    expect(progress.lastReadAt, readAt);
++    expect(progress.bookmark!.sourceId, 'ptbr.atomic');
++    expect(progress.bookmark!.mangaId, 'work-atomic');
++    expect(progress.bookmark!.chapterId, 'chapter-atomic-1');
++    expect(progress.bookmark!.pageIndex, 7);
++    expect(progress.bookmark!.pageCount, 20);
++  });
+ 
+   test('removing a work from library preserves canonical progress', () async {
+     await libraryRepository.setStatus('mw_test', MangaLibraryStatus.reading);
+diff --git a/test/widgets/manga/manga_reader_screen_test.dart b/test/widgets/manga/manga_reader_screen_test.dart
+index b519a860..7dd4c0cf 100644
+--- a/test/widgets/manga/manga_reader_screen_test.dart
++++ b/test/widgets/manga/manga_reader_screen_test.dart
+@@ -124,6 +124,11 @@ void main() {
+     );
+     expect(find.text('Try again'), findsOneWidget);
++
++    expect(
++      await progress.progressForChapter('work-1', 'chapter-1'),
++      isNull,
++    );
+ 
+     await tester.tap(find.text('Try again'));
+     await tester.pumpAndSettle();
+@@ -134,6 +139,17 @@ void main() {
+       find.text('This offline package could not be opened.'),
+       findsNothing,
+     );
++
++    final saved = await progress.progressForChapter('work-1', 'chapter-1');
++    expect(saved, isNotNull);
++    expect(saved!.bookmark, isNotNull);
++    expect(saved.bookmark!.sourceId, 'local.test');
++    expect(saved.bookmark!.mangaId, 'work-source-1');
++    expect(saved.bookmark!.chapterId, 'chapter-source-1');
++    expect(saved.bookmark!.pageIndex, 0);
++    expect(saved.bookmark!.pageCount, 1);
+   });
+ }
