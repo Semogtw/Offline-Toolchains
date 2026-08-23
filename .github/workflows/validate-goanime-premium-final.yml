@@ -1,0 +1,203 @@
+name: Validate GoAnime premium final
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-premium-final/*.request'
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_VERSION: '3.44.1'
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve exact request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-premium-final/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project sha < "trusted-source/$request"
+          test "$project" = goanime
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify exact source
+        working-directory: private-source
+        env:
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Resolve deterministic dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          git diff --exit-code -- pubspec.lock
+          grep -q '^  goanime_brand_fonts:' pubspec.lock
+          grep -q 'ref: cb00271f6e51bb971504b499939781895832a7f1' pubspec.lock
+          grep -q 'resolved-ref: cb00271f6e51bb971504b499939781895832a7f1' pubspec.lock
+          ! grep -q '^  google_fonts:' pubspec.lock
+
+      - name: Check premium touched files
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format --output=none --set-exit-if-changed \
+            lib/app/bootstrap.dart \
+            lib/theme/app_theme.dart \
+            lib/widgets/goanime_opening.dart \
+            test/widgets/goanime_opening_test.dart \
+            test/widgets/frontend_foundation_test.dart \
+            test/widget_test.dart
+          git diff --check
+          python3 -m unittest tools.tests.test_bundled_fonts
+
+      - name: Analyze premium startup integration
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          for target in \
+            lib/app/bootstrap.dart \
+            lib/theme/app_theme.dart \
+            lib/widgets/goanime_opening.dart \
+            test/widgets/goanime_opening_test.dart; do
+            dart analyze "$target"
+          done
+
+      - name: Run focused startup regressions
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter test --no-pub test/widgets/goanime_opening_test.dart
+          flutter test --no-pub test/widget_test.dart
+          flutter test --no-pub test/widgets/frontend_foundation_test.dart
+
+      - name: Run complete Flutter test suite
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter test --no-pub --reporter expanded 2>&1 | tee "$RUNNER_TEMP/goanime-premium-final-full-test.log"
+
+      - name: Build Android debug APK
+        working-directory: private-source
+        run: flutter build apk --debug --no-pub
+
+      - name: Verify APK font payload and output
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk=build/app/outputs/flutter-apk/app-debug.apk
+          test -s "$apk"
+          listing="$(unzip -Z1 "$apk")"
+          for font in \
+            Epilogue-ExtraBold.ttf \
+            Epilogue-Black.ttf \
+            Manrope-Regular.ttf \
+            Manrope-SemiBold.ttf \
+            Manrope-Bold.ttf \
+            Manrope-ExtraBold.ttf; do
+            grep -q "$font" <<<"$listing"
+          done
+          ! grep -qi 'google_fonts' <<<"$listing"
+          sha256sum "$apk" | tee "$RUNNER_TEMP/goanime-premium-final-apk.sha256"
+
+      - name: Upload validated premium startup APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-premium-final-${{ steps.request.outputs.sha }}
+          path: private-source/build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Publish sanitized diagnostic and receipt
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.request.outputs.sha }}
+          STATE: ${{ job.status }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_log_path=""
+          raw_log="$RUNNER_TEMP/goanime-premium-final-full-test.log"
+          if test -s "$raw_log"; then
+            test_log_path="results/goanime-premium-final/$GITHUB_RUN_ID-flutter-test.log"
+            sanitized="$RUNNER_TEMP/goanime-premium-final-full-test-sanitized.log"
+            tail -n 1000 "$raw_log" \
+              | sed -E "s#${GITHUB_WORKSPACE}#<workspace>#g; s#${HOME}#<home>#g; s/(ghp_|github_pat_)[A-Za-z0-9_]+/<redacted-token>/g" \
+              > "$sanitized"
+            encoded_log="$(base64 -w0 < "$sanitized")"
+            gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$test_log_path" \
+              -f message="ci(result): preserve GoAnime premium final Flutter log $GITHUB_RUN_ID" \
+              -f content="$encoded_log" >/dev/null
+          fi
+          apk_sha=""
+          if test -s "$RUNNER_TEMP/goanime-premium-final-apk.sha256"; then
+            apk_sha="$(cut -d' ' -f1 < "$RUNNER_TEMP/goanime-premium-final-apk.sha256")"
+          fi
+          body="$(jq -cn --arg sha "$TARGET_SHA" --arg state "$STATE" --arg testLogPath "$test_log_path" --arg apkSha256 "$apk_sha" --argjson runId "$GITHUB_RUN_ID" '{schemaVersion:1,sourceSha:$sha,state:$state,runId:$runId,testLogPath:$testLogPath,apkSha256:$apkSha256}')"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          path="results/goanime-premium-final/$GITHUB_RUN_ID.json"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" \
+            -f message="ci(result): record GoAnime premium final validation $GITHUB_RUN_ID" \
+            -f content="$encoded" >/dev/null
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
