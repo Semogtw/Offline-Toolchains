@@ -1,11 +1,11 @@
 {
-  "conclusion": "success",
-  "run_id": 32325286996,
-  "run_number": 7,
+  "conclusion": null,
+  "run_id": 32660300546,
+  "run_number": 8,
   "schema_version": 1,
-  "source_ref": "403795edabdd7ea46d2f9f6f1795d669a7381ae9",
-  "status": "completed",
-  "trigger_sha": "813de595f55c2f7940d5d6659b04dca2fc24b804",
-  "updated_at": "2026-08-20T02:39:03Z",
+  "source_ref": "87991b56c11c13a6b44d57c6173af11cde7c4c7d",
+  "status": "queued",
+  "trigger_sha": "f5fd4cef764555eb62bc2696d6c6f94f2159f543",
+  "updated_at": "2026-08-23T19:08:37Z",
   "workflow": "Prepare verified GoAnime formatting fix"
 }
