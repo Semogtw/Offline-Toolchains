@@ -7,7 +7,7 @@ on:
       - 'triggers/goanime-global-cache-validation/*.request'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: goanime-global-cache-validation
@@ -182,3 +182,38 @@ jobs:
           with urllib.request.urlopen(request, timeout=30) as response:
               assert response.status in (200, 201)
           PY
+
+      - name: Persist public validation report
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.request.outputs.source_hint }}
+          RESULT: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          source_sha="${SOURCE_SHA:-unknown-${GITHUB_RUN_ID}}"
+          report_path="reports/goanime-global-cache/${source_sha}.json"
+          report_file="$RUNNER_TEMP/goanime-global-cache-report.json"
+          python - <<'PY' > "$report_file"
+          import json, os
+          print(json.dumps({
+              'schemaVersion': 1,
+              'sourceSha': os.environ.get('SOURCE_SHA') or None,
+              'result': os.environ.get('RESULT', 'failure'),
+              'runId': os.environ['GITHUB_RUN_ID'],
+              'runUrl': f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+          }, indent=2))
+          PY
+          encoded="$(base64 -w0 < "$report_file")"
+          existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$report_path" --jq .sha 2>/dev/null || true)"
+          args=(
+            --method PUT
+            "repos/$GITHUB_REPOSITORY/contents/$report_path"
+            -f "message=ci(goanime): record global cache validation ${source_sha}"
+            -f "content=$encoded"
+            -f "branch=main"
+          )
+          if [ -n "$existing" ]; then
+            args+=( -f "sha=$existing" )
+          fi
+          gh api "${args[@]}" >/dev/null
