@@ -129,7 +129,10 @@ jobs:
 
       - name: Run complete Flutter test suite
         working-directory: private-source
-        run: flutter test --no-pub
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter test --no-pub --reporter expanded 2>&1 | tee "$RUNNER_TEMP/goanime-complete-flutter-test.log"
 
       - name: Build Android debug APK
         working-directory: private-source
@@ -172,7 +175,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          body="$(jq -cn --arg sha "$TARGET_SHA" --arg state "$STATE" --argjson runId "$GITHUB_RUN_ID" '{schemaVersion:1,sourceSha:$sha,state:$state,runId:$runId}')"
+          test_log_path=""
+          raw_log="$RUNNER_TEMP/goanime-complete-flutter-test.log"
+          if test -s "$raw_log"; then
+            test_log_path="results/goanime-premium-startup/$GITHUB_RUN_ID-flutter-test.log"
+            sanitized="$RUNNER_TEMP/goanime-complete-flutter-test-sanitized.log"
+            tail -n 800 "$raw_log" \
+              | sed -E "s#${GITHUB_WORKSPACE}#<workspace>#g; s#${HOME}#<home>#g; s/(ghp_|github_pat_)[A-Za-z0-9_]+/<redacted-token>/g" \
+              > "$sanitized"
+            encoded_log="$(base64 -w0 < "$sanitized")"
+            gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$test_log_path" \
+              -f message="ci(result): preserve GoAnime Flutter test log $GITHUB_RUN_ID" \
+              -f content="$encoded_log" >/dev/null
+          fi
+          body="$(jq -cn --arg sha "$TARGET_SHA" --arg state "$STATE" --arg testLogPath "$test_log_path" --argjson runId "$GITHUB_RUN_ID" '{schemaVersion:2,sourceSha:$sha,state:$state,runId:$runId,testLogPath:$testLogPath}')"
           encoded="$(printf '%s\n' "$body" | base64 -w0)"
           path="results/goanime-premium-startup/$GITHUB_RUN_ID.json"
           gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" \
