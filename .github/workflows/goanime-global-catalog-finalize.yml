@@ -1,0 +1,325 @@
+name: GoAnime Global Catalog Finalize
+
+on:
+  workflow_run:
+    workflows: ["GoAnime Scrapling provider cache"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: GoAnime ref to validate; publication is restricted to main
+        required: true
+        default: main
+      publish_runtime:
+        description: Publish runtime SQLite/manifest to R2 when configured
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-global-catalog-finalize
+  cancel-in-progress: true
+
+jobs:
+  finalize:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      FLUTTER_CHANNEL: stable
+      FLUTTER_VERSION: 3.44.1
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          persist-credentials: false
+          show-progress: false
+
+      - name: Run trusted consensus unit tests
+        working-directory: trusted-source
+        run: python -m unittest tests/test_goanime_catalog_discovery_consensus.py -v
+
+      - name: Resolve target and publication policy
+        id: policy
+        shell: bash
+        env:
+          DISPATCH_TARGET: ${{ github.event.inputs.target_ref || '' }}
+          DISPATCH_PUBLISH_RUNTIME: ${{ github.event.inputs.publish_runtime || 'false' }}
+          READ_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          RUNTIME_BASE_URL: ${{ secrets.RUNTIME_DATABASE_PUBLIC_BASE_URL }}
+          UPDATE_MANIFEST_URL: ${{ secrets.UPDATE_MANIFEST_URL }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.GOANIME_FIREBASE_SERVICE_ACCOUNT_JSON_B64 }}
+        run: |
+          set -euo pipefail
+          test -n "$READ_TOKEN" || { echo '::error::PRIVATE_REPOSITORIES_TOKEN is required.'; exit 1; }
+
+          target="${DISPATCH_TARGET:-main}"
+          git check-ref-format --branch "$target" >/dev/null
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+
+          publish_runtime=false
+          if [ "${GITHUB_EVENT_NAME}" = 'workflow_run' ] || [ "$DISPATCH_PUBLISH_RUNTIME" = 'true' ]; then
+            publish_runtime=true
+          fi
+          echo "publish_runtime=$publish_runtime" >> "$GITHUB_OUTPUT"
+
+          if [ -n "$WRITE_TOKEN" ] && [ "$target" = 'main' ] && [ "${GITHUB_EVENT_NAME}" = 'workflow_run' ]; then
+            echo 'commit=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'commit=false' >> "$GITHUB_OUTPUT"
+          fi
+
+          base_url="${RUNTIME_BASE_URL%/}"
+          if [ -z "$base_url" ] && [ -n "$UPDATE_MANIFEST_URL" ]; then
+            case "$UPDATE_MANIFEST_URL" in
+              */latest/update.json)
+                base_url="${UPDATE_MANIFEST_URL%/update.json}"
+                ;;
+            esac
+          fi
+          echo "runtime_base_url=$base_url" >> "$GITHUB_OUTPUT"
+
+          if [ -n "$R2_ACCOUNT_ID" ] && [ -n "$R2_ACCESS_KEY_ID" ] && [ -n "$R2_SECRET_ACCESS_KEY" ] && [ -n "$R2_BUCKET" ] && [ -n "$base_url" ]; then
+            echo 'r2_configured=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'r2_configured=false' >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ -n "$FIREBASE_SERVICE_ACCOUNT" ]; then
+            echo 'firestore_configured=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'firestore_configured=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout private GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.policy.outputs.target }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Record immutable GoAnime revision
+        id: source
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          test -f tools/apply_catalog_discovery_consensus.py
+          test -f tools/build_title_availability_database.dart
+          test -f tools/build_runtime_database_manifest.dart
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install Firestore collector dependency
+        if: steps.policy.outputs.firestore_configured == 'true'
+        run: python -m pip install --disable-pip-version-check 'google-auth==2.40.3' 'requests==2.32.4'
+
+      - name: Collect playback-verified discovery consensus
+        working-directory: trusted-source
+        env:
+          GOANIME_FIREBASE_SERVICE_ACCOUNT_JSON_B64: ${{ secrets.GOANIME_FIREBASE_SERVICE_ACCOUNT_JSON_B64 }}
+        run: >-
+          python scripts/goanime_catalog_discovery_consensus.py
+          --output ../private-source/build/catalog_discovery_consensus.json
+          --min-reporters 2
+          --max-age-days 14
+
+      - name: Validate provider base before community overlay
+        working-directory: private-source
+        run: >-
+          python tools/scrapling_provider_pipeline/validate_provider_cache.py
+          --repo-root .
+          --allow-preserved
+
+      - name: Apply safe discovery consensus overlay
+        working-directory: private-source
+        run: >-
+          python tools/apply_catalog_discovery_consensus.py
+          --repo-root .
+          --consensus build/catalog_discovery_consensus.json
+
+      - name: Run promotion unit tests
+        working-directory: private-source
+        run: python -m unittest tools/tests/test_apply_catalog_discovery_consensus.py -v
+
+      - name: Validate promoted JSON shapes
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool assets/data/available_animes.json >/dev/null
+          python -m json.tool assets/data/available_anime_modes.json >/dev/null
+          python -m json.tool assets/data/mal_provider_availability_map.json >/dev/null
+          python -m json.tool build/catalog_discovery_consensus.json >/dev/null
+          python -m json.tool build/catalog_discovery_promotion_summary.json >/dev/null
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Install GoAnime dependencies
+        working-directory: private-source
+        run: flutter pub get --enforce-lockfile
+
+      - name: Validate client discovery reporter
+        working-directory: private-source
+        run: flutter test --no-pub test/services/catalog_discovery_reporting_service_test.dart
+
+      - name: Build title availability SQLite
+        working-directory: private-source
+        run: dart run tools/build_title_availability_database.dart
+
+      - name: Build runtime database manifest
+        working-directory: private-source
+        env:
+          RUNTIME_DATABASE_PUBLIC_BASE_URL: ${{ steps.policy.outputs.runtime_base_url }}
+        run: dart run tools/build_runtime_database_manifest.dart
+
+      - name: Validate runtime publication outputs
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s assets/data/title_availability.db
+          test -s assets/data/title_availability.db.sha256
+          test -s dist/runtime_database_cache/runtime_database_manifest.json
+          test -s dist/runtime_database_cache/title_availability.db
+          test -s dist/runtime_database_cache/franchise_availability.db
+          python -m json.tool dist/runtime_database_cache/runtime_database_manifest.json >/dev/null
+          expected="$(tr -d '[:space:]' < assets/data/title_availability.db.sha256)"
+          actual="$(sha256sum assets/data/title_availability.db | awk '{print $1}')"
+          test "$expected" = "$actual"
+
+      - name: Verify repository diff scope
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          allowed='^(assets/data/(available_animes\.json|available_anime_modes\.json|mal_provider_availability_map\.json|title_availability\.db|title_availability\.db\.sha256|franchise_availability\.db\.sha256))$'
+          changed="$(git status --porcelain=v1 | sed -E 's/^.. //' | grep -Ev '^(build|dist)/' || true)"
+          unexpected="$(printf '%s\n' "$changed" | sed '/^$/d' | grep -Ev "$allowed" || true)"
+          if [ -n "$unexpected" ]; then
+            echo '::error::Unexpected generated repository files:'
+            printf '%s\n' "$unexpected"
+            exit 1
+          fi
+
+      - name: Commit validated global catalog artifacts
+        if: steps.policy.outputs.commit == 'true'
+        working-directory: private-source
+        env:
+          WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          EXPECTED_SHA: ${{ steps.source.outputs.sha }}
+          TARGET_REF: ${{ steps.policy.outputs.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '4189828+github-actions[bot]@users.noreply.github.com'
+          git add \
+            assets/data/available_animes.json \
+            assets/data/available_anime_modes.json \
+            assets/data/mal_provider_availability_map.json \
+            assets/data/title_availability.db \
+            assets/data/title_availability.db.sha256 \
+            assets/data/franchise_availability.db.sha256
+          if git diff --cached --quiet; then
+            echo 'No global catalog artifact changes to commit.'
+            exit 0
+          fi
+          git diff --cached --check
+          git commit -m 'chore(cache): publish global runtime catalog'
+          auth="$(printf 'x-access-token:%s' "$WRITE_TOKEN" | base64 -w0)"
+          extraheader="AUTHORIZATION: basic $auth"
+          git -c http.https://github.com/.extraheader="$extraheader" fetch origin "$TARGET_REF"
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_SHA" || {
+            echo '::error::GoAnime target advanced during finalization; refusing stale push.'
+            exit 1
+          }
+          git -c http.https://github.com/.extraheader="$extraheader" push origin "HEAD:$TARGET_REF"
+          unset auth extraheader WRITE_TOKEN
+
+      - name: Publish runtime databases to R2
+        if: steps.policy.outputs.publish_runtime == 'true' && steps.policy.outputs.r2_configured == 'true'
+        working-directory: private-source
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: 'true'
+          R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          aws s3 cp dist/runtime_database_cache/runtime_database_manifest.json "s3://${R2_BUCKET}/latest/runtime_database_manifest.json" --endpoint-url "$endpoint"
+          aws s3 cp dist/runtime_database_cache/franchise_availability.db "s3://${R2_BUCKET}/latest/franchise_availability.db" --endpoint-url "$endpoint"
+          aws s3 cp dist/runtime_database_cache/title_availability.db "s3://${R2_BUCKET}/latest/title_availability.db" --endpoint-url "$endpoint"
+
+      - name: Warn when runtime publication is requested but unavailable
+        if: steps.policy.outputs.publish_runtime == 'true' && steps.policy.outputs.r2_configured != 'true'
+        run: echo '::warning::Runtime publication requested, but R2 credentials/public base URL are incomplete in Offline-Toolchains.'
+
+      - name: Upload catalog finalization evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-global-catalog-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 7
+          path: |
+            private-source/build/catalog_discovery_consensus.json
+            private-source/build/catalog_discovery_promotion_summary.json
+            private-source/dist/runtime_database_cache/runtime_database_manifest.json
+            private-source/dist/runtime_database_cache/title_availability.db
+            private-source/assets/data/title_availability.db.sha256
+
+      - name: Write workflow summary
+        if: always()
+        working-directory: private-source
+        shell: bash
+        env:
+          TARGET_REF: ${{ steps.policy.outputs.target }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          FIRESTORE_CONFIGURED: ${{ steps.policy.outputs.firestore_configured }}
+          R2_CONFIGURED: ${{ steps.policy.outputs.r2_configured }}
+          PUBLISH_RUNTIME: ${{ steps.policy.outputs.publish_runtime }}
+        run: |
+          {
+            echo '## GoAnime global catalog finalization'
+            echo
+            echo "- target: \`$TARGET_REF\`"
+            echo "- source SHA: \`$SOURCE_SHA\`"
+            echo "- Firestore consensus configured: \`$FIRESTORE_CONFIGURED\`"
+            echo "- runtime publication requested: \`$PUBLISH_RUNTIME\`"
+            echo "- R2 configured: \`$R2_CONFIGURED\`"
+            if [ -f build/catalog_discovery_promotion_summary.json ]; then
+              echo '- promotion summary:'
+              echo '```json'
+              cat build/catalog_discovery_promotion_summary.json
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
