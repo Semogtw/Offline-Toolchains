@@ -1,0 +1,136 @@
+name: GoAnime global catalog mode-quorum hardening
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-global-catalog-mode-quorum/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-global-catalog-mode-quorum
+  cancel-in-progress: true
+
+jobs:
+  harden:
+    name: Harden discovery quorum per mode
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve exact private revision
+        id: request
+        env:
+          GITHUB_EVENT_NAME: push
+        run: |
+          set -euo pipefail
+          python scripts/goanime_resolve_request.py \
+            --request-dir triggers/goanime-global-catalog-mode-quorum \
+            --workspace .
+
+      - name: Require private write token
+        env:
+          WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: test -n "$WRITE_TOKEN"
+
+      - name: Checkout exact GoAnime candidate
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.source_hint }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify immutable source revision
+        working-directory: private-source
+        env:
+          EXPECTED_SHA: ${{ steps.request.outputs.source_hint }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Apply per-mode quorum validation
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          script = Path('tools/apply_catalog_discovery_consensus.py')
+          text = script.read_text(encoding='utf-8')
+          old = '''    if candidate.get("hasSub") is not True and candidate.get("hasDub") is not True:\n        return False\n    reporter_count = candidate.get("reporterCount")\n    if not isinstance(reporter_count, int) or reporter_count < min_reporters:\n        return False\n'''
+          new = '''    has_sub = candidate.get("hasSub") is True\n    has_dub = candidate.get("hasDub") is True\n    if not has_sub and not has_dub:\n        return False\n    reporter_count = candidate.get("reporterCount")\n    if not isinstance(reporter_count, int) or reporter_count < min_reporters:\n        return False\n    sub_reporter_count = candidate.get("subReporterCount")\n    dub_reporter_count = candidate.get("dubReporterCount")\n    if (\n        not isinstance(sub_reporter_count, int)\n        or not isinstance(dub_reporter_count, int)\n        or sub_reporter_count < 0\n        or dub_reporter_count < 0\n        or sub_reporter_count > reporter_count\n        or dub_reporter_count > reporter_count\n    ):\n        return False\n    if has_sub != (sub_reporter_count >= min_reporters):\n        return False\n    if has_dub != (dub_reporter_count >= min_reporters):\n        return False\n'''
+          if old not in text:
+              raise SystemExit('promotion validation block not found')
+          script.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          test = Path('tools/tests/test_apply_catalog_discovery_consensus.py')
+          text = test.read_text(encoding='utf-8')
+          old = '''                    "hasSub": True,\n                    "hasDub": False,\n                    "verifiedAt": verified_at.isoformat().replace("+00:00", "Z"),\n                    "reporterCount": reporters,\n'''
+          new = '''                    "hasSub": True,\n                    "hasDub": False,\n                    "verifiedAt": verified_at.isoformat().replace("+00:00", "Z"),\n                    "reporterCount": reporters,\n                    "subReporterCount": reporters,\n                    "dubReporterCount": 0,\n'''
+          if old not in text:
+              raise SystemExit('test consensus candidate block not found')
+          text = text.replace(old, new, 1)
+          marker = '''    def test_rejects_stale_candidate(self) -> None:\n'''
+          extra = '''    def test_rejects_mode_without_independent_quorum(self) -> None:\n        consensus = self._consensus(verified_at=self.now - timedelta(minutes=10))\n        candidate = consensus["candidates"][0]\n        candidate["hasDub"] = True\n        candidate["dubReporterCount"] = 1\n        result = module.apply_consensus(\n            consensus=consensus,\n            available=[],\n            modes={},\n            provider_map=self._provider_map(),\n            now=self.now,\n        )\n\n        self.assertEqual(result["summary"]["promoted"], 0)\n        self.assertEqual(result["summary"]["rejectedInvalid"], 1)\n\n'''
+          if marker not in text:
+              raise SystemExit('stale candidate marker not found')
+          test.write_text(text.replace(marker, extra + marker, 1), encoding='utf-8')
+          PY
+          git diff --check
+
+      - name: Run promotion tests
+        working-directory: private-source
+        run: python -m unittest tools/tests/test_apply_catalog_discovery_consensus.py -v
+
+      - name: Publish hardened candidate
+        id: publish
+        working-directory: private-source
+        env:
+          TARGET_BRANCH: ${{ steps.request.outputs.target_branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.source_hint }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "$TARGET_BRANCH"
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_SHA" || {
+            echo 'Candidate branch moved; refusing stale push.' >&2
+            exit 1
+          }
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tools/apply_catalog_discovery_consensus.py tools/tests/test_apply_catalog_discovery_consensus.py
+          git commit -m 'fix(catalog): require independent quorum per mode'
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+          echo "published_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Record result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.request.outputs.source_hint }}
+          PUBLISHED_SHA: ${{ steps.publish.outputs.published_sha }}
+          RESULT: ${{ job.status }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha="${SOURCE_SHA:-unknown-${GITHUB_RUN_ID}}"
+          report="$(jq -cn --arg sourceSha "$source_sha" --arg publishedSha "${PUBLISHED_SHA:-}" --arg result "$RESULT" --argjson runId "$GITHUB_RUN_ID" '{schemaVersion:1,sourceSha:$sourceSha,publishedSha:$publishedSha,result:$result,runId:$runId}')"
+          encoded="$(printf '%s\n' "$report" | base64 -w0)"
+          path="reports/goanime-global-catalog-mode-quorum/${source_sha}.json"
+          existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f "message=ci(goanime): record catalog mode quorum ${source_sha}" -f "content=$encoded" -f "branch=main")
+          if [ -n "$existing" ]; then args+=( -f "sha=$existing" ); fi
+          gh api "${args[@]}" >/dev/null
