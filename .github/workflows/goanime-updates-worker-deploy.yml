@@ -1,0 +1,104 @@
+name: GoAnime updates worker deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-updates-worker-deploy/*.request'
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: GoAnime source branch
+        required: true
+        default: main
+      source_hint:
+        description: Optional exact 40-character GoAnime source SHA
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-updates-worker-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || github.actor == github.repository_owner
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve pinned GoAnime source
+        id: request
+        shell: pwsh
+        env:
+          DISPATCH_TARGET_BRANCH: ${{ github.event.inputs.target_branch || '' }}
+          DISPATCH_SOURCE_HINT: ${{ github.event.inputs.source_hint || '' }}
+        run: >-
+          python scripts/goanime_resolve_request.py
+          --request-dir triggers/goanime-updates-worker-deploy
+          --workspace .
+          --default-branch main
+          --dispatch-target "$env:DISPATCH_TARGET_BRANCH"
+          --dispatch-source-hint "$env:DISPATCH_SOURCE_HINT"
+
+      - name: Validate credentials
+        shell: pwsh
+        env:
+          READ_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if (-not $env:READ_TOKEN) { throw 'PRIVATE_REPOSITORIES_TOKEN is required.' }
+          if (-not $env:CLOUDFLARE_ACCOUNT_ID) { throw 'CLOUDFLARE_ACCOUNT_ID is required.' }
+          if (-not $env:CLOUDFLARE_API_TOKEN) { throw 'CLOUDFLARE_API_TOKEN is required.' }
+
+      - name: Checkout private GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.source_hint || steps.request.outputs.target_branch }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify immutable source revision
+        shell: pwsh
+        working-directory: private-source
+        env:
+          EXPECTED_SHA: ${{ steps.request.outputs.source_hint }}
+        run: |
+          $sha = (git rev-parse HEAD).Trim()
+          if ($env:EXPECTED_SHA -and $sha -ne $env:EXPECTED_SHA) {
+            throw "Checked-out GoAnime revision does not match source_hint."
+          }
+          if (-not (Test-Path cloudflare/updates-worker/src/index.js)) {
+            throw 'Cloudflare Worker source is missing.'
+          }
+
+      - name: Syntax-check Worker
+        shell: pwsh
+        working-directory: private-source
+        run: node --check cloudflare/updates-worker/src/index.js
+
+      - name: Deploy Worker
+        shell: pwsh
+        working-directory: private-source
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          $bucket = if ($env:R2_BUCKET) { $env:R2_BUCKET } else { 'goanime-releases' }
+          ./tools/deploy_cloudflare_updates.ps1 -BucketName $bucket
