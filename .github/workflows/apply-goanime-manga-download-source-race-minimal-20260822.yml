@@ -100,6 +100,7 @@ jobs:
           set -euo pipefail
           flutter config --no-analytics
           flutter pub get
+          (cd packages/goanime_core && dart pub get)
           dart format lib/screens/manga/manga_downloads_screen.dart test/widgets/manga/manga_downloads_screen_test.dart >/dev/null
           git diff --check
           flutter analyze --no-pub
