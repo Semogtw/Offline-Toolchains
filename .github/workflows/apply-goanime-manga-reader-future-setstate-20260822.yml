@@ -94,6 +94,7 @@ jobs:
           set -euo pipefail
           flutter config --no-analytics
           flutter pub get
+          (cd packages/goanime_core && dart pub get)
 
       - name: Validate targeted Reader retry
         working-directory: private-source
