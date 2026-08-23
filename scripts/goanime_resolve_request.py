@@ -176,7 +176,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--request-dir", required=True)
     parser.add_argument("--workspace", type=Path, default=Path("."))
-    parser.add_argument("--default-branch", default="feat/scrapling-provider-pipeline")
+    parser.add_argument("--default-branch", default="main")
     parser.add_argument("--dispatch-target", default="")
     parser.add_argument("--dispatch-source-hint", default="")
     args = parser.parse_args()
