@@ -200,17 +200,18 @@ jobs:
         working-directory: private-source
         shell: bash
         env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          GOANIME_CATALOG_WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
           TEMP_BRANCH: ${{ steps.request.outputs.temp_branch }}
           TARGET_BRANCH: ${{ steps.request.outputs.branch }}
           EXPECTED_SHA: ${{ steps.request.outputs.sha }}
         run: |
           set -euo pipefail
-          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          test -n "$GOANIME_CATALOG_WRITE_TOKEN"
+          auth="$(printf 'x-access-token:%s' "$GOANIME_CATALOG_WRITE_TOKEN" | base64 -w0)"
           remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/GoAnime-Mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
           test "$remote_head" = "$EXPECTED_SHA"
           git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/GoAnime-Mobile.git "HEAD:refs/heads/$TEMP_BRANCH" >/dev/null
-          unset auth PRIVATE_REPOSITORIES_TOKEN
+          unset auth GOANIME_CATALOG_WRITE_TOKEN
 
       - name: Report validated formatter commit safely
         shell: bash
