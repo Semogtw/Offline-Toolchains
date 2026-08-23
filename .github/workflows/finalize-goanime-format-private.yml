@@ -96,12 +96,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          flutter analyze --no-pub lib/services/manga lib/screens/manga test/services/manga test/widgets/manga test/architecture >/dev/null
-          flutter test --no-pub test/services/manga/download >/dev/null
-          flutter test --no-pub test/services/manga/offline >/dev/null
-          flutter test --no-pub test/services/manga/archive >/dev/null
-          flutter test --no-pub test/widgets/manga >/dev/null
-          flutter test --no-pub test/architecture/manga_offline_persistence_boundary_test.dart >/dev/null
+          flutter analyze --no-pub lib/services/manga lib/screens/manga test/services/manga test/widgets/manga test/architecture
+          flutter test --no-pub test/services/manga/download
+          flutter test --no-pub test/services/manga/offline
+          flutter test --no-pub test/services/manga/archive
+          flutter test --no-pub test/widgets/manga
+          flutter test --no-pub test/architecture/manga_offline_persistence_boundary_test.dart
 
       - name: Commit formatting only
         id: commit
@@ -142,3 +142,52 @@ jobs:
         if: always()
         shell: bash
         run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
+
+  report:
+    name: Publish sanitized GoAnime formatter result
+    if: always()
+    needs: [format]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+
+    steps:
+      - name: Publish formatter run id and result
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORMAT_RESULT: ${{ needs.format.result }}
+          TOOLCHAINS_TRIGGER_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/goanime-format-report.json"
+          python3 - "$report" <<'PY'
+          import json
+          import os
+          import sys
+          from datetime import datetime, timezone
+
+          payload = {
+              "schemaVersion": 1,
+              "runId": int(os.environ["RUN_ID"]),
+              "runAttempt": int(os.environ["RUN_ATTEMPT"]),
+              "toolchainsTriggerSha": os.environ["TOOLCHAINS_TRIGGER_SHA"],
+              "formatResult": os.environ["FORMAT_RESULT"],
+              "finishedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+          }
+          with open(sys.argv[1], "w", encoding="utf-8") as stream:
+              json.dump(payload, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          PY
+          encoded="$(base64 -w0 < "$report")"
+          path="reports/goanime-format-finalize/${RUN_ID}.json"
+          gh api \
+            --method PUT \
+            "repos/${GITHUB_REPOSITORY}/contents/${path}" \
+            -f "message=ci(goanime): report formatter run ${RUN_ID}" \
+            -f "content=${encoded}" \
+            >/dev/null
