@@ -167,7 +167,10 @@ jobs:
           ref: ${{ needs.normalize.outputs.ref }}
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
-          fetch-depth: 1
+          # Project health scans 20 recent commits and needs the parent of the
+          # oldest scanned commit so a shallow boundary is never treated as a
+          # root commit. Keep this at scan window + 1.
+          fetch-depth: 21
           persist-credentials: false
           lfs: false
           submodules: false
@@ -218,93 +221,83 @@ jobs:
         working-directory: private-source
         run: flutter analyze --no-pub
 
-      - name: Test Flutter application
+      - name: Run Flutter test suite
         working-directory: private-source
         run: flutter test --no-pub
 
-      - name: Test GoAnime core
+      - name: Run core package tests
         working-directory: private-source/packages/goanime_core
         run: dart test
 
       - name: Validate release workflow invariants
         working-directory: private-source
+        shell: bash
         run: bash ./tools/validate_release_workflows.sh
 
-      - name: Build Android debug APK without publishing it
+      - name: Build Android debug APK
         working-directory: private-source
         run: flutter build apk --debug --no-pub
 
-      - name: Remove private checkout and request material
+      - name: Remove private checkout
         if: always()
         shell: bash
-        run: |
-          rm -rf "$GITHUB_WORKSPACE/private-source"
-          rm -rf "$GITHUB_WORKSPACE/trusted-source"
-          rm -f "$RUNNER_TEMP/goanime-ci-request.json"
+        run: rm -rf private-source
 
-      - name: Summarize sanitized result
-        if: always()
-        shell: bash
-        env:
-          RESULT: ${{ job.status }}
-        run: |
-          {
-            echo '## GoAnime full public-runner CI'
-            echo
-            echo "- Result: \`$RESULT\`"
-            echo '- Private repository/ref/commit details are intentionally omitted.'
-            echo '- Debug APK and private checkout were verification-only and discarded.'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  report:
-    name: Publish sanitized GoAnime CI result
+  publish-result:
+    name: Publish sanitized full-CI result
     if: always()
-    needs: [normalize, verify]
+    needs:
+      - normalize
+      - verify
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       contents: write
 
     steps:
-      - name: Publish result without private source access
-        continue-on-error: true
+      - name: Checkout trusted report target
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: true
+
+      - name: Write sanitized result
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
           NORMALIZE_RESULT: ${{ needs.normalize.result }}
           VERIFY_RESULT: ${{ needs.verify.result }}
-          TOOLCHAINS_TRIGGER_SHA: ${{ github.sha }}
-          RUN_ID: ${{ github.run_id }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
-          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          report="$RUNNER_TEMP/goanime-full-ci-report.json"
-          python3 - "$report" <<'PY'
+          mkdir -p reports/goanime-full-ci
+          python3 - <<'PY'
           import json
           import os
-          import sys
           from datetime import datetime, timezone
+          from pathlib import Path
 
           payload = {
               "schemaVersion": 1,
-              "runId": int(os.environ["RUN_ID"]),
-              "runAttempt": int(os.environ["RUN_ATTEMPT"]),
-              "toolchainsTriggerSha": os.environ["TOOLCHAINS_TRIGGER_SHA"],
-              "event": os.environ["EVENT_NAME"],
+              "runId": int(os.environ["GITHUB_RUN_ID"]),
+              "runAttempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "event": os.environ["GITHUB_EVENT_NAME"],
+              "toolchainsTriggerSha": os.environ["GITHUB_SHA"],
               "normalizeResult": os.environ["NORMALIZE_RESULT"],
               "verifyResult": os.environ["VERIFY_RESULT"],
               "finishedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
           }
-          with open(sys.argv[1], "w", encoding="utf-8") as stream:
-              json.dump(payload, stream, indent=2, sort_keys=True)
-              stream.write("\n")
+          path = Path("reports/goanime-full-ci") / f"{os.environ['GITHUB_RUN_ID']}.json"
+          path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
           PY
-          encoded="$(base64 -w0 < "$report")"
-          path="reports/goanime-full-ci/${RUN_ID}.json"
-          gh api \
-            --method PUT \
-            "repos/${GITHUB_REPOSITORY}/contents/${path}" \
-            -f "message=ci(goanime): report full CI run ${RUN_ID}" \
-            -f "content=${encoded}" \
-            >/dev/null
+
+      - name: Commit sanitized result
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add reports/goanime-full-ci
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "ci(goanime): report full CI run $GITHUB_RUN_ID"
+          git push
