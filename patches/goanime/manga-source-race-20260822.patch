@@ -1,0 +1,300 @@
+diff --git a/lib/screens/manga/manga_downloads_screen.dart b/lib/screens/manga/manga_downloads_screen.dart
+index 7a46631e..7fccc704 100644
+--- a/lib/screens/manga/manga_downloads_screen.dart
++++ b/lib/screens/manga/manga_downloads_screen.dart
+@@ -46,6 +46,7 @@ class _MangaDownloadsScreenState extends State<MangaDownloadsScreen> {
+   Timer? _pollTimer;
+   bool _loading = false;
+   bool _binding = false;
++  int? _bindingGeneration;
+   bool _checkingIntegrity = false;
+   bool _importing = false;
+   final Set<String> _exportingWorkIds = <String>{};
+@@ -58,7 +59,8 @@ class _MangaDownloadsScreenState extends State<MangaDownloadsScreen> {
+   void didChangeDependencies() {
+     super.didChangeDependencies();
+     final runtime = Provider.of<MangaPlatformRuntimeService?>(context);
+-    if (identical(runtime, _runtimeService) && _dataSource != null) return;
++    final runtimeChanged = !identical(runtime, _runtimeService);
++    if (!runtimeChanged && _dataSource != null) return;
+     _runtimeService = runtime;
+     _dataSource = widget.dataSource;
+     _snapshot = null;
+@@ -67,9 +69,11 @@ class _MangaDownloadsScreenState extends State<MangaDownloadsScreen> {
+     _generation += 1;
+     _pollTimer?.cancel();
+     if (_dataSource != null) {
+-      unawaited(_load(showSpinner: true));
++      unawaited(_load(showSpinner: true, force: runtimeChanged));
+     } else if (runtime?.catalogReady == true) {
+-      unawaited(_bindRuntime(runtime!, _generation));
++      unawaited(
++        _bindRuntime(runtime!, _generation, force: runtimeChanged),
++      );
+     }
+   }
+ 
+@@ -85,9 +89,9 @@ class _MangaDownloadsScreenState extends State<MangaDownloadsScreen> {
+     _pollTimer?.cancel();
+     final runtime = _runtimeService;
+     if (_dataSource != null) {
+-      unawaited(_load(showSpinner: true));
++      unawaited(_load(showSpinner: true, force: true));
+     } else if (runtime?.catalogReady == true) {
+-      unawaited(_bindRuntime(runtime!, _generation));
++      unawaited(_bindRuntime(runtime!, _generation, force: true));
+     }
+   }
+ 
+@@ -99,10 +103,12 @@ class _MangaDownloadsScreenState extends State<MangaDownloadsScreen> {
+ 
+   Future<void> _bindRuntime(
+     MangaPlatformRuntimeService runtime,
+-    int generation,
+-  ) async {
+-    if (_binding) return;
++    int generation, {
++    bool force = false,
++  }) async {
++    if (_binding && !force) return;
+     _binding = true;
++    _bindingGeneration = generation;
+     try {
+       final manager = await runtime.downloadManager();
+       if (!mounted || generation != _generation) return;
+@@ -111,18 +117,21 @@ class _MangaDownloadsScreenState extends State<MangaDownloadsScreen> {
+         localPackages: manager.localPackages,
+         catalog: MangaCatalogRepository(),
+       );
+-      await _load(showSpinner: true);
++      await _load(showSpinner: true, force: true);
+     } catch (error) {
+       if (!mounted || generation != _generation) return;
+       setState(() => _error = error);
+     } finally {
+-      _binding = false;
++      if (_bindingGeneration == generation) {
++        _binding = false;
++        _bindingGeneration = null;
++      }
+     }
+   }
+ 
+-  Future<void> _load({bool showSpinner = false}) async {
++  Future<void> _load({bool showSpinner = false, bool force = false}) async {
+     final source = _dataSource;
+-    if (source == null || _loading) return;
++    if (source == null || (_loading && !force)) return;
+     final generation = ++_generation;
+     _loading = true;
+     if (showSpinner && mounted) setState(() => _error = null);
+@@ -139,7 +148,9 @@ class _MangaDownloadsScreenState extends State<MangaDownloadsScreen> {
+       setState(() => _error = error);
+       _syncPolling(false);
+     } finally {
+-      _loading = false;
++      if (generation == _generation) {
++        _loading = false;
++      }
+     }
+   }
+ 
+diff --git a/lib/screens/manga/manga_history_screen.dart b/lib/screens/manga/manga_history_screen.dart
+index 4981cc06..5417dfe6 100644
+--- a/lib/screens/manga/manga_history_screen.dart
++++ b/lib/screens/manga/manga_history_screen.dart
+@@ -58,7 +58,7 @@ class _MangaHistoryScreenState extends State<MangaHistoryScreen> {
+     _dataSource = widget.dataSource ?? MangaRepositoryHistoryDataSource();
+     _items = null;
+     _error = null;
+-    unawaited(_load());
++    unawaited(_load(force: true));
+   }
+ 
+   @override
+@@ -67,8 +67,8 @@ class _MangaHistoryScreenState extends State<MangaHistoryScreen> {
+     super.dispose();
+   }
+ 
+-  Future<void> _load() async {
+-    if (_loading) return;
++  Future<void> _load({bool force = false}) async {
++    if (_loading && !force) return;
+     final generation = ++_generation;
+     _loading = true;
+     try {
+@@ -82,7 +82,9 @@ class _MangaHistoryScreenState extends State<MangaHistoryScreen> {
+       if (!mounted || generation != _generation) return;
+       setState(() => _error = error);
+     } finally {
+-      _loading = false;
++      if (generation == _generation) {
++        _loading = false;
++      }
+     }
+   }
+ 
+diff --git a/test/widgets/manga/manga_downloads_screen_test.dart b/test/widgets/manga/manga_downloads_screen_test.dart
+index cceb6cc5..153c81af 100644
+--- a/test/widgets/manga/manga_downloads_screen_test.dart
++++ b/test/widgets/manga/manga_downloads_screen_test.dart
+@@ -1,3 +1,5 @@
++import 'dart:async';
++
+ import 'package:flutter/material.dart';
+ import 'package:flutter_localizations/flutter_localizations.dart';
+ import 'package:flutter_test/flutter_test.dart';
+@@ -83,6 +85,59 @@ void main() {
+     expect(find.text('Offline verificado'), findsNothing);
+   });
+ 
++  testWidgets('source replacement wins while previous load is pending', (
++    tester,
++  ) async {
++    final pending = Completer<MangaDownloadsSnapshot>();
++    final source = ValueNotifier<MangaDownloadsDataSource>(
++      _HandlerDownloadsDataSource(() => pending.future),
++    );
++    addTearDown(source.dispose);
++
++    await tester.pumpWidget(
++      MaterialApp(
++        locale: const Locale('pt', 'BR'),
++        supportedLocales: AppLocalizations.supportedLocales,
++        localizationsDelegates: const <LocalizationsDelegate<dynamic>>[
++          AppLocalizations.delegate,
++          GlobalMaterialLocalizations.delegate,
++          GlobalWidgetsLocalizations.delegate,
++          GlobalCupertinoLocalizations.delegate,
++        ],
++        home: ValueListenableBuilder<MangaDownloadsDataSource>(
++          valueListenable: source,
++          builder: (context, value, _) => MangaDownloadsScreen(dataSource: value),
++        ),
++      ),
++    );
++    await tester.pump();
++
++    source.value = _FakeDownloadsDataSource(
++      MangaDownloadsSnapshot(
++        const <MangaDownloadListItem>[],
++        importedWorks: <MangaImportedOfflineWorkItem>[
++          MangaImportedOfflineWorkItem(
++            workId: 'work-replacement',
++            workTitle: 'Replacement Offline Work',
++            packages: <MangaLocalPackageRecord>[
++              _package('replacement-package', 'replacement-chapter'),
++            ],
++          ),
++        ],
++      ),
++    );
++    await tester.pump();
++    await tester.pump();
++
++    expect(find.text('Replacement Offline Work'), findsOneWidget);
++
++    pending.complete(MangaDownloadsSnapshot(const <MangaDownloadListItem>[]));
++    await tester.pump();
++    await tester.pump();
++
++    expect(find.text('Replacement Offline Work'), findsOneWidget);
++  });
++
+   testWidgets('empty state points to both download and import entry points', (
+     tester,
+   ) async {
+@@ -140,3 +195,13 @@ final class _FakeDownloadsDataSource implements MangaDownloadsDataSource {
+   @override
+   Future<MangaDownloadsSnapshot> load() async => snapshot;
+ }
++
++
++final class _HandlerDownloadsDataSource implements MangaDownloadsDataSource {
++  const _HandlerDownloadsDataSource(this.handler);
++
++  final Future<MangaDownloadsSnapshot> Function() handler;
++
++  @override
++  Future<MangaDownloadsSnapshot> load() => handler();
++}
+diff --git a/test/widgets/manga/manga_history_screen_test.dart b/test/widgets/manga/manga_history_screen_test.dart
+index 525b7820..f9f54930 100644
+--- a/test/widgets/manga/manga_history_screen_test.dart
++++ b/test/widgets/manga/manga_history_screen_test.dart
+@@ -1,3 +1,5 @@
++import 'dart:async';
++
+ import 'package:flutter/material.dart';
+ import 'package:flutter_localizations/flutter_localizations.dart';
+ import 'package:flutter_test/flutter_test.dart';
+@@ -46,6 +48,55 @@ void main() {
+     expect(find.byIcon(Icons.history_toggle_off_rounded), findsOneWidget);
+   });
+ 
++  testWidgets('source replacement wins while previous load is pending', (
++    tester,
++  ) async {
++    final pending = Completer<List<MangaReadingHistoryItem>>();
++    final first = _HandlerHistoryDataSource((_) => pending.future);
++    final replacementItem = MangaReadingHistoryItem(
++      workId: 'work-new',
++      workTitle: 'Replacement Work',
++      canonicalChapterId: 'chapter-new',
++      chapterNumber: 7,
++      completed: false,
++      lastReadAt: DateTime.utc(2026, 8, 22),
++    );
++    final source = ValueNotifier<MangaHistoryDataSource>(first);
++    addTearDown(source.dispose);
++
++    await tester.pumpWidget(
++      MaterialApp(
++        locale: const Locale('pt', 'BR'),
++        supportedLocales: AppLocalizations.supportedLocales,
++        localizationsDelegates: const <LocalizationsDelegate<dynamic>>[
++          AppLocalizations.delegate,
++          GlobalMaterialLocalizations.delegate,
++          GlobalWidgetsLocalizations.delegate,
++          GlobalCupertinoLocalizations.delegate,
++        ],
++        home: ValueListenableBuilder<MangaHistoryDataSource>(
++          valueListenable: source,
++          builder: (context, value, _) => MangaHistoryScreen(dataSource: value),
++        ),
++      ),
++    );
++    await tester.pump();
++
++    source.value = _FakeHistoryDataSource(<MangaReadingHistoryItem>[
++      replacementItem,
++    ]);
++    await tester.pump();
++    await tester.pump();
++
++    expect(find.text('Replacement Work'), findsOneWidget);
++
++    pending.complete(const <MangaReadingHistoryItem>[]);
++    await tester.pump();
++    await tester.pump();
++
++    expect(find.text('Replacement Work'), findsOneWidget);
++  });
++
+   testWidgets('optional callback makes history row actionable', (tester) async {
+     final item = MangaReadingHistoryItem(
+       workId: 'work-1',
+@@ -99,3 +150,13 @@ final class _FakeHistoryDataSource implements MangaHistoryDataSource {
+   @override
+   Future<List<MangaReadingHistoryItem>> load({int limit = 100}) async => items;
+ }
++
++
++final class _HandlerHistoryDataSource implements MangaHistoryDataSource {
++  const _HandlerHistoryDataSource(this.handler);
++
++  final Future<List<MangaReadingHistoryItem>> Function(int limit) handler;
++
++  @override
++  Future<List<MangaReadingHistoryItem>> load({int limit = 100}) => handler(limit);
++}
