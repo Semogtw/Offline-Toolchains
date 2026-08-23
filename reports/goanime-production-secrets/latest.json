@@ -1,0 +1,28 @@
+{
+  "generatedAt": "2026-08-23T23:31:41.031928Z",
+  "presence": {
+    "ANDROID_KEYSTORE_BASE64": false,
+    "ANDROID_KEYSTORE_PASSWORD": false,
+    "ANDROID_KEY_ALIAS": false,
+    "ANDROID_KEY_PASSWORD": false,
+    "ANIME_METADATA_SEED_MANIFEST_URL": false,
+    "CLOUDFLARE_ACCOUNT_ID": false,
+    "CLOUDFLARE_API_TOKEN": false,
+    "FIREBASE_PROJECT_ID": false,
+    "FIREBASE_WEB_API_KEY": false,
+    "GOANIME_CATALOG_WRITE_TOKEN": true,
+    "GOANIME_FIREBASE_SERVICE_ACCOUNT_JSON_B64": false,
+    "GOOGLE_SERVICES_JSON_BASE64": false,
+    "PRIVATE_REPOSITORIES_TOKEN": true,
+    "R2_ACCESS_KEY_ID": false,
+    "R2_BUCKET": false,
+    "R2_SECRET_ACCESS_KEY": false,
+    "RUNTIME_DATABASE_MANIFEST_URL": false,
+    "RUNTIME_DATABASE_PUBLIC_BASE_URL": false,
+    "SHOREBIRD_TOKEN": false,
+    "TMDB_API_KEY": false,
+    "UPDATE_APPCAST_URL": false,
+    "UPDATE_MANIFEST_URL": false
+  },
+  "schemaVersion": 1
+}
