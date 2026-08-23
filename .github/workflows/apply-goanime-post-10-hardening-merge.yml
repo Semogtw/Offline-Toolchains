@@ -1,0 +1,189 @@
+name: Apply GoAnime post-10 hardening merge
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-post-10-hardening-merge/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-post-10-hardening-merge
+  cancel-in-progress: false
+
+jobs:
+  merge-validate-publish:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains request
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact merge request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-post-10-hardening-merge/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project expected_main fix_sha < "trusted-source/$request"
+          test "$project" = goanime
+          [[ "$expected_main" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$fix_sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'expected_main=%s\nfix_sha=%s\n' "$expected_main" "$fix_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact GoAnime main
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.expected_main }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify main and build merge commit locally
+        id: merge
+        working-directory: source
+        shell: bash
+        env:
+          EXPECTED_MAIN: ${{ steps.request.outputs.expected_main }}
+          FIX_SHA: ${{ steps.request.outputs.fix_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_MAIN"
+          remote_main="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+          test "$remote_main" = "$EXPECTED_MAIN"
+          git fetch --no-tags origin "$FIX_SHA"
+          test "$(git rev-parse FETCH_HEAD)" = "$FIX_SHA"
+          git config user.name "goanime-toolchains[bot]"
+          git config user.email "goanime-toolchains[bot]@users.noreply.github.com"
+          git merge --no-ff "$FIX_SHA" -m "Merge post-10/10 correctness hardening"
+          merged_sha="$(git rev-parse HEAD)"
+          printf 'merged_sha=%s\n' "$merged_sha" >> "$GITHUB_OUTPUT"
+          git diff-tree --check --no-commit-id -r HEAD
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Expose Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: false
+
+      - name: Resolve dependencies
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Validate project health
+        working-directory: source
+        run: bash ./tools/validate_project_health.sh
+
+      - name: Test Python tooling
+        working-directory: source
+        run: python3 -m unittest discover -s tools/tests -p 'test_*.py'
+
+      - name: Validate repository guards
+        working-directory: source
+        run: python3 tools/validate_repository_guards.py
+
+      - name: Check canonical formatting
+        working-directory: source
+        run: dart format --output=none --set-exit-if-changed lib test packages tools
+
+      - name: Analyze Flutter project
+        working-directory: source
+        run: flutter analyze --no-pub
+
+      - name: Test Flutter application serially
+        working-directory: source
+        run: flutter test --no-pub --concurrency=1
+
+      - name: Test GoAnime core
+        working-directory: source/packages/goanime_core
+        run: dart test
+
+      - name: Validate release workflow invariants
+        working-directory: source
+        run: bash ./tools/validate_release_workflows.sh
+
+      - name: Build Android debug APK
+        working-directory: source
+        run: flutter build apk --debug --no-pub
+
+      - name: Publish guarded merge to main
+        id: publish
+        working-directory: source
+        shell: bash
+        env:
+          EXPECTED_MAIN: ${{ steps.request.outputs.expected_main }}
+          MERGED_SHA: ${{ steps.merge.outputs.merged_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$MERGED_SHA"
+          remote_main="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+          test "$remote_main" = "$EXPECTED_MAIN"
+          git push origin "HEAD:refs/heads/main"
+          printf 'pushed_sha=%s\n' "$MERGED_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Publish sanitized receipt
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_MAIN: ${{ steps.request.outputs.expected_main }}
+          FIX_SHA: ${{ steps.request.outputs.fix_sha }}
+          MERGED_SHA: ${{ steps.merge.outputs.merged_sha }}
+          PUSHED_SHA: ${{ steps.publish.outputs.pushed_sha }}
+          STATE: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          body="$(jq -cn \
+            --arg sourceMain "$SOURCE_MAIN" \
+            --arg fixSha "$FIX_SHA" \
+            --arg mergedSha "$MERGED_SHA" \
+            --arg pushedSha "$PUSHED_SHA" \
+            --arg state "$STATE" \
+            --argjson runId "$GITHUB_RUN_ID" \
+            '{schemaVersion:1,sourceMain:$sourceMain,fixSha:$fixSha,mergedSha:$mergedSha,pushedSha:$pushedSha,state:$state,runId:$runId}')"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          path="results/goanime-post-10-hardening-merge/$GITHUB_RUN_ID.json"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" \
+            -f message="ci(result): record GoAnime post-10 hardening merge $GITHUB_RUN_ID" \
+            -f content="$encoded" >/dev/null
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/source" "$GITHUB_WORKSPACE/trusted-source"
