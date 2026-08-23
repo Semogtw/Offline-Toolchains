@@ -39,43 +39,12 @@ jobs:
             --request-dir triggers/goanime-global-cache-validation \
             --workspace .
 
-      - name: Require private repository tokens
+      - name: Require private repository read token
         env:
           READ_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-          STATUS_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
         run: |
           set -euo pipefail
           test -n "$READ_TOKEN" || { echo '::error::PRIVATE_REPOSITORIES_TOKEN is required.'; exit 1; }
-          test -n "$STATUS_TOKEN" || { echo '::error::GOANIME_CATALOG_WRITE_TOKEN is required.'; exit 1; }
-
-      - name: Mark private required check pending
-        env:
-          GH_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
-          SHA: ${{ steps.request.outputs.source_hint }}
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json, os, urllib.request
-          sha = os.environ['SHA']
-          request = urllib.request.Request(
-              f'https://api.github.com/repos/Semogtw/goanime-mobile/statuses/{sha}',
-              data=json.dumps({
-                  'state': 'pending',
-                  'context': 'Project health, analysis and principal tests',
-                  'description': 'Offline-Toolchains global cache validation is running',
-                  'target_url': f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
-              }).encode(),
-              headers={
-                  'Authorization': f"Bearer {os.environ['GH_TOKEN']}",
-                  'Accept': 'application/vnd.github+json',
-                  'X-GitHub-Api-Version': '2022-11-28',
-                  'Content-Type': 'application/json',
-              },
-              method='POST',
-          )
-          with urllib.request.urlopen(request, timeout=30) as response:
-              assert response.status in (200, 201)
-          PY
 
       - name: Checkout exact GoAnime revision
         uses: actions/checkout@v6
@@ -147,13 +116,19 @@ jobs:
         working-directory: private-source
         run: node --check cloudflare/updates-worker/src/index.js
 
-      - name: Publish private required-check result
+      - name: Best-effort private required-check status
         if: always() && steps.request.outputs.source_hint != ''
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
           SHA: ${{ steps.request.outputs.source_hint }}
           RESULT: ${{ job.status }}
         run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo 'GOANIME_CATALOG_WRITE_TOKEN is not configured; skipping private commit status.'
+            exit 0
+          fi
           python - <<'PY'
           import json, os, urllib.request
           result = os.environ.get('RESULT', 'failure')
