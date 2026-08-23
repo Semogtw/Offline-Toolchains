@@ -1,0 +1,3 @@
+target_branch=work/global-catalog-refresh-20260823
+source_hint=fb678795a12e008e0bd030c4979bbd9a22686ca9
+reason=Harden validated global catalog candidate so SUB and DUB each require independent reporter quorum.
