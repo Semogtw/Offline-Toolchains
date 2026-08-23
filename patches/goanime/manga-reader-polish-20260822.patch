@@ -1,0 +1,335 @@
+diff --git a/lib/screens/manga/manga_reader_screen.dart b/lib/screens/manga/manga_reader_screen.dart
+index 7cb40674..dbbe9976 100644
+--- a/lib/screens/manga/manga_reader_screen.dart
++++ b/lib/screens/manga/manga_reader_screen.dart
+@@ -62,6 +62,8 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+   late final MangaPreferencesRepository _preferencesRepository;
+   late final int _initialPageIndex;
+   final Object _remoteOwnerToken = Object();
++  final GlobalKey _continuousViewportKey = GlobalKey();
++  final Map<int, GlobalKey> _continuousPageKeys = <int, GlobalKey>{};
+   PageController? _imageController;
+   ScrollController? _continuousController;
+   PdfViewerController? _pdfController;
+@@ -695,19 +697,25 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+       return NotificationListener<ScrollNotification>(
+         onNotification: (notification) =>
+             _handleContinuousScroll(notification, manifest.pages.length),
+-        child: ListView.builder(
+-          controller: _continuousController,
+-          itemCount: manifest.pages.length,
+-          itemBuilder: (context, index) {
+-            return _MangaRemoteImagePage(
+-              sourceId: manifest.sourceId,
+-              request: manifest.pages[index],
+-              transport: widget.remoteTransport,
+-              ownerToken: _remoteOwnerToken,
+-              continuous: true,
+-              errorBuilder: (retry) => _pageError(l10n, onRetry: retry),
+-            );
+-          },
++        child: SizedBox.expand(
++          key: _continuousViewportKey,
++          child: ListView.builder(
++            controller: _continuousController,
++            itemCount: manifest.pages.length,
++            itemBuilder: (context, index) {
++              return KeyedSubtree(
++                key: _continuousPageKey(index),
++                child: _MangaRemoteImagePage(
++                  sourceId: manifest.sourceId,
++                  request: manifest.pages[index],
++                  transport: widget.remoteTransport,
++                  ownerToken: _remoteOwnerToken,
++                  continuous: true,
++                  errorBuilder: (retry) => _pageError(l10n, onRetry: retry),
++                ),
++              );
++            },
++          ),
+         ),
+       );
+     }
+@@ -880,17 +888,23 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+       return NotificationListener<ScrollNotification>(
+         onNotification: (notification) =>
+             _handleContinuousScroll(notification, content.pages.length),
+-        child: ListView.builder(
+-          controller: _continuousController,
+-          itemCount: content.pages.length,
+-          itemBuilder: (context, index) {
+-            return Image.file(
+-              content.pages[index],
+-              width: double.infinity,
+-              fit: BoxFit.fitWidth,
+-              errorBuilder: (_, _, _) => _pageError(l10n),
+-            );
+-          },
++        child: SizedBox.expand(
++          key: _continuousViewportKey,
++          child: ListView.builder(
++            controller: _continuousController,
++            itemCount: content.pages.length,
++            itemBuilder: (context, index) {
++              return KeyedSubtree(
++                key: _continuousPageKey(index),
++                child: Image.file(
++                  content.pages[index],
++                  width: double.infinity,
++                  fit: BoxFit.fitWidth,
++                  errorBuilder: (_, _, _) => _pageError(l10n),
++                ),
++              );
++            },
++          ),
+         ),
+       );
+     }
+@@ -906,9 +920,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+       onPageChanged: (index) => _onPageChanged(index, content.pages.length),
+       itemBuilder: (context, index) {
+         final file = content.pages[index];
+-        return InteractiveViewer(
+-          minScale: 1,
+-          maxScale: 4,
++        return _MangaZoomablePage(
+           child: Center(
+             child: Image.file(
+               file,
+@@ -931,6 +943,34 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+     );
+   }
+ 
++  GlobalKey _continuousPageKey(int index) =>
++      _continuousPageKeys.putIfAbsent(index, () => GlobalKey());
++
++  int? _dominantContinuousPage(int pageCount) {
++    final viewportContext = _continuousViewportKey.currentContext;
++    final viewportBox = viewportContext?.findRenderObject();
++    if (viewportBox is! RenderBox || !viewportBox.attached) return null;
++    final viewportTop = viewportBox.localToGlobal(Offset.zero).dy;
++    final viewportCenter = viewportTop + viewportBox.size.height / 2;
++
++    int? closestIndex;
++    var closestDistance = double.infinity;
++    for (var index = 0; index < pageCount; index++) {
++      final pageContext = _continuousPageKeys[index]?.currentContext;
++      final pageBox = pageContext?.findRenderObject();
++      if (pageBox is! RenderBox || !pageBox.attached) continue;
++      final top = pageBox.localToGlobal(Offset.zero).dy;
++      final bottom = top + pageBox.size.height;
++      if (viewportCenter >= top && viewportCenter < bottom) return index;
++      final distance = ((top + bottom) / 2 - viewportCenter).abs();
++      if (distance < closestDistance) {
++        closestDistance = distance;
++        closestIndex = index;
++      }
++    }
++    return closestIndex;
++  }
++
+   void _restoreContinuousPosition() {
+     if (_restoredContinuousPosition || _pageIndex <= 0) return;
+     final controller = _continuousController;
+@@ -954,11 +994,15 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+     }
+     final max = notification.metrics.maxScrollExtent;
+     if (pageCount <= 0 || max <= 0) return false;
++    final dominant = notification is ScrollEndNotification
++        ? _dominantContinuousPage(pageCount)
++        : null;
+     final ratio = (notification.metrics.pixels / max).clamp(0.0, 1.0);
+-    final index = (ratio * (pageCount - 1))
+-        .round()
+-        .clamp(0, pageCount - 1)
+-        .toInt();
++    final index = dominant ??
++        (ratio * (pageCount - 1))
++            .round()
++            .clamp(0, pageCount - 1)
++            .toInt();
+     if (index != _pageIndex) {
+       _hasUserNavigated = true;
+       _onPageChanged(index, pageCount, markNavigation: false);
+@@ -1200,6 +1244,63 @@ class _ReaderControlButton extends StatelessWidget {
+   }
+ }
+ 
++class _MangaZoomablePage extends StatefulWidget {
++  const _MangaZoomablePage({required this.child});
++
++  final Widget child;
++
++  @override
++  State<_MangaZoomablePage> createState() => _MangaZoomablePageState();
++}
++
++class _MangaZoomablePageState extends State<_MangaZoomablePage> {
++  final TransformationController _controller = TransformationController();
++  Offset _doubleTapPosition = Offset.zero;
++
++  @override
++  void dispose() {
++    _controller.dispose();
++    super.dispose();
++  }
++
++  void _handleDoubleTapDown(TapDownDetails details) {
++    _doubleTapPosition = details.localPosition;
++  }
++
++  void _handleDoubleTap() {
++    if (_controller.value.getMaxScaleOnAxis() > 1.01) {
++      _controller.value = Matrix4.identity();
++      return;
++    }
++    const scale = 2.0;
++    final position = _doubleTapPosition;
++    _controller.value = Matrix4.identity()
++      ..translateByDouble(
++        -position.dx * (scale - 1),
++        -position.dy * (scale - 1),
++        0,
++        1,
++      )
++      ..scaleByDouble(scale, scale, 1, 1);
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    return GestureDetector(
++      behavior: HitTestBehavior.translucent,
++      onDoubleTapDown: _handleDoubleTapDown,
++      onDoubleTap: _handleDoubleTap,
++      child: InteractiveViewer(
++        transformationController: _controller,
++        minScale: 1,
++        maxScale: 4,
++        child: widget.child,
++      ),
++    );
++  }
++}
++
+ class _MangaRemoteImagePage extends StatefulWidget {
+   const _MangaRemoteImagePage({
+     required this.sourceId,
+@@ -1276,11 +1377,7 @@ class _MangaRemoteImagePageState extends State<_MangaRemoteImagePage> {
+         errorWidget: (_, _, _) => widget.errorBuilder(_retryDirect),
+       );
+       if (widget.continuous) return image;
+-      return InteractiveViewer(
+-        minScale: 1,
+-        maxScale: 4,
+-        child: Center(child: image),
+-      );
++      return _MangaZoomablePage(child: Center(child: image));
+     }
+ 
+     return FutureBuilder<Uint8List>(
+@@ -1304,11 +1401,7 @@ class _MangaRemoteImagePageState extends State<_MangaRemoteImagePage> {
+           errorBuilder: (_, _, _) => widget.errorBuilder(_retryTransport),
+         );
+         if (widget.continuous) return image;
+-        return InteractiveViewer(
+-          minScale: 1,
+-          maxScale: 4,
+-          child: Center(child: image),
+-        );
++        return _MangaZoomablePage(child: Center(child: image));
+       },
+     );
+   }
+diff --git a/test/widgets/manga/manga_reader_screen_test.dart b/test/widgets/manga/manga_reader_screen_test.dart
+index 46a3d8de..bbc5c7b5 100644
+--- a/test/widgets/manga/manga_reader_screen_test.dart
++++ b/test/widgets/manga/manga_reader_screen_test.dart
+@@ -244,6 +244,88 @@ void main() {
+     expect((calls.last.arguments as Map<Object?, Object?>)['enabled'], isFalse);
+     expect(find.byType(AppBar), findsOneWidget);
+   });
++
++  testWidgets('continuous mode reports the page at the viewport center', (
++    tester,
++  ) async {
++    await preferences.saveReaderMode(
++      'work-1',
++      MangaReaderMode.continuousVertical,
++    );
++    final tall = File('${tempDirectory.path}/tall.png');
++    final square = File('${tempDirectory.path}/square.png');
++    await tall.writeAsBytes(
++      base64Decode(
++        'iVBORw0KGgoAAAANSUhEUgAAAAoAAAAoCAYAAADHVmuAAAAAIklEQVR4nGP8////fwYiABMxikYVjiocVTiqcFThqEJUAACEmARMaUzfPAAAAABJRU5ErkJggg==',
++      ),
++    );
++    await square.writeAsBytes(
++      base64Decode(
++        'iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAGElEQVR4nGP8////fwYiABMxikYVUk8hAGmaBBDJTaZVAAAAAElFTkSuQmCC',
++      ),
++    );
++    tester.view.devicePixelRatio = 1;
++    await tester.binding.setSurfaceSize(const Size(800, 600));
++    addTearDown(() async {
++      tester.view.reset();
++      await tester.binding.setSurfaceSize(null);
++    });
++
++    await tester.pumpWidget(
++      _readerApp(
++        preferences: preferences,
++        progress: progress,
++        manifest: const LocalPackageContentManifest(
++          sourceId: 'local.test',
++          mangaId: 'work-source-1',
++          chapterId: 'chapter-source-1',
++          packageId: 'package-1',
++          sourceContentKind: MangaContentKind.imageSequence,
++          pageCount: 3,
++        ),
++        loader: (_) async => MangaLocalImageReaderContent(
++          <File>[tall, square, square],
++        ),
++      ),
++    );
++    await tester.pumpAndSettle();
++
++    await tester.drag(find.byType(ListView), const Offset(0, -3200));
++    await tester.pumpAndSettle();
++
++    expect(find.text('Page 2 of 3'), findsOneWidget);
++  });
++
++  testWidgets('double tap toggles image zoom', (tester) async {
++    await preferences.saveReaderMode('work-1', MangaReaderMode.pagedVertical);
++    await tester.pumpWidget(
++      _readerApp(
++        preferences: preferences,
++        progress: progress,
++        loader: (_) async => MangaLocalImageReaderContent(<File>[pageFile]),
++      ),
++    );
++    await tester.pumpAndSettle();
++
++    final viewerFinder = find.byType(InteractiveViewer);
++    expect(viewerFinder, findsOneWidget);
++
++    await tester.doubleTap(viewerFinder);
++    await tester.pumpAndSettle();
++    var viewer = tester.widget<InteractiveViewer>(viewerFinder);
++    expect(
++      viewer.transformationController!.value.getMaxScaleOnAxis(),
++      closeTo(2, 0.01),
++    );
++
++    await tester.doubleTap(viewerFinder);
++    await tester.pumpAndSettle();
++    viewer = tester.widget<InteractiveViewer>(viewerFinder);
++    expect(
++      viewer.transformationController!.value.getMaxScaleOnAxis(),
++      closeTo(1, 0.01),
++    );
++  });
+ }
+ 
+ Widget _readerApp({
