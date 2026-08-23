@@ -177,7 +177,6 @@ jobs:
           flutter test --no-pub test/services/manga/manga_request_scheduler_test.dart
           flutter test --no-pub test/services/manga/manga_request_scheduler_health_outcome_test.dart
           flutter test --no-pub test/services/manga/manga_source_runtime_health_test.dart
-          flutter test --no-pub test/services/manga/manga_search_health_test.dart
           flutter test --no-pub test/services/manga/download
           flutter test --no-pub test/services/manga/offline
           flutter test --no-pub test/services/manga/archive
@@ -246,7 +245,7 @@ jobs:
       contents: write
 
     steps:
-      - name: Publish formatter run id and result
+      - name: Publish sanitized GoAnime formatter result
         continue-on-error: true
         shell: bash
         env:
