@@ -1,0 +1,114 @@
+name: Validate GoAnime startup opening
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-startup-opening-ci/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-startup-opening-ci
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout trusted request
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact GoAnime revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-startup-opening-ci/*.request' | head -n 1)"
+          test -n "$request"
+          read -r sha < "trusted-source/$request"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify exact checkout
+        working-directory: private-source
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = '${{ steps.request.outputs.sha }}'
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Check scoped formatting
+        working-directory: private-source
+        run: dart format --output=none --set-exit-if-changed lib/widgets/goanime_opening.dart test/widgets/goanime_opening_test.dart
+
+      - name: Analyze opening implementation
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter analyze lib/widgets/goanime_opening.dart
+          flutter analyze test/widgets/goanime_opening_test.dart
+
+      - name: Run opening regression tests
+        working-directory: private-source
+        run: flutter test test/widgets/goanime_opening_test.dart
+
+      - name: Build Android debug APK
+        working-directory: private-source
+        run: flutter build apk --debug
+
+      - name: Verify debug APK exists
+        working-directory: private-source
+        run: test -s build/app/outputs/flutter-apk/app-debug.apk
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
