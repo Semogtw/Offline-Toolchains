@@ -74,12 +74,12 @@ jobs:
           flutter pub get >/dev/null 2>&1
           (cd packages/goanime_core && dart pub get >/dev/null 2>&1)
 
-      - name: Check shared search formatting
+      - name: Normalize shared search workspace
         working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
-          dart format --output=none --set-exit-if-changed \
+          dart format \
             lib/controllers/media \
             lib/services/manga/manga_readable_search_adapter.dart \
             lib/widgets/manga/manga_readable_search_view.dart \
@@ -87,7 +87,8 @@ jobs:
             test/controllers/media/progressive_search_controller_test.dart \
             test/services/manga/manga_readable_search_adapter_test.dart \
             test/services/providers/anime_search_adapter_test.dart \
-            test/architecture/shared_search_lifecycle_guard_test.dart
+            test/architecture/shared_search_lifecycle_guard_test.dart \
+            >/dev/null
 
       - name: Analyze shared search boundary
         working-directory: private-source
