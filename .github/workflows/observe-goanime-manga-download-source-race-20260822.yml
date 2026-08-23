@@ -1,0 +1,29 @@
+name: Observe GoAnime Manga download source race fix
+
+on:
+  workflow_run:
+    workflows: ['Apply GoAnime Manga download source race fix']
+    types: [completed]
+
+permissions:
+  contents: write
+
+jobs:
+  report:
+    if: github.event.workflow_run.repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Publish sanitized result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          EVENT: ${{ github.event.workflow_run.event }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          path="reports/goanime-manga-download-source-race-20260822/${RUN_ID}.json"
+          payload="$(jq -nc --argjson runId "$RUN_ID" --arg conclusion "$CONCLUSION" --arg headSha "$HEAD_SHA" --arg event "$EVENT" '{schemaVersion:1,runId:$runId,conclusion:$conclusion,headSha:$headSha,event:$event}')"
+          encoded="$(printf '%s\n' "$payload" | base64 -w0)"
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/${path}" -f message="ci(goanime): report Manga download source race ${RUN_ID}" -f content="$encoded" >/dev/null
