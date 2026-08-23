@@ -1,0 +1,226 @@
+name: Publish GoAnime post-10 candidate v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-post-10-candidate-v2/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-post-10-candidate-v2
+  cancel-in-progress: true
+
+jobs:
+  validate-publish:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted request
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-post-10-candidate-v2/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project expected_main candidate_sha < "trusted-source/$request"
+          test "$project" = goanime
+          [[ "$expected_main" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'expected_main=%s\ncandidate_sha=%s\n' "$expected_main" "$candidate_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact candidate
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.candidate_sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify candidate ancestry and current main
+        working-directory: source
+        shell: bash
+        env:
+          EXPECTED_MAIN: ${{ steps.request.outputs.expected_main }}
+          CANDIDATE_SHA: ${{ steps.request.outputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_MAIN"
+          test "$(git ls-remote origin refs/heads/main | awk '{print $1}')" = "$EXPECTED_MAIN"
+          git diff-tree --check --no-commit-id -r HEAD
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Expose Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: false
+
+      - name: Resolve dependencies
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Apply analyzer fixes and normalize candidate
+        id: normalize
+        working-directory: source
+        shell: bash
+        env:
+          EXPECTED_MAIN: ${{ steps.request.outputs.expected_main }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              target = Path(path)
+              text = target.read_text(encoding='utf-8')
+              if text.count(old) != 1:
+                  raise SystemExit(f'anchor mismatch in {path}: {old!r}')
+              target.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replace_once(
+              'test/services/source/unified_source_stale_fallback_cache_test.dart',
+              "import 'package:flutter_test/flutter_test.dart';\n",
+              "import 'package:flutter_test/flutter_test.dart';\nimport 'package:goanime_core/goanime_core.dart';\n",
+          )
+          replace_once(
+              'lib/widgets/goanime_opening.dart',
+              "import 'package:flutter/foundation.dart';\n",
+              '',
+          )
+          replace_once(
+              'test/widgets/goanime_opening_test.dart',
+              "import 'package:flutter/painting.dart';\n",
+              '',
+          )
+          PY
+          mapfile -t dart_files < <(git diff --name-only "$EXPECTED_MAIN"..HEAD -- '*.dart')
+          dart_files+=(lib/widgets/goanime_opening.dart test/widgets/goanime_opening_test.dart)
+          dart format "${dart_files[@]}" >/dev/null
+          chmod 0644 tools/validate_project_health_files.py
+          git diff --check
+          git config user.name "goanime-toolchains[bot]"
+          git config user.email "goanime-toolchains[bot]@users.noreply.github.com"
+          git add -- "${dart_files[@]}" tools/validate_project_health_files.py
+          git commit -m "fix: finalize post-10 hardening" >/dev/null
+          final_sha="$(git rev-parse HEAD)"
+          printf 'final_sha=%s\n' "$final_sha" >> "$GITHUB_OUTPUT"
+          mapfile -t final_dart_files < <(git diff --name-only "$EXPECTED_MAIN"..HEAD -- '*.dart')
+          dart format --output=none --set-exit-if-changed "${final_dart_files[@]}" >/dev/null
+          git diff --check "$EXPECTED_MAIN"..HEAD
+
+      - name: Validate project health
+        working-directory: source
+        shell: bash
+        run: bash ./tools/validate_project_health.sh
+
+      - name: Test Python tooling
+        working-directory: source
+        shell: bash
+        run: python3 -m unittest discover -s tools/tests -p 'test_*.py'
+
+      - name: Validate repository guards
+        working-directory: source
+        shell: bash
+        run: python3 tools/validate_repository_guards.py
+
+      - name: Analyze Flutter project
+        working-directory: source
+        shell: bash
+        run: flutter analyze --no-pub
+
+      - name: Test Flutter application serially
+        working-directory: source
+        shell: bash
+        run: flutter test --no-pub --concurrency=1
+
+      - name: Test GoAnime core
+        working-directory: source/packages/goanime_core
+        shell: bash
+        run: dart test --concurrency=1
+
+      - name: Validate release workflow invariants
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/validate_release_workflow.py
+          python3 tools/validate_quality_scorecard.py
+
+      - name: Build Android debug APK
+        working-directory: source
+        shell: bash
+        run: flutter build apk --debug --no-pub
+
+      - name: Publish exact validated candidate to main
+        id: publish
+        working-directory: source
+        shell: bash
+        env:
+          EXPECTED_MAIN: ${{ steps.request.outputs.expected_main }}
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/heads/main | awk '{print $1}')" = "$EXPECTED_MAIN"
+          final_sha="$(git rev-parse HEAD)"
+          git push origin "HEAD:refs/heads/main"
+          pushed="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+          test "$pushed" = "$final_sha"
+          printf 'pushed_sha=%s\n' "$pushed" >> "$GITHUB_OUTPUT"
+
+      - name: Publish sanitized receipt
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_MAIN: ${{ steps.request.outputs.expected_main }}
+          CANDIDATE_SHA: ${{ steps.request.outputs.candidate_sha }}
+          FINAL_SHA: ${{ steps.normalize.outputs.final_sha }}
+          PUSHED_SHA: ${{ steps.publish.outputs.pushed_sha }}
+          STATE: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          body="$(jq -cn --arg sourceMain "$SOURCE_MAIN" --arg candidateSha "$CANDIDATE_SHA" --arg finalSha "$FINAL_SHA" --arg pushedSha "$PUSHED_SHA" --arg state "$STATE" --argjson runId "$GITHUB_RUN_ID" '{schemaVersion:2,sourceMain:$sourceMain,candidateSha:$candidateSha,finalSha:$finalSha,pushedSha:$pushedSha,state:$state,runId:$runId}')"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          path="results/goanime-post-10-candidate-v2/$GITHUB_RUN_ID.json"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): record GoAnime post-10 candidate v2 $GITHUB_RUN_ID" -f content="$encoded" >/dev/null
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/source" "$GITHUB_WORKSPACE/trusted-source"
