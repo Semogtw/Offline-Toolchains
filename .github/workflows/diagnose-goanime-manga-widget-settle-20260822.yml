@@ -1,0 +1,305 @@
+name: Diagnose GoAnime Manga widget settling
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-widget-settle-diagnostic-20260822/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-widget-settle-diagnostic-20260822
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact GoAnime revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-widget-settle-diagnostic-20260822/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          test "$branch" = 'feature/manga-platform'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify current remote head
+        working-directory: private-source
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+
+      - name: Add diagnostic-only widget tests
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > test/widgets/manga/manga_settle_diagnostic_test.dart <<'DART'
+          import 'dart:convert';
+          import 'dart:io';
+
+          import 'package:flutter/material.dart';
+          import 'package:flutter_localizations/flutter_localizations.dart';
+          import 'package:flutter_test/flutter_test.dart';
+          import 'package:goanime/l10n/app_localizations.dart';
+          import 'package:goanime/screens/manga/manga_details_screen.dart';
+          import 'package:goanime/screens/manga/manga_reader_screen.dart';
+          import 'package:goanime/services/manga/manga_availability_models.dart';
+          import 'package:goanime/services/manga/manga_details_data_source.dart';
+          import 'package:goanime/services/manga/offline/manga_local_package_reader_resolver.dart';
+          import 'package:goanime/services/manga/storage/manga_catalog_repository.dart';
+          import 'package:goanime/services/manga/storage/manga_database.dart';
+          import 'package:goanime/services/manga/storage/manga_library_repository.dart';
+          import 'package:goanime/services/manga/storage/manga_preferences_repository.dart';
+          import 'package:goanime/services/manga/storage/manga_progress_repository.dart';
+          import 'package:goanime/theme/app_theme.dart';
+          import 'package:goanime/theme/goanime_theme_tokens.dart';
+          import 'package:goanime_core/goanime_core.dart';
+          import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+          void main() {
+            setUpAll(() {
+              sqfliteFfiInit();
+              databaseFactory = databaseFactoryFfi;
+            });
+
+            testWidgets('diagnose continuous reader settling', (tester) async {
+              final dir = await Directory.systemTemp.createTemp('reader_settle_diag_');
+              addTearDown(() async {
+                await tester.pumpWidget(const SizedBox.shrink());
+                if (await dir.exists()) await dir.delete(recursive: true);
+              });
+              final database = MangaDatabase(databasePath: '${dir.path}/manga.db');
+              addTearDown(database.close);
+              final preferences = MangaPreferencesRepository(database: database);
+              final progress = MangaProgressRepository(database: database);
+              const chapter = CanonicalChapter(
+                canonicalChapterId: 'chapter-1',
+                workId: 'work-1',
+                title: 'Chapter 1',
+                number: 1,
+              );
+              await MangaCatalogRepository(database: database).upsertWork(
+                const MangaWork(workId: 'work-1', canonicalTitle: 'Reader Work'),
+              );
+              await MangaCatalogRepository(database: database).replaceChapterGraph(
+                workId: 'work-1',
+                chapters: const <CanonicalChapter>[chapter],
+                variants: const <ChapterVariant>[],
+              );
+              await preferences.saveDefaultReaderMode(MangaReaderMode.pagedRtl);
+              await preferences.saveReaderMode(
+                'work-1',
+                MangaReaderMode.continuousVertical,
+              );
+              final page = File('${dir.path}/page.png');
+              await page.writeAsBytes(base64Decode(
+                'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=',
+              ));
+
+              await tester.pumpWidget(MaterialApp(
+                locale: const Locale('en', 'US'),
+                supportedLocales: AppLocalizations.supportedLocales,
+                localizationsDelegates: const <LocalizationsDelegate<dynamic>>[
+                  AppLocalizations.delegate,
+                  DefaultMaterialLocalizations.delegate,
+                  DefaultWidgetsLocalizations.delegate,
+                ],
+                home: MangaReaderScreen(
+                  chapter: chapter,
+                  manifest: const LocalPackageContentManifest(
+                    sourceId: 'local.test',
+                    mangaId: 'work-source-1',
+                    chapterId: 'chapter-source-1',
+                    packageId: 'package-1',
+                    sourceContentKind: MangaContentKind.imageSequence,
+                    pageCount: 1,
+                  ),
+                  preferencesRepository: preferences,
+                  progressRepository: progress,
+                  localContentLoader: (_) async =>
+                      MangaLocalImageReaderContent(<File>[page]),
+                ),
+              ));
+
+              for (var i = 0; i < 20; i++) {
+                await tester.pump(const Duration(milliseconds: 50));
+                debugPrint(
+                  'READER_DIAG i=$i scheduled=${tester.binding.hasScheduledFrame} '
+                  'transient=${tester.binding.transientCallbackCount} '
+                  'progress=${find.byType(CircularProgressIndicator).evaluate().length} '
+                  'mode=${find.byTooltip('Reading mode').evaluate().length}',
+                );
+              }
+              expect(find.byTooltip('Reading mode'), findsOneWidget);
+            });
+
+            testWidgets('diagnose details initial settling', (tester) async {
+              final dir = await Directory.systemTemp.createTemp('details_settle_diag_');
+              final database = MangaDatabase(databasePath: '${dir.path}/manga.db');
+              addTearDown(() async {
+                await tester.pumpWidget(const SizedBox.shrink());
+                await database.close();
+                if (await dir.exists()) await dir.delete(recursive: true);
+              });
+              final library = MangaLibraryRepository(database: database);
+              const work = MangaWork(
+                workId: 'mw_library',
+                canonicalTitle: 'Library Work',
+                authors: ['Creator'],
+              );
+              await MangaCatalogRepository(database: database).upsertWork(work);
+              final availability = MangaAvailabilityRecord(
+                work: work,
+                sourceLinks: [
+                  MangaSourceLink(
+                    workId: work.workId,
+                    occurrence: const MangaSourceOccurrence(
+                      sourceId: 'ptbr.test',
+                      mangaId: 'remote-work',
+                      title: 'Library Work',
+                    ),
+                    matchConfidence: 1,
+                  ),
+                ],
+                evidence: [
+                  MangaReadabilityEvidence(
+                    workId: work.workId,
+                    sourceId: 'ptbr.test',
+                    mangaId: 'remote-work',
+                    sampleChapterId: 'remote-chapter-1',
+                    contentKind: MangaContentKind.imageSequence,
+                    verifiedAt: DateTime.utc(2026, 8, 19),
+                  ),
+                ],
+              );
+              final source = _DiagDetailsSource(MangaDetailsSnapshot(
+                availability: availability,
+                chapters: const [
+                  CanonicalChapter(
+                    canonicalChapterId: 'mc_library_1',
+                    workId: 'mw_library',
+                    title: 'Chapter 1',
+                    number: 1,
+                  ),
+                ],
+                variantsByChapter: const {},
+                progressByChapter: const {},
+                sourcePreference: const MangaSourcePreference(
+                  mode: MangaSourceMode.automatic,
+                ),
+              ));
+
+              tester.view.devicePixelRatio = 1;
+              await tester.binding.setSurfaceSize(const Size(800, 1100));
+              addTearDown(() async {
+                tester.view.reset();
+                await tester.binding.setSurfaceSize(null);
+              });
+              await tester.pumpWidget(MaterialApp(
+                locale: const Locale('en', 'US'),
+                supportedLocales: AppLocalizations.supportedLocales,
+                localizationsDelegates: const [
+                  AppLocalizations.delegate,
+                  GlobalMaterialLocalizations.delegate,
+                  GlobalWidgetsLocalizations.delegate,
+                  GlobalCupertinoLocalizations.delegate,
+                ],
+                theme: AppTheme.darkTheme.copyWith(
+                  extensions: [GoAnimeThemeTokens.fromCurrentStyle()],
+                ),
+                home: MangaDetailsScreen(
+                  availability: availability,
+                  dataSource: source,
+                  libraryRepository: library,
+                ),
+              ));
+
+              for (var i = 0; i < 20; i++) {
+                await tester.pump(const Duration(milliseconds: 50));
+                debugPrint(
+                  'DETAILS_DIAG i=$i scheduled=${tester.binding.hasScheduledFrame} '
+                  'transient=${tester.binding.transientCallbackCount} '
+                  'progress=${find.byType(CircularProgressIndicator).evaluate().length} '
+                  'add=${find.text('Add to library').evaluate().length}',
+                );
+              }
+              expect(find.text('Add to library'), findsOneWidget);
+            });
+          }
+
+          final class _DiagDetailsSource implements MangaDetailsDataSource {
+            const _DiagDetailsSource(this.snapshot);
+            final MangaDetailsSnapshot snapshot;
+
+            @override
+            Future<MangaDetailsSnapshot> load(MangaAvailabilityRecord availability) async => snapshot;
+
+            @override
+            Future<void> saveSourcePreference(
+              String workId,
+              MangaSourcePreference preference,
+            ) async {}
+          }
+          DART
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies and run diagnostic
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          flutter test --no-pub test/widgets/manga/manga_settle_diagnostic_test.dart -r expanded
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
