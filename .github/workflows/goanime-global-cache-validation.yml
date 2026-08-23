@@ -72,9 +72,14 @@ jobs:
           flutter-version: 3.44.1
           cache: true
 
-      - name: Install locked dependencies
+      - name: Resolve app and core dependencies
         working-directory: private-source
-        run: flutter pub get --enforce-lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get --enforce-lockfile
+          (cd packages/goanime_core && dart pub get)
 
       - name: Check Dart formatting
         working-directory: private-source
@@ -91,7 +96,7 @@ jobs:
 
       - name: Analyze project
         working-directory: private-source
-        run: flutter analyze
+        run: flutter analyze --no-pub
 
       - name: Run focused catalog tests
         working-directory: private-source
