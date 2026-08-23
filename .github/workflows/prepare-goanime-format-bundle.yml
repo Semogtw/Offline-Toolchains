@@ -40,6 +40,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           path: trusted-source
+          fetch-depth: 2
           persist-credentials: false
           sparse-checkout: |
             scripts/private_ci_request.py
@@ -58,6 +59,7 @@ jobs:
           python3 - "$request" "$INPUT_REF" "$EVENT_NAME" "$GITHUB_EVENT_PATH" <<'PY'
           import json
           import re
+          import subprocess
           import sys
           from pathlib import Path
 
@@ -76,6 +78,24 @@ jobs:
               for commit in commits:
                   changed.extend(commit.get("added", []))
                   changed.extend(commit.get("modified", []))
+              if not changed:
+                  try:
+                      changed = subprocess.check_output(
+                          [
+                              "git",
+                              "-C",
+                              "trusted-source",
+                              "diff-tree",
+                              "--no-commit-id",
+                              "--name-only",
+                              "-r",
+                              "HEAD^",
+                              "HEAD",
+                          ],
+                          text=True,
+                      ).splitlines()
+                  except subprocess.CalledProcessError:
+                      changed = []
               pattern = re.compile(
                   r"^triggers/goanime-format/[A-Za-z0-9._-]+\.request$"
               )
