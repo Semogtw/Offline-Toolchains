@@ -4,12 +4,20 @@ on:
   workflow_run:
     workflows: ["GoAnime Scrapling provider cache"]
     types: [completed]
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-global-catalog-finalize/*.request'
   workflow_dispatch:
     inputs:
       target_ref:
         description: GoAnime ref to validate; publication is restricted to main
         required: true
         default: main
+      source_hint:
+        description: Optional exact 40-character GoAnime source SHA
+        required: false
+        default: ''
       publish_runtime:
         description: Publish runtime SQLite/manifest to R2 when configured
         required: true
@@ -20,12 +28,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: goanime-global-catalog-finalize
+  group: goanime-global-catalog-finalize-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
   finalize:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -36,6 +44,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           path: trusted-source
+          fetch-depth: 2
           persist-credentials: false
           show-progress: false
 
@@ -43,11 +52,27 @@ jobs:
         working-directory: trusted-source
         run: python -m unittest tests/test_goanime_catalog_discovery_consensus.py -v
 
-      - name: Resolve target and publication policy
-        id: policy
+      - name: Resolve trusted GoAnime target
+        id: request
+        working-directory: trusted-source
         shell: bash
         env:
           DISPATCH_TARGET: ${{ github.event.inputs.target_ref || '' }}
+          DISPATCH_SOURCE_HINT: ${{ github.event.inputs.source_hint || '' }}
+        run: |
+          set -euo pipefail
+          python scripts/goanime_resolve_request.py \
+            --request-dir triggers/goanime-global-catalog-finalize \
+            --workspace . \
+            --default-branch main \
+            --dispatch-target "$DISPATCH_TARGET" \
+            --dispatch-source-hint "$DISPATCH_SOURCE_HINT"
+
+      - name: Resolve publication policy
+        id: policy
+        shell: bash
+        env:
+          TARGET_REF: ${{ steps.request.outputs.target_branch }}
           DISPATCH_PUBLISH_RUNTIME: ${{ github.event.inputs.publish_runtime || 'false' }}
           READ_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
@@ -61,18 +86,16 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$READ_TOKEN" || { echo '::error::PRIVATE_REPOSITORIES_TOKEN is required.'; exit 1; }
-
-          target="${DISPATCH_TARGET:-main}"
-          git check-ref-format --branch "$target" >/dev/null
-          echo "target=$target" >> "$GITHUB_OUTPUT"
+          git check-ref-format --branch "$TARGET_REF" >/dev/null
+          echo "target=$TARGET_REF" >> "$GITHUB_OUTPUT"
 
           publish_runtime=false
-          if [ "${GITHUB_EVENT_NAME}" = 'workflow_run' ] || [ "$DISPATCH_PUBLISH_RUNTIME" = 'true' ]; then
+          if [ "${GITHUB_EVENT_NAME}" = 'workflow_run' ] || { [ "${GITHUB_EVENT_NAME}" = 'workflow_dispatch' ] && [ "$DISPATCH_PUBLISH_RUNTIME" = 'true' ]; }; then
             publish_runtime=true
           fi
           echo "publish_runtime=$publish_runtime" >> "$GITHUB_OUTPUT"
 
-          if [ -n "$WRITE_TOKEN" ] && [ "$target" = 'main' ] && [ "${GITHUB_EVENT_NAME}" = 'workflow_run' ]; then
+          if [ -n "$WRITE_TOKEN" ] && [ "$TARGET_REF" = 'main' ] && [ "${GITHUB_EVENT_NAME}" = 'workflow_run' ]; then
             echo 'commit=true' >> "$GITHUB_OUTPUT"
           else
             echo 'commit=false' >> "$GITHUB_OUTPUT"
@@ -104,7 +127,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
-          ref: ${{ steps.policy.outputs.target }}
+          ref: ${{ steps.request.outputs.source_hint || steps.request.outputs.target_branch }}
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
           fetch-depth: 1
@@ -117,9 +140,15 @@ jobs:
         id: source
         working-directory: private-source
         shell: bash
+        env:
+          EXPECTED_SOURCE_HINT: ${{ steps.request.outputs.source_hint }}
         run: |
           set -euo pipefail
           sha="$(git rev-parse HEAD)"
+          if [ -n "$EXPECTED_SOURCE_HINT" ] && [ "$sha" != "$EXPECTED_SOURCE_HINT" ]; then
+            echo '::error::Checked-out GoAnime revision does not match source_hint.'
+            exit 1
+          fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           test -f tools/apply_catalog_discovery_consensus.py
           test -f tools/build_title_availability_database.dart
