@@ -1,0 +1,28 @@
+diff --git a/lib/screens/manga/manga_reader_screen.dart b/lib/screens/manga/manga_reader_screen.dart
+index d2d6c2bd..ca0bc366 100644
+--- a/lib/screens/manga/manga_reader_screen.dart
++++ b/lib/screens/manga/manga_reader_screen.dart
+@@ -602,7 +602,10 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+           return _pageError(
+             l10n,
+             onRetry: () {
+-              setState(() => _remotePdfFuture = _materializeRemotePdf(manifest));
++              final retryFuture = _materializeRemotePdf(manifest);
++              setState(() {
++                _remotePdfFuture = retryFuture;
++              });
+             },
+           );
+         }
+@@ -695,7 +698,10 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+             onRetry: loader == null
+                 ? null
+                 : () {
+-                    setState(() => _localContentFuture = loader(manifest));
++                    final retryFuture = loader(manifest);
++                    setState(() {
++                      _localContentFuture = retryFuture;
++                    });
+                   },
+           );
+         }
