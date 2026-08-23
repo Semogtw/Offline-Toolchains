@@ -76,6 +76,18 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      - name: Mirror generated lockfile in Toolchains
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          encoded="$(base64 -w0 < private-source/pubspec.lock)"
+          path="results/goanime-lockfile/$GITHUB_RUN_ID.lock"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" \
+            -f message="ci(result): mirror GoAnime lockfile $GITHUB_RUN_ID" \
+            -f content="$encoded" >/dev/null
+
       - name: Publish sanitized receipt
         if: always()
         env:
