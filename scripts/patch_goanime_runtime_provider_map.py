@@ -74,7 +74,7 @@ def main() -> int:
       uri.path.length - 'update.json'.length,
     );
     final nextPath = '${basePath}mal_provider_availability_map.json';
-    return uri.replace(path: nextPath, fragment: '').toString();
+    return uri.replace(path: nextPath).removeFragment().toString();
   }
 """,
         'configured refresh block',
