@@ -7,7 +7,7 @@ on:
       - 'triggers/goanime-bundled-fonts/*.request'
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: goanime-bundled-fonts
@@ -248,7 +248,7 @@ jobs:
       - name: Publish sanitized receipt
         if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           TARGET_SHA: ${{ steps.request.outputs.sha }}
           PUSHED_SHA: ${{ steps.push.outputs.pushed_sha }}
           STATE: ${{ job.status }}
