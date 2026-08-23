@@ -1,0 +1,93 @@
+name: Diagnose GoAnime post-10 v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/diagnose-goanime-post10-v2/*.request'
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout trusted request
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Extract first Flutter failure safely
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/diagnose-goanime-post10-v2/*.request' | head -n 1)"
+          test -n "$request"
+          read -r job_id < "$request"
+          [[ "$job_id" =~ ^[0-9]+$ ]]
+          raw="$RUNNER_TEMP/job.log"
+          gh api "repos/$REPO/actions/jobs/$job_id/logs" > "$raw"
+          report="$RUNNER_TEMP/report.json"
+          python3 - "$raw" "$report" "$job_id" <<'PY'
+          import json, re, sys
+          from pathlib import Path
+
+          raw = Path(sys.argv[1]).read_text(encoding='utf-8', errors='replace').splitlines()
+          job_id = int(sys.argv[3])
+          cleaned = []
+          ansi = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
+          ts = re.compile(r'^\ufeff?\d{4}-\d{2}-\d{2}T[^ ]+Z\s+')
+          for line in raw:
+              line = ansi.sub('', line)
+              line = ts.sub('', line)
+              line = line.replace('***', '[masked]')
+              cleaned.append(line)
+
+          start = 0
+          for i, line in enumerate(cleaned):
+              if 'Test Flutter application serially' in line or 'flutter test --no-pub --concurrency=1' in line:
+                  start = i
+                  break
+          segment = cleaned[start:]
+          patterns = [
+              r'Some tests failed', r'Expected:', r'Actual:', r'TestFailure',
+              r'EXCEPTION CAUGHT', r'\bFAILED\b', r'\+[0-9]+ -[1-9][0-9]*:',
+              r'test/.+_test\.dart', r'Process completed with exit code 1',
+              r'\[E\]$', r'Error:'
+          ]
+          rx = re.compile('|'.join(patterns), re.I)
+          hit = None
+          for i, line in enumerate(segment):
+              if rx.search(line):
+                  # Ignore command echo and generic final process line until a substantive failure appears.
+                  if 'flutter test --no-pub --concurrency=1' in line:
+                      continue
+                  hit = i
+                  break
+          if hit is None:
+              hit = max(0, len(segment) - 120)
+          lo = max(0, hit - 35)
+          hi = min(len(segment), hit + 120)
+          context = segment[lo:hi]
+          # Keep report bounded and avoid accidental credential-shaped strings.
+          text = '\n'.join(context)
+          text = re.sub(r'(?i)(token|secret|password|authorization)(\s*[:=]\s*)\S+', r'\1\2[redacted]', text)
+          payload = {
+              'schemaVersion': 1,
+              'jobId': job_id,
+              'firstMatchOffset': hit,
+              'context': text[:24000],
+          }
+          Path(sys.argv[2]).write_text(json.dumps(payload, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+          PY
+          encoded="$(base64 -w0 < "$report")"
+          path="results/diagnose-goanime-post10-v2/${GITHUB_RUN_ID}.json"
+          gh api --method PUT "repos/$REPO/contents/$path" -f message="ci(diagnose): record GoAnime post-10 v2 failure ${GITHUB_RUN_ID}" -f content="$encoded" >/dev/null
