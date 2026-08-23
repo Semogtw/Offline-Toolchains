@@ -1,0 +1,29 @@
+diff --git a/test/widgets/manga/manga_details_library_test.dart b/test/widgets/manga/manga_details_library_test.dart
+index fc72a458..2359ef35 100644
+--- a/test/widgets/manga/manga_details_library_test.dart
++++ b/test/widgets/manga/manga_details_library_test.dart
+@@ -101,7 +101,7 @@ void main() {
+         libraryRepository: library,
+       ),
+     );
+-    await tester.pumpAndSettle();
++    await _pumpUntilFound(tester, find.text('Add to library'));
+ 
+     expect(find.text('Add to library'), findsOneWidget);
+     expect(await library.entryForWork('mw_library'), isNull);
+@@ -154,6 +154,15 @@ final class _FakeDetailsDataSource implements MangaDetailsDataSource {
+   ) async {}
+ }
+ 
++
++Future<void> _pumpUntilFound(WidgetTester tester, Finder finder) async {
++  for (var i = 0; i < 80; i += 1) {
++    await tester.pump(const Duration(milliseconds: 50));
++    if (finder.evaluate().isNotEmpty) return;
++  }
++  throw TestFailure('Timed out waiting for Manga details content.');
++}
++
+ Future<void> _pump(WidgetTester tester, Widget child) async {
+   tester.view.devicePixelRatio = 1;
+   await tester.binding.setSurfaceSize(const Size(800, 1100));
