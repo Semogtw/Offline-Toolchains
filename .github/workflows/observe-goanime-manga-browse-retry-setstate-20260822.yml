@@ -1,0 +1,28 @@
+name: Observe GoAnime Manga browse retry setState fix
+
+on:
+  workflow_run:
+    workflows: ['Apply GoAnime Manga browse retry setState fix']
+    types: [completed]
+
+permissions:
+  contents: write
+
+jobs:
+  report:
+    if: github.event.workflow_run.repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Publish sanitized result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          path="reports/goanime-manga-browse-retry-setstate-20260822/${RUN_ID}.json"
+          payload="$(jq -nc --argjson runId "$RUN_ID" --arg conclusion "$CONCLUSION" --arg headSha "$HEAD_SHA" '{schemaVersion:1,runId:$runId,conclusion:$conclusion,headSha:$headSha}')"
+          encoded="$(printf '%s\n' "$payload" | base64 -w0)"
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/${path}" -f message="ci(goanime): report browse retry setState ${RUN_ID}" -f content="$encoded" >/dev/null
