@@ -312,19 +312,17 @@ jobs:
         if: steps.policy.outputs.publish_runtime == 'true' && steps.policy.outputs.r2_configured != 'true'
         run: echo '::warning::Runtime publication requested, but R2 credentials/public base URL are incomplete in Offline-Toolchains.'
 
-      - name: Upload catalog finalization evidence
+      - name: Upload sanitized catalog finalization evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: goanime-global-catalog-${{ github.run_id }}
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 1
           path: |
             private-source/build/catalog_discovery_consensus.json
             private-source/build/catalog_discovery_promotion_summary.json
             private-source/dist/runtime_database_cache/runtime_database_manifest.json
-            private-source/dist/runtime_database_cache/title_availability.db
-            private-source/assets/data/title_availability.db.sha256
 
       - name: Write workflow summary
         if: always()
