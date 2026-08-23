@@ -1,0 +1,265 @@
+diff --git a/lib/screens/manga/manga_reader_screen.dart b/lib/screens/manga/manga_reader_screen.dart
+index d2d6c2bd..07b817c2 100644
+--- a/lib/screens/manga/manga_reader_screen.dart
++++ b/lib/screens/manga/manga_reader_screen.dart
+@@ -108,11 +108,15 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+     } else if (widget.manifest
+         case final LocalPackageContentManifest manifest) {
+       final loader = widget.localContentLoader;
+-      if (loader != null) _localContentFuture = loader(manifest);
++      if (loader != null) {
++        _localContentFuture = _loadLocalContent(manifest, loader);
++      }
+     }
+     unawaited(_loadReaderMode());
+     unawaited(WakelockPlus.enable());
+-    _recordPage(_pageIndex, _pageCount);
++    if (widget.manifest is! LocalPackageContentManifest) {
++      _recordPage(_pageIndex, _pageCount);
++    }
+   }
+ 
+   @override
+@@ -278,8 +282,8 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+   Future<void> _useDefaultReaderMode() async {
+     if (!_supportsImageModes || !_hasReaderModeOverride) return;
+     try {
+-      await _preferencesRepository.clearReaderMode(widget.chapter.workId);
+       final defaultMode = await _preferencesRepository.defaultReaderMode();
++      await _preferencesRepository.clearReaderMode(widget.chapter.workId);
+       if (!mounted) return;
+       setState(() => _hasReaderModeOverride = false);
+       _applyReaderMode(defaultMode, persist: false);
+@@ -674,6 +678,15 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+     }
+   }
+ 
++  Future<MangaLocalReaderContent> _loadLocalContent(
++    LocalPackageContentManifest manifest,
++    MangaLocalContentLoader loader,
++  ) async {
++    final content = await loader(manifest);
++    if (mounted) _recordPage(_pageIndex, _pageCount);
++    return content;
++  }
++
+   Widget _buildLocalReader(
+     LocalPackageContentManifest manifest,
+     UiMangaLocalizations l10n,
+@@ -695,7 +708,9 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+             onRetry: loader == null
+                 ? null
+                 : () {
+-                    setState(() => _localContentFuture = loader(manifest));
++                    setState(() {
++                      _localContentFuture = _loadLocalContent(manifest, loader);
++                    });
+                   },
+           );
+         }
+@@ -924,7 +939,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+     _progressWrites = _progressWrites
+         .then((_) async {
+           final now = DateTime.now().toUtc();
+-          await _progressRepository.saveBookmark(
++          await _progressRepository.saveReadingProgress(
+             workId: widget.chapter.workId,
+             canonicalChapterId: widget.chapter.canonicalChapterId,
+             bookmark: MangaVariantBookmark(
+@@ -934,11 +949,6 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+               pageIndex: pageIndex,
+               pageCount: pageCount,
+             ),
+-            lastReadAt: now,
+-          );
+-          await _progressRepository.saveLogicalProgress(
+-            workId: widget.chapter.workId,
+-            canonicalChapterId: widget.chapter.canonicalChapterId,
+             completed: _completedInSession,
+             lastReadAt: now,
+           );
+diff --git a/lib/services/manga/storage/manga_progress_repository.dart b/lib/services/manga/storage/manga_progress_repository.dart
+index d9e7443d..334ace6b 100644
+--- a/lib/services/manga/storage/manga_progress_repository.dart
++++ b/lib/services/manga/storage/manga_progress_repository.dart
+@@ -128,6 +128,41 @@ final class MangaProgressRepository {
+     });
+   }
+ 
++  Future<void> saveReadingProgress({
++    required String workId,
++    required String canonicalChapterId,
++    required MangaVariantBookmark bookmark,
++    required bool completed,
++    required DateTime lastReadAt,
++  }) async {
++    _validateIdentity(workId, canonicalChapterId);
++    final database = await _database.database;
++    await database.transaction((transaction) async {
++      final values = <String, Object?>{
++        'completed': completed ? 1 : 0,
++        'lastReadAt': lastReadAt.toUtc().toIso8601String(),
++        'sourceId': bookmark.sourceId,
++        'mangaId': bookmark.mangaId,
++        'chapterId': bookmark.chapterId,
++        'pageIndex': bookmark.pageIndex,
++        'pageCount': bookmark.pageCount,
++      };
++      final updated = await transaction.update(
++        'manga_progress',
++        values,
++        where: 'workId = ? AND canonicalChapterId = ?',
++        whereArgs: [workId, canonicalChapterId],
++      );
++      if (updated == 0) {
++        await transaction.insert('manga_progress', <String, Object?>{
++          'workId': workId,
++          'canonicalChapterId': canonicalChapterId,
++          ...values,
++        });
++      }
++    });
++  }
++
+   Future<MangaChapterProgress?> progressForChapter(
+     String workId,
+     String canonicalChapterId,
+diff --git a/test/services/manga/storage/manga_library_progress_repository_test.dart b/test/services/manga/storage/manga_library_progress_repository_test.dart
+index e20d1f48..42631e1a 100644
+--- a/test/services/manga/storage/manga_library_progress_repository_test.dart
++++ b/test/services/manga/storage/manga_library_progress_repository_test.dart
+@@ -89,6 +89,38 @@ void main() {
+     expect(progress.bookmark!.pageCount, 42);
+   });
+ 
++  test('reading progress writes bookmark and logical state together', () async {
++    final readAt = DateTime.utc(2026, 8, 22, 18, 30);
++
++    await progressRepository.saveReadingProgress(
++      workId: 'mw_test',
++      canonicalChapterId: 'mc_1',
++      bookmark: MangaVariantBookmark(
++        sourceId: 'ptbr.atomic',
++        mangaId: 'work-atomic',
++        chapterId: 'chapter-atomic-1',
++        pageIndex: 7,
++        pageCount: 20,
++      ),
++      completed: true,
++      lastReadAt: readAt,
++    );
++
++    final progress = await progressRepository.progressForChapter(
++      'mw_test',
++      'mc_1',
++    );
++
++    expect(progress, isNotNull);
++    expect(progress!.completed, isTrue);
++    expect(progress.lastReadAt, readAt);
++    expect(progress.bookmark!.sourceId, 'ptbr.atomic');
++    expect(progress.bookmark!.mangaId, 'work-atomic');
++    expect(progress.bookmark!.chapterId, 'chapter-atomic-1');
++    expect(progress.bookmark!.pageIndex, 7);
++    expect(progress.bookmark!.pageCount, 20);
++  });
++
+   test('removing a work from library preserves canonical progress', () async {
+     await libraryRepository.setStatus('mw_test', MangaLibraryStatus.reading);
+     await progressRepository.saveLogicalProgress(
+diff --git a/test/widgets/manga/manga_reader_screen_test.dart b/test/widgets/manga/manga_reader_screen_test.dart
+index bfb79fe9..24e73a2f 100644
+--- a/test/widgets/manga/manga_reader_screen_test.dart
++++ b/test/widgets/manga/manga_reader_screen_test.dart
+@@ -90,14 +90,17 @@ void main() {
+         loader: (_) async => MangaLocalImageReaderContent(<File>[pageFile]),
+       ),
+     );
+-    await tester.pumpAndSettle();
++    await _pumpUntilFound(tester, find.byTooltip('Reading mode'));
+ 
+     await tester.tap(find.byTooltip('Reading mode'));
+-    await tester.pumpAndSettle();
++    await _pumpUntilFound(tester, find.text('Use default mode'));
+ 
+     expect(find.text('Use default mode'), findsOneWidget);
+     await tester.tap(find.text('Use default mode'));
+-    await tester.pumpAndSettle();
++    await _pumpUntilFound(
++      tester,
++      find.text('This work now uses the default mode.'),
++    );
+ 
+     expect(
+       find.text('This work now uses the default mode.'),
+@@ -131,7 +134,10 @@ void main() {
+         },
+       ),
+     );
+-    await tester.pumpAndSettle();
++    await _pumpUntilFound(
++      tester,
++      find.text('This offline package could not be opened.'),
++    );
+ 
+     expect(attempts, 1);
+     expect(
+@@ -139,18 +145,57 @@ void main() {
+       findsOneWidget,
+     );
+     expect(find.text('Try again'), findsOneWidget);
++    expect(
++      await progress.progressForChapter('work-1', 'chapter-1'),
++      isNull,
++    );
+ 
+     await tester.tap(find.text('Try again'));
+-    await tester.pumpAndSettle();
++    await _pumpUntil(
++      tester,
++      () =>
++          attempts == 2 &&
++          find.text('This offline package could not be opened.').evaluate().isEmpty,
++    );
+ 
+     expect(attempts, 2);
+     expect(
+       find.text('This offline package could not be opened.'),
+       findsNothing,
+     );
++
++    MangaChapterProgress? saved;
++    for (var i = 0; i < 40 && saved == null; i += 1) {
++      await tester.pump(const Duration(milliseconds: 50));
++      saved = await progress.progressForChapter('work-1', 'chapter-1');
++    }
++    expect(saved, isNotNull);
++    expect(saved!.bookmark, isNotNull);
++    expect(saved.bookmark!.sourceId, 'local.test');
++    expect(saved.bookmark!.mangaId, 'work-source-1');
++    expect(saved.bookmark!.chapterId, 'chapter-source-1');
++    expect(saved.bookmark!.pageIndex, 0);
++    expect(saved.bookmark!.pageCount, 1);
+   });
+ }
+ 
++
++Future<void> _pumpUntilFound(WidgetTester tester, Finder finder) async {
++  await _pumpUntil(tester, () => finder.evaluate().isNotEmpty);
++}
++
++Future<void> _pumpUntil(
++  WidgetTester tester,
++  bool Function() condition, {
++  int maxPumps = 80,
++}) async {
++  for (var i = 0; i < maxPumps; i += 1) {
++    await tester.pump(const Duration(milliseconds: 50));
++    if (condition()) return;
++  }
++  throw TestFailure('Timed out waiting for the expected reader state.');
++}
++
+ Widget _readerApp({
+   required MangaPreferencesRepository preferences,
+   required MangaProgressRepository progress,
