@@ -83,6 +83,7 @@ jobs:
           set -euo pipefail
           flutter config --no-analytics
           flutter pub get
+          git diff --exit-code -- pubspec.lock
           grep -q '^  goanime_brand_fonts:' pubspec.lock
           grep -q 'resolved-ref: cb00271f6e51bb971504b499939781895832a7f1' pubspec.lock
           ! grep -q '^  google_fonts:' pubspec.lock
