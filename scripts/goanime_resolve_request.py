@@ -11,6 +11,7 @@ from typing import Iterable
 
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
 _ALLOWED_KEYS = frozenset({"target_branch", "source_hint", "reason"})
+_LEGACY_DEFAULT_BRANCH = "feat/scrapling-provider-pipeline"
 
 
 def _changed_paths(event: dict[str, object]) -> tuple[set[str], set[str]]:
@@ -172,11 +173,18 @@ def resolve_push_request(
     return target_branch, source_hint
 
 
+def _resolve_dispatch_target(dispatch_target: str, default_branch: str) -> str:
+    requested = dispatch_target.strip()
+    if not requested or requested == _LEGACY_DEFAULT_BRANCH:
+        return default_branch
+    return requested
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--request-dir", required=True)
     parser.add_argument("--workspace", type=Path, default=Path("."))
-    parser.add_argument("--default-branch", default="feat/scrapling-provider-pipeline")
+    parser.add_argument("--default-branch", default="main")
     parser.add_argument("--dispatch-target", default="")
     parser.add_argument("--dispatch-source-hint", default="")
     args = parser.parse_args()
@@ -195,7 +203,10 @@ def main() -> int:
             request_dir=args.request_dir,
         )
     else:
-        target_branch = args.dispatch_target.strip() or args.default_branch
+        target_branch = _resolve_dispatch_target(
+            args.dispatch_target,
+            args.default_branch,
+        )
         _validate_branch(target_branch)
         source_hint = _validate_optional_sha(
             args.dispatch_source_hint,
