@@ -81,13 +81,76 @@ jobs:
           flutter pub get >/dev/null 2>&1
           (cd packages/goanime_core && dart pub get >/dev/null 2>&1)
 
-      - name: Apply scoped lint fix and repository formatter
+      - name: Apply scoped lint fixes and repository formatter
         id: format
         working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
           dart fix --apply --code=curly_braces_in_flow_control_structures >/dev/null
+          python3 - <<'PY'
+          from pathlib import Path
+
+          replacements = {
+              'lib/services/manga/download/manga_download_control_service.dart': [
+                  (
+                      "    if (parent == null) throw StateError('Unknown manga download: $downloadId.');",
+                      "    if (parent == null) {\n      throw StateError('Unknown manga download: $downloadId.');\n    }",
+                      1,
+                  ),
+              ],
+              'lib/services/manga/download/manga_download_manager.dart': [
+                  (
+                      "    if (parent == null) throw StateError('Unknown manga download: $downloadId.');",
+                      "    if (parent == null) {\n      throw StateError('Unknown manga download: $downloadId.');\n    }",
+                      3,
+                  ),
+              ],
+              'lib/services/manga/download/manga_download_repository.dart': [
+                  (
+                      "      if (rows.isEmpty) throw StateError('Unknown manga download: $downloadId.');",
+                      "      if (rows.isEmpty) {\n        throw StateError('Unknown manga download: $downloadId.');\n      }",
+                      1,
+                  ),
+              ],
+              'lib/services/manga/providers/leitura_manga_manga_provider.dart': [
+                  (
+                      "    if (decoded is! List || decoded.length < 2 || decoded[1] is! String) continue;",
+                      "    if (decoded is! List || decoded.length < 2 || decoded[1] is! String) {\n      continue;\n    }",
+                      1,
+                  ),
+              ],
+              'test/services/manga/providers/mangaflix_manga_provider_test.dart': [
+                  (
+                      "      if (request.url.path == '/v1/search/mangas') return _json(searchFixture);",
+                      "      if (request.url.path == '/v1/search/mangas') {\n        return _json(searchFixture);\n      }",
+                      1,
+                  ),
+                  (
+                      "      if (request.url.path == '/v1/mangas/mf-example') return _json(detailsFixture);",
+                      "      if (request.url.path == '/v1/mangas/mf-example') {\n        return _json(detailsFixture);\n      }",
+                      1,
+                  ),
+                  (
+                      "      if (request.url.path == '/v1/chapters/mf-ch-20') return _json(chapterFixture);",
+                      "      if (request.url.path == '/v1/chapters/mf-ch-20') {\n        return _json(chapterFixture);\n      }",
+                      1,
+                  ),
+              ],
+          }
+
+          for raw_path, rules in replacements.items():
+              path = Path(raw_path)
+              text = path.read_text(encoding='utf-8')
+              for old, new, expected in rules:
+                  count = text.count(old)
+                  if count != expected:
+                      raise SystemExit(
+                          f'{raw_path}: expected {expected} exact occurrences, found {count}: {old!r}'
+                      )
+                  text = text.replace(old, new)
+              path.write_text(text, encoding='utf-8')
+          PY
           dart format lib test packages tools >/dev/null
           git diff --check
           count="$(git diff --name-only -- '*.dart' | wc -l | tr -d ' ')"
