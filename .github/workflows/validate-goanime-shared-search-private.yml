@@ -1,0 +1,182 @@
+name: Validate GoAnime shared search privately
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-search-private/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-shared-search-private
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate exact GoAnime shared search source
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact source revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-search-private/*.request' | head -n 1)"
+          test -n "$request"
+          sha="$(tr -d '\r\n' < "control/$request")"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies privately
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter pub get >/dev/null 2>&1
+          (cd packages/goanime_core && dart pub get >/dev/null 2>&1)
+
+      - name: Check shared search formatting
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format --output=none --set-exit-if-changed \
+            lib/controllers/media \
+            lib/services/manga/manga_readable_search_adapter.dart \
+            lib/widgets/manga/manga_readable_search_view.dart \
+            packages/goanime_core/lib/src/media/media_search_contract.dart \
+            test/controllers/media/progressive_search_controller_test.dart \
+            test/services/manga/manga_readable_search_adapter_test.dart \
+            test/services/providers/anime_search_adapter_test.dart \
+            test/architecture/shared_search_lifecycle_guard_test.dart
+
+      - name: Analyze shared search boundary
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter analyze --no-pub \
+            lib/controllers/media \
+            lib/services/manga/manga_readable_search_adapter.dart \
+            lib/widgets/manga/manga_readable_search_view.dart \
+            test/controllers/media/progressive_search_controller_test.dart \
+            test/services/manga/manga_readable_search_adapter_test.dart \
+            test/services/providers/anime_search_adapter_test.dart \
+            test/architecture/shared_search_lifecycle_guard_test.dart
+
+      - name: Test shared controller
+        working-directory: private-source
+        run: flutter test --no-pub test/controllers/media/progressive_search_controller_test.dart
+
+      - name: Test manga search adapter
+        working-directory: private-source
+        run: flutter test --no-pub test/services/manga/manga_readable_search_adapter_test.dart
+
+      - name: Test manga search view
+        working-directory: private-source
+        run: flutter test --no-pub test/widgets/manga/manga_readable_search_view_test.dart
+
+      - name: Test anime search adapter
+        working-directory: private-source
+        run: flutter test --no-pub test/services/providers/anime_search_adapter_test.dart
+
+      - name: Test search architecture guard
+        working-directory: private-source
+        run: flutter test --no-pub test/architecture/shared_search_lifecycle_guard_test.dart
+
+      - name: Test core media contracts
+        working-directory: private-source/packages/goanime_core
+        run: dart test test/media
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
+
+  report:
+    name: Publish sanitized shared search result
+    if: always()
+    needs: [validate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+
+    steps:
+      - name: Publish sanitized result
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          TOOLCHAINS_TRIGGER_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/goanime-search-report.json"
+          python3 - "$report" <<'PY'
+          import json
+          import os
+          import sys
+          from datetime import datetime, timezone
+
+          payload = {
+              "schemaVersion": 1,
+              "runId": int(os.environ["RUN_ID"]),
+              "runAttempt": int(os.environ["RUN_ATTEMPT"]),
+              "toolchainsTriggerSha": os.environ["TOOLCHAINS_TRIGGER_SHA"],
+              "validateResult": os.environ["VALIDATE_RESULT"],
+              "finishedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+          }
+          with open(sys.argv[1], "w", encoding="utf-8") as stream:
+              json.dump(payload, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          PY
+          encoded="$(base64 -w0 < "$report")"
+          path="reports/goanime-search-private/${RUN_ID}.json"
+          gh api \
+            --method PUT \
+            "repos/${GITHUB_REPOSITORY}/contents/${path}" \
+            -f "message=ci(goanime): report shared search run ${RUN_ID}" \
+            -f "content=${encoded}" \
+            >/dev/null
