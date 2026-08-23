@@ -1,6 +1,8 @@
+diff --git a/test/widgets/manga/manga_reader_screen_test.dart b/test/widgets/manga/manga_reader_screen_test.dart
+index d514fef..82454f0 100644
 --- a/test/widgets/manga/manga_reader_screen_test.dart
 +++ b/test/widgets/manga/manga_reader_screen_test.dart
-@@ -69,10 +69,14 @@
+@@ -69,10 +69,14 @@ void main() {
    testWidgets('can clear a work override and return to the global mode', (
      tester,
    ) async {
@@ -19,7 +21,7 @@
      );
  
      await tester.pumpWidget(
-@@ -95,11 +99,17 @@
+@@ -95,11 +99,17 @@ void main() {
      );
  
      expect(find.text('This work now uses the default mode.'), findsOneWidget);
@@ -41,7 +43,7 @@
    });
  
    testWidgets('local package failure exposes retry and reloads the package', (
-@@ -131,7 +141,11 @@
+@@ -131,7 +141,11 @@ void main() {
        findsOneWidget,
      );
      expect(find.text('Try again'), findsOneWidget);
@@ -54,18 +56,18 @@
  
      await tester.tap(find.text('Try again'));
      await _pumpUntil(
-@@ -153,7 +167,9 @@
+@@ -153,7 +167,9 @@ void main() {
      MangaChapterProgress? saved;
      for (var i = 0; i < 40 && saved == null; i += 1) {
        await tester.pump(const Duration(milliseconds: 50));
 -      saved = await progress.progressForChapter('work-1', 'chapter-1');
-+      saved = await tester.runAsync(
++      saved = await tester.runAsync<MangaChapterProgress?>(
 +        () => progress.progressForChapter('work-1', 'chapter-1'),
 +      );
      }
      expect(saved, isNotNull);
      expect(saved!.bookmark, isNotNull);
-@@ -162,6 +178,9 @@
+@@ -162,6 +178,9 @@ void main() {
      expect(saved.bookmark!.chapterId, 'chapter-source-1');
      expect(saved.bookmark!.pageIndex, 0);
      expect(saved.bookmark!.pageCount, 1);
@@ -75,7 +77,7 @@
    });
  }
  
-@@ -177,10 +196,17 @@
+@@ -177,10 +196,17 @@ Future<void> _pumpUntil(
    for (var i = 0; i < maxPumps; i += 1) {
      await tester.pump(const Duration(milliseconds: 50));
      if (condition()) return;
