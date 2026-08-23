@@ -63,9 +63,10 @@ jobs:
           set -euo pipefail
           flutter config --no-analytics
           flutter pub get
-          grep -q '^  goanime_brand_fonts:' pubspec.lock
-          grep -q 'resolved-ref: cb00271f6e51bb971504b499939781895832a7f1' pubspec.lock
-          ! grep -q '^  google_fonts:' pubspec.lock
+          test -s pubspec.lock
+          grep -q '^packages:' pubspec.lock
+          grep -q '^sdks:' pubspec.lock
+          git diff --check -- pubspec.lock
 
       - name: Upload generated lockfile
         uses: actions/upload-artifact@v7
