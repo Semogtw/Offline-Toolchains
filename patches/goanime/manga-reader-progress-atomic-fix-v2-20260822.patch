@@ -1,5 +1,5 @@
 diff --git a/lib/screens/manga/manga_reader_screen.dart b/lib/screens/manga/manga_reader_screen.dart
-index d2d6c2bd..07b817c2 100644
+index d2d6c2bd..7116d5f5 100644
 --- a/lib/screens/manga/manga_reader_screen.dart
 +++ b/lib/screens/manga/manga_reader_screen.dart
 @@ -108,11 +108,15 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
@@ -20,7 +20,96 @@ index d2d6c2bd..07b817c2 100644
    }
  
    @override
-@@ -278,8 +282,8 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+@@ -142,7 +146,8 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+       final override = await _preferencesRepository.readerModeOverrideForWork(
+         widget.chapter.workId,
+       );
+-      final saved = override ?? await _preferencesRepository.defaultReaderMode();
++      final saved =
++          override ?? await _preferencesRepository.defaultReaderMode();
+       if (!mounted || !_supportsImageModes) return;
+       setState(() => _hasReaderModeOverride = override != null);
+       _applyReaderMode(saved, persist: false);
+@@ -161,11 +166,12 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+         final variants = await catalog.variantsForChapter(
+           widget.chapter.canonicalChapterId,
+         );
+-        sourceIds = variants
+-            .map((variant) => variant.chapter.sourceId)
+-            .toSet()
+-            .toList(growable: false)
+-          ..sort();
++        sourceIds =
++            variants
++                .map((variant) => variant.chapter.sourceId)
++                .toSet()
++                .toList(growable: false)
++              ..sort();
+       }
+       if (!mounted) return;
+       setState(() {
+@@ -186,9 +192,9 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+   };
+ 
+   int get _currentChapterIndex => _navigationChapters.indexWhere(
+-        (chapter) =>
+-            chapter.canonicalChapterId == widget.chapter.canonicalChapterId,
+-      );
++    (chapter) =>
++        chapter.canonicalChapterId == widget.chapter.canonicalChapterId,
++  );
+ 
+   bool get _hasPreviousChapter {
+     if (widget.hasPreviousChapter) return true;
+@@ -205,17 +211,15 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+     final values = <String>{
+       ...widget.availableSourceIds,
+       ..._discoveredSourceIds,
+-    }.toList(growable: false)
+-      ..sort();
++    }.toList(growable: false)..sort();
+     return values;
+   }
+ 
+   bool get _hasReaderControls =>
+-      _hasPreviousChapter ||
+-      _hasNextChapter ||
+-      _effectiveSourceIds.length > 1;
++      _hasPreviousChapter || _hasNextChapter || _effectiveSourceIds.length > 1;
+ 
+-  String get _activeSourceId => widget.activeSourceId ?? widget.manifest.sourceId;
++  String get _activeSourceId =>
++      widget.activeSourceId ?? widget.manifest.sourceId;
+ 
+   void _toggleChrome() {
+     setState(() => _chromeVisible = !_chromeVisible);
+@@ -236,9 +240,9 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+                 padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+                 child: Text(
+                   _readerModeTitle(context),
+-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+-                    fontWeight: FontWeight.w800,
+-                  ),
++                  style: Theme.of(
++                    context,
++                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+                 ),
+               ),
+               if (_hasReaderModeOverride)
+@@ -246,10 +250,8 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+                   key: const ValueKey('manga-reader-use-default-mode'),
+                   leading: const Icon(Icons.settings_backup_restore_rounded),
+                   title: Text(_readerUseDefaultModeLabel(context)),
+-                  onTap: () => Navigator.pop(
+-                    context,
+-                    _ReaderModeMenuAction.useDefault,
+-                  ),
++                  onTap: () =>
++                      Navigator.pop(context, _ReaderModeMenuAction.useDefault),
+                 ),
+               for (final mode in MangaReaderMode.values)
+                 ListTile(
+@@ -278,8 +280,8 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
    Future<void> _useDefaultReaderMode() async {
      if (!_supportsImageModes || !_hasReaderModeOverride) return;
      try {
@@ -30,7 +119,41 @@ index d2d6c2bd..07b817c2 100644
        if (!mounted) return;
        setState(() => _hasReaderModeOverride = false);
        _applyReaderMode(defaultMode, persist: false);
-@@ -674,6 +678,15 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+@@ -310,9 +312,9 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+                 padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+                 child: Text(
+                   _readerSourceTitle(context),
+-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+-                    fontWeight: FontWeight.w800,
+-                  ),
++                  style: Theme.of(
++                    context,
++                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+                 ),
+               ),
+               for (final sourceId in sources)
+@@ -455,7 +457,8 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+   @override
+   Widget build(BuildContext context) {
+     final l10n = AppLocalizations.of(context).manga;
+-    final title = widget.chapter.title ?? _chapterFallbackTitle(context, widget.chapter);
++    final title =
++        widget.chapter.title ?? _chapterFallbackTitle(context, widget.chapter);
+     return Scaffold(
+       backgroundColor: Colors.black,
+       extendBodyBehindAppBar: !_chromeVisible,
+@@ -602,7 +605,9 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+           return _pageError(
+             l10n,
+             onRetry: () {
+-              setState(() => _remotePdfFuture = _materializeRemotePdf(manifest));
++              setState(
++                () => _remotePdfFuture = _materializeRemotePdf(manifest),
++              );
+             },
+           );
+         }
+@@ -674,6 +679,15 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
      }
    }
  
@@ -46,7 +169,7 @@ index d2d6c2bd..07b817c2 100644
    Widget _buildLocalReader(
      LocalPackageContentManifest manifest,
      UiMangaLocalizations l10n,
-@@ -695,7 +708,9 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+@@ -695,7 +709,9 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
              onRetry: loader == null
                  ? null
                  : () {
@@ -57,7 +180,42 @@ index d2d6c2bd..07b817c2 100644
                    },
            );
          }
-@@ -924,7 +939,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+@@ -828,11 +844,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+     _recordPage(safeIndex, pageCount);
+   }
+ 
+-  void _onPageChanged(
+-    int index,
+-    int? pageCount, {
+-    bool markNavigation = true,
+-  }) {
++  void _onPageChanged(int index, int? pageCount, {bool markNavigation = true}) {
+     if (markNavigation && index != _pageIndex) {
+       _hasUserNavigated = true;
+     }
+@@ -845,10 +857,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+     _recordPage(index, pageCount);
+   }
+ 
+-  Widget _pageError(
+-    UiMangaLocalizations l10n, {
+-    VoidCallback? onRetry,
+-  }) {
++  Widget _pageError(UiMangaLocalizations l10n, {VoidCallback? onRetry}) {
+     return Center(
+       child: Padding(
+         padding: const EdgeInsets.all(24),
+@@ -915,16 +924,14 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+   void _recordPage(int pageIndex, int? pageCount) {
+     final manifest = widget.manifest;
+     if (pageIndex < 0 || (pageCount != null && pageIndex >= pageCount)) return;
+-    if (_hasUserNavigated &&
+-        pageCount != null &&
+-        pageIndex == pageCount - 1) {
++    if (_hasUserNavigated && pageCount != null && pageIndex == pageCount - 1) {
+       _completedInSession = true;
+     }
+ 
      _progressWrites = _progressWrites
          .then((_) async {
            final now = DateTime.now().toUtc();
@@ -66,7 +224,7 @@ index d2d6c2bd..07b817c2 100644
              workId: widget.chapter.workId,
              canonicalChapterId: widget.chapter.canonicalChapterId,
              bookmark: MangaVariantBookmark(
-@@ -934,11 +949,6 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
+@@ -934,11 +941,6 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
                pageIndex: pageIndex,
                pageCount: pageCount,
              ),
@@ -168,10 +326,44 @@ index e20d1f48..42631e1a 100644
      await libraryRepository.setStatus('mw_test', MangaLibraryStatus.reading);
      await progressRepository.saveLogicalProgress(
 diff --git a/test/widgets/manga/manga_reader_screen_test.dart b/test/widgets/manga/manga_reader_screen_test.dart
-index bfb79fe9..24e73a2f 100644
+index bfb79fe9..0ff05733 100644
 --- a/test/widgets/manga/manga_reader_screen_test.dart
 +++ b/test/widgets/manga/manga_reader_screen_test.dart
-@@ -90,14 +90,17 @@ void main() {
+@@ -26,14 +26,6 @@ void main() {
+     title: 'Chapter 1',
+     number: 1,
+   );
+-  const manifest = LocalPackageContentManifest(
+-    sourceId: 'local.test',
+-    mangaId: 'work-source-1',
+-    chapterId: 'chapter-source-1',
+-    packageId: 'package-1',
+-    sourceContentKind: MangaContentKind.imageSequence,
+-    pageCount: 1,
+-  );
+ 
+   setUpAll(() {
+     sqfliteFfiInit();
+@@ -77,10 +69,14 @@ void main() {
+   testWidgets('can clear a work override and return to the global mode', (
+     tester,
+   ) async {
+-    await preferences.saveDefaultReaderMode(MangaReaderMode.pagedRtl);
+-    await preferences.saveReaderMode(
+-      'work-1',
+-      MangaReaderMode.continuousVertical,
++    await tester.runAsync(
++      () => preferences.saveDefaultReaderMode(MangaReaderMode.pagedRtl),
++    );
++    await tester.runAsync(
++      () => preferences.saveReaderMode(
++        'work-1',
++        MangaReaderMode.continuousVertical,
++      ),
+     );
+ 
+     await tester.pumpWidget(
+@@ -90,27 +86,30 @@ void main() {
          loader: (_) async => MangaLocalImageReaderContent(<File>[pageFile]),
        ),
      );
@@ -185,14 +377,36 @@ index bfb79fe9..24e73a2f 100644
      expect(find.text('Use default mode'), findsOneWidget);
      await tester.tap(find.text('Use default mode'));
 -    await tester.pumpAndSettle();
+-
+-    expect(
 +    await _pumpUntilFound(
 +      tester,
-+      find.text('This work now uses the default mode.'),
-+    );
- 
-     expect(
        find.text('This work now uses the default mode.'),
-@@ -131,7 +134,10 @@ void main() {
+-      findsOneWidget,
+     );
+-    expect(
+-      await preferences.readerModeOverrideForWork('work-1'),
+-      isNull,
++
++    expect(find.text('This work now uses the default mode.'), findsOneWidget);
++    final override = await tester.runAsync(
++      () => preferences.readerModeOverrideForWork('work-1'),
+     );
+-    expect(
+-      await preferences.readerModeForWork('work-1'),
+-      MangaReaderMode.pagedRtl,
++    final effectiveMode = await tester.runAsync(
++      () => preferences.readerModeForWork('work-1'),
+     );
++    expect(override, isNull);
++    expect(effectiveMode, MangaReaderMode.pagedRtl);
++
++    await tester.pumpWidget(const SizedBox.shrink());
++    await _yieldToIo(tester);
+   });
+ 
+   testWidgets('local package failure exposes retry and reloads the package', (
+@@ -131,7 +130,10 @@ void main() {
          },
        ),
      );
@@ -204,14 +418,15 @@ index bfb79fe9..24e73a2f 100644
  
      expect(attempts, 1);
      expect(
-@@ -139,18 +145,57 @@ void main() {
+@@ -139,15 +141,69 @@ void main() {
        findsOneWidget,
      );
      expect(find.text('Try again'), findsOneWidget);
-+    expect(
-+      await progress.progressForChapter('work-1', 'chapter-1'),
-+      isNull,
++    await _yieldToIo(tester);
++    final failedProgress = await tester.runAsync(
++      () => progress.progressForChapter('work-1', 'chapter-1'),
 +    );
++    expect(failedProgress, isNull);
  
      await tester.tap(find.text('Try again'));
 -    await tester.pumpAndSettle();
@@ -219,7 +434,10 @@ index bfb79fe9..24e73a2f 100644
 +      tester,
 +      () =>
 +          attempts == 2 &&
-+          find.text('This offline package could not be opened.').evaluate().isEmpty,
++          find
++              .text('This offline package could not be opened.')
++              .evaluate()
++              .isEmpty,
 +    );
  
      expect(attempts, 2);
@@ -231,7 +449,9 @@ index bfb79fe9..24e73a2f 100644
 +    MangaChapterProgress? saved;
 +    for (var i = 0; i < 40 && saved == null; i += 1) {
 +      await tester.pump(const Duration(milliseconds: 50));
-+      saved = await progress.progressForChapter('work-1', 'chapter-1');
++      saved = await tester.runAsync(
++        () => progress.progressForChapter('work-1', 'chapter-1'),
++      );
 +    }
 +    expect(saved, isNotNull);
 +    expect(saved!.bookmark, isNotNull);
@@ -240,9 +460,11 @@ index bfb79fe9..24e73a2f 100644
 +    expect(saved.bookmark!.chapterId, 'chapter-source-1');
 +    expect(saved.bookmark!.pageIndex, 0);
 +    expect(saved.bookmark!.pageCount, 1);
-   });
- }
- 
++
++    await tester.pumpWidget(const SizedBox.shrink());
++    await _yieldToIo(tester);
++  });
++}
 +
 +Future<void> _pumpUntilFound(WidgetTester tester, Finder finder) async {
 +  await _pumpUntil(tester, () => finder.evaluate().isNotEmpty);
@@ -256,10 +478,14 @@ index bfb79fe9..24e73a2f 100644
 +  for (var i = 0; i < maxPumps; i += 1) {
 +    await tester.pump(const Duration(milliseconds: 50));
 +    if (condition()) return;
++    await _yieldToIo(tester);
 +  }
 +  throw TestFailure('Timed out waiting for the expected reader state.');
 +}
 +
- Widget _readerApp({
-   required MangaPreferencesRepository preferences,
-   required MangaProgressRepository progress,
++Future<void> _yieldToIo(WidgetTester tester) async {
++  await tester.runAsync(() async {
++    await Future<void>.delayed(const Duration(milliseconds: 10));
+   });
+ }
+ 
