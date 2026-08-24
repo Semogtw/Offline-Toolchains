@@ -1,17 +1,27 @@
 {
-  "generatedAt": "2026-08-24T01:19:26.581177Z",
+  "generatedAt": "2026-08-24T02:57:57.584207Z",
   "schemaVersion": 1,
   "workflows": {
     "finalizer": [
       {
-        "conclusion": "",
+        "conclusion": "success",
+        "createdAt": "2026-08-24T02:51:54Z",
+        "databaseId": 32684457493,
+        "displayTitle": "ci(goanime): finalize PR 210 singleton review",
+        "event": "push",
+        "headSha": "5e96b3487222183c151e62016842d01193a165c7",
+        "status": "completed",
+        "updatedAt": "2026-08-24T02:53:01Z"
+      },
+      {
+        "conclusion": "success",
         "createdAt": "2026-08-24T01:19:13Z",
         "databaseId": 32679410196,
         "displayTitle": "ci(goanime): final catalog gate for PR 210",
         "event": "push",
         "headSha": "c6080040131042d5111abf12da92143a436a3c84",
-        "status": "in_progress",
-        "updatedAt": "2026-08-24T01:19:17Z"
+        "status": "completed",
+        "updatedAt": "2026-08-24T01:20:14Z"
       },
       {
         "conclusion": "failure",
@@ -52,28 +62,38 @@
         "headSha": "4e9c3a324a4815f4d9c4990fad831791c5c2c9c4",
         "status": "completed",
         "updatedAt": "2026-08-23T23:28:22Z"
-      },
-      {
-        "conclusion": "failure",
-        "createdAt": "2026-08-23T22:12:31Z",
-        "databaseId": 32669882827,
-        "displayTitle": "ci(goanime): revalidate global catalog candidate fb678795",
-        "event": "push",
-        "headSha": "c5faf8406149f569b797013157955d636200a5a0",
-        "status": "completed",
-        "updatedAt": "2026-08-23T22:13:22Z"
       }
     ],
     "fullCi": [
       {
         "conclusion": "",
+        "createdAt": "2026-08-24T02:57:09Z",
+        "databaseId": 32684749231,
+        "displayTitle": "ci(goanime): validate shared search checkpoint",
+        "event": "push",
+        "headSha": "194bf853d68244488da6825d4edf47784dd8858b",
+        "status": "in_progress",
+        "updatedAt": "2026-08-24T02:57:49Z"
+      },
+      {
+        "conclusion": "cancelled",
+        "createdAt": "2026-08-24T02:51:43Z",
+        "databaseId": 32684447590,
+        "displayTitle": "ci(goanime): validate PR 210 singleton review",
+        "event": "push",
+        "headSha": "38c5cdbddcb019a820bcb64d752d157186e1a3c2",
+        "status": "completed",
+        "updatedAt": "2026-08-24T02:57:39Z"
+      },
+      {
+        "conclusion": "failure",
         "createdAt": "2026-08-24T01:19:03Z",
         "databaseId": 32679400948,
         "displayTitle": "ci(goanime): final full CI for PR 210",
         "event": "push",
         "headSha": "8bbeeb94b7c3bbf23b73e615315afddd84769681",
-        "status": "in_progress",
-        "updatedAt": "2026-08-24T01:19:23Z"
+        "status": "completed",
+        "updatedAt": "2026-08-24T01:27:42Z"
       },
       {
         "conclusion": "cancelled",
@@ -104,26 +124,6 @@
         "headSha": "93b878c50e1b931ddc7a5dc8c7976e5c51f122f5",
         "status": "completed",
         "updatedAt": "2026-08-23T23:42:28Z"
-      },
-      {
-        "conclusion": "failure",
-        "createdAt": "2026-08-23T23:27:40Z",
-        "databaseId": 32673668836,
-        "displayTitle": "ci(goanime): ensure exact global catalog SHA is queued",
-        "event": "push",
-        "headSha": "2dd7af9dbf92de925ae2883e150b5b03c6a00086",
-        "status": "completed",
-        "updatedAt": "2026-08-23T23:30:06Z"
-      },
-      {
-        "conclusion": "cancelled",
-        "createdAt": "2026-08-23T23:27:20Z",
-        "databaseId": 32673653473,
-        "displayTitle": "ci(goanime): run full CI for global catalog integration",
-        "event": "push",
-        "headSha": "5c1f06c560519c6cf6a532831a4dd975cf72eecc",
-        "status": "completed",
-        "updatedAt": "2026-08-23T23:27:49Z"
       }
     ],
     "workerDeploy": [
