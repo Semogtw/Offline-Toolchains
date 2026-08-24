@@ -7,7 +7,7 @@ on:
       - 'triggers/goanime-manga-upstream-refresh/*.request'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: goanime-manga-upstream-refresh
@@ -214,3 +214,43 @@ jobs:
       - name: Remove private checkout
         if: always()
         run: rm -rf "$GITHUB_WORKSPACE/private-source"
+
+  receipt:
+    needs: [resolve, checks, live]
+    if: always() && needs.resolve.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Publish machine-readable receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GOANIME_SHA: ${{ needs.resolve.outputs.sha }}
+          MODE: ${{ needs.resolve.outputs.mode }}
+          CHECKS_RESULT: ${{ needs.checks.result }}
+          LIVE_RESULT: ${{ needs.live.result }}
+          CONTROL_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          state=failure
+          if [[ "$CHECKS_RESULT" == success ]]; then
+            if [[ "$MODE" != full || "$LIVE_RESULT" == success ]]; then
+              state=success
+            fi
+          fi
+          result="$(jq -cn \
+            --arg state "$state" \
+            --arg goanimeSha "$GOANIME_SHA" \
+            --arg mode "$MODE" \
+            --arg checks "$CHECKS_RESULT" \
+            --arg live "$LIVE_RESULT" \
+            --arg controlSha "$CONTROL_SHA" \
+            '{schemaVersion:1,state:$state,goanimeSha:$goanimeSha,mode:$mode,checks:$checks,live:$live,controlSha:$controlSha}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          path="results/goanime-manga-upstream-refresh/${GOANIME_SHA}-${MODE}.json"
+          existing_sha="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): record manga upstream refresh $GOANIME_SHA $MODE" -f content="$encoded")
+          if [[ -n "$existing_sha" ]]; then
+            args+=(-f sha="$existing_sha")
+          fi
+          gh api "${args[@]}" >/dev/null
+          echo "$result" >> "$GITHUB_STEP_SUMMARY"
