@@ -84,11 +84,19 @@ jobs:
             lib/services/providers/anime_search_adapter.dart \
             lib/services/manga/manga_readable_search_adapter.dart \
             lib/widgets/manga/manga_readable_search_view.dart \
+            lib/screens/search_screen.dart \
+            lib/screens/search_screen_data.dart \
+            lib/screens/search_screen_presentation.dart \
             packages/goanime_core/lib/src/media/media_search_contract.dart \
             test/controllers/media/progressive_search_controller_test.dart \
             test/services/manga/manga_readable_search_adapter_test.dart \
             test/services/providers/anime_search_adapter_test.dart \
             test/architecture/shared_search_lifecycle_guard_test.dart \
+            test/widgets/search_stale_response_test.dart \
+            test/widgets/search_selection_debounce_test.dart \
+            test/widgets/search_filter_only_results_test.dart \
+            test/widgets/catalog_filter_staging_test.dart \
+            test/widgets/catalog_resilience_test.dart \
             >/dev/null
 
       - name: Analyze shared search boundary
@@ -101,10 +109,18 @@ jobs:
             lib/services/providers/anime_search_adapter.dart \
             lib/services/manga/manga_readable_search_adapter.dart \
             lib/widgets/manga/manga_readable_search_view.dart \
+            lib/screens/search_screen.dart \
+            lib/screens/search_screen_data.dart \
+            lib/screens/search_screen_presentation.dart \
             test/controllers/media/progressive_search_controller_test.dart \
             test/services/manga/manga_readable_search_adapter_test.dart \
             test/services/providers/anime_search_adapter_test.dart \
-            test/architecture/shared_search_lifecycle_guard_test.dart
+            test/architecture/shared_search_lifecycle_guard_test.dart \
+            test/widgets/search_stale_response_test.dart \
+            test/widgets/search_selection_debounce_test.dart \
+            test/widgets/search_filter_only_results_test.dart \
+            test/widgets/catalog_filter_staging_test.dart \
+            test/widgets/catalog_resilience_test.dart
 
       - name: Test shared controller
         working-directory: private-source
@@ -121,6 +137,17 @@ jobs:
       - name: Test anime search adapter
         working-directory: private-source
         run: flutter test --no-pub test/services/providers/anime_search_adapter_test.dart
+
+      - name: Test anime search screen regressions
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter test --no-pub test/widgets/search_stale_response_test.dart
+          flutter test --no-pub test/widgets/search_selection_debounce_test.dart
+          flutter test --no-pub test/widgets/search_filter_only_results_test.dart
+          flutter test --no-pub test/widgets/catalog_filter_staging_test.dart
+          flutter test --no-pub test/widgets/catalog_resilience_test.dart
 
       - name: Test search architecture guard
         working-directory: private-source
