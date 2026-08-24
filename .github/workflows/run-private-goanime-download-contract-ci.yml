@@ -92,7 +92,8 @@ jobs:
             test/services/media/download_queue_coordinator_test.dart \
             test/services/manga/download/manga_download_queue_test.dart \
             test/architecture/shared_download_lifecycle_guard_test.dart \
-            test/architecture/shared_download_queue_adoption_guard_test.dart
+            test/architecture/shared_download_queue_adoption_guard_test.dart \
+            test/architecture/shared_anime_download_queue_adoption_guard_test.dart
 
       - name: Run shared download contract tests
         working-directory: private-source
@@ -104,6 +105,7 @@ jobs:
           flutter test --no-pub test/services/manga/download/manga_download_queue_test.dart
           flutter test --no-pub test/architecture/shared_download_lifecycle_guard_test.dart
           flutter test --no-pub test/architecture/shared_download_queue_adoption_guard_test.dart
+          flutter test --no-pub test/architecture/shared_anime_download_queue_adoption_guard_test.dart
 
       - name: Remove private checkout
         if: always()
