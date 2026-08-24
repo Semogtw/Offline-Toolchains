@@ -78,6 +78,7 @@ jobs:
           cp assets/data/mal_availability_map.json "$work/baseline/mal_availability_map.json"
           cp assets/data/mal_availability_unmatched.json "$work/baseline/mal_availability_unmatched.json"
           cp assets/data/anime_metadata_seed.json "$work/baseline/anime_metadata_seed.json"
+          cp assets/data/franchise_availability_map.json "$work/baseline/franchise_availability_map.json"
           python3 - "$work/baseline/stats.json" <<'PY'
           import json, sys
           from pathlib import Path
@@ -86,6 +87,7 @@ jobs:
           mal = read('assets/data/mal_availability_map.json')
           unmatched = read('assets/data/mal_availability_unmatched.json')
           metadata = read('assets/data/anime_metadata_seed.json')
+          franchises = read('assets/data/franchise_availability_map.json')
           matched = {title for entry in mal.get('entries') or [] for title in (entry.get('matchedAvailableTitles') or []) if isinstance(title, str)}
           terminal_unmatched = {entry.get('normalizedTitle') for entry in unmatched.get('entries') or [] if isinstance(entry, dict) and entry.get('reason') != 'jikan_error' and isinstance(entry.get('normalizedTitle'), str)}
           stats = {
@@ -94,6 +96,7 @@ jobs:
               'matched_titles': len(matched),
               'terminal_unmatched_titles': len(terminal_unmatched),
               'rich_metadata_entries': len(metadata.get('entries') or []),
+              'franchise_index_entries': len(franchises.get('index') or []),
               'mal_generated_at': mal.get('generatedAt'),
           }
           Path(sys.argv[1]).write_text(json.dumps(stats, indent=2, sort_keys=True)+'\n', encoding='utf-8')
@@ -156,12 +159,47 @@ jobs:
           cp dist/anime_metadata_cache/broadcast_schedule.json assets/data/broadcast_schedule.json
           sha256sum assets/data/anime_metadata_seed.json | awk '{print $1}' > assets/data/anime_metadata_seed.json.sha256
 
+      - name: Capture MAL IDs missing from the franchise cache
+        working-directory: private-source
+        shell: bash
+        env:
+          WORK: ${{ steps.baseline.outputs.work }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          work = Path(os.environ['WORK'])
+          mal = json.loads(Path('assets/data/mal_availability_map.json').read_text(encoding='utf-8'))
+          franchises = json.loads(Path('assets/data/franchise_availability_map.json').read_text(encoding='utf-8'))
+          mal_ids = {entry.get('malId') for entry in mal.get('entries') or [] if isinstance(entry, dict) and isinstance(entry.get('malId'), int)}
+          indexed_ids = {entry.get('malId') for entry in franchises.get('index') or [] if isinstance(entry, dict) and isinstance(entry.get('malId'), int)}
+          missing = sorted(mal_ids - indexed_ids)
+          (work / 'missing_franchise_ids.txt').write_text(
+              ''.join(f'{mal_id}\n' for mal_id in missing),
+              encoding='utf-8',
+          )
+          print(f'MAL IDs={len(mal_ids)} franchise-indexed={len(indexed_ids)} missing={len(missing)}')
+          PY
+
       - name: Rebuild title availability database
         working-directory: private-source
         shell: bash
+        env:
+          WORK: ${{ steps.baseline.outputs.work }}
         run: |
           set -euo pipefail
           dart run tools/build_title_availability_database.dart
+          if [ -s "$WORK/missing_franchise_ids.txt" ]; then
+            args=()
+            while IFS= read -r id; do
+              [ -n "$id" ] && args+=("--mal-id=$id")
+            done < "$WORK/missing_franchise_ids.txt"
+            dart run tools/build_franchise_availability_cache.dart "${args[@]}"
+          else
+            echo 'No MAL IDs missing from the franchise cache.'
+          fi
+          dart run tools/build_franchise_runtime_artifacts.dart
 
       - name: Validate backfill and metadata coverage
         id: validate
@@ -182,9 +220,11 @@ jobs:
           mal_doc = read('assets/data/mal_availability_map.json')
           unmatched_doc = read('assets/data/mal_availability_unmatched.json')
           metadata_doc = read('assets/data/anime_metadata_seed.json')
+          franchise_doc = read('assets/data/franchise_availability_map.json')
           mal = mal_doc.get('entries') or []
           unmatched = unmatched_doc.get('entries') or []
           metadata = metadata_doc.get('entries') or []
+          franchise_index = franchise_doc.get('index') or []
           source = set(available)
           matched = {title for entry in mal for title in (entry.get('matchedAvailableTitles') or []) if isinstance(title, str)}
           terminal = {entry.get('normalizedTitle') for entry in unmatched if isinstance(entry, dict) and entry.get('reason') != 'jikan_error' and isinstance(entry.get('normalizedTitle'), str)}
@@ -198,6 +238,8 @@ jobs:
               raise SystemExit(f'MAL entries regressed: {len(mal)} < {baseline["mal_entries"]}')
           if len(metadata) < baseline['rich_metadata_entries']:
               raise SystemExit(f'Rich metadata regressed: {len(metadata)} < {baseline["rich_metadata_entries"]}')
+          if len(franchise_index) < baseline['franchise_index_entries']:
+              raise SystemExit(f'Franchise index regressed: {len(franchise_index)} < {baseline["franchise_index_entries"]}')
           mal_ids = {int(entry['malId']) for entry in mal if isinstance(entry, dict) and isinstance(entry.get('malId'), int)}
           metadata_ids = {int(entry['malId']) for entry in metadata if isinstance(entry, dict) and isinstance(entry.get('malId'), int)}
           rich_coverage = len(mal_ids & metadata_ids) / len(mal_ids) if mal_ids else 0.0
@@ -222,6 +264,7 @@ jobs:
               'rich_metadata_entries': len(metadata),
               'rich_mal_coverage': round(rich_coverage, 6),
               'title_db_rows': db_titles,
+              'franchise_index_entries': len(franchise_index),
               'mal_generated_at': mal_doc.get('generatedAt'),
               'metadata_generated_at': metadata_doc.get('generatedAt'),
           }
@@ -238,7 +281,11 @@ jobs:
           set -euo pipefail
           dart format --output=none --set-exit-if-changed tools/build_mal_availability_cache_checkpointed.dart tools/build_anime_metadata_seed.dart
           flutter analyze --no-pub
-          flutter test --no-pub test/tools/build_mal_availability_cache_checkpointed_test.dart test/tools/build_anime_metadata_seed_catalog_sources_test.dart
+          flutter test --no-pub \
+            test/tools/build_mal_availability_cache_checkpointed_test.dart \
+            test/tools/build_anime_metadata_seed_catalog_sources_test.dart \
+            test/tools/build_franchise_availability_cache_test.dart \
+            test/tools/build_franchise_runtime_artifacts_test.dart
 
       - name: Commit refreshed bridge and metadata back to private main
         working-directory: private-source
@@ -256,7 +303,11 @@ jobs:
             assets/data/anime_metadata_seed.json \
             assets/data/anime_metadata_seed.json.sha256 \
             assets/data/broadcast_schedule.json \
-            assets/data/title_availability.db
+            assets/data/title_availability.db \
+            assets/data/franchise_availability_map.json \
+            assets/data/franchise_index.json \
+            assets/data/franchise_availability.db \
+            assets/data/franchise_availability.db.sha256
           if git diff --cached --quiet; then
             echo 'No catalog bridge changes to commit.'
             exit 0
