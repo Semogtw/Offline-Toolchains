@@ -1,0 +1,107 @@
+name: Diagnose GoAnime manga static exact SHA
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-static-exact/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-static-exact/*.request' | head -n1)"
+          read -r project sha < "$request"
+          test "$project" = goanime
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - working-directory: source
+        run: |
+          flutter config --no-analytics
+          flutter pub get >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+      - name: Run all static gates independently
+        id: checks
+        working-directory: source
+        shell: bash
+        run: |
+          set -u
+          results="$RUNNER_TEMP/static-results.jsonl"
+          : > "$results"
+          run_gate() {
+            name="$1"; shift
+            log="$RUNNER_TEMP/${name}.log"
+            set +e
+            "$@" >"$log" 2>&1
+            code=$?
+            set -e
+            tail_text="$(tail -n 80 "$log" | sed -E 's#(/home/runner/work/)[^ ]+#<runner-path>#g')"
+            jq -cn --arg name "$name" --argjson code "$code" --arg tail "$tail_text" '{name:$name,exit:$code,tail:$tail}' >> "$results"
+            printf '%-24s exit=%s\n' "$name" "$code"
+          }
+          set -e
+          run_gate format_mangalivre dart format --output=none --set-exit-if-changed lib/services/manga/providers/mangalivre_org_manga_provider.dart test/services/manga/providers/mangalivre_org_manga_provider_test.dart
+          run_gate provider_tests flutter test --no-pub --concurrency=2 test/services/manga/providers
+          run_gate manifest_tests flutter test --no-pub --concurrency=1 test/architecture/manga_provider_registry_manifest_test.dart test/architecture/manga_provider_manifest_validator_test.dart test/architecture/manga_planned_provider_definitions_test.dart
+          run_gate drift_unit python3 -m unittest tools.tests.test_audit_keiyoushi_provider_drift
+          run_gate python_all python3 -m unittest discover -s tools/tests -p 'test_*.py'
+          run_gate compile_tools python3 -m compileall -q tools
+          run_gate repo_guards python3 tools/validate_repository_guards.py
+          run_gate release_workflows bash tools/validate_release_workflows.sh
+          run_gate project_health bash tools/validate_project_health.sh
+          run_gate flutter_analyze flutter analyze --no-pub
+          run_gate diff_check git diff --check
+          jq -s '.' "$results" > "$RUNNER_TEMP/static-results.json"
+          failures="$(jq '[.[] | select(.exit != 0)] | length' "$RUNNER_TEMP/static-results.json")"
+          echo "failures=$failures" >> "$GITHUB_OUTPUT"
+      - name: Publish diagnostic receipt
+        if: always() && steps.request.outputs.sha != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.request.outputs.sha }}
+          FAILURES: ${{ steps.checks.outputs.failures }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          checks='[]'
+          if [[ -f "$RUNNER_TEMP/static-results.json" ]]; then checks="$(cat "$RUNNER_TEMP/static-results.json")"; fi
+          failures="${FAILURES:-99}"
+          result="$(jq -cn --arg sha "$SHA" --argjson failures "$failures" --argjson checks "$checks" '{schemaVersion:1,goanimeSha:$sha,state:(if $failures==0 then "success" else "failure" end),failures:$failures,checks:$checks}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          path="results/goanime-manga-static-exact/${SHA}.json"
+          existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): record manga static exact ${SHA:0:8}" -f content="$encoded")
+          if [[ -n "$existing" ]]; then args+=(-f sha="$existing"); fi
+          gh api "${args[@]}" >/dev/null
+      - name: Enforce aggregate static result
+        if: steps.checks.outputs.failures != '0'
+        run: exit 1
