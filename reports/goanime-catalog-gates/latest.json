@@ -1,17 +1,27 @@
 {
-  "generatedAt": "2026-08-23T23:40:30.555705Z",
+  "generatedAt": "2026-08-24T01:16:31.991557Z",
   "schemaVersion": 1,
   "workflows": {
     "finalizer": [
       {
         "conclusion": "",
+        "createdAt": "2026-08-24T01:16:13Z",
+        "databaseId": 32679248793,
+        "displayTitle": "ci(goanime): finalize formatted PR 210",
+        "event": "push",
+        "headSha": "a216f469fa117748fb4ec6412e481a86860ca71a",
+        "status": "in_progress",
+        "updatedAt": "2026-08-24T01:16:16Z"
+      },
+      {
+        "conclusion": "failure",
         "createdAt": "2026-08-23T23:40:17Z",
         "databaseId": 32674295786,
         "displayTitle": "ci(goanime): revalidate final catalog after scorecard refresh",
         "event": "push",
         "headSha": "bdf3e8a77632a467bd950ada17d80a25c260e8fa",
-        "status": "in_progress",
-        "updatedAt": "2026-08-23T23:40:20Z"
+        "status": "completed",
+        "updatedAt": "2026-08-23T23:41:10Z"
       },
       {
         "conclusion": "failure",
@@ -57,13 +67,23 @@
     "fullCi": [
       {
         "conclusion": "",
+        "createdAt": "2026-08-24T01:16:05Z",
+        "databaseId": 32679242087,
+        "displayTitle": "ci(goanime): run full CI for formatted PR 210",
+        "event": "push",
+        "headSha": "ecd9ed64767d1fdafd59e08d237ca4911cddc4ea",
+        "status": "in_progress",
+        "updatedAt": "2026-08-24T01:16:19Z"
+      },
+      {
+        "conclusion": "failure",
         "createdAt": "2026-08-23T23:40:11Z",
         "databaseId": 32674291122,
         "displayTitle": "ci(goanime): rerun full CI after scorecard refresh",
         "event": "push",
         "headSha": "93b878c50e1b931ddc7a5dc8c7976e5c51f122f5",
-        "status": "in_progress",
-        "updatedAt": "2026-08-23T23:40:21Z"
+        "status": "completed",
+        "updatedAt": "2026-08-23T23:42:28Z"
       },
       {
         "conclusion": "failure",
@@ -104,16 +124,6 @@
         "headSha": "466c4ee1874e63665a2c203b198d131056f956fd",
         "status": "completed",
         "updatedAt": "2026-08-23T22:27:20Z"
-      },
-      {
-        "conclusion": "failure",
-        "createdAt": "2026-08-23T22:20:12Z",
-        "databaseId": 32670266715,
-        "displayTitle": "ci(goanime): validate PR 209 regression tests red state",
-        "event": "push",
-        "headSha": "011114eada5d2ac8f937f75b0d38c100e74f031e",
-        "status": "completed",
-        "updatedAt": "2026-08-23T22:22:13Z"
       }
     ],
     "workerDeploy": [
