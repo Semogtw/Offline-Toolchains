@@ -1,0 +1,90 @@
+name: Diagnose GoAnime manga live exact
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-live-diagnostic/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Resolve exact SHA
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-live-diagnostic/*.request' | head -n1)"
+          test -n "$request"
+          read -r project sha < "control/$request"
+          test "$project" = goanime
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Require private token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.target.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - name: Resolve dependencies
+        working-directory: source
+        run: flutter pub get >/dev/null 2>&1
+      - name: Probe failing/pending providers with sanitized logs
+        id: probe
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/live-diagnostic"
+          for source in ptbr.arthurscan ptbr.mangalivreorg ptbr.ler999; do
+            raw="$RUNNER_TEMP/live-diagnostic/$source.raw"
+            safe="$RUNNER_TEMP/live-diagnostic/$source.safe"
+            set +e
+            timeout 240s dart run tools/manga/audit_planned_provider_stage.dart "$source" >"$raw" 2>&1
+            code=$?
+            set -e
+            grep -E '^(search_[0-9]+|search_[0-9]+_results|details|chapters|chapter_count|content_[0-9]+|content_[0-9]+_kind|transport_[0-9]+|verifier|terminal|[a-z0-9_]+_(type|kind|status|host))=' "$raw" \
+              | sed -E 's#https?://[^ ]+#<url>#g' > "$safe" || true
+            printf 'exit=%s\n' "$code" >> "$safe"
+          done
+      - name: Publish sanitized diagnostic
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.target.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          result="$(jq -cn \
+            --arg sha "$SHA" \
+            --arg arthur "$(cat "$RUNNER_TEMP/live-diagnostic/ptbr.arthurscan.safe")" \
+            --arg ml "$(cat "$RUNNER_TEMP/live-diagnostic/ptbr.mangalivreorg.safe")" \
+            --arg ler "$(cat "$RUNNER_TEMP/live-diagnostic/ptbr.ler999.safe")" \
+            '{schemaVersion:1,goanimeSha:$sha,arthurScan:$arthur,mangaLivreOrg:$ml,ler999:$ler,state:"complete"}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          path="results/goanime-manga-live-diagnostic/$SHA.json"
+          existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): diagnose manga live ${SHA:0:8}" -f content="$encoded")
+          if [[ -n "$existing" ]]; then args+=(-f sha="$existing"); fi
+          gh api "${args[@]}" >/dev/null
