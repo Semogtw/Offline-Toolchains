@@ -1,0 +1,94 @@
+name: Mirror GoAnime parity formatted files
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-parity-format-mirror/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-parity-format-mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout control repository
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: true
+      - id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-parity-format-mirror/*.request' | head -n1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = goanime
+          test "$branch" = 'codex/manga-parity-20260823'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.target.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - name: Produce formatter-only tree
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter pub get >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+          git restore --source=HEAD --staged --worktree -- .
+          test -z "$(git status --porcelain --untracked-files=no)"
+          dart format lib test packages tools >/dev/null
+          dart format --output=none --set-exit-if-changed lib test packages tools
+          git diff --check
+          git diff --name-only --diff-filter=M -- lib test packages tools | sort > "$RUNNER_TEMP/changed.txt"
+          test -s "$RUNNER_TEMP/changed.txt"
+      - name: Mirror formatted files atomically
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix="control/generated/goanime-parity-format-mirror/$TARGET_SHA"
+          rm -rf "$prefix"
+          mkdir -p "$prefix/tree"
+          while IFS= read -r rel; do
+            mkdir -p "$prefix/tree/$(dirname "$rel")"
+            cp "source/$rel" "$prefix/tree/$rel"
+          done < "$RUNNER_TEMP/changed.txt"
+          cp "$RUNNER_TEMP/changed.txt" "$prefix/manifest.txt"
+          printf 'targetSha=%s\nchanged=%s\n' "$TARGET_SHA" "$(wc -l < "$RUNNER_TEMP/changed.txt" | tr -d ' ')" > "$prefix/receipt.txt"
+          git -C control config user.name 'github-actions[bot]'
+          git -C control config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C control add "generated/goanime-parity-format-mirror/$TARGET_SHA"
+          git -C control commit -m "ci(goanime): mirror formatted parity tree ${TARGET_SHA:0:8}"
+          for attempt in 1 2 3 4 5; do
+            if git -C control pull --rebase origin main && git -C control push origin HEAD:main; then exit 0; fi
+            sleep $((attempt * 2))
+          done
+          exit 1
