@@ -1,0 +1,326 @@
+name: GoAnime MegaPlay cache
+
+on:
+  pull_request:
+    paths:
+      - "tools/megaplay_cache/**"
+      - "tests/test_megaplay_cache_builder.py"
+      - ".github/workflows/goanime-megaplay-cache.yml"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Cache refresh mode
+        required: true
+        default: recent
+        type: choice
+        options:
+          - recent
+          - backfill
+  schedule:
+    - cron: "15 */6 * * *"
+    - cron: "45 3 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-megaplay-cache
+  cancel-in-progress: false
+
+env:
+  CACHE_TAG: goanime-megaplay-cache-latest
+  RECENT_CRON: "15 */6 * * *"
+  BACKFILL_CRON: "45 3 * * *"
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Toolchains
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Run MegaPlay cache unit tests
+        run: python -m unittest discover -s tests -p 'test_megaplay_cache_builder.py' -v
+
+      - name: Compile cache scripts
+        run: python -m compileall -q tools/megaplay_cache tests/test_megaplay_cache_builder.py
+
+  refresh:
+    if: github.event_name != 'pull_request'
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve refresh mode
+        id: mode
+        env:
+          DISPATCH_MODE: ${{ inputs.mode }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            mode="${DISPATCH_MODE:-recent}"
+          elif [[ "${EVENT_SCHEDULE:-}" == "${BACKFILL_CRON}" ]]; then
+            mode="backfill"
+          else
+            mode="recent"
+          fi
+          case "$mode" in
+            recent|backfill) ;;
+            *) echo "::error::Unsupported refresh mode: $mode"; exit 1 ;;
+          esac
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
+      - name: Restore previous published snapshot
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p previous
+          if ! gh release view "$CACHE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          gh release download "$CACHE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern manifest.json --dir previous --clobber
+          asset_name="$({ python - <<'PY'
+          import json
+          from pathlib import Path
+          from urllib.parse import urlparse
+          manifest = json.loads(Path('previous/manifest.json').read_text(encoding='utf-8'))
+          name = Path(urlparse(manifest['asset']['url']).path).name
+          if not name.startswith('megaplay_catalog_') or not name.endswith('.db'):
+              raise SystemExit('previous manifest has an invalid asset name')
+          print(name)
+          PY
+          } )"
+          gh release download "$CACHE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "$asset_name" --dir previous --clobber
+          python -m tools.megaplay_cache.build_megaplay_cache \
+            --output "previous/$asset_name" --validate-only
+          cp "previous/$asset_name" previous/megaplay_catalog.db
+          echo "available=true" >> "$GITHUB_OUTPUT"
+          echo "asset_name=$asset_name" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve publication URLs
+        id: public
+        env:
+          R2_BASE_OVERRIDE: ${{ secrets.MEGAPLAY_CACHE_PUBLIC_BASE_URL }}
+          UPDATE_MANIFEST_URL: ${{ secrets.UPDATE_MANIFEST_URL }}
+        run: |
+          set -euo pipefail
+          github_base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${CACHE_TAG}"
+          r2_base="${R2_BASE_OVERRIDE:-}"
+          if [[ -z "$r2_base" && -n "${UPDATE_MANIFEST_URL:-}" ]]; then
+            r2_base="${UPDATE_MANIFEST_URL%/*}/megaplay"
+          fi
+          if [[ -n "$r2_base" ]]; then
+            case "$r2_base" in
+              https://*) ;;
+              *) echo "::error::MegaPlay R2 public base must be HTTPS"; exit 1 ;;
+            esac
+            r2_base="${r2_base%/}"
+          fi
+          echo "github_base=$github_base" >> "$GITHUB_OUTPUT"
+          echo "r2_base=$r2_base" >> "$GITHUB_OUTPUT"
+
+      - name: Refresh MegaPlay catalog
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+          PUBLIC_BASE: ${{ steps.public.outputs.github_base }}
+          HAS_PREVIOUS: ${{ steps.previous.outputs.available }}
+        run: |
+          set -euo pipefail
+          rm -rf dist/megaplay-cache
+          mkdir -p dist/megaplay-cache
+          args=(
+            --output-dir dist/megaplay-cache
+            --mode "$MODE"
+            --public-base-url "$PUBLIC_BASE"
+            --request-interval 2.1
+            --per-page 100
+            --recent-pages 5
+            --backfill-pages 5
+          )
+          if [[ "$HAS_PREVIOUS" == "true" ]]; then
+            args+=(--previous-database previous/megaplay_catalog.db)
+          fi
+          python -m tools.megaplay_cache.run_pipeline "${args[@]}"
+
+      - name: Validate publication candidate
+        run: |
+          set -euo pipefail
+          python -m json.tool dist/megaplay-cache/manifest.json >/dev/null
+          python -m json.tool dist/megaplay-cache/collection_stats.json >/dev/null
+          asset_name="$(python - <<'PY'
+          import json
+          from pathlib import Path
+          from urllib.parse import urlparse
+          manifest = json.loads(Path('dist/megaplay-cache/manifest.json').read_text(encoding='utf-8'))
+          print(Path(urlparse(manifest['asset']['url']).path).name)
+          PY
+          )"
+          python -m tools.megaplay_cache.build_megaplay_cache \
+            --output "dist/megaplay-cache/$asset_name" --validate-only
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          from urllib.parse import urlparse
+
+          root = Path('dist/megaplay-cache')
+          manifest = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
+          stats = json.loads((root / 'collection_stats.json').read_text(encoding='utf-8'))
+          asset_name = Path(urlparse(manifest['asset']['url']).path).name
+          asset = root / asset_name
+          digest = hashlib.sha256(asset.read_bytes()).hexdigest()
+          assert manifest['schemaVersion'] == 1
+          assert manifest['asset']['schemaVersion'] == 1
+          assert manifest['asset']['sha256'] == digest
+          assert manifest['asset']['sizeBytes'] == asset.stat().st_size
+          assert manifest['catalog']['seriesCount'] > 0
+          assert manifest['catalog']['episodeCount'] > 0
+          requested = int(stats.get('series_requested', 0))
+          failed = int(stats.get('failed_series', 0))
+          if requested and failed * 5 > requested:
+              raise SystemExit(
+                  f'refusing partial publication: {failed}/{requested} series requests failed'
+              )
+          PY
+
+      - name: Build optional R2 manifest
+        if: steps.public.outputs.r2_base != ''
+        env:
+          R2_PUBLIC_BASE: ${{ steps.public.outputs.r2_base }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from urllib.parse import urlparse
+
+          root = Path('dist/megaplay-cache')
+          manifest = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
+          asset_name = Path(urlparse(manifest['asset']['url']).path).name
+          manifest['asset']['url'] = f"{os.environ['R2_PUBLIC_BASE'].rstrip('/')}/{asset_name}"
+          (root / 'manifest-r2.json').write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          PY
+          python -m json.tool dist/megaplay-cache/manifest-r2.json >/dev/null
+
+      - name: Publish stable GitHub mirror atomically
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          asset_name="$(python - <<'PY'
+          import json
+          from pathlib import Path
+          from urllib.parse import urlparse
+          manifest = json.loads(Path('dist/megaplay-cache/manifest.json').read_text(encoding='utf-8'))
+          print(Path(urlparse(manifest['asset']['url']).path).name)
+          PY
+          )"
+          notes="GoAnime opt-in MegaPlay English cache. No user data, cookies, tokens or signed stream URLs."
+          if gh release view "$CACHE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$CACHE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --title 'GoAnime MegaPlay cache' --notes "$notes"
+          else
+            gh release create "$CACHE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --title 'GoAnime MegaPlay cache' --notes "$notes"
+          fi
+
+          # Upload content-addressed DB first. The manifest is the commit point.
+          gh release upload "$CACHE_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            "dist/megaplay-cache/$asset_name"
+          gh release upload "$CACHE_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            dist/megaplay-cache/manifest.json \
+            dist/megaplay-cache/collection_stats.json
+
+          # Keep only the active catalog DB after manifest publication.
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${CACHE_TAG}" \
+            --jq '.assets[] | [.id, .name] | @tsv' | \
+          while IFS=$'\t' read -r id name; do
+            if [[ "$name" == megaplay_catalog_*.db && "$name" != "$asset_name" ]]; then
+              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${id}"
+            fi
+          done
+
+      - name: Resolve optional R2 publication
+        id: r2
+        env:
+          R2_PUBLIC_BASE: ${{ steps.public.outputs.r2_base }}
+          ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${R2_PUBLIC_BASE:-}" ]]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "No MegaPlay R2 public base configured; GitHub Release remains the canonical mirror."
+            exit 0
+          fi
+          if [[ -n "${ACCOUNT_ID:-}" && -n "${ACCESS_KEY_ID:-}" && -n "${SECRET_ACCESS_KEY:-}" && -n "${BUCKET:-}" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::warning::MegaPlay R2 publication skipped because credentials are incomplete. GitHub Release remains valid."
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+
+      - name: Publish MegaPlay cache to R2 atomically
+        if: steps.r2.outputs.enabled == 'true'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+        run: |
+          set -euo pipefail
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          asset_name="$(python - <<'PY'
+          import json
+          from pathlib import Path
+          from urllib.parse import urlparse
+          manifest = json.loads(Path('dist/megaplay-cache/manifest.json').read_text(encoding='utf-8'))
+          print(Path(urlparse(manifest['asset']['url']).path).name)
+          PY
+          )"
+          aws s3 cp "dist/megaplay-cache/$asset_name" \
+            "s3://${R2_BUCKET}/latest/megaplay/$asset_name" \
+            --endpoint-url "$endpoint"
+          aws s3 cp dist/megaplay-cache/collection_stats.json \
+            "s3://${R2_BUCKET}/latest/megaplay/collection_stats.json" \
+            --endpoint-url "$endpoint"
+          # R2-specific manifest last = atomic visible generation switch.
+          aws s3 cp dist/megaplay-cache/manifest-r2.json \
+            "s3://${R2_BUCKET}/latest/megaplay/manifest.json" \
+            --endpoint-url "$endpoint"
+
+      - name: Upload audit artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-megaplay-cache-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            dist/megaplay-cache/manifest.json
+            dist/megaplay-cache/manifest-r2.json
+            dist/megaplay-cache/collection_stats.json
+            dist/megaplay-cache/megaplay_catalog_*.db
