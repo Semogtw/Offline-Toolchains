@@ -1,0 +1,153 @@
+name: Diagnose GoAnime MangaLivre current repair
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-mangalivre-diagnose/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control repository
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: true
+          show-progress: false
+
+      - name: Resolve current branch head
+        id: target
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-mangalivre-diagnose/*.request' | head -n1)"
+          test -n "$request"
+          read -r project branch < "control/$request"
+          test "$project" = goanime
+          test "$branch" = 'codex/manga-parity-20260823'
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          sha="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$branch" | awk '{print $1}')"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.target.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Apply reviewed regex normalization only
+        id: patch
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > "$RUNNER_TEMP/patch.txt"
+          from pathlib import Path
+          path = Path('lib/services/manga/providers/mangalivre_org_manga_provider.dart')
+          lines = path.read_text(encoding='utf-8').splitlines()
+          start = next(i for i, line in enumerate(lines) if 'static final RegExp _nonceVariableRegex' in line)
+          end = next(i for i, line in enumerate(lines) if 'static final RegExp _nonceShapeRegex' in line)
+          changed = 0
+          for index in range(start + 1, end):
+              line = lines[index]
+              if "r'''" not in line:
+                  continue
+              normalized = line.replace('\\\\', '\\').replace('\\"', '"')
+              if normalized != line:
+                  lines[index] = normalized
+                  changed += 1
+          path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          print(changed)
+          PY
+          changed="$(cat "$RUNNER_TEMP/patch.txt")"
+          printf 'changed=%s\n' "$changed" >> "$GITHUB_OUTPUT"
+          git diff --check
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: |
+          flutter config --no-analytics
+          flutter pub get >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+
+      - name: Run isolated format and provider test
+        id: test
+        working-directory: private-source
+        shell: bash
+        run: |
+          set +e
+          dart format lib/services/manga/providers/mangalivre_org_manga_provider.dart test/services/manga/providers/mangalivre_org_manga_provider_test.dart > "$RUNNER_TEMP/format.log" 2>&1
+          format_code=$?
+          flutter test --no-pub --concurrency=1 test/services/manga/providers/mangalivre_org_manga_provider_test.dart > "$RUNNER_TEMP/test.log" 2>&1
+          test_code=$?
+          set -e
+          printf 'format_code=%s\ntest_code=%s\n' "$format_code" "$test_code" >> "$GITHUB_OUTPUT"
+
+      - name: Publish sanitized diagnostic
+        working-directory: control
+        env:
+          GOANIME_SHA: ${{ steps.target.outputs.sha }}
+          PATCH_CHANGED: ${{ steps.patch.outputs.changed }}
+          FORMAT_CODE: ${{ steps.test.outputs.format_code }}
+          TEST_CODE: ${{ steps.test.outputs.test_code }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/goanime-mangalivre-diagnose
+          tail -n 80 "$RUNNER_TEMP/test.log" | sed -E 's#(/home/runner/work/)[^ ]+#<runner-path>#g' > "$RUNNER_TEMP/test-tail.txt"
+          python3 - "$RUNNER_TEMP/test-tail.txt" "results/goanime-mangalivre-diagnose/${GOANIME_SHA}.json" <<'PY'
+          import json, os, sys
+          tail_path, output = sys.argv[1:]
+          payload = {
+              'schemaVersion': 1,
+              'goanimeSha': os.environ['GOANIME_SHA'],
+              'patchChangedLines': int(os.environ['PATCH_CHANGED']),
+              'formatExit': int(os.environ['FORMAT_CODE']),
+              'testExit': int(os.environ['TEST_CODE']),
+              'testTail': open(tail_path, encoding='utf-8', errors='replace').read(),
+          }
+          with open(output, 'w', encoding='utf-8') as fh:
+              json.dump(payload, fh, ensure_ascii=False, indent=2, sort_keys=True)
+              fh.write('\n')
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add results/goanime-mangalivre-diagnose
+          git commit -m "ci(goanime): report MangaLivre diagnosis ${GOANIME_SHA:0:8}"
+          git push
+
+      - name: Enforce isolated test result
+        if: steps.test.outputs.format_code != '0' || steps.test.outputs.test_code != '0'
+        run: exit 1
+
+      - name: Clean private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
