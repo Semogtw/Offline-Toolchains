@@ -82,7 +82,7 @@ jobs:
             cp "source/$rel" "$prefix/tree/$rel"
           done < "$RUNNER_TEMP/changed.txt"
           cp "$RUNNER_TEMP/changed.txt" "$prefix/manifest.txt"
-          printf 'targetSha=%s\nchanged=%s\n' "$TARGET_SHA" "$(wc -l < "$RUNNER_TEMP/changed.txt" | tr -d ' ')" > "$prefix/receipt.txt"
+          printf 'targetSha=%s\nchanged=%s\nrunId=%s\n' "$TARGET_SHA" "$(wc -l < "$RUNNER_TEMP/changed.txt" | tr -d ' ')" "$GITHUB_RUN_ID" > "$prefix/receipt.txt"
           git -C control config user.name 'github-actions[bot]'
           git -C control config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git -C control add "generated/goanime-parity-format-mirror/$TARGET_SHA"
@@ -92,3 +92,10 @@ jobs:
             sleep $((attempt * 2))
           done
           exit 1
+      - name: Upload formatter-only tree
+        uses: actions/upload-artifact@v4
+        with:
+          name: goanime-parity-format-${{ steps.target.outputs.sha }}
+          path: control/generated/goanime-parity-format-mirror/${{ steps.target.outputs.sha }}/tree
+          if-no-files-found: error
+          retention-days: 1
