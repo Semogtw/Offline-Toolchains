@@ -2,7 +2,9 @@ name: Report current GoAnime main private release APK
 
 on:
   workflow_run:
-    workflows: ['Build current GoAnime main private release APK']
+    workflows:
+      - 'Build current GoAnime main private release APK'
+      - 'Build current GoAnime main private release APK v2'
     types: [completed]
 
 permissions:
@@ -27,11 +29,14 @@ jobs:
               { owner, repo, run_id: run.id, per_page: 100 }
             );
             const artifact = artifacts.find(
+              item => item.name === 'goanime-main-release-private-encrypted-v2'
+            ) ?? artifacts.find(
               item => item.name === 'goanime-main-release-private-encrypted'
             );
             const report = {
-              schema_version: 1,
+              schema_version: 2,
               source_sha: process.env.SOURCE_SHA,
+              workflow_name: run.name,
               workflow_run_id: run.id,
               workflow_run_url: run.html_url,
               conclusion: run.conclusion,
