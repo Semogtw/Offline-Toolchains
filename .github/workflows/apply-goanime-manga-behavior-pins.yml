@@ -1,0 +1,129 @@
+name: Apply GoAnime manga behavior pins
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-behavior-pins/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Require token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: true
+
+      - name: Resolve branch
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-behavior-pins/*.request' | head -n1)"
+          read -r project branch < "control/$request"
+          test "$project" = goanime
+          test "$branch" = 'codex/manga-parity-20260823'
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout GoAnime branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.target.outputs.branch }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Record reviewed behavior revisions
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path('docs/manga_sources_ptbr.json')
+          payload = json.loads(path.read_text(encoding='utf-8'))
+          records = {r['goanimeSourceId']: r for r in payload['providerRecords']}
+
+          pins = {
+              'ptbr.arthurscan': ('src/pt/arthurscan', 'ddfe050009c20da11bd69c1fbbae3933a5089ef8'),
+              'ptbr.kamisamaexplorer': ('src/pt/kamisamaexplorer', '66535bd04bec51a1063532cc72fb5e25de30effd'),
+              'ptbr.ninjascan': ('src/pt/ninjascan', '66535bd04bec51a1063532cc72fb5e25de30effd'),
+              'ptbr.kivaratoons': ('src/pt/kivaratoons', 'ddfe050009c20da11bd69c1fbbae3933a5089ef8'),
+              'ptbr.littletyrant': ('src/pt/littletyrant', 'ddfe050009c20da11bd69c1fbbae3933a5089ef8'),
+              'ptbr.mangalivreorg': ('src/pt/mangalivreorg', 'ddfe050009c20da11bd69c1fbbae3933a5089ef8'),
+          }
+
+          for source_id, (source_path, revision) in pins.items():
+              record = records[source_id]
+              reference = record.get('referenceImplementation')
+              if not isinstance(reference, dict):
+                  reference = {
+                      'repository': 'keiyoushi/extensions-source',
+                      'revision': revision,
+                      'path': source_path,
+                  }
+                  record['referenceImplementation'] = reference
+              if reference.get('repository') != 'keiyoushi/extensions-source':
+                  raise SystemExit(f'{source_id}: unexpected reference repository')
+              if reference.get('path') not in (None, source_path):
+                  raise SystemExit(f'{source_id}: unexpected reference path {reference.get("path")}')
+              reference['path'] = source_path
+              reference['behaviorRevision'] = revision
+
+          path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+          PY
+          python3 -m json.tool docs/manga_sources_ptbr.json >/dev/null
+          git diff --check
+
+      - name: Commit and safely rebase-push
+        id: publish
+        working-directory: source
+        env:
+          BRANCH: ${{ steps.target.outputs.branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/manga_sources_ptbr.json
+          git commit -m 'docs(manga): record reviewed provider behavior pins'
+          for attempt in 1 2 3 4 5; do
+            git fetch origin "$BRANCH" --quiet
+            git rebase "origin/$BRANCH"
+            if git push origin "HEAD:refs/heads/$BRANCH"; then
+              echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          exit 1
+
+      - name: Publish receipt
+        working-directory: control
+        env:
+          SHA: ${{ steps.publish.outputs.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p results/goanime-manga-behavior-pins
+          jq -n --arg sha "$SHA" '{schemaVersion:1,state:"success",goanimeSha:$sha}' > "results/goanime-manga-behavior-pins/${SHA}.json"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add results/goanime-manga-behavior-pins
+          git commit -m "ci(result): record manga behavior pins ${SHA:0:8}"
+          git push
