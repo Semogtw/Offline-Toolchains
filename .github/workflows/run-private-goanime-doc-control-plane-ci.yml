@@ -86,10 +86,26 @@ jobs:
 
       - name: Check documentation guard formatting
         working-directory: private-source
+        shell: bash
         run: |
-          dart format --output=none --set-exit-if-changed \
-            test/architecture/documentation_drift_test.dart \
+          set -euo pipefail
+          files=(
+            test/architecture/documentation_drift_test.dart
             test/architecture/active_parity_documentation_guard_test.dart
+          )
+          before="$(mktemp -d)"
+          trap 'rm -rf "$before"' EXIT
+          for file in "${files[@]}"; do
+            cp "$file" "$before/$(basename "$file")"
+          done
+          dart format "${files[@]}" >/dev/null
+          changed=0
+          for file in "${files[@]}"; do
+            if ! diff -u "$before/$(basename "$file")" "$file"; then
+              changed=1
+            fi
+          done
+          test "$changed" -eq 0
 
       - name: Remove private checkout
         if: always()
