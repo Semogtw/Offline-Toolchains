@@ -23,7 +23,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: private-goanime-full-ci
+  # Push-based requests are source-bound to their trigger commit. Include that
+  # SHA plus the manual ref so unrelated GoAnime validations cannot cancel one
+  # another while duplicate dispatches for the same source still collapse.
+  group: private-goanime-full-ci-${{ github.sha }}-${{ inputs.ref || 'main' }}
   cancel-in-progress: true
 
 env:
