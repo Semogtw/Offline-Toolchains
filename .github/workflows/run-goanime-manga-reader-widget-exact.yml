@@ -1,0 +1,91 @@
+name: Run GoAnime Manga reader widget exact SHA
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-reader-widget-exact/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-manga-reader-widget-exact
+  cancel-in-progress: false
+
+jobs:
+  test:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+      - id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-reader-widget-exact/*.request' | head -n1)"
+          test -n "$request"
+          read -r project sha < "control/$request"
+          test "$project" = goanime
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Require private token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.target.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - name: Resolve dependencies
+        working-directory: source
+        run: flutter pub get >/dev/null
+      - name: Run focused reader widgets
+        id: focused
+        working-directory: source
+        shell: bash
+        run: |
+          set +e
+          flutter test --no-pub --concurrency=1 \
+            test/widgets/manga/manga_reader_settings_screen_test.dart \
+            test/widgets/manga/manga_reader_screen_test.dart
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit "$code"
+      - name: Publish receipt
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.target.outputs.sha }}
+          EXIT_CODE: ${{ steps.focused.outputs.exit_code }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="${EXIT_CODE:-99}"
+          state=failure; [[ "$code" == 0 ]] && state=success
+          result="$(jq -cn --arg sha "$SHA" --arg state "$state" --arg code "$code" '{schemaVersion:1,goanimeSha:$sha,state:$state,exitCode:($code|tonumber),exactSha:true}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          path="results/goanime-manga-reader-widget-exact/$SHA.json"
+          for attempt in 1 2 3 4 5; do
+            existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): manga reader widgets ${SHA:0:8}" -f content="$encoded")
+            [[ -n "$existing" ]] && args+=(-f sha="$existing")
+            if gh api "${args[@]}" >/dev/null 2>&1; then exit 0; fi
+            sleep $((attempt * 2))
+          done
+          exit 1
