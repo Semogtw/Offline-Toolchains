@@ -1,0 +1,235 @@
+diff --git a/lib/services/manga/providers/mangalivre_org_manga_provider.dart b/lib/services/manga/providers/mangalivre_org_manga_provider.dart
+index c54b34e..746ed92 100644
+--- a/lib/services/manga/providers/mangalivre_org_manga_provider.dart
++++ b/lib/services/manga/providers/mangalivre_org_manga_provider.dart
+@@ -15,12 +15,11 @@ final class MangaLivreOrgMangaProvider implements MangaSourceProvider {
+   }) : _httpClient = httpClient,
+        baseUri = baseUri ?? Uri.parse('https://mangalivre.org/'),
+        apiUri = apiUri ?? Uri.parse('https://api.mangalivre.org/api/v1/');
+ 
+   static const String sourceIdValue = 'ptbr.mangalivreorg';
+-  static const String _fallbackReaderNonce =
+-      '3dce95d4540e54086a970da4ea44cf46';
++  static const String _fallbackReaderNonce = '3dce95d4540e54086a970da4ea44cf46';
+   static const int _nonceAssignmentLength = 300;
+   static final RegExp _nonceVariableRegex = RegExp(
+     r'''(?:X-ML-Nonce|Nonce"]\.join\("-"\))"?\]\s*=\s*(\w+)''',
+   );
+   static final RegExp _nonceLiteralRegex = RegExp(
+@@ -259,13 +258,11 @@ final class MangaLivreOrgMangaProvider implements MangaSourceProvider {
+   }
+ 
+   Future<MangaHttpResponse> _fetchChapterWithNonceRetry(
+     String chapterId,
+   ) async {
+-    final uri = apiUri.resolve(
+-      'chapters/${Uri.encodeComponent(chapterId)}',
+-    );
++    final uri = apiUri.resolve('chapters/${Uri.encodeComponent(chapterId)}');
+     try {
+       return await _httpClient.get(uri, headers: await _chapterHeaders());
+     } on MangaProviderFailure catch (failure) {
+       final statusCode = failure.statusCode;
+       final canRefreshNonce =
+@@ -308,23 +305,18 @@ final class MangaLivreOrgMangaProvider implements MangaSourceProvider {
+     final variable = _nonceVariableRegex.firstMatch(script.body)?.group(1);
+     if (variable == null || variable.isEmpty) {
+       return _fallbackReaderNonce;
+     }
+ 
+-    final assignmentRegex = RegExp(
+-      '\\b${RegExp.escape(variable)}\\s*=\\s*',
+-    );
++    final assignmentRegex = RegExp('\\b${RegExp.escape(variable)}\\s*=\\s*');
+     for (final match in assignmentRegex.allMatches(script.body)) {
+       final start = match.end;
+       final requestedEnd = start + _nonceAssignmentLength;
+       final end = requestedEnd < script.body.length
+           ? requestedEnd
+           : script.body.length;
+-      final assignment = script.body
+-          .substring(start, end)
+-          .split(';')
+-          .first;
++      final assignment = script.body.substring(start, end).split(';').first;
+       final decoded = _decodeNonceAssignment(assignment);
+       if (decoded != null) return decoded;
+     }
+     return _fallbackReaderNonce;
+   }
+diff --git a/test/services/manga/providers/mangalivre_org_manga_provider_test.dart b/test/services/manga/providers/mangalivre_org_manga_provider_test.dart
+index c7cfc6d..ccbc0cb 100644
+--- a/test/services/manga/providers/mangalivre_org_manga_provider_test.dart
++++ b/test/services/manga/providers/mangalivre_org_manga_provider_test.dart
+@@ -47,41 +47,44 @@ void main() {
+         'picture.mangalivre.org',
+       }),
+     );
+   });
+ 
+-  test('search uses the dedicated API host and no same-origin fetch header', () async {
+-    http.Request? searchRequest;
+-    final provider = _provider((request) async {
+-      if (request.url.host == 'api.mangalivre.org' &&
+-          request.url.path == '/api/v1/mangas/list') {
+-        searchRequest = request;
+-        return _json(searchFixture);
+-      }
+-      return http.Response('not found', 404);
+-    });
+-
+-    final page = await provider.search(
+-      const MangaSearchRequest(query: 'Org Example'),
+-    );
++  test(
++    'search uses the dedicated API host and no same-origin fetch header',
++    () async {
++      http.Request? searchRequest;
++      final provider = _provider((request) async {
++        if (request.url.host == 'api.mangalivre.org' &&
++            request.url.path == '/api/v1/mangas/list') {
++          searchRequest = request;
++          return _json(searchFixture);
++        }
++        return http.Response('not found', 404);
++      });
+ 
+-    expect(provider.sourceId, MangaLivreOrgMangaProvider.sourceIdValue);
+-    expect(provider.name, 'MangaLivre.org');
+-    expect(page.items.single.mangaId, 'org-example');
+-    expect(page.items.single.title, 'Org Example');
+-    expect(page.nextPageToken, isNull);
+-    expect(searchRequest, isNotNull);
+-    expect(searchRequest!.method, 'GET');
+-    expect(searchRequest!.url.queryParameters['filter'], 'Org Example');
+-    expect(searchRequest!.url.queryParameters['page'], '1');
+-    expect(searchRequest!.headers['user-agent'], contains('Chrome'));
+-    expect(searchRequest!.headers['accept-language'], contains('pt-BR'));
+-    expect(
+-      searchRequest!.headers.keys.map((key) => key.toLowerCase()),
+-      isNot(contains('sec-fetch-site')),
+-    );
+-  });
++      final page = await provider.search(
++        const MangaSearchRequest(query: 'Org Example'),
++      );
++
++      expect(provider.sourceId, MangaLivreOrgMangaProvider.sourceIdValue);
++      expect(provider.name, 'MangaLivre.org');
++      expect(page.items.single.mangaId, 'org-example');
++      expect(page.items.single.title, 'Org Example');
++      expect(page.nextPageToken, isNull);
++      expect(searchRequest, isNotNull);
++      expect(searchRequest!.method, 'GET');
++      expect(searchRequest!.url.queryParameters['filter'], 'Org Example');
++      expect(searchRequest!.url.queryParameters['page'], '1');
++      expect(searchRequest!.headers['user-agent'], contains('Chrome'));
++      expect(searchRequest!.headers['accept-language'], contains('pt-BR'));
++      expect(
++        searchRequest!.headers.keys.map((key) => key.toLowerCase()),
++        isNot(contains('sec-fetch-site')),
++      );
++    },
++  );
+ 
+   test('maps current API chapter ids and sorted chapter image pages', () async {
+     final provider = _provider((request) async {
+       if (request.url.path == '/api/v1/mangas/org-example') {
+         return _json(detailsFixture);
+@@ -126,52 +129,55 @@ void main() {
+     expect(images.pages, hasLength(2));
+     expect(images.pages.first.uri.path, '/org-example/001.webp');
+     expect(images.pages.last.uri.path, '/org-example/002.webp');
+   });
+ 
+-  test('refreshes a rotated runtime nonce and retries the chapter once', () async {
+-    final nonces = <String?>[];
+-    var bundleRequests = 0;
+-    final provider = _provider((request) async {
+-      if (request.url.path == '/') {
+-        return _text(homeFixture, contentType: 'text/html; charset=utf-8');
+-      }
+-      if (request.url.path == '/assets/app-abc.js') {
+-        bundleRequests += 1;
+-        return _text(
+-          bundleRequests == 1
+-              ? bundleFixture
+-              : bundleFixture.replaceAll('97', '98'),
+-          contentType: 'application/javascript',
+-        );
+-      }
+-      if (request.url.path == '/api/v1/chapters/chapter-20') {
+-        nonces.add(_header(request, 'x-ml-nonce'));
+-        if (nonces.length == 1) return http.Response('stale nonce', 404);
+-        return _json(chapterFixture);
+-      }
+-      return http.Response('not found', 404);
+-    });
+-
+-    const chapter = MangaSourceChapter(
+-      sourceId: MangaLivreOrgMangaProvider.sourceIdValue,
+-      mangaId: 'org-example',
+-      chapterId: 'chapter-20',
+-      title: 'Capítulo 20',
+-      number: 20,
+-      language: 'pt-BR',
+-    );
+-
+-    final manifest = await provider.resolveContent(chapter);
++  test(
++    'refreshes a rotated runtime nonce and retries the chapter once',
++    () async {
++      final nonces = <String?>[];
++      var bundleRequests = 0;
++      final provider = _provider((request) async {
++        if (request.url.path == '/') {
++          return _text(homeFixture, contentType: 'text/html; charset=utf-8');
++        }
++        if (request.url.path == '/assets/app-abc.js') {
++          bundleRequests += 1;
++          return _text(
++            bundleRequests == 1
++                ? bundleFixture
++                : bundleFixture.replaceAll('97', '98'),
++            contentType: 'application/javascript',
++          );
++        }
++        if (request.url.path == '/api/v1/chapters/chapter-20') {
++          nonces.add(_header(request, 'x-ml-nonce'));
++          if (nonces.length == 1) return http.Response('stale nonce', 404);
++          return _json(chapterFixture);
++        }
++        return http.Response('not found', 404);
++      });
+ 
+-    expect(manifest, isA<ImageSequenceContentManifest>());
+-    expect(bundleRequests, 2);
+-    expect(nonces, <String>[
+-      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+-      'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+-    ]);
+-  });
++      const chapter = MangaSourceChapter(
++        sourceId: MangaLivreOrgMangaProvider.sourceIdValue,
++        mangaId: 'org-example',
++        chapterId: 'chapter-20',
++        title: 'Capítulo 20',
++        number: 20,
++        language: 'pt-BR',
++      );
++
++      final manifest = await provider.resolveContent(chapter);
++
++      expect(manifest, isA<ImageSequenceContentManifest>());
++      expect(bundleRequests, 2);
++      expect(nonces, <String>[
++        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
++        'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
++      ]);
++    },
++  );
+ 
+   test(
+     'passes generic provider contract with independent current API fixtures',
+     () async {
+       final provider = _provider((request) async {
