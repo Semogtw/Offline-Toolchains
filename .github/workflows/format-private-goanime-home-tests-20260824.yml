@@ -1,0 +1,131 @@
+name: Format private GoAnime Home tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/private-goanime-home-format.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-goanime-home-format
+  cancel-in-progress: true
+
+jobs:
+  format:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: trusted-source
+          persist-credentials: false
+
+      - name: Read exact source request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$GITHUB_WORKSPACE/trusted-source/triggers/private-goanime-home-format.json"
+          python3 - "$request" "$GITHUB_OUTPUT" <<'PY'
+          import json, re, sys
+          request, output = sys.argv[1:]
+          payload = json.load(open(request, encoding='utf-8'))
+          sha = str(payload.get('ref') or '').strip().lower()
+          branch = str(payload.get('branch') or '').strip()
+          if not re.fullmatch(r'[0-9a-f]{40}', sha):
+              raise SystemExit('ref must be an exact 40-character commit SHA')
+          if branch != 'fix/home-direct-bundled-seed-fallback-20260824':
+              raise SystemExit('unexpected target branch')
+          with open(output, 'a', encoding='utf-8') as fh:
+              fh.write(f'ref={sha}\nbranch={branch}\n')
+          PY
+
+      - name: Require private source tokens
+        shell: bash
+        env:
+          READ_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$READ_TOKEN" || { echo 'Missing PRIVATE_REPOSITORIES_TOKEN.' >&2; exit 1; }
+          test -n "$WRITE_TOKEN" || { echo 'Missing GOANIME_CATALOG_WRITE_TOKEN.' >&2; exit 1; }
+
+      - name: Checkout exact GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify immutable source
+        working-directory: private-source
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = '${{ steps.request.outputs.ref }}'
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Apply canonical Dart formatting
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format \
+            test/services/recent_anime_freshness_test.dart \
+            test/services/runtime_home_catalog_partial_cache_repair_test.dart \
+            test/services/runtime_home_catalog_resilience_test.dart \
+            test/services/runtime_home_catalog_seed_fallback_test.dart
+          git diff --check
+          git diff --exit-code -- test/services/runtime_home_catalog_loading_regression_test.dart
+
+      - name: Commit canonical formatting to Home branch
+        working-directory: private-source
+        shell: bash
+        env:
+          WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            test/services/recent_anime_freshness_test.dart \
+            test/services/runtime_home_catalog_partial_cache_repair_test.dart \
+            test/services/runtime_home_catalog_resilience_test.dart \
+            test/services/runtime_home_catalog_seed_fallback_test.dart
+          if git diff --cached --quiet; then
+            echo 'No formatting changes required.'
+            exit 0
+          fi
+          git commit -m 'test(home): apply canonical Dart formatting'
+          auth="$(printf 'x-access-token:%s' "$WRITE_TOKEN" | base64 -w0)"
+          extraheader="AUTHORIZATION: basic $auth"
+          git -c http.https://github.com/.extraheader="$extraheader" fetch origin '${{ steps.request.outputs.branch }}'
+          test "$(git rev-parse origin/${{ steps.request.outputs.branch }})" = '${{ steps.request.outputs.ref }}' || {
+            echo 'Target branch advanced unexpectedly; refusing to overwrite it.' >&2
+            exit 1
+          }
+          git -c http.https://github.com/.extraheader="$extraheader" push origin HEAD:'${{ steps.request.outputs.branch }}'
+          unset auth extraheader WRITE_TOKEN
+
+      - name: Remove private source
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source"
+          rm -rf "$GITHUB_WORKSPACE/trusted-source"
