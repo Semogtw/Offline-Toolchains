@@ -258,7 +258,8 @@ jobs:
       - name: Checkout trusted report target
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.sha }}
+          ref: main
+          fetch-depth: 0
           persist-credentials: true
 
       - name: Write sanitized result
@@ -300,4 +301,6 @@ jobs:
             exit 0
           fi
           git commit -m "ci(goanime): report full CI run $GITHUB_RUN_ID"
-          git push
+          git fetch origin main
+          git rebase origin/main
+          git push origin HEAD:main
