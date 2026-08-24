@@ -1,13 +1,22 @@
 {
   "schema_version": 1,
-  "run_id": 32780722389,
+  "run_id": 32737537622,
   "name": "Backfill private GoAnime MAL catalog",
   "status": "completed",
   "conclusion": "cancelled",
   "event": "push",
-  "head_sha": "2963985c197b1a1f6af27005dc2702e9872dc64a",
-  "created_at": "2026-08-24T21:40:11Z",
-  "updated_at": "2026-08-24T21:40:56Z",
-  "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/32780722389",
-  "jobs": []
+  "head_sha": "51b02c613c85f27be006396f9ef2fdd9b1742ca0",
+  "created_at": "2026-08-24T14:15:05Z",
+  "updated_at": "2026-08-24T22:04:58Z",
+  "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/32737537622",
+  "jobs": [
+    {
+      "id": 97546300586,
+      "name": "backfill",
+      "status": "completed",
+      "conclusion": "cancelled",
+      "started_at": "2026-08-24T18:33:38Z",
+      "completed_at": "2026-08-24T22:04:57Z"
+    }
+  ]
 }
