@@ -17,7 +17,7 @@ jobs:
   refresh:
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 240
     env:
       CACHE_BUILDER_MAX_RUNTIME_MINUTES: '90'
 
@@ -82,6 +82,7 @@ jobs:
           cp assets/data/mal_availability_map.json "$work/baseline/mal_availability_map.json"
           cp assets/data/mal_availability_unmatched.json "$work/baseline/mal_availability_unmatched.json"
           cp assets/data/franchise_availability_map.json "$work/baseline/franchise_availability_map.json"
+          cp assets/data/anime_metadata_seed.json "$work/baseline/anime_metadata_seed.json"
           python3 - "$work/baseline/stats.json" <<'PY'
           import json, sys
           from pathlib import Path
@@ -91,6 +92,7 @@ jobs:
               'modes': len(read('assets/data/available_anime_modes.json')),
               'mal': len(read('assets/data/mal_availability_map.json').get('entries') or []),
               'franchises': len(read('assets/data/franchise_availability_map.json').get('franchises') or []),
+              'metadata': len(read('assets/data/anime_metadata_seed.json').get('entries') or []),
           }
           Path(sys.argv[1]).write_text(json.dumps(stats, sort_keys=True), encoding='utf-8')
           print('baseline', stats)
@@ -170,7 +172,7 @@ jobs:
           print(f'AniList current season: {season} {now.year}, discovered={len(discovered)}, metadata targets={len(targets)}')
           PY
 
-      - name: Refresh Jikan metadata and broadcasts
+      - name: Refresh Jikan metadata and broadcasts for discovery targets
         working-directory: private-source
         shell: bash
         run: |
@@ -242,7 +244,14 @@ jobs:
           fi
           rm -f "$RUNNER_TEMP/animefire-preflight.html"
 
-      - name: Map newly discovered provider titles to MAL
+      - name: Map every unprocessed provider title through checkpointed strict MAL mapping
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart run tools/build_mal_availability_cache_checkpointed.dart --incremental
+
+      - name: Capture newly mapped MAL IDs and rebuild rich metadata
         working-directory: private-source
         shell: bash
         env:
@@ -253,72 +262,18 @@ jobs:
           import json, os
           from pathlib import Path
           work = Path(os.environ['WORK'])
-          before = set(json.loads((work/'baseline/available_animes.json').read_text(encoding='utf-8')))
-          after = set(json.loads(Path('assets/data/available_animes.json').read_text(encoding='utf-8')))
-          new = sorted(after - before)
-          (work/'new_titles.json').write_text(json.dumps(new, ensure_ascii=False), encoding='utf-8')
-          modes = json.loads(Path('assets/data/available_anime_modes.json').read_text(encoding='utf-8'))
-          (work/'new_modes.json').write_text(json.dumps({k:v for k,v in modes.items() if k in set(new)}, ensure_ascii=False), encoding='utf-8')
-          (work/'full_available.json').write_text(Path('assets/data/available_animes.json').read_text(encoding='utf-8'), encoding='utf-8')
-          (work/'full_modes.json').write_text(Path('assets/data/available_anime_modes.json').read_text(encoding='utf-8'), encoding='utf-8')
-          print(f'New provider-confirmed titles: {len(new)}')
+          old = json.loads((work/'baseline/mal_availability_map.json').read_text(encoding='utf-8'))
+          new = json.loads(Path('assets/data/mal_availability_map.json').read_text(encoding='utf-8'))
+          old_ids = {int(e['malId']) for e in old.get('entries') or [] if isinstance(e, dict) and isinstance(e.get('malId'), int)}
+          new_ids = {int(e['malId']) for e in new.get('entries') or [] if isinstance(e, dict) and isinstance(e.get('malId'), int)}
+          added = sorted(new_ids - old_ids)
+          (work/'new_mal_ids.txt').write_text('\n'.join(map(str, added)), encoding='utf-8')
+          print(f'MAL entries: {len(new_ids)} (+{len(added)})')
           PY
-          new_count="$(python3 -c 'import json,os; print(len(json.load(open(os.environ["WORK"]+"/new_titles.json"))))')"
-          if [ "$new_count" -gt 0 ]; then
-            cp "$WORK/new_titles.json" assets/data/available_animes.json
-            cp "$WORK/new_modes.json" assets/data/available_anime_modes.json
-            dart run tools/build_mal_availability_cache.dart
-            cp assets/data/mal_availability_map.json "$WORK/new_mal_map.json"
-            cp assets/data/mal_availability_unmatched.json "$WORK/new_mal_unmatched.json"
-            cp "$WORK/full_available.json" assets/data/available_animes.json
-            cp "$WORK/full_modes.json" assets/data/available_anime_modes.json
-          else
-            printf '{"schemaVersion":1,"generatedAt":"","entries":[]}' > "$WORK/new_mal_map.json"
-            printf '{"schemaVersion":1,"generatedAt":"","entries":[]}' > "$WORK/new_mal_unmatched.json"
-          fi
-          cp "$WORK/baseline/mal_availability_map.json" assets/data/mal_availability_map.json
-          cp "$WORK/baseline/mal_availability_unmatched.json" assets/data/mal_availability_unmatched.json
-          python3 - <<'PY'
-          import json, os
-          from datetime import datetime, timezone
-          from pathlib import Path
-          work = Path(os.environ['WORK'])
-          old = json.loads(Path('assets/data/mal_availability_map.json').read_text(encoding='utf-8'))
-          fresh = json.loads((work/'new_mal_map.json').read_text(encoding='utf-8'))
-          modes = json.loads(Path('assets/data/available_anime_modes.json').read_text(encoding='utf-8'))
-          by_id = {int(e['malId']): e for e in old.get('entries', []) if isinstance(e, dict) and isinstance(e.get('malId'), int)}
-          old_ids = set(by_id)
-          for entry in fresh.get('entries', []):
-              if not isinstance(entry, dict) or not isinstance(entry.get('malId'), int): continue
-              mid = int(entry['malId'])
-              if mid in by_id:
-                  cur = by_id[mid]
-                  cur['matchedAvailableTitles'] = sorted(set(cur.get('matchedAvailableTitles') or []) | set(entry.get('matchedAvailableTitles') or []))
-                  cm = cur.setdefault('modes', {'sub': False, 'dub': False}); em = entry.get('modes') or {}
-                  cm['sub'] = bool(cm.get('sub')) or bool(em.get('sub')); cm['dub'] = bool(cm.get('dub')) or bool(em.get('dub'))
-                  if float(entry.get('matchConfidence') or 0) > float(cur.get('matchConfidence') or 0):
-                      for key in ('canonicalTitle','titleEnglish','titleJapanese','year','season','type','episodes','matchConfidence','matchType'):
-                          if key in entry: cur[key] = entry[key]
-              else:
-                  by_id[mid] = entry
-          for entry in by_id.values():
-              matched = [t for t in entry.get('matchedAvailableTitles') or [] if t in modes]
-              if matched:
-                  entry['modes'] = {'sub': any(bool(modes[t].get('sub')) for t in matched), 'dub': any(bool(modes[t].get('dub')) for t in matched)}
-          old['generatedAt'] = datetime.now(timezone.utc).isoformat()
-          old['entries'] = sorted(by_id.values(), key=lambda e: int(e.get('malId') or 0))
-          Path('assets/data/mal_availability_map.json').write_text(json.dumps(old, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
-          old_u = json.loads(Path('assets/data/mal_availability_unmatched.json').read_text(encoding='utf-8'))
-          new_u = json.loads((work/'new_mal_unmatched.json').read_text(encoding='utf-8'))
-          merged = {}
-          for e in list(old_u.get('entries') or []) + list(new_u.get('entries') or []):
-              if isinstance(e, dict): merged[(str(e.get('normalizedTitle') or ''), str(e.get('availableTitle') or ''))] = e
-          old_u['generatedAt'] = datetime.now(timezone.utc).isoformat(); old_u['entries'] = sorted(merged.values(), key=lambda e:(str(e.get('normalizedTitle') or ''), str(e.get('availableTitle') or '')))
-          Path('assets/data/mal_availability_unmatched.json').write_text(json.dumps(old_u, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
-          new_ids = sorted(set(by_id) - old_ids)
-          (work/'new_mal_ids.txt').write_text('\n'.join(map(str,new_ids)), encoding='utf-8')
-          print(f'MAL entries: {len(by_id)} (+{len(new_ids)})')
-          PY
+          dart run tools/build_anime_metadata_seed.dart
+          cp dist/anime_metadata_cache/anime_metadata_seed.json assets/data/anime_metadata_seed.json
+          cp dist/anime_metadata_cache/broadcast_schedule.json assets/data/broadcast_schedule.json
+          sha256sum assets/data/anime_metadata_seed.json | awk '{print $1}' > assets/data/anime_metadata_seed.json.sha256
 
       - name: Rebuild derived availability databases
         working-directory: private-source
@@ -337,7 +292,8 @@ jobs:
           fi
           dart run tools/build_franchise_runtime_artifacts.dart
 
-      - name: Validate refreshed catalog cannot regress
+      - name: Validate refreshed catalog, terminal mapping decisions, and rich metadata coverage
+        id: validate
         working-directory: private-source
         shell: bash
         env:
@@ -345,27 +301,61 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, os, sqlite3
+          import hashlib, json, os, sqlite3
           from datetime import datetime, timezone
           from pathlib import Path
-          work=Path(os.environ['WORK']); baseline=json.loads((work/'baseline/stats.json').read_text())
+          work = Path(os.environ['WORK'])
+          baseline = json.loads((work/'baseline/stats.json').read_text(encoding='utf-8'))
           def read(p): return json.loads(Path(p).read_text(encoding='utf-8'))
-          titles=read('assets/data/available_animes.json'); modes=read('assets/data/available_anime_modes.json')
-          mal=read('assets/data/mal_availability_map.json').get('entries') or []
-          franchises=read('assets/data/franchise_availability_map.json').get('franchises') or []
-          metadata=read('assets/data/anime_metadata_seed.json'); broadcasts=read('assets/data/broadcast_schedule.json').get('entries') or {}
-          now=datetime.now(timezone.utc); season='winter' if now.month<=3 else 'spring' if now.month<=6 else 'summer' if now.month<=9 else 'fall'
-          current=[e for e in metadata.get('entries') or [] if e.get('year')==now.year and str(e.get('season') or '').lower()==season and str(e.get('imageUrl') or '').strip()]
-          current_stats={'titles':len(titles),'modes':len(modes),'mal':len(mal),'franchises':len(franchises)}
-          for key in ('titles','modes','mal','franchises'):
-              if current_stats[key] < baseline[key]: raise SystemExit(f'{key} regressed: {current_stats[key]} < {baseline[key]}')
+          titles = read('assets/data/available_animes.json')
+          modes = read('assets/data/available_anime_modes.json')
+          mal_doc = read('assets/data/mal_availability_map.json')
+          unmatched_doc = read('assets/data/mal_availability_unmatched.json')
+          franchises = read('assets/data/franchise_availability_map.json').get('franchises') or []
+          metadata_doc = read('assets/data/anime_metadata_seed.json')
+          broadcasts = read('assets/data/broadcast_schedule.json').get('entries') or {}
+          mal = mal_doc.get('entries') or []
+          unmatched = unmatched_doc.get('entries') or []
+          metadata = metadata_doc.get('entries') or []
+          source = set(titles)
+          matched = {title for entry in mal for title in (entry.get('matchedAvailableTitles') or []) if isinstance(title, str)}
+          terminal = {entry.get('normalizedTitle') for entry in unmatched if isinstance(entry, dict) and entry.get('reason') != 'jikan_error' and isinstance(entry.get('normalizedTitle'), str)}
+          retryable = {entry.get('normalizedTitle') for entry in unmatched if isinstance(entry, dict) and entry.get('reason') == 'jikan_error' and isinstance(entry.get('normalizedTitle'), str)}
+          pending = source - matched - terminal
+          if retryable & source:
+              raise SystemExit(f'{len(retryable & source)} transient Jikan errors remain')
+          if pending:
+              raise SystemExit(f'{len(pending)} provider titles still lack a terminal MAL mapping decision')
+          stats = {'titles': len(titles), 'modes': len(modes), 'mal': len(mal), 'franchises': len(franchises), 'metadata': len(metadata)}
+          for key in ('titles', 'modes', 'mal', 'franchises', 'metadata'):
+              if stats[key] < baseline[key]: raise SystemExit(f'{key} regressed: {stats[key]} < {baseline[key]}')
+          mal_ids = {int(e['malId']) for e in mal if isinstance(e, dict) and isinstance(e.get('malId'), int)}
+          metadata_ids = {int(e['malId']) for e in metadata if isinstance(e, dict) and isinstance(e.get('malId'), int)}
+          rich_coverage = len(mal_ids & metadata_ids) / len(mal_ids) if mal_ids else 0.0
+          if rich_coverage < 0.90: raise SystemExit(f'Rich metadata coverage below 90%: {rich_coverage:.3%}')
+          digest = hashlib.sha256(Path('assets/data/anime_metadata_seed.json').read_bytes()).hexdigest()
+          expected = Path('assets/data/anime_metadata_seed.json.sha256').read_text(encoding='utf-8').strip().lower()
+          if digest != expected: raise SystemExit('Bundled metadata SHA-256 does not match rebuilt seed')
+          now = datetime.now(timezone.utc)
+          season = 'winter' if now.month <= 3 else 'spring' if now.month <= 6 else 'summer' if now.month <= 9 else 'fall'
+          current = [e for e in metadata if e.get('year') == now.year and str(e.get('season') or '').lower() == season and str(e.get('imageUrl') or '').strip()]
           if len(current) < 10: raise SystemExit(f'current metadata too small: {len(current)}')
           if len(broadcasts) < 5: raise SystemExit(f'broadcast snapshot too small: {len(broadcasts)}')
-          db=sqlite3.connect('assets/data/title_availability.db')
-          try: db_titles=db.execute('select count(*) from title_availability').fetchone()[0]
+          db = sqlite3.connect('assets/data/title_availability.db')
+          try: db_titles = db.execute('select count(*) from title_availability').fetchone()[0]
           finally: db.close()
-          if db_titles < baseline['titles']: raise SystemExit(f'title DB regressed: {db_titles} < {baseline["titles"]}')
-          print('validated', current_stats, f'current={len(current)} broadcasts={len(broadcasts)} title_db={db_titles}')
+          if db_titles < len(source): raise SystemExit(f'title DB incomplete: {db_titles} < {len(source)}')
+          result = {
+              **stats,
+              'matched_provider_titles': len(matched & source),
+              'terminal_unmatched_titles': len(terminal & source),
+              'rich_mal_coverage': round(rich_coverage, 6),
+              'title_db_rows': db_titles,
+              'mal_generated_at': mal_doc.get('generatedAt'),
+              'metadata_generated_at': metadata_doc.get('generatedAt'),
+          }
+          Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8').write('stats=' + json.dumps(result, separators=(',', ':')) + '\n')
+          print('validated', json.dumps(result, indent=2, sort_keys=True))
           PY
 
       - name: Run project gates
@@ -395,7 +385,6 @@ jobs:
           apk="$GITHUB_WORKSPACE/private-source/build/app/outputs/flutter-apk/app-debug.apk"
           test -s "$apk"
           unzip -t "$apk" >/dev/null
-
           work="$RUNNER_TEMP/goanime-handoff"
           gpg_home="$work/gpg"
           transfer="$work/transfer"
@@ -403,12 +392,12 @@ jobs:
           mkdir -p "$gpg_home" "$transfer"
           chmod 700 "$gpg_home"
           export GNUPGHOME="$gpg_home"
-
           cache_archive="$work/goanime-catalog-refresh.tar.gz"
           tar -C "$GITHUB_WORKSPACE/private-source" -czf "$cache_archive" \
             tools/anime_metadata_seed_targets.json \
             tools/anime_availability_seed_targets.json \
             assets/data/anime_metadata_seed.json \
+            assets/data/anime_metadata_seed.json.sha256 \
             assets/data/broadcast_schedule.json \
             assets/data/available_animes.json \
             assets/data/available_anime_modes.json \
@@ -419,31 +408,28 @@ jobs:
             assets/data/franchise_index.json \
             assets/data/franchise_availability.db
           tar -tzf "$cache_archive" >/dev/null
-
           apk_sha256="$(sha256sum "$apk" | awk '{print $1}')"
           apk_size="$(stat -c '%s' "$apk")"
           cache_sha256="$(sha256sum "$cache_archive" | awk '{print $1}')"
           cache_size="$(stat -c '%s' "$cache_archive")"
-
           gpg --batch --import "$GITHUB_WORKSPACE/trusted-source/keys/source-bundles-public.asc"
           fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1=="fpr"{print $10;exit}')"
           test "$fingerprint" = "$EXPECTED_FINGERPRINT"
           test -z "$(gpg --batch --with-colons --list-secret-keys 2>/dev/null | awk -F: '$1 == "sec" { print $1 }')"
-
           encrypted_apk="$transfer/GoAnime-refreshed-debug.apk.gpg"
           encrypted_cache="$transfer/GoAnime-refreshed-catalog.tar.gz.gpg"
           gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" --output "$encrypted_apk" --encrypt "$apk"
           gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" --output "$encrypted_cache" --encrypt "$cache_archive"
           test -s "$encrypted_apk"
           test -s "$encrypted_cache"
-
           python3 - "$transfer/manifest.json" "$apk_sha256" "$apk_size" "$cache_sha256" "$cache_size" "$GITHUB_RUN_ID" <<'PY'
-          import datetime,json,sys
+          import datetime,json,os,sys
           path,apk_sha256,apk_size,cache_sha256,cache_size,run_id=sys.argv[1:]
           data={
-              'schema_version':2,
+              'schema_version':3,
               'project':'goanime',
-              'refresh_mode':__import__('os').environ.get('PROVIDER_AUDIT_STATUS') or 'unknown',
+              'refresh_mode':os.environ.get('PROVIDER_AUDIT_STATUS') or 'unknown',
+              'mapping_mode':'checkpointed-strict-full-current-catalog',
               'build_type':'debug',
               'apk_sha256':apk_sha256,
               'apk_size_bytes':int(apk_size),
@@ -457,7 +443,6 @@ jobs:
           }
           open(path,'w',encoding='utf-8').write(json.dumps(data,indent=2,sort_keys=True)+'\n')
           PY
-
           rm -rf "$gpg_home" "$cache_archive"
           echo "transfer_dir=$transfer" >> "$GITHUB_OUTPUT"
           echo "apk_sha256=$apk_sha256" >> "$GITHUB_OUTPUT"
@@ -483,13 +468,13 @@ jobs:
             echo 'GOANIME_CATALOG_WRITE_TOKEN is not configured; encrypted cache handoff was uploaded for trusted external persistence.'
             exit 0
           fi
-
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add \
             tools/anime_metadata_seed_targets.json \
             tools/anime_availability_seed_targets.json \
             assets/data/anime_metadata_seed.json \
+            assets/data/anime_metadata_seed.json.sha256 \
             assets/data/broadcast_schedule.json \
             assets/data/available_animes.json \
             assets/data/available_anime_modes.json \
@@ -504,7 +489,6 @@ jobs:
             exit 0
           fi
           git commit -m 'chore(catalog): refresh current anime caches'
-
           auth="$(printf 'x-access-token:%s' "$WRITE_TOKEN" | base64 -w0)"
           extraheader="AUTHORIZATION: basic $auth"
           git -c http.https://github.com/.extraheader="$extraheader" fetch origin main
@@ -516,18 +500,24 @@ jobs:
           echo 'Catalog refresh published to private main without persisting write credentials.'
 
       - name: Summary
+        if: always()
         shell: bash
+        env:
+          STATS: ${{ steps.validate.outputs.stats }}
         run: |
           echo '## GoAnime full catalog refresh' >> "$GITHUB_STEP_SUMMARY"
-          echo "- APK SHA-256: \`${{ steps.package.outputs.apk_sha256 }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Catalog archive SHA-256: \`${{ steps.package.outputs.catalog_sha256 }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Source ref: \`${{ steps.request.outputs.ref }}\`." >> "$GITHUB_STEP_SUMMARY"
           echo "- Provider refresh status: \`${{ steps.provider.outputs.status }}\`." >> "$GITHUB_STEP_SUMMARY"
+          echo '- MAL mapping: checkpointed strict incremental mapping over the complete current provider catalog.' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Rich metadata is rebuilt after MAL mapping, so newly mapped IDs are included in the same refresh.' >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$STATS" ]; then echo "- Validated stats: \`$STATS\`." >> "$GITHUB_STEP_SUMMARY"; fi
+          if [ -n '${{ steps.package.outputs.apk_sha256 }}' ]; then echo "- APK SHA-256: \`${{ steps.package.outputs.apk_sha256 }}\`." >> "$GITHUB_STEP_SUMMARY"; fi
+          if [ -n '${{ steps.package.outputs.catalog_sha256 }}' ]; then echo "- Catalog archive SHA-256: \`${{ steps.package.outputs.catalog_sha256 }}\`." >> "$GITHUB_STEP_SUMMARY"; fi
           if [ '${{ steps.provider.outputs.status }}' != 'full-provider-audit' ]; then
-            echo '- Hosted Azure egress was blocked by the provider; the validated complete baseline was preserved and current titles remain eligible for on-device runtime verification.' >> "$GITHUB_STEP_SUMMARY"
+            echo '- Hosted runner provider access was blocked; the validated complete baseline was preserved and bounded runtime discovery remains enabled.' >> "$GITHUB_STEP_SUMMARY"
           fi
-          echo '- Baseline cache counts were not allowed to regress.' >> "$GITHUB_STEP_SUMMARY"
-          echo '- APK and refreshed cache handoff were encrypted before upload.' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Only OpenPGP ciphertext was uploaded by the public Toolchains repository.' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Matching thresholds were not relaxed.' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Only OpenPGP ciphertext is uploaded by the public Toolchains repository.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove all private and transient data
         if: always()
