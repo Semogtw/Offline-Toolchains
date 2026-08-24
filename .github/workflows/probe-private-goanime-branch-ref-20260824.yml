@@ -1,0 +1,87 @@
+name: Probe private GoAnime branch ref
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/private-goanime-branch-ref.json'
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: trusted-source
+          persist-credentials: false
+
+      - name: Read target branch
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$GITHUB_WORKSPACE/trusted-source/triggers/private-goanime-branch-ref.json"
+          branch="$(python3 - "$request" <<'PY'
+          import json, sys
+          payload=json.load(open(sys.argv[1],encoding='utf-8'))
+          branch=str(payload.get('branch') or '').strip()
+          if branch != 'fix/home-direct-bundled-seed-fallback-20260824': raise SystemExit('unexpected branch')
+          print(branch)
+          PY
+          )"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout target branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.branch }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Record exact branch ref
+        id: ref
+        working-directory: private-source
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish ref report
+        uses: actions/github-script@v8
+        env:
+          SOURCE_SHA: ${{ steps.ref.outputs.sha }}
+          SOURCE_BRANCH: ${{ steps.request.outputs.branch }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const report = {
+              schema_version: 1,
+              branch: process.env.SOURCE_BRANCH,
+              sha: process.env.SOURCE_SHA,
+              probed_at: new Date().toISOString()
+            };
+            const path='reports/goanime-branch-ref/latest.json';
+            let sha;
+            try {
+              const old=await github.rest.repos.getContent({owner,repo,path,ref:'main'});
+              if (!Array.isArray(old.data)) sha=old.data.sha;
+            } catch (error) { if (error.status !== 404) throw error; }
+            await github.rest.repos.createOrUpdateFileContents({
+              owner,repo,path,branch:'main',sha,
+              message:'ci(goanime): record Home branch ref [skip ci]',
+              content:Buffer.from(JSON.stringify(report,null,2)+'\n').toString('base64')
+            });
+
+      - name: Remove private source
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
