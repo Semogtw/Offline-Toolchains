@@ -1,0 +1,153 @@
+name: Validate GoAnime shared foundation privately
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-foundation-private/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-foundation-private
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate shared media foundation
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact source revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-foundation-private/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = "goanime"
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies privately
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter pub get >/dev/null 2>&1
+          (cd packages/goanime_core && dart pub get >/dev/null 2>&1)
+
+      - name: Analyze shared foundation
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd packages/goanime_core && dart analyze \
+            lib/src/media/provider_key.dart \
+            lib/src/media/provider_operation.dart \
+            lib/src/media/media_provider_registry.dart \
+            lib/src/media/provider_policy.dart \
+            test/media/media_provider_registry_validation_test.dart \
+            test/anime_source_provider_registry_test.dart)
+          flutter analyze --no-pub \
+            lib/services/manga/manga_source_registry.dart \
+            lib/services/manga/manga_provider_policy.dart \
+            test/services/manga/manga_source_registry_test.dart
+
+      - name: Run core provider registry tests
+        working-directory: private-source/packages/goanime_core
+        run: |
+          dart test test/media/media_provider_registry_validation_test.dart
+          dart test test/anime_source_provider_registry_test.dart
+
+      - name: Run Manga provider registry tests
+        working-directory: private-source
+        run: flutter test --no-pub test/services/manga/manga_source_registry_test.dart
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
+
+  report:
+    name: Publish sanitized GoAnime foundation result
+    if: always()
+    needs: [validate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+
+    steps:
+      - name: Publish sanitized GoAnime foundation result
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          TOOLCHAINS_TRIGGER_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/goanime-foundation-report.json"
+          python3 - "$report" <<'PY'
+          import json
+          import os
+          import sys
+          from datetime import datetime, timezone
+          payload = {
+              "schemaVersion": 1,
+              "runId": int(os.environ["RUN_ID"]),
+              "runAttempt": int(os.environ["RUN_ATTEMPT"]),
+              "toolchainsTriggerSha": os.environ["TOOLCHAINS_TRIGGER_SHA"],
+              "validateResult": os.environ["VALIDATE_RESULT"],
+              "finishedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+          }
+          with open(sys.argv[1], "w", encoding="utf-8") as stream:
+              json.dump(payload, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          PY
+          encoded="$(base64 -w0 < "$report")"
+          path="reports/goanime-foundation-private/${RUN_ID}.json"
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/${path}" \
+            -f "message=ci(goanime): report foundation run ${RUN_ID}" \
+            -f "content=${encoded}" >/dev/null
