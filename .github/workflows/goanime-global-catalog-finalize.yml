@@ -25,7 +25,7 @@ on:
         default: false
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: goanime-global-catalog-finalize-${{ github.event_name }}
@@ -313,7 +313,7 @@ jobs:
       - name: Publish sanitized validation receipt
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
           REQUEST_SOURCE_SHA: ${{ steps.request.outputs.source_hint }}
           TARGET_REF: ${{ steps.request.outputs.target_branch }}
