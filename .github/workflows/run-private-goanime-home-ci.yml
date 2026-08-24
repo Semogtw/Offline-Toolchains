@@ -92,6 +92,7 @@ jobs:
             lib/screens/home_screen_data.dart \
             lib/screens/home_screen_presentation.dart \
             test/controllers/media/home_snapshot_controller_test.dart \
+            test/services/media/anime_home_snapshot_adapter_test.dart \
             test/widgets/manga/manga_home_screen_test.dart \
             test/widgets/manga/manga_home_refresh_resilience_test.dart \
             test/widgets/home_cache_race_test.dart \
@@ -100,6 +101,10 @@ jobs:
       - name: Run shared Home controller tests
         working-directory: private-source
         run: flutter test --no-pub test/controllers/media/home_snapshot_controller_test.dart
+
+      - name: Run Anime Home adapter tests
+        working-directory: private-source
+        run: flutter test --no-pub test/services/media/anime_home_snapshot_adapter_test.dart
 
       - name: Run Manga Home tests
         working-directory: private-source
