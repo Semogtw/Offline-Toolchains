@@ -1,0 +1,67 @@
+name: Dispatch GoAnime credentialed private APK v3
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/dispatch-goanime-full-release-v3-20260824.yml'
+
+permissions:
+  contents: write
+
+env:
+  SOURCE_SHA: 7bd636136b7dac88bd679f1b98f9bec2d605efde
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Resolve or dispatch credentialed build
+        id: build
+        env:
+          TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$TOKEN"
+          api=(-H "Authorization: Bearer $TOKEN" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+          actual="$(curl --fail --silent --show-error "${api[@]}" https://api.github.com/repos/Semogtw/goanime-mobile/branches/main | python3 -c 'import json,sys; print(json.load(sys.stdin)["commit"]["sha"])')"
+          test "$actual" = "$SOURCE_SHA"
+
+          list_runs() {
+            curl --fail --silent --show-error "${api[@]}" 'https://api.github.com/repos/Semogtw/goanime-mobile/actions/workflows/build_full_credentialed_apk.yml/runs?event=workflow_dispatch&branch=main&per_page=30'
+          }
+          pick_run() {
+            python3 -c 'import json,sys,datetime; d=json.load(sys.stdin); sha=sys.argv[1]; cutoff=datetime.datetime.fromisoformat("2026-08-24T11:04:00+00:00"); rows=[r for r in d.get("workflow_runs",[]) if r.get("head_sha")==sha and datetime.datetime.fromisoformat(r["created_at"].replace("Z","+00:00"))>=cutoff]; rows.sort(key=lambda r:r["created_at"], reverse=True); print(rows[0]["id"] if rows else "")' "$SOURCE_SHA"
+          }
+
+          run_id="$(list_runs | pick_run)"
+          if [[ -z "$run_id" ]]; then
+            curl --fail --silent --show-error -X POST "${api[@]}" https://api.github.com/repos/Semogtw/goanime-mobile/actions/workflows/build_full_credentialed_apk.yml/dispatches -d '{"ref":"main"}'
+            for attempt in $(seq 1 30); do
+              sleep 4
+              run_id="$(list_runs | pick_run)"
+              [[ -n "$run_id" ]] && break
+            done
+          fi
+          test -n "$run_id"
+          state="$(curl --fail --silent --show-error "${api[@]}" "https://api.github.com/repos/Semogtw/goanime-mobile/actions/runs/$run_id" | python3 -c 'import json,sys; r=json.load(sys.stdin); print((r.get("status") or "")+"|"+(r.get("conclusion") or ""))')"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          echo "Resolved credentialed GoAnime run $run_id ($state)"
+
+      - name: Publish sanitized run pointer
+        env:
+          TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          RUN_ID: ${{ steps.build.outputs.run_id }}
+          STATE: ${{ steps.build.outputs.state }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$(python3 -c 'import json,os; status,_,conclusion=os.environ["STATE"].partition("|"); print(json.dumps({"schema_version":3,"source_sha":os.environ["SOURCE_SHA"],"goanime_workflow_run_id":int(os.environ["RUN_ID"]),"goanime_workflow_run_url":"https://github.com/Semogtw/goanime-mobile/actions/runs/"+os.environ["RUN_ID"],"status":status,"conclusion":conclusion or None,"distribution":"private build only; no release or rollout"},indent=2))')"
+          encoded="$(printf '%s\n' "$report" | base64 -w0)"
+          path='reports/goanime-full-main-private-release/latest.json'
+          api=(-H "Authorization: Bearer $TOKEN" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+          existing="$(curl --silent --show-error "${api[@]}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/$path" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("sha", ""))' 2>/dev/null || true)"
+          body="$(python3 -c 'import json,sys; message,content,sha=sys.argv[1:]; d={"message":message,"content":content,"branch":"main"}; d.update({"sha":sha} if sha else {}); print(json.dumps(d))' "ci(goanime): record credentialed APK run $RUN_ID [skip ci]" "$encoded" "$existing")"
+          curl --fail --silent --show-error -X PUT "${api[@]}" -H 'Content-Type: application/json' "https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/$path" -d "$body" >/dev/null
