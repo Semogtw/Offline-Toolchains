@@ -42,7 +42,8 @@ jobs:
           set -euo pipefail
           request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-format-finalize/*.request' | head -n 1)"
           test -n "$request"
-          read -r project branch sha < "control/$request"
+          request_line="$(cat "control/$request")"
+          read -r project branch sha <<< "$request_line"
           test "$project" = "goanime"
           [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]
           [[ "$branch" != /* ]]
@@ -243,7 +244,6 @@ jobs:
 
       - name: Remove private checkout
         if: always()
-        shell: bash
         run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
 
   report:
