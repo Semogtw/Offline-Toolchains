@@ -87,8 +87,10 @@ jobs:
           flutter analyze --no-pub \
             lib/services/media/anime_progress_event_adapter.dart \
             lib/services/media/manga_progress_event_adapter.dart \
+            lib/services/media/anime_user_state_event_adapter.dart \
             test/services/media/anime_progress_event_adapter_test.dart \
             test/services/media/manga_progress_event_adapter_test.dart \
+            test/services/media/anime_user_state_event_adapter_test.dart \
             test/architecture/shared_progress_event_guard_test.dart
           (cd packages/goanime_core && dart analyze \
             lib/src/media/media_progress_event.dart \
@@ -111,6 +113,10 @@ jobs:
       - name: Run Manga Progress adapter tests
         working-directory: private-source
         run: flutter test --no-pub test/services/media/manga_progress_event_adapter_test.dart
+
+      - name: Run Anime user-state adapter tests
+        working-directory: private-source
+        run: flutter test --no-pub test/services/media/anime_user_state_event_adapter_test.dart
 
       - name: Enforce Progress payload boundaries
         working-directory: private-source
