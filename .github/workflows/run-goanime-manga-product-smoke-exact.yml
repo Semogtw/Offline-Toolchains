@@ -17,7 +17,7 @@ jobs:
   smoke:
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - name: Checkout control
         uses: actions/checkout@v6
@@ -68,17 +68,32 @@ jobs:
           set -e
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit "$code"
-      - name: Run Manga widget regression suite
+      - name: Run Manga widget regression suite per file
         id: widgets
         working-directory: source
         shell: bash
         run: |
           set +e
-          flutter test --no-pub --concurrency=1 test/widgets/manga
-          code=$?
+          failures='[]'
+          diagnostics='[]'
+          overall=0
+          while IFS= read -r file; do
+            log="$(mktemp)"
+            flutter test --no-pub --concurrency=1 --reporter expanded "$file" >"$log" 2>&1
+            code=$?
+            if [[ "$code" -ne 0 ]]; then
+              overall=1
+              failures="$(jq -c --arg file "$file" '. + [$file]' <<<"$failures")"
+              safe="$(grep -E '(^|: )(Expected:|Actual:|Which:)|\[E\]$|Test failed|══╡ EXCEPTION' "$log" | head -n 12 | sed -E 's/[[:cntrl:]]//g' | cut -c1-400 || true)"
+              diagnostics="$(jq -c --arg file "$file" --arg detail "$safe" '. + [{file:$file,detail:$detail}]' <<<"$diagnostics")"
+            fi
+            rm -f "$log"
+          done < <(find test/widgets/manga -maxdepth 1 -type f -name '*_test.dart' | sort)
           set -e
-          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
-          exit "$code"
+          echo "exit_code=$overall" >> "$GITHUB_OUTPUT"
+          echo "failing_files=$(jq -c . <<<"$failures")" >> "$GITHUB_OUTPUT"
+          echo "diagnostics=$(jq -c . <<<"$diagnostics")" >> "$GITHUB_OUTPUT"
+          exit "$overall"
       - name: Publish sanitized smoke receipt
         if: always()
         env:
@@ -86,14 +101,18 @@ jobs:
           SHA: ${{ steps.target.outputs.sha }}
           INTEGRATION: ${{ steps.integration.outputs.exit_code }}
           WIDGETS: ${{ steps.widgets.outputs.exit_code }}
+          FAILING_FILES: ${{ steps.widgets.outputs.failing_files }}
+          DIAGNOSTICS: ${{ steps.widgets.outputs.diagnostics }}
         shell: bash
         run: |
           set -euo pipefail
           integration="${INTEGRATION:-99}"
           widgets="${WIDGETS:-99}"
+          failing="${FAILING_FILES:-[]}"; jq -e . >/dev/null <<<"$failing" || failing='[]'
+          diagnostics="${DIAGNOSTICS:-[]}"; jq -e . >/dev/null <<<"$diagnostics" || diagnostics='[]'
           state=failure
           if [[ "$integration" == 0 && "$widgets" == 0 ]]; then state=success; fi
-          result="$(jq -cn --arg sha "$SHA" --arg state "$state" --arg integration "$integration" --arg widgets "$widgets" '{schemaVersion:1,goanimeSha:$sha,state:$state,integrationExit:($integration|tonumber),widgetsExit:($widgets|tonumber),exactSha:true}')"
+          result="$(jq -cn --arg sha "$SHA" --arg state "$state" --arg integration "$integration" --arg widgets "$widgets" --argjson failing "$failing" --argjson diagnostics "$diagnostics" '{schemaVersion:2,goanimeSha:$sha,state:$state,integrationExit:($integration|tonumber),widgetsExit:($widgets|tonumber),failingFiles:$failing,diagnostics:$diagnostics,exactSha:true}')"
           encoded="$(printf '%s\n' "$result" | base64 -w0)"
           path="results/goanime-manga-product-smoke-exact/$SHA.json"
           for attempt in 1 2 3 4 5; do
