@@ -19,7 +19,7 @@ jobs:
     name: Validate shared download job mappings and queue lifecycle
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 35
 
     steps:
       - name: Require private repository token
@@ -86,11 +86,15 @@ jobs:
             lib/services/media/anime_download_job_adapter.dart \
             lib/services/media/manga_download_job_adapter.dart \
             lib/services/media/download_queue_coordinator.dart \
+            lib/services/download/download_queue_manager.dart \
             lib/services/manga/download/manga_download_queue.dart \
             test/services/media/anime_download_job_adapter_test.dart \
             test/services/media/manga_download_job_adapter_test.dart \
             test/services/media/download_queue_coordinator_test.dart \
             test/services/manga/download/manga_download_queue_test.dart \
+            test/services/download/download_components_test.dart \
+            test/services/download/download_restart_recovery_test.dart \
+            test/services/download/download_resume_content_range_test.dart \
             test/architecture/shared_download_lifecycle_guard_test.dart \
             test/architecture/shared_download_queue_adoption_guard_test.dart \
             test/architecture/shared_anime_download_queue_adoption_guard_test.dart
@@ -103,6 +107,9 @@ jobs:
           flutter test --no-pub test/services/media/manga_download_job_adapter_test.dart
           flutter test --no-pub test/services/media/download_queue_coordinator_test.dart
           flutter test --no-pub test/services/manga/download/manga_download_queue_test.dart
+          flutter test --no-pub test/services/download/download_components_test.dart
+          flutter test --no-pub test/services/download/download_restart_recovery_test.dart
+          flutter test --no-pub test/services/download/download_resume_content_range_test.dart
           flutter test --no-pub test/architecture/shared_download_lifecycle_guard_test.dart
           flutter test --no-pub test/architecture/shared_download_queue_adoption_guard_test.dart
           flutter test --no-pub test/architecture/shared_anime_download_queue_adoption_guard_test.dart
