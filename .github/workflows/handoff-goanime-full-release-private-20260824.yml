@@ -5,9 +5,11 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/handoff-goanime-full-release-private-20260824.yml'
+      - 'triggers/goanime-full-main-private-release/*.request'
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: goanime-full-main-private-handoff-20260824
@@ -19,7 +21,6 @@ env:
 
 jobs:
   handoff:
-    if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -29,109 +30,112 @@ jobs:
           ref: main
           persist-credentials: false
 
-      - name: Dispatch private full build in GoAnime-Mobile
+      - name: Dispatch exact-main credentialed build
         id: dispatch
         env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$PRIVATE_REPOSITORIES_TOKEN"
-          actual_sha="$(curl --fail --silent --show-error \
-            -H "Authorization: Bearer $PRIVATE_REPOSITORIES_TOKEN" \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            https://api.github.com/repos/Semogtw/goanime-mobile/branches/main | python3 -c 'import json,sys; print(json.load(sys.stdin)["commit"]["sha"])')"
+          test -n "$GH_TOKEN"
+          actual_sha="$(gh api repos/Semogtw/goanime-mobile/branches/main --jq .commit.sha)"
           test "$actual_sha" = "$SOURCE_SHA" || {
             echo "GoAnime main moved: expected $SOURCE_SHA, found $actual_sha" >&2
             exit 1
           }
-          dispatched_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          curl --fail --silent --show-error -X POST \
-            -H "Authorization: Bearer $PRIVATE_REPOSITORIES_TOKEN" \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            https://api.github.com/repos/Semogtw/goanime-mobile/actions/workflows/build_full_credentialed_apk.yml/dispatches \
-            -d '{"ref":"main"}'
-          echo "dispatched_at=$dispatched_at" >> "$GITHUB_OUTPUT"
+          before="$(date -u +%s)"
+          gh api --method POST \
+            repos/Semogtw/goanime-mobile/actions/workflows/build_full_credentialed_apk.yml/dispatches \
+            -f ref=main
+          echo "before=$before" >> "$GITHUB_OUTPUT"
+          echo "Credentialed build dispatched for $SOURCE_SHA"
 
-      - name: Resolve dispatched run
+      - name: Resolve dispatched GoAnime run
         id: run
         env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-          DISPATCHED_AT: ${{ steps.dispatch.outputs.dispatched_at }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          BEFORE: ${{ steps.dispatch.outputs.before }}
         shell: bash
         run: |
           set -euo pipefail
           run_id=''
-          for attempt in $(seq 1 30); do
-            json="$(curl --fail --silent --show-error \
-              -H "Authorization: Bearer $PRIVATE_REPOSITORIES_TOKEN" \
-              -H 'Accept: application/vnd.github+json' \
-              -H 'X-GitHub-Api-Version: 2022-11-28' \
-              'https://api.github.com/repos/Semogtw/goanime-mobile/actions/workflows/build_full_credentialed_apk.yml/runs?event=workflow_dispatch&branch=main&per_page=20')"
-            run_id="$(printf '%s' "$json" | python3 - "$SOURCE_SHA" "$DISPATCHED_AT" <<'PY'
-          import datetime, json, sys
-          source_sha, dispatched_at = sys.argv[1:]
-          data = json.load(sys.stdin)
-          cutoff = datetime.datetime.fromisoformat(dispatched_at.replace('Z', '+00:00'))
-          for run in data.get('workflow_runs', []):
-              created = datetime.datetime.fromisoformat(run['created_at'].replace('Z', '+00:00'))
-              if run.get('head_sha') == source_sha and created >= cutoff:
-                  print(run['id']); break
-          PY
-            )"
-            if [[ -n "$run_id" ]]; then break; fi
+          for attempt in $(seq 1 36); do
+            runs="$(gh api 'repos/Semogtw/goanime-mobile/actions/workflows/build_full_credentialed_apk.yml/runs?event=workflow_dispatch&branch=main&per_page=20')"
+            run_id="$(jq -r --arg sha "$SOURCE_SHA" --argjson before "$BEFORE" '
+              [.workflow_runs[]
+               | select(.head_sha == $sha)
+               | select((.created_at | fromdateiso8601) >= ($before - 5))]
+              | sort_by(.created_at) | last | .id // empty
+            ' <<<"$runs")"
+            [[ -n "$run_id" ]] && break
             sleep 5
           done
-          test -n "$run_id" || { echo 'Unable to resolve dispatched GoAnime run' >&2; exit 1; }
+          test -n "$run_id" || {
+            echo 'Unable to resolve dispatched GoAnime credentialed run' >&2
+            exit 1
+          }
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-          echo "Resolved GoAnime private build run $run_id"
+          echo "Resolved GoAnime run $run_id"
 
-      - name: Wait for private build completion
-        id: completion
+      - name: Record resolved run immediately
         env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           RUN_ID: ${{ steps.run.outputs.run_id }}
         shell: bash
         run: |
           set -euo pipefail
-          conclusion=''
-          for attempt in $(seq 1 180); do
-            json="$(curl --fail --silent --show-error \
-              -H "Authorization: Bearer $PRIVATE_REPOSITORIES_TOKEN" \
-              -H 'Accept: application/vnd.github+json' \
-              -H 'X-GitHub-Api-Version: 2022-11-28' \
-              "https://api.github.com/repos/Semogtw/goanime-mobile/actions/runs/$RUN_ID")"
-            status="$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')"
-            conclusion="$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("conclusion") or "")')"
-            [[ "$status" == 'completed' ]] && break
-            sleep 20
-          done
-          test -n "$conclusion" || { echo 'GoAnime build did not complete inside handoff window' >&2; exit 1; }
-          echo "conclusion=$conclusion" >> "$GITHUB_OUTPUT"
-          echo "GoAnime build conclusion: $conclusion"
-          test "$conclusion" = 'success'
+          report="$(jq -n \
+            --arg source "$SOURCE_SHA" \
+            --argjson run "$RUN_ID" \
+            --argjson toolchains "$GITHUB_RUN_ID" \
+            '{schema_version:2,source_sha:$source,goanime_workflow_run_id:$run,goanime_workflow_run_url:("https://github.com/Semogtw/goanime-mobile/actions/runs/"+($run|tostring)),goanime_build_conclusion:null,source_artifact_id:null,apk_sha256:null,apk_size_bytes:null,toolchains_run_id:$toolchains,toolchains_run_url:("https://github.com/Semogtw/Offline-Toolchains/actions/runs/"+($toolchains|tostring)),distribution:"private artifacts only; no GitHub Release, Play Store, Shorebird, update-manifest publication, or rollout",stage:"building"}')"
+          encoded="$(printf '%s\n' "$report" | base64 -w0)"
+          path='reports/goanime-full-main-private-release/latest.json'
+          old="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$path" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$path" -f message="ci(goanime): record private APK run $RUN_ID [skip ci]" -f content="$encoded")
+          [[ -n "$old" ]] && args+=(-f sha="$old")
+          gh api "${args[@]}" >/dev/null
 
-      - name: Download completed private APK artifact
+      - name: Wait for credentialed build
+        id: completion
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          RUN_ID: ${{ steps.run.outputs.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          status=''
+          conclusion=''
+          for attempt in $(seq 1 240); do
+            run="$(gh api "repos/Semogtw/goanime-mobile/actions/runs/$RUN_ID")"
+            status="$(jq -r .status <<<"$run")"
+            conclusion="$(jq -r '.conclusion // empty' <<<"$run")"
+            [[ "$status" == completed ]] && break
+            sleep 15
+          done
+          test "$status" = completed || {
+            echo 'Credentialed GoAnime build did not complete inside handoff window' >&2
+            exit 1
+          }
+          echo "conclusion=$conclusion" >> "$GITHUB_OUTPUT"
+          echo "GoAnime run $RUN_ID concluded: $conclusion"
+          test "$conclusion" = success
+
+      - name: Download and encrypt private APK
         id: artifact
         env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           RUN_ID: ${{ steps.run.outputs.run_id }}
         shell: bash
         run: |
           set -euo pipefail
           work="$RUNNER_TEMP/goanime-full-handoff"
           mkdir -p "$work/plain" "$work/transfer" "$work/gpg"
-          artifacts="$(curl --fail --silent --show-error \
-            -H "Authorization: Bearer $PRIVATE_REPOSITORIES_TOKEN" \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "https://api.github.com/repos/Semogtw/goanime-mobile/actions/runs/$RUN_ID/artifacts?per_page=100")"
-          artifact_id="$(printf '%s' "$artifacts" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next((a["id"] for a in data.get("artifacts",[]) if a["name"]=="goanime-production-equivalent-private-arm64"), ""))')"
-          test -n "$artifact_id" || { echo 'Expected GoAnime private APK artifact not found' >&2; exit 1; }
+          artifacts="$(gh api "repos/Semogtw/goanime-mobile/actions/runs/$RUN_ID/artifacts?per_page=100")"
+          artifact_id="$(jq -r '.artifacts[] | select(.name=="goanime-production-equivalent-private-arm64") | .id' <<<"$artifacts" | head -n1)"
+          test -n "$artifact_id"
           curl --fail --silent --show-error --location \
-            -H "Authorization: Bearer $PRIVATE_REPOSITORIES_TOKEN" \
+            -H "Authorization: Bearer $GH_TOKEN" \
             -H 'Accept: application/vnd.github+json' \
             -H 'X-GitHub-Api-Version: 2022-11-28' \
             "https://api.github.com/repos/Semogtw/goanime-mobile/actions/artifacts/$artifact_id/zip" \
@@ -145,36 +149,27 @@ jobs:
 
           chmod 700 "$work/gpg"
           export GNUPGHOME="$work/gpg"
-          gpg --batch --import "$GITHUB_WORKSPACE/keys/source-bundles-public.asc"
-          test "$(gpg --batch --with-colons --fingerprint "$EXPECTED_PGP_FINGERPRINT" | awk -F: '$1=="fpr"{print $10;exit}')" = "$EXPECTED_PGP_FINGERPRINT"
+          gpg --batch --import "$GITHUB_WORKSPACE/keys/source-bundles-public.asc" >/dev/null 2>&1
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_PGP_FINGERPRINT" | awk -F: '$1=="fpr"{print $10;exit}')"
+          test "$fingerprint" = "$EXPECTED_PGP_FINGERPRINT"
           encrypted="$work/transfer/GoAnime-${SOURCE_SHA:0:12}-full-main-release-arm64.apk.gpg"
           gpg --batch --yes --trust-model always --recipient "$EXPECTED_PGP_FINGERPRINT" --output "$encrypted" --encrypt "$apk"
-
           find "$work/plain" -maxdepth 1 -type f ! -name '*.apk' -exec cp {} "$work/transfer/" \;
-          python3 - "$work/transfer/handoff.json" "$RUN_ID" "$artifact_id" "$sha256" "$size" "$SOURCE_SHA" <<'PY'
-          import datetime, json, sys
-          path, run_id, artifact_id, sha256, size, source_sha = sys.argv[1:]
-          json.dump({
-              'schema_version': 1,
-              'source_sha': source_sha,
-              'goanime_workflow_run_id': int(run_id),
-              'goanime_source_artifact_id': int(artifact_id),
-              'flutter_mode': 'release',
-              'target': 'android-arm64',
-              'apk_sha256': sha256,
-              'apk_size_bytes': int(size),
-              'distribution': 'private artifacts only; no GitHub Release, Play Store, Shorebird, update-manifest publication, or rollout',
-              'created_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-          }, open(path, 'w', encoding='utf-8'), indent=2, sort_keys=True)
-          PY
+          jq -n \
+            --arg source "$SOURCE_SHA" \
+            --argjson run "$RUN_ID" \
+            --argjson artifact "$artifact_id" \
+            --arg sha "$sha256" \
+            --argjson size "$size" \
+            '{schema_version:2,source_sha:$source,goanime_workflow_run_id:$run,goanime_source_artifact_id:$artifact,flutter_mode:"release",target:"android-arm64",apk_sha256:$sha,apk_size_bytes:$size,distribution:"private artifacts only; no GitHub Release, Play Store, Shorebird, update-manifest publication, or rollout"}' \
+            > "$work/transfer/handoff.json"
           rm -rf "$work/plain" "$work/gpg" "$work/source.zip"
           echo "transfer_dir=$work/transfer" >> "$GITHUB_OUTPUT"
+          echo "source_artifact_id=$artifact_id" >> "$GITHUB_OUTPUT"
           echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
           echo "size=$size" >> "$GITHUB_OUTPUT"
-          echo "source_artifact_id=$artifact_id" >> "$GITHUB_OUTPUT"
 
       - name: Upload encrypted full release handoff
-        id: upload
         uses: actions/upload-artifact@v7
         with:
           name: goanime-full-main-release-private-encrypted
@@ -183,46 +178,38 @@ jobs:
           compression-level: 0
           retention-days: 1
 
-      - name: Record handoff report
+      - name: Record final handoff state
         if: always()
         env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           RUN_ID: ${{ steps.run.outputs.run_id }}
           BUILD_CONCLUSION: ${{ steps.completion.outputs.conclusion }}
+          SOURCE_ARTIFACT_ID: ${{ steps.artifact.outputs.source_artifact_id }}
           APK_SHA256: ${{ steps.artifact.outputs.sha256 }}
           APK_SIZE: ${{ steps.artifact.outputs.size }}
-          SOURCE_ARTIFACT_ID: ${{ steps.artifact.outputs.source_artifact_id }}
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git fetch origin main
-          git checkout -B main origin/main
-          mkdir -p reports/goanime-full-main-private-release
-          python3 - <<'PY'
-          import datetime, json, os, pathlib
-          def maybe_int(value):
-              try: return int(value)
-              except Exception: return None
-          report = {
-              'schema_version': 1,
-              'source_sha': os.environ['SOURCE_SHA'],
-              'goanime_workflow_run_id': maybe_int(os.environ.get('RUN_ID','')),
-              'goanime_workflow_run_url': ('https://github.com/Semogtw/goanime-mobile/actions/runs/' + os.environ['RUN_ID']) if os.environ.get('RUN_ID') else None,
-              'goanime_build_conclusion': os.environ.get('BUILD_CONCLUSION') or None,
-              'source_artifact_id': maybe_int(os.environ.get('SOURCE_ARTIFACT_ID','')),
-              'apk_sha256': os.environ.get('APK_SHA256') or None,
-              'apk_size_bytes': maybe_int(os.environ.get('APK_SIZE','')),
-              'toolchains_run_id': int(os.environ['GITHUB_RUN_ID']),
-              'toolchains_run_url': 'https://github.com/Semogtw/Offline-Toolchains/actions/runs/' + os.environ['GITHUB_RUN_ID'],
-              'distribution': 'private artifacts only; no GitHub Release, Play Store, Shorebird, update-manifest publication, or rollout',
-              'recorded_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-          }
-          pathlib.Path('reports/goanime-full-main-private-release/latest.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
-          PY
-          git add reports/goanime-full-main-private-release/latest.json
-          if ! git diff --cached --quiet; then
-            git commit -m "ci(goanime): record full private APK handoff ${RUN_ID:-unknown} [skip ci]"
-            git push "https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main
-          fi
+          maybe_json_int() { [[ "$1" =~ ^[0-9]+$ ]] && printf '%s' "$1" || printf 'null'; }
+          run_json="$(maybe_json_int "${RUN_ID:-}")"
+          artifact_json="$(maybe_json_int "${SOURCE_ARTIFACT_ID:-}")"
+          size_json="$(maybe_json_int "${APK_SIZE:-}")"
+          toolchains_json="$GITHUB_RUN_ID"
+          stage='failed'
+          [[ "${BUILD_CONCLUSION:-}" == success && -n "${APK_SHA256:-}" ]] && stage='complete'
+          report="$(jq -n \
+            --arg source "$SOURCE_SHA" \
+            --argjson run "$run_json" \
+            --arg conclusion "${BUILD_CONCLUSION:-}" \
+            --argjson artifact "$artifact_json" \
+            --arg sha "${APK_SHA256:-}" \
+            --argjson size "$size_json" \
+            --argjson toolchains "$toolchains_json" \
+            --arg stage "$stage" \
+            '{schema_version:2,source_sha:$source,goanime_workflow_run_id:$run,goanime_workflow_run_url:(if $run then "https://github.com/Semogtw/goanime-mobile/actions/runs/"+($run|tostring) else null end),goanime_build_conclusion:(if $conclusion=="" then null else $conclusion end),source_artifact_id:$artifact,apk_sha256:(if $sha=="" then null else $sha end),apk_size_bytes:$size,toolchains_run_id:$toolchains,toolchains_run_url:("https://github.com/Semogtw/Offline-Toolchains/actions/runs/"+($toolchains|tostring)),distribution:"private artifacts only; no GitHub Release, Play Store, Shorebird, update-manifest publication, or rollout",stage:$stage}')"
+          encoded="$(printf '%s\n' "$report" | base64 -w0)"
+          path='reports/goanime-full-main-private-release/latest.json'
+          old="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$path" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/$path" -f message="ci(goanime): finalize private APK handoff ${RUN_ID:-unknown} [skip ci]" -f content="$encoded")
+          [[ -n "$old" ]] && args+=(-f sha="$old")
+          gh api "${args[@]}" >/dev/null
