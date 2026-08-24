@@ -1,18 +1,19 @@
 {
+  "behaviorPins": 16,
+  "behaviorPinsFile": "manga_provider_behavior_pins.json",
   "enabledProviders": 16,
-  "goanimeRevision": "37798515b5d58f51b630045d033ca38fe9ea47f6",
+  "goanimeRevision": "4a843a7c8b6d246e1d139811018e47e0f80f5a06",
   "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
   "inventoryRepoHead": "6927c0a7cc3b919624b0799992d7a22faa112cb9",
   "providers": [
     {
       "changedCommits": [],
-      "diagnostic": "reviewed revision is not present in source history: 6702cd8ab39e0a4cf87f02850d915337bfcafe72",
       "goanimeSourceId": "ptbr.arthurscan",
       "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
-      "reviewedRevision": "6702cd8ab39e0a4cf87f02850d915337bfcafe72",
+      "reviewedRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
       "sourceName": "Arthur Scan",
       "sourcePath": "src/pt/arthurscan",
-      "state": "critical"
+      "state": "clean"
     },
     {
       "changedCommits": [],
@@ -34,13 +35,12 @@
     },
     {
       "changedCommits": [],
-      "diagnostic": "no Keiyoushi reference implementation is declared",
       "goanimeSourceId": "ptbr.hipertoon",
       "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
-      "reviewedRevision": null,
+      "reviewedRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
       "sourceName": "Hipertoon",
-      "sourcePath": null,
-      "state": "untracked"
+      "sourcePath": "src/pt/hipertoon",
+      "state": "clean"
     },
     {
       "changedCommits": [],
@@ -52,69 +52,58 @@
       "state": "clean"
     },
     {
-      "changedCommits": [
-        {
-          "message": "Madara 1.6 (#18075)",
-          "sha": "66535bd04bec51a1063532cc72fb5e25de30effd"
-        }
-      ],
-      "diagnostic": "source-specific upstream commits exist after the reviewed revision",
+      "changedCommits": [],
       "goanimeSourceId": "ptbr.kamisamaexplorer",
       "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
-      "reviewedRevision": "eabaae5738cda3dfcafc5355fa3c9c6e2f00194b",
+      "reviewedRevision": "66535bd04bec51a1063532cc72fb5e25de30effd",
       "sourceName": "Kami Sama Explorer",
       "sourcePath": "src/pt/kamisamaexplorer",
-      "state": "review-needed"
+      "state": "clean"
     },
     {
       "changedCommits": [],
-      "diagnostic": "no Keiyoushi reference implementation is declared",
       "goanimeSourceId": "ptbr.kivaratoons",
       "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
-      "reviewedRevision": null,
+      "reviewedRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
       "sourceName": "KivaraToons",
-      "sourcePath": null,
-      "state": "untracked"
+      "sourcePath": "src/pt/kivaratoons",
+      "state": "clean"
     },
     {
       "changedCommits": [],
-      "diagnostic": "no Keiyoushi reference implementation is declared",
       "goanimeSourceId": "ptbr.leituramanga",
       "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
-      "reviewedRevision": null,
+      "reviewedRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
       "sourceName": "Leitura Mangá",
-      "sourcePath": null,
-      "state": "untracked"
+      "sourcePath": "src/pt/leituramanga",
+      "state": "clean"
     },
     {
       "changedCommits": [],
-      "diagnostic": "no Keiyoushi reference implementation is declared",
       "goanimeSourceId": "ptbr.ler999",
       "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
-      "reviewedRevision": null,
+      "reviewedRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
       "sourceName": "Ler 999",
-      "sourcePath": null,
-      "state": "untracked"
+      "sourcePath": "src/pt/ler999",
+      "state": "clean"
     },
     {
       "changedCommits": [],
-      "diagnostic": "no Keiyoushi reference implementation is declared",
       "goanimeSourceId": "ptbr.littletyrant",
       "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
-      "reviewedRevision": null,
+      "reviewedRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
       "sourceName": "Little Tyrant",
-      "sourcePath": null,
-      "state": "untracked"
+      "sourcePath": "src/pt/littletyrant",
+      "state": "clean"
     },
     {
       "changedCommits": [],
-      "diagnostic": "no Keiyoushi reference implementation is declared",
       "goanimeSourceId": "ptbr.maidscan",
       "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
-      "reviewedRevision": null,
+      "reviewedRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
       "sourceName": "Maid Scan",
-      "sourcePath": null,
-      "state": "untracked"
+      "sourcePath": "src/pt/maidscan",
+      "state": "clean"
     },
     {
       "changedCommits": [],
@@ -127,56 +116,47 @@
     },
     {
       "changedCommits": [],
-      "diagnostic": "no Keiyoushi reference implementation is declared",
       "goanimeSourceId": "ptbr.mangaflix",
       "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
-      "reviewedRevision": null,
+      "reviewedRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
       "sourceName": "MangaFlix",
-      "sourcePath": null,
-      "state": "untracked"
+      "sourcePath": "src/pt/mangaflix",
+      "state": "clean"
     },
     {
       "changedCommits": [],
-      "diagnostic": "no Keiyoushi reference implementation is declared",
       "goanimeSourceId": "ptbr.mangalivreblog",
       "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
-      "reviewedRevision": null,
+      "reviewedRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
       "sourceName": "Manga Livre Blog",
-      "sourcePath": null,
-      "state": "untracked"
+      "sourcePath": "src/pt/mangalivreblog",
+      "state": "clean"
     },
     {
       "changedCommits": [],
-      "diagnostic": "no Keiyoushi reference implementation is declared",
       "goanimeSourceId": "ptbr.mangalivreorg",
       "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
-      "reviewedRevision": null,
+      "reviewedRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
       "sourceName": "MangaLivre.org",
-      "sourcePath": null,
-      "state": "untracked"
+      "sourcePath": "src/pt/mangalivreorg",
+      "state": "clean"
     },
     {
-      "changedCommits": [
-        {
-          "message": "Madara 1.6 (#18075)",
-          "sha": "66535bd04bec51a1063532cc72fb5e25de30effd"
-        }
-      ],
-      "diagnostic": "source-specific upstream commits exist after the reviewed revision",
+      "changedCommits": [],
       "goanimeSourceId": "ptbr.ninjascan",
       "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
-      "reviewedRevision": "5083ff5d06b9cb7736216ae0fbd0be3828bcce2c",
+      "reviewedRevision": "66535bd04bec51a1063532cc72fb5e25de30effd",
       "sourceName": "Ninja Scan",
       "sourcePath": "src/pt/ninjascan",
-      "state": "review-needed"
+      "state": "clean"
     }
   ],
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "sourceRepository": "keiyoushi/extensions-source",
   "summary": {
-    "clean": 4,
-    "critical": 1,
-    "review-needed": 2,
-    "untracked": 9
+    "clean": 16,
+    "critical": 0,
+    "review-needed": 0,
+    "untracked": 0
   }
 }
