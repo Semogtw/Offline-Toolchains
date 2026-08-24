@@ -1,0 +1,144 @@
+name: GoAnime source-bound candidate formatter
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-format-candidate/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-format-candidate
+  cancel-in-progress: false
+
+jobs:
+  format:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve exact GoAnime request
+        id: request
+        shell: bash
+        run: >-
+          python scripts/goanime_resolve_request.py
+          --request-dir triggers/goanime-format-candidate
+          --workspace .
+
+      - name: Require private write token
+        env:
+          WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: test -n "$WRITE_TOKEN"
+
+      - name: Checkout exact GoAnime candidate
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.source_hint }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify immutable candidate
+        working-directory: private-source
+        env:
+          EXPECTED_SHA: ${{ steps.request.outputs.source_hint }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve Dart dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Format candidate
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format lib test packages tools
+          dart format --output=none --set-exit-if-changed lib test packages tools
+          git diff --check
+
+      - name: Prove formatter delta is layout-only
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib
+          import subprocess
+          import sys
+
+          def is_layout(ch: str) -> bool:
+              return ch.isspace() or ch == ','
+
+          changed = subprocess.check_output(
+              ['git', 'diff', '--name-only'], text=True
+          ).splitlines()
+          if any(not path.endswith('.dart') for path in changed):
+              print('Formatter changed a non-Dart file', file=sys.stderr)
+              print('\n'.join(changed), file=sys.stderr)
+              sys.exit(2)
+
+          for path in changed:
+              original = subprocess.check_output(
+                  ['git', 'show', f'HEAD:{path}'], text=True
+              )
+              formatted = pathlib.Path(path).read_text(encoding='utf-8')
+              original_stable = ''.join(ch for ch in original if not is_layout(ch))
+              formatted_stable = ''.join(ch for ch in formatted if not is_layout(ch))
+              if original_stable != formatted_stable:
+                  print(
+                      f'Unsafe formatter delta outside whitespace/trailing commas: {path}',
+                      file=sys.stderr,
+                  )
+                  sys.exit(2)
+
+          print(f'Layout-only formatter proof passed for {len(changed)} file(s).')
+          PY
+
+      - name: Commit and publish formatter result
+        working-directory: private-source
+        env:
+          TARGET_BRANCH: ${{ steps.request.outputs.target_branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.source_hint }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'Candidate already formatted.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- '*.dart'
+          git diff --cached --check
+          git commit -m 'style: apply Dart formatter'
+          git fetch origin "$TARGET_BRANCH"
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_SHA" || {
+            echo '::error::Target branch advanced during formatting; refusing stale push.'
+            exit 1
+          }
+          git push origin "HEAD:$TARGET_BRANCH"
