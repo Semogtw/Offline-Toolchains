@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "sourceSha": "603dc49ade43bea5149f6353005bdf9e22adcbee",
+  "runId": 32680187217,
+  "exitCode": 1,
+  "failureCount": 1,
+  "failures": [
+    {
+      "testId": 3964,
+      "name": "service singletons remain an explicit reviewed inventory",
+      "suitePath": "/home/runner/work/Offline-Toolchains/Offline-Toolchains/private-source/test/architecture/service_singleton_inventory_guard_test.dart",
+      "groups": [],
+      "errors": [
+        {
+          "error": "Expected: Set:[\n            'lib/platform/desktop/services/discord_rpc_service.dart:DiscordRpcService',\n            'lib/services/anime_image_cache_service.dart:AnimeImageCacheService',\n            'lib/services/app_work_coordinator.dart:AppWorkCoordinator',\n            'lib/services/crash_reporting_service.dart:CrashReportingService',\n            'lib/services/download/download_transfer_health_service.dart:DownloadTransferHealthService',\n            'lib/services/download_service.dart:DownloadService',\n            'lib/services/image_cache_diagnostics.dart:ImageCacheDiagnosticsService',\n            'lib/services/local_performance_diagnostics.dart:LocalPerformanceDiagnosticsService',\n            'lib/services/notification_service.dart:NotificationService',\n            'lib/services/open_anime_session_cache.dart:OpenAnimeSessionCache',\n            'lib/services/providers/provider_health_service.dart:ProviderHealthService',\n            'lib/services/remote_push_token_service.dart:RemotePushTokenService',\n            'lib/services/user_sync_service.dart:UserSyncService',\n            'lib/services/watchlist_notifier.dart:WatchlistNotifier'\n          ]\n  Actual: Set:[\n            'lib/platform/desktop/services/discord_rpc_service.dart:DiscordRpcService',\n            'lib/services/anime_image_cache_service.dart:AnimeImageCacheService',\n            'lib/services/providers/provider_health_service.dart:ProviderHealthService',\n            'lib/services/notification_service.dart:NotificationService',\n            'lib/services/image_cache_diagnostics.dart:ImageCacheDiagnosticsService',\n            'lib/services/watchlist_notifier.dart:WatchlistNotifier',\n            'lib/services/app_work_coordinator.dart:AppWorkCoordinator',\n            'lib/services/remote_push_token_service.dart:RemotePushTokenService',\n            'lib/services/catalog_discovery_reporting_service.dart:CatalogDiscoveryReportingService',\n            'lib/services/open_anime_session_cache.dart:OpenAnimeSessionCache',\n            'lib/services/download/download_transfer_health_service.dart:DownloadTransferHealthService',\n            'lib/services/download_service.dart:DownloadService',\n            'lib/services/crash_reporting_service.dart:CrashReportingService',\n            'lib/services/user_sync_service.dart:UserSyncService',\n            'lib/services/local_performance_diagnostics.dart:LocalPerformanceDiagnosticsService'\n          ]\n   Which: larger than expected\nA new process-wide service singleton must be explicitly reviewed and either receive an injectable seam or a documented exception.\n",
+          "stackTrace": "package:matcher                                                     expect\npackage:flutter_test/src/widget_tester.dart 473:18                  expect\ntest/architecture/service_singleton_inventory_guard_test.dart 39:5  main.<fn>\n"
+        }
+      ]
+    }
+  ],
+  "stderrTail": ""
+}
