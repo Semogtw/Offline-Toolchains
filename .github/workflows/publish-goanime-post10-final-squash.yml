@@ -235,7 +235,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 tools/validate_release_workflow.py
+          python3 tools/validate_release_guard_parity.py
           python3 tools/validate_quality_scorecard.py
 
       - name: Build Android debug APK
