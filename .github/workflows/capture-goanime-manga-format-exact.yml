@@ -1,0 +1,79 @@
+name: Capture GoAnime manga format exact
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-format-capture/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  capture:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout control
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Resolve exact SHA
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-format-capture/*.request' | head -n1)"
+          test -n "$request"
+          read -r project sha < "control/$request"
+          test "$project" = goanime
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Require private token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.target.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - name: Format exact files
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format \
+            lib/services/manga/providers/mangalivre_org_manga_provider.dart \
+            test/services/manga/providers/mangalivre_org_manga_provider_test.dart
+          git diff --check
+      - name: Publish formatted contents
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.target.outputs.sha }}
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          provider="$(base64 -w0 lib/services/manga/providers/mangalivre_org_manga_provider.dart)"
+          testfile="$(base64 -w0 test/services/manga/providers/mangalivre_org_manga_provider_test.dart)"
+          result="$(jq -cn --arg sha "$SHA" --arg provider "$provider" --arg testfile "$testfile" '{schemaVersion:1,goanimeSha:$sha,providerBase64:$provider,testBase64:$testfile,state:"success"}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          path="results/goanime-manga-format-capture/$SHA.json"
+          existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): capture manga format ${SHA:0:8}" -f content="$encoded")
+          if [[ -n "$existing" ]]; then args+=(-f sha="$existing"); fi
+          gh api "${args[@]}" >/dev/null
