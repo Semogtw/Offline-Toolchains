@@ -14,16 +14,25 @@ jobs:
   observe:
     runs-on: ubuntu-24.04
     steps:
-      - name: Capture sanitized workflow state
+      - name: Capture sanitized private release workflow state
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          SOURCE_SHA: 7bd636136b7dac88bd679f1b98f9bec2d605efde
         shell: bash
         run: |
           set -euo pipefail
-          target='run-private-goanime-ci.yml'
-          response="$(gh api "repos/$REPO/actions/workflows/$target/runs?per_page=10")"
-          report="$(jq -c '{schemaVersion:1,runs:[.workflow_runs[] | {id,status,conclusion,event,head_sha,created_at,updated_at}]}' <<<"$response")"
+          test -n "$GH_TOKEN"
+          toolchains="$(gh api 'repos/Semogtw/Offline-Toolchains/actions/workflows/handoff-goanime-full-release-private-20260824.yml/runs?branch=main&per_page=10')"
+          goanime="$(gh api 'repos/Semogtw/goanime-mobile/actions/workflows/build_full_credentialed_apk.yml/runs?event=workflow_dispatch&branch=main&per_page=20')"
+          report="$(jq -n --arg sha "$SOURCE_SHA" --argjson t "$toolchains" --argjson g "$goanime" '{schemaVersion:2,sourceSha:$sha,toolchainsHandoff:($t.workflow_runs[0] | if . then {id,status,conclusion,event,head_sha,created_at,updated_at,html_url} else null end),goanimeBuild:([$g.workflow_runs[] | select(.head_sha==$sha)][0] | if . then {id,status,conclusion,event,head_sha,created_at,updated_at,html_url} else null end)}')"
           encoded="$(printf '%s\n' "$report" | base64 -w0)"
-          path="results/observe-goanime-full-ci/${GITHUB_RUN_ID}.json"
-          gh api --method PUT "repos/$REPO/contents/$path" -f message="ci(observe): record GoAnime full CI state $GITHUB_RUN_ID" -f content="$encoded" >/dev/null
+          unique="results/observe-goanime-full-ci/${GITHUB_RUN_ID}.json"
+          latest='reports/goanime-full-main-private-release/observer.json'
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/$unique" -f message="ci(observe): record GoAnime full CI state $GITHUB_RUN_ID" -f content="$encoded" >/dev/null
+          current_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/$latest" --jq .sha 2>/dev/null || true)"
+          if [[ -n "$current_sha" ]]; then
+            gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/$latest" -f message="ci(observe): update private APK observer $GITHUB_RUN_ID" -f content="$encoded" -f sha="$current_sha" >/dev/null
+          else
+            gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/$latest" -f message="ci(observe): create private APK observer $GITHUB_RUN_ID" -f content="$encoded" >/dev/null
+          fi
+          printf '%s\n' "$report"
