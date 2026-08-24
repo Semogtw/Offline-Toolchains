@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/observe-goanime-full-release-private-20260824.yml'
+      - 'triggers/observe-goanime-full-release-private/*.request'
 
 permissions:
   contents: write
