@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "probed_at": "2026-08-24T15:18:46.552Z",
+  "runs": [
+    {
+      "id": 32737537622,
+      "name": "Backfill private GoAnime MAL catalog",
+      "status": "pending",
+      "conclusion": null,
+      "event": "push",
+      "head_sha": "51b02c613c85f27be006396f9ef2fdd9b1742ca0",
+      "created_at": "2026-08-24T14:15:05Z",
+      "updated_at": "2026-08-24T14:15:07Z",
+      "run_started_at": "2026-08-24T14:15:05Z",
+      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/32737537622"
+    },
+    {
+      "id": 32727703080,
+      "name": "Backfill private GoAnime MAL catalog",
+      "status": "in_progress",
+      "conclusion": null,
+      "event": "push",
+      "head_sha": "464ba1fc0939619b322cb4a976e642833fb3c0bf",
+      "created_at": "2026-08-24T12:33:15Z",
+      "updated_at": "2026-08-24T12:33:18Z",
+      "run_started_at": "2026-08-24T12:33:15Z",
+      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/32727703080"
+    }
+  ]
+}
