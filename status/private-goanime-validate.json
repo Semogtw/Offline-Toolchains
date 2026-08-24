@@ -1,11 +1,11 @@
 {
-  "conclusion": null,
+  "conclusion": "success",
   "run_id": 32790706722,
   "run_number": 42,
   "schema_version": 1,
   "source_ref": "e9b04ef0734296453466c3bc0bc2dbcc1fb97a7c",
-  "status": "in_progress",
+  "status": "completed",
   "trigger_sha": "8ceff27a1172a990c9d3db88ef6311ae4d4be7aa",
-  "updated_at": "2026-08-24T23:44:51Z",
+  "updated_at": "2026-08-24T23:47:30Z",
   "workflow": "Validate private GoAnime source"
 }
