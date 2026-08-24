@@ -1,0 +1,119 @@
+name: Diagnose GoAnime Little Tyrant validator
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-littletyrant-validator/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Resolve exact SHA
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-littletyrant-validator/*.request' | head -n1)"
+          test -n "$request"
+          read -r project sha < "control/$request"
+          test "$project" = goanime
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Require private token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.target.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - working-directory: source
+        run: flutter pub get >/dev/null 2>&1
+      - name: Instrument temporary auditor copy
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp tools/manga/audit_planned_provider_stage.dart tools/manga/_littletyrant_diag.dart
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('tools/manga/_littletyrant_diag.dart')
+          s = p.read_text()
+          needle = "      manifest = await provider.resolveContent(chapter);\n      manifestValidator.validate("
+          repl = """      manifest = await provider.resolveContent(chapter);\n      if (provider.sourceId == 'ptbr.littletyrant' && manifest is ImageSequenceContentManifest) {\n        final hosts = manifest.pages.map((page) => page.uri.host).where((host) => host.isNotEmpty).toSet().toList()..sort();\n        stdout.writeln('diagnostic_hosts=${hosts.join(',')}');\n      }\n      manifestValidator.validate("""
+          if needle not in s:
+              raise SystemExit('manifest instrumentation anchor missing')
+          s = s.replace(needle, repl, 1)
+          needle2 = "  if (error is MangaProviderFailure) {\n"
+          repl2 = """  if (error is StateError) {\n    stdout.writeln('${stage}_state=${error.message}');\n  }\n  if (error is MangaProviderFailure) {\n"""
+          if needle2 not in s:
+              raise SystemExit('failure instrumentation anchor missing')
+          s = s.replace(needle2, repl2, 1)
+          p.write_text(s)
+          PY
+      - name: Probe Little Tyrant
+        id: probe
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="$RUNNER_TEMP/littletyrant.raw"
+          set +e
+          timeout 240s dart run tools/manga/_littletyrant_diag.dart ptbr.littletyrant >"$raw" 2>&1
+          code=$?
+          set -e
+          hosts="$(grep -E '^diagnostic_hosts=' "$raw" | tail -n1 | cut -d= -f2- || true)"
+          reason=none
+          if grep -q 'Provider returned content from an unapproved host' "$raw"; then reason=unapproved_host; fi
+          if grep -q 'Resolved manga content identity does not match chapter' "$raw"; then reason=identity_mismatch; fi
+          if grep -q 'Provider returned image pages without capability' "$raw"; then reason=missing_capability; fi
+          if grep -q 'Provider returned an empty image sequence' "$raw"; then reason=empty_sequence; fi
+          if grep -q 'Provider returned non-canonical page indexes' "$raw"; then reason=noncanonical_indexes; fi
+          if grep -q 'Provider returned an unsafe remote content URI' "$raw"; then reason=unsafe_uri; fi
+          if grep -q 'Provider returned a sensitive reader header' "$raw"; then reason=sensitive_header; fi
+          terminal="$(grep -E '^terminal=' "$raw" | tail -n1 | cut -d= -f2- || true)"
+          printf 'hosts=%s\nreason=%s\nterminal=%s\nexit_code=%s\n' "${hosts:-none}" "$reason" "${terminal:-unknown}" "$code" >> "$GITHUB_OUTPUT"
+          rm -f tools/manga/_littletyrant_diag.dart "$raw"
+      - name: Publish sanitized diagnostic
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.target.outputs.sha }}
+          HOSTS: ${{ steps.probe.outputs.hosts }}
+          REASON: ${{ steps.probe.outputs.reason }}
+          TERMINAL: ${{ steps.probe.outputs.terminal }}
+          EXIT_CODE: ${{ steps.probe.outputs.exit_code }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          result="$(jq -cn --arg sha "$SHA" --arg hosts "$HOSTS" --arg reason "$REASON" --arg terminal "$TERMINAL" --arg exitCode "$EXIT_CODE" '{schemaVersion:1,goanimeSha:$sha,pageHosts:($hosts|split(",")|map(select(. != "none" and . != ""))),validatorReason:$reason,terminal:$terminal,exitCode:$exitCode}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          path="results/goanime-littletyrant-validator/$SHA.json"
+          for attempt in 1 2 3 4 5; do
+            existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): diagnose Little Tyrant ${SHA:0:8}" -f content="$encoded")
+            if [[ -n "$existing" ]]; then args+=(-f sha="$existing"); fi
+            if gh api "${args[@]}" >/dev/null 2>&1; then exit 0; fi
+            sleep $((attempt * 2))
+          done
+          exit 1
