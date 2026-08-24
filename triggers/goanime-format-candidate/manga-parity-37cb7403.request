@@ -1,0 +1,3 @@
+target_branch=codex/manga-parity-20260823
+source_hint=37cb74033abf8400dc9e7c9809ee4537a8a12e0c
+reason=repo-wide-dart-format-gate-after-shared-media-cleanup
