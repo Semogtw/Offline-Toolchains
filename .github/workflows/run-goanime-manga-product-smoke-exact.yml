@@ -1,0 +1,106 @@
+name: Run GoAnime manga product smoke exact SHA
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-product-smoke-exact/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-manga-product-smoke-exact
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout control
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+      - id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-product-smoke-exact/*.request' | head -n1)"
+          test -n "$request"
+          read -r project sha < "control/$request"
+          test "$project" = goanime
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Require private token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.target.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - name: Resolve dependencies
+        working-directory: source
+        run: flutter pub get >/dev/null
+      - name: Run Manga product integration smoke
+        id: integration
+        working-directory: source
+        shell: bash
+        run: |
+          set +e
+          flutter test --no-pub --concurrency=1 \
+            test/integration/manga_product_flow_test.dart \
+            test/integration/manga_offline_reading_test.dart
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit "$code"
+      - name: Run Manga widget regression suite
+        id: widgets
+        working-directory: source
+        shell: bash
+        run: |
+          set +e
+          flutter test --no-pub --concurrency=1 test/widgets/manga
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit "$code"
+      - name: Publish sanitized smoke receipt
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.target.outputs.sha }}
+          INTEGRATION: ${{ steps.integration.outputs.exit_code }}
+          WIDGETS: ${{ steps.widgets.outputs.exit_code }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          integration="${INTEGRATION:-99}"
+          widgets="${WIDGETS:-99}"
+          state=failure
+          if [[ "$integration" == 0 && "$widgets" == 0 ]]; then state=success; fi
+          result="$(jq -cn --arg sha "$SHA" --arg state "$state" --arg integration "$integration" --arg widgets "$widgets" '{schemaVersion:1,goanimeSha:$sha,state:$state,integrationExit:($integration|tonumber),widgetsExit:($widgets|tonumber),exactSha:true}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          path="results/goanime-manga-product-smoke-exact/$SHA.json"
+          for attempt in 1 2 3 4 5; do
+            existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): manga product smoke ${SHA:0:8}" -f content="$encoded")
+            if [[ -n "$existing" ]]; then args+=(-f sha="$existing"); fi
+            if gh api "${args[@]}" >/dev/null 2>&1; then exit 0; fi
+            sleep $((attempt * 2))
+          done
+          exit 1
