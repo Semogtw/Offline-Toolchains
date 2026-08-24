@@ -48,16 +48,14 @@ jobs:
       - name: Capture source head
         id: source
         run: echo "sha=$(git -C source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - name: Track all enabled providers against reviewed Keiyoushi behavior
+      - name: Prepare idempotent pin transform
         id: track
         continue-on-error: true
         working-directory: source
         shell: bash
         run: |
           set +e
-          {
-            set -euo pipefail
-            python3 - <<'PY'
+          cat > "$RUNNER_TEMP/apply_manga_pins.py" <<'PY'
           import json
           from pathlib import Path
 
@@ -100,6 +98,9 @@ jobs:
             ref['behaviorRevision']=behavior
           p.write_text(json.dumps(data,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
           PY
+          {
+            set -euo pipefail
+            python3 "$RUNNER_TEMP/apply_manga_pins.py"
             python3 -m json.tool docs/manga_sources_ptbr.json >/dev/null
             git diff --check
           } > "$RUNNER_TEMP/pins.log" 2>&1
@@ -108,7 +109,7 @@ jobs:
           cat "$RUNNER_TEMP/pins.log"
           echo "code=$code" >> "$GITHUB_OUTPUT"
           exit "$code"
-      - name: Commit and rebase-push
+      - name: Commit against fresh remote head and push
         id: publish
         if: steps.track.outcome == 'success'
         working-directory: source
@@ -119,22 +120,27 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add docs/manga_sources_ptbr.json
-          if git diff --cached --quiet; then
-            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          git commit -m 'docs(manga): track all enabled provider behavior revisions'
+          : > "$RUNNER_TEMP/publish.log"
           for attempt in 1 2 3 4 5; do
-            git fetch origin "$BRANCH" --quiet
-            if ! git rebase "origin/$BRANCH"; then
-              git rebase --abort || true
-              exit 1
-            fi
-            if git push origin "HEAD:refs/heads/$BRANCH"; then
-              echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
+            {
+              echo "attempt=$attempt"
+              git fetch origin "$BRANCH" --quiet
+              git reset --hard "origin/$BRANCH"
+              python3 "$RUNNER_TEMP/apply_manga_pins.py"
+              python3 -m json.tool docs/manga_sources_ptbr.json >/dev/null
+              git diff --check
+              git add docs/manga_sources_ptbr.json
+              if git diff --cached --quiet; then
+                echo "already-current"
+                echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              git commit -m 'docs(manga): track all enabled provider behavior revisions'
+              if git push origin "HEAD:refs/heads/$BRANCH"; then
+                echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            } 2>&1 | tee -a "$RUNNER_TEMP/publish.log"
             sleep $((attempt * 2))
           done
           exit 1
@@ -152,8 +158,9 @@ jobs:
           sha="${PUBLISHED_SHA:-$SOURCE_SHA}"
           state=failure
           if [[ "$TRACK_OUTCOME" == success && "$PUBLISH_OUTCOME" == success ]]; then state=success; fi
-          tail_text="$(tail -n 100 "$RUNNER_TEMP/pins.log" 2>/dev/null || true)"
-          result="$(jq -cn --arg state "$state" --arg sha "$sha" --arg track "$TRACK_OUTCOME" --arg publish "$PUBLISH_OUTCOME" --arg tail "$tail_text" '{schemaVersion:3,state:$state,goanimeSha:$sha,trackedEnabledProviders:16,trackOutcome:$track,publishOutcome:$publish,diagnosticTail:$tail}')"
+          track_tail="$(tail -n 60 "$RUNNER_TEMP/pins.log" 2>/dev/null || true)"
+          publish_tail="$(tail -n 100 "$RUNNER_TEMP/publish.log" 2>/dev/null || true)"
+          result="$(jq -cn --arg state "$state" --arg sha "$sha" --arg track "$TRACK_OUTCOME" --arg publish "$PUBLISH_OUTCOME" --arg trackTail "$track_tail" --arg publishTail "$publish_tail" '{schemaVersion:4,state:$state,goanimeSha:$sha,trackedEnabledProviders:16,trackOutcome:$track,publishOutcome:$publish,trackDiagnostic:$trackTail,publishDiagnostic:$publishTail}')"
           encoded="$(printf '%s\n' "$result" | base64 -w0)"
           path="results/goanime-manga-behavior-pins-v2/${sha}.json"
           existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
