@@ -1,6 +1,6 @@
 {
-  "workflow_run_id": 32724674131,
-  "conclusion": "failure",
+  "workflow_run_id": 32725025671,
+  "conclusion": "cancelled",
   "artifact_id": null,
-  "completed_at": "2026-08-24T12:01:51Z"
+  "completed_at": "2026-08-24T12:09:53Z"
 }
