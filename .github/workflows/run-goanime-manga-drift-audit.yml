@@ -107,6 +107,12 @@ jobs:
           code=$?
           set -e
           test "$code" = 0 -o "$code" = 2
+          enabled="$(jq -r '.enabledProviders' "$raw")"
+          pins="$(jq -r '.behaviorPins // 0' "$raw")"
+          untracked="$(jq -r '.summary.untracked // 0' "$raw")"
+          if [[ "$pins" != "$enabled" || "$untracked" != 0 ]]; then
+            code=2
+          fi
           python3 - "$raw" "$inventory_head" '${{ steps.goanime.outputs.sha }}' <<'PY'
           import json, sys
           path, inventory_head, goanime_revision = sys.argv[1:]
@@ -133,7 +139,7 @@ jobs:
           cp "$REPORT" reports/goanime-manga-keiyoushi-drift/current.json
           cp "$REPORT" "reports/goanime-manga-keiyoushi-drift/${SOURCE_HEAD}.json"
           jq -n --arg goanimeSha "$GOANIME_SHA" --arg sourceHead "$SOURCE_HEAD" --arg code "$AUDIT_CODE" \
-            '{schemaVersion:2,state:"success",goanimeSha:$goanimeSha,sourceHead:$sourceHead,auditExit:($code|tonumber),unitTests:true}' \
+            '{schemaVersion:3,state:(if ($code|tonumber)==0 then "success" else "review-required" end),goanimeSha:$goanimeSha,sourceHead:$sourceHead,auditExit:($code|tonumber),unitTests:true,fullBehaviorPinCoverage:(($code|tonumber)==0)}' \
             > "results/goanime-manga-drift-audit/${GOANIME_SHA}.json"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -147,6 +153,12 @@ jobs:
             if [ "$attempt" -lt 5 ]; then sleep $((attempt * 2)); fi
           done
           exit 1
+
+      - name: Surface drift or coverage review
+        if: steps.audit.outputs.code == '2'
+        run: |
+          echo 'Enabled manga provider drift or behavior-pin coverage requires review.' >&2
+          exit 2
 
       - name: Clean checkouts
         if: always()
