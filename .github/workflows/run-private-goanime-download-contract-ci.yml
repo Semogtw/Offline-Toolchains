@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   validate:
-    name: Validate shared download job mappings
+    name: Validate shared download job mappings and queue lifecycle
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -85,9 +85,14 @@ jobs:
           flutter analyze --no-pub \
             lib/services/media/anime_download_job_adapter.dart \
             lib/services/media/manga_download_job_adapter.dart \
+            lib/services/media/download_queue_coordinator.dart \
+            lib/services/manga/download/manga_download_queue.dart \
             test/services/media/anime_download_job_adapter_test.dart \
             test/services/media/manga_download_job_adapter_test.dart \
-            test/architecture/shared_download_lifecycle_guard_test.dart
+            test/services/media/download_queue_coordinator_test.dart \
+            test/services/manga/download/manga_download_queue_test.dart \
+            test/architecture/shared_download_lifecycle_guard_test.dart \
+            test/architecture/shared_download_queue_adoption_guard_test.dart
 
       - name: Run shared download contract tests
         working-directory: private-source
@@ -95,7 +100,10 @@ jobs:
           (cd packages/goanime_core && dart test test/media/media_download_job_test.dart)
           flutter test --no-pub test/services/media/anime_download_job_adapter_test.dart
           flutter test --no-pub test/services/media/manga_download_job_adapter_test.dart
+          flutter test --no-pub test/services/media/download_queue_coordinator_test.dart
+          flutter test --no-pub test/services/manga/download/manga_download_queue_test.dart
           flutter test --no-pub test/architecture/shared_download_lifecycle_guard_test.dart
+          flutter test --no-pub test/architecture/shared_download_queue_adoption_guard_test.dart
 
       - name: Remove private checkout
         if: always()
