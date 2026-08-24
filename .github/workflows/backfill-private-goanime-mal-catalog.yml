@@ -148,17 +148,19 @@ jobs:
         run: |
           set -uo pipefail
           set +e
-          dart run tools/build_mal_availability_cache_checkpointed.dart --incremental
+          timeout --signal=TERM --kill-after=30s 15m \
+            dart run tools/build_mal_availability_cache_checkpointed.dart \
+            --incremental --max-passes=1
           jikan_status=$?
           set -e
           if [ "$jikan_status" -eq 0 ]; then
             exit 0
           fi
-          if [ "$jikan_status" -ne 2 ]; then
+          if [ "$jikan_status" -ne 2 ] && [ "$jikan_status" -ne 124 ] && [ "$jikan_status" -ne 137 ] && [ "$jikan_status" -ne 143 ]; then
             echo "Jikan checkpoint mapper failed with unexpected status $jikan_status." >&2
             exit "$jikan_status"
           fi
-          echo 'Jikan left transient errors; continuing with the existing AniList MAL fallback.'
+          echo 'Jikan did not complete cleanly; continuing from its last checkpoint with the existing AniList MAL fallback.'
           dart run tools/anilist_mal_fallback.dart \
             --checkpoint=.dart_tool/mal_availability_checkpoint.json
 
