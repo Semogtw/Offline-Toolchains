@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source_sha": "7bd636136b7dac88bd679f1b98f9bec2d605efde",
-  "workflow_run_id": 32721820161,
-  "workflow_run_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/32721820161",
-  "conclusion": "cancelled",
-  "artifact_id": null,
-  "artifact_name": null,
-  "artifact_expired": null,
-  "completed_at": "2026-08-24T11:30:56Z",
+  "workflow_run_id": 32722220288,
+  "workflow_run_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/32722220288",
+  "conclusion": "success",
+  "artifact_id": 9518581296,
+  "artifact_name": "goanime-private-release-apk-encrypted",
+  "artifact_expired": false,
+  "completed_at": "2026-08-24T11:44:46Z",
   "distribution": "private encrypted artifact only; no release or rollout"
 }
