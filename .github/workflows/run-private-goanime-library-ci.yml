@@ -90,6 +90,7 @@ jobs:
             lib/screens/watchlist_screen.dart \
             test/controllers/media/library_snapshot_controller_test.dart \
             test/widgets/manga/manga_library_screen_test.dart \
+            test/widgets/manga/manga_library_refresh_resilience_test.dart \
             test/widgets/watchlist_clear_feedback_test.dart
 
       - name: Run core Library contract
@@ -102,7 +103,9 @@ jobs:
 
       - name: Run Manga Library tests
         working-directory: private-source
-        run: flutter test --no-pub test/widgets/manga/manga_library_screen_test.dart
+        run: |
+          flutter test --no-pub test/widgets/manga/manga_library_screen_test.dart
+          flutter test --no-pub test/widgets/manga/manga_library_refresh_resilience_test.dart
 
       - name: Run Anime Watchlist tests
         working-directory: private-source
