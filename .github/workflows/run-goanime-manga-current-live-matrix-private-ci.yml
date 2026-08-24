@@ -45,7 +45,7 @@ jobs:
           test -n "$request"
           read -r project branch sha < "toolchain-control/$request"
           test "$project" = goanime
-          test "$branch" = feature/manga-platform
+          test "$branch" = codex/manga-parity-20260823
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
@@ -140,14 +140,13 @@ jobs:
         source:
           - ptbr.arthurscan
           - ptbr.astratoons
-          - ptbr.hqnow
           - ptbr.capitoons
+          - ptbr.hqnow
+          - ptbr.hipertoon
           - ptbr.kamisamaexplorer
           - ptbr.kivaratoons
-          - ptbr.leitordemangas
           - ptbr.leituramanga
           - ptbr.ler999
-          - ptbr.lermangas
           - ptbr.littletyrant
           - ptbr.maidscan
           - ptbr.mangadash
@@ -179,7 +178,7 @@ jobs:
           test -n "$request"
           read -r project branch sha < "toolchain-control/$request"
           test "$project" = goanime
-          test "$branch" = feature/manga-platform
+          test "$branch" = codex/manga-parity-20260823
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
@@ -261,11 +260,14 @@ jobs:
             -f state="$state" \
             -f context="goanime/manga-live/$SOURCE_ID" \
             -f description="Manga live provider gate: $JOB_STATUS"
-          result="$(jq -cn --arg controlSha "$CONTROL_SHA" --arg reviewedSha "$REVIEWED_SHA" --arg sourceId "$SOURCE_ID" --arg state "$state" --arg terminal "${TERMINAL:-unknown}" --arg problem "${PROBLEM:-none}" '{schemaVersion:1,controlSha:$controlSha,reviewedSha:$reviewedSha,sourceId:$sourceId,state:$state,terminal:$terminal,problem:$problem}')"
+          result="$(jq -cn --arg controlSha "$CONTROL_SHA" --arg reviewedSha "$REVIEWED_SHA" --arg sourceId "$SOURCE_ID" --arg state "$state" --arg terminal "${TERMINAL:-unknown}" --arg problem "${PROBLEM:-none}" '{schemaVersion:2,controlSha:$controlSha,reviewedSha:$reviewedSha,sourceId:$sourceId,state:$state,terminal:$terminal,problem:$problem}')"
           encoded="$(printf '%s\n' "$result" | base64 -w0)"
           path="results/goanime-manga-live/$CONTROL_SHA/$SOURCE_ID.json"
           for attempt in 1 2 3 4 5; do
-            if gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): record manga live $SOURCE_ID" -f content="$encoded"; then exit 0; fi
+            existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): record manga live $SOURCE_ID" -f content="$encoded")
+            if [[ -n "$existing" ]]; then args+=(-f sha="$existing"); fi
+            if gh api "${args[@]}" >/dev/null; then exit 0; fi
             sleep "$attempt"
           done
           exit 1
