@@ -1,11 +1,11 @@
 {
-  "conclusion": "failure",
-  "run_id": 32745379577,
-  "run_number": 21,
+  "conclusion": null,
+  "run_id": 32746954899,
+  "run_number": 22,
   "schema_version": 1,
-  "source_ref": "9f82bd59fbf60e7ec93b201b821e1313ed934a1c",
-  "status": "completed",
-  "trigger_sha": "f6cafc8ec2a9541d728b830be152657714d72bc6",
-  "updated_at": "2026-08-24T15:33:22Z",
+  "source_ref": "5c700c8bedb3469cae8d385707b2f85bb67c8886",
+  "status": "queued",
+  "trigger_sha": "728ef8e444eb28b1fdc48476a46baca7374179d8",
+  "updated_at": "2026-08-24T15:47:04Z",
   "workflow": "Validate private GoAnime source"
 }
