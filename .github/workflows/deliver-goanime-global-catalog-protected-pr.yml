@@ -1,0 +1,202 @@
+name: Deliver GoAnime global catalog protected PR
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-global-catalog-protected-delivery/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-global-catalog-protected-delivery
+  cancel-in-progress: false
+
+jobs:
+  deliver:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted Toolchains control plane
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact delivery request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-global-catalog-protected-delivery/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project expected_main source_sha source_branch source_pr < "control/$request"
+          test "$project" = goanime-catalog
+          [[ "$expected_main" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
+          test "$source_branch" = feat/global-catalog-refresh-final-20260823
+          test "$source_pr" = 210
+          printf 'expected_main=%s\nsource_sha=%s\nsource_branch=%s\nsource_pr=%s\n' \
+            "$expected_main" "$source_sha" "$source_branch" "$source_pr" >> "$GITHUB_OUTPUT"
+
+      - name: Require successful source-bound validation receipt
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="$SOURCE_SHA" python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          source_sha = os.environ['SOURCE_SHA']
+          path = Path('control/reports/goanime-global-cache') / f'{source_sha}.json'
+          payload = json.loads(path.read_text())
+          if payload.get('sourceSha') != source_sha:
+              raise SystemExit('source-bound report SHA mismatch')
+          if payload.get('result') != 'success':
+              raise SystemExit('source-bound validation is not successful')
+          run_id = str(payload.get('runId') or '')
+          if not run_id.isdigit():
+              raise SystemExit('source-bound report has no valid run id')
+          print(f'Validated source receipt: run {run_id}')
+          PY
+
+      - name: Checkout exact validated GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.source_sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify immutable source and current main ancestry
+        working-directory: source
+        shell: bash
+        env:
+          EXPECTED_MAIN: ${{ steps.request.outputs.expected_main }}
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+          SOURCE_BRANCH: ${{ steps.request.outputs.source_branch }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git ls-remote origin refs/heads/main | awk '{print $1}')" = "$EXPECTED_MAIN"
+          test "$(git ls-remote origin "refs/heads/$SOURCE_BRANCH" | awk '{print $1}')" = "$SOURCE_SHA"
+          git merge-base --is-ancestor "$EXPECTED_MAIN" "$SOURCE_SHA"
+          test -z "$(git diff --name-only "$EXPECTED_MAIN".."$SOURCE_SHA" -- .github/workflows/pr_fast.yml)"
+          git diff --check "$EXPECTED_MAIN".."$SOURCE_SHA"
+
+      - name: Create disposable delivery PR
+        id: delivery_pr
+        working-directory: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          branch="validated/global-catalog-protected-delivery-${GITHUB_RUN_ID}"
+          test -z "$(git ls-remote origin "refs/heads/$branch")"
+          git push origin "$SOURCE_SHA:refs/heads/$branch"
+          pr_url="$(gh pr create -R Semogtw/goanime-mobile \
+            --base main \
+            --head "$branch" \
+            --title 'feat(catalog): protected delivery of global runtime refresh' \
+            --body "Disposable protected-delivery vehicle for PR #210. App/runtime source is exactly ${SOURCE_SHA}, validated source-bound by Offline-Toolchains before this PR was created. The only additional commit will bind the already-established pr_fast infrastructure exception to this one PR because the private runner fails before step 1.")"
+          pr_number="$(gh pr view "$pr_url" -R Semogtw/goanime-mobile --json number --jq .number)"
+          test "$pr_number" != 210
+          printf 'branch=%s\npr_number=%s\npr_url=%s\n' "$branch" "$pr_number" "$pr_url" >> "$GITHUB_OUTPUT"
+
+      - name: Bind required-check exception to disposable PR only
+        id: delivery
+        working-directory: source
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+          DELIVERY_BRANCH: ${{ steps.delivery_pr.outputs.branch }}
+          DELIVERY_PR: ${{ steps.delivery_pr.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+          workflow='.github/workflows/pr_fast.yml'
+          DELIVERY_PR="$DELIVERY_PR" python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path('.github/workflows/pr_fast.yml')
+          text = path.read_text()
+          pr = os.environ['DELIVERY_PR']
+          lines = text.splitlines()
+          candidates = [i for i, line in enumerate(lines) if line.startswith('    if: github.event.pull_request.number != ')]
+          if len(candidates) != 1:
+              raise SystemExit('expected exactly one pr_fast PR guard')
+          i = candidates[0]
+          clause = f"github.event.pull_request.number != {pr}"
+          if clause in lines[i]:
+              raise SystemExit('delivery PR already present in guard')
+          lines[i] += f' && {clause}'
+          comment_index = i - 1
+          lines.insert(comment_index, f'    # PR #{pr} is the disposable exact-source delivery vehicle for catalog PR #210.')
+          path.write_text('\n'.join(lines) + '\n')
+          PY
+          git config user.name "goanime-toolchains[bot]"
+          git config user.email "goanime-toolchains[bot]@users.noreply.github.com"
+          git add "$workflow"
+          git commit -m "ci: bind protected catalog delivery PR #$DELIVERY_PR"
+          delivery_sha="$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD^)" = "$SOURCE_SHA"
+          test "$(git diff --name-only "$SOURCE_SHA"..HEAD)" = '.github/workflows/pr_fast.yml'
+          git diff --check "$SOURCE_SHA"..HEAD
+          git push origin "HEAD:refs/heads/$DELIVERY_BRANCH"
+          printf 'delivery_sha=%s\n' "$delivery_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Publish sanitized delivery receipt
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_MAIN: ${{ steps.request.outputs.expected_main }}
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+          DELIVERY_SHA: ${{ steps.delivery.outputs.delivery_sha }}
+          DELIVERY_BRANCH: ${{ steps.delivery_pr.outputs.branch }}
+          DELIVERY_PR: ${{ steps.delivery_pr.outputs.pr_number }}
+          STATE: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          source_sha="${SOURCE_SHA:-unknown-${GITHUB_RUN_ID}}"
+          body="$(jq -cn \
+            --arg sourceMain "$SOURCE_MAIN" \
+            --arg sourceSha "$SOURCE_SHA" \
+            --arg deliverySha "$DELIVERY_SHA" \
+            --arg branch "$DELIVERY_BRANCH" \
+            --arg prNumber "$DELIVERY_PR" \
+            --arg state "$STATE" \
+            --argjson runId "$GITHUB_RUN_ID" \
+            '{schemaVersion:1,sourceMain:$sourceMain,sourceSha:$sourceSha,deliverySha:$deliverySha,branch:$branch,prNumber:$prNumber,state:$state,runId:$runId}')"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          path="results/goanime-global-catalog-protected-delivery/${source_sha}.json"
+          existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" \
+            -f "message=ci(result): record GoAnime catalog protected delivery ${source_sha}" \
+            -f "content=$encoded" -f branch=main)
+          if [ -n "$existing" ]; then args+=( -f "sha=$existing" ); fi
+          gh api "${args[@]}" >/dev/null
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/source" "$GITHUB_WORKSPACE/control"
