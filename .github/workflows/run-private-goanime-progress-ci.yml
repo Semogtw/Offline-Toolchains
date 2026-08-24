@@ -92,11 +92,17 @@ jobs:
             test/architecture/shared_progress_event_guard_test.dart
           (cd packages/goanime_core && dart analyze \
             lib/src/media/media_progress_event.dart \
-            test/media/media_progress_event_test.dart)
+            lib/src/media/user_media_state_event.dart \
+            test/media/media_progress_event_test.dart \
+            test/media/user_media_state_event_test.dart)
 
       - name: Run core Progress event tests
         working-directory: private-source/packages/goanime_core
         run: dart test test/media/media_progress_event_test.dart
+
+      - name: Run core User state envelope tests
+        working-directory: private-source/packages/goanime_core
+        run: dart test test/media/user_media_state_event_test.dart
 
       - name: Run Anime Progress adapter tests
         working-directory: private-source
