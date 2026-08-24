@@ -16,10 +16,10 @@ concurrency:
 
 jobs:
   validate:
-    name: Validate shared health and lifecycle phases
+    name: Validate shared media infrastructure end-to-end
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 40
 
     steps:
       - name: Require private repository token
@@ -76,36 +76,38 @@ jobs:
           flutter pub get >/dev/null 2>&1
           (cd packages/goanime_core && dart pub get >/dev/null 2>&1)
 
-      - name: Run shared core contract tests
+      - name: Analyze shared media core
         working-directory: private-source/packages/goanime_core
-        run: |
-          dart test \
-            test/media/media_provider_health_test.dart \
-            test/media/media_browse_contract_test.dart \
-            test/media/media_search_contract_test.dart \
-            test/media/media_library_contract_test.dart \
-            test/media/media_history_contract_test.dart \
-            test/media/media_progress_event_test.dart \
-            test/media/user_media_state_event_test.dart
+        run: dart analyze lib/src/media test/media
 
-      - name: Run shared controller tests
+      - name: Analyze shared app infrastructure
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter analyze --no-pub \
+            lib/controllers/media \
+            lib/services/media \
+            test/controllers/media \
+            test/services/media \
+            test/architecture/shared_*_test.dart
+
+      - name: Run all shared core media tests
+        working-directory: private-source/packages/goanime_core
+        run: dart test test/media
+
+      - name: Run all shared controller tests
         working-directory: private-source
         run: flutter test --no-pub test/controllers/media
 
-      - name: Run shared adapter and health tests
+      - name: Run all shared adapter and infrastructure tests
         working-directory: private-source
         run: flutter test --no-pub test/services/media
 
-      - name: Run real-consumer architecture guards
+      - name: Run all shared-media architecture guards
         working-directory: private-source
-        run: |
-          flutter test --no-pub \
-            test/architecture/shared_media_infrastructure_guard_test.dart \
-            test/architecture/shared_search_lifecycle_guard_test.dart \
-            test/architecture/shared_home_lifecycle_guard_test.dart \
-            test/architecture/shared_library_lifecycle_guard_test.dart \
-            test/architecture/shared_history_lifecycle_guard_test.dart \
-            test/architecture/shared_progress_event_guard_test.dart
+        shell: bash
+        run: flutter test --no-pub test/architecture/shared_*_test.dart
 
       - name: Remove private checkout
         if: always()
