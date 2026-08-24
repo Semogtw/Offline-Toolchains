@@ -86,12 +86,14 @@ jobs:
             lib/src/media/provider_operation.dart \
             lib/src/media/media_provider_registry.dart \
             lib/src/media/provider_policy.dart \
+            lib/src/providers/anime_source_provider_registry.dart \
             test/media/media_provider_registry_validation_test.dart \
             test/anime_source_provider_registry_test.dart)
           flutter analyze --no-pub \
             lib/services/manga/manga_source_registry.dart \
             lib/services/manga/manga_provider_policy.dart \
-            test/services/manga/manga_source_registry_test.dart
+            test/services/manga/manga_source_registry_test.dart \
+            test/architecture/shared_provider_registry_guard_test.dart
 
       - name: Run core provider registry tests
         working-directory: private-source/packages/goanime_core
@@ -99,9 +101,11 @@ jobs:
           dart test test/media/media_provider_registry_validation_test.dart
           dart test test/anime_source_provider_registry_test.dart
 
-      - name: Run Manga provider registry tests
+      - name: Run app provider registry tests
         working-directory: private-source
-        run: flutter test --no-pub test/services/manga/manga_source_registry_test.dart
+        run: |
+          flutter test --no-pub test/services/manga/manga_source_registry_test.dart
+          flutter test --no-pub test/architecture/shared_provider_registry_guard_test.dart
 
       - name: Remove private checkout
         if: always()
