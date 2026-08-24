@@ -1,0 +1,144 @@
+name: Run GoAnime test machine diagnostic
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-test-machine-diagnostic/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-test-machine-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout control
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+      - id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-test-machine-diagnostic/*.request' | head -n1)"
+          test -n "$request"
+          read -r project sha test_path < "control/$request"
+          test "$project" = goanime
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$test_path" =~ ^test/[A-Za-z0-9_./-]+$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "test_path=$test_path" >> "$GITHUB_OUTPUT"
+      - name: Require private token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.target.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - name: Resolve dependencies
+        working-directory: source
+        run: flutter pub get >/dev/null
+      - name: Run machine-readable test suite
+        id: test
+        working-directory: source
+        env:
+          TEST_PATH: ${{ steps.target.outputs.test_path }}
+        shell: bash
+        run: |
+          set +e
+          flutter test --no-pub --concurrency=1 --machine "$TEST_PATH" > "$RUNNER_TEMP/goanime-test-machine.jsonl" 2>&1
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Parse sanitized failures
+        id: parse
+        env:
+          MACHINE_LOG: ${{ runner.temp }}/goanime-test-machine.jsonl
+        shell: bash
+        run: |
+          python3 - <<'PY' > "$RUNNER_TEMP/failures.json"
+          import json, os, pathlib, re
+          p = pathlib.Path(os.environ['MACHINE_LOG'])
+          tests = {}
+          errors = {}
+          failed = set()
+          if p.exists():
+              for raw in p.read_text(errors='replace').splitlines():
+                  try:
+                      event = json.loads(raw)
+                  except Exception:
+                      continue
+                  typ = event.get('type')
+                  if typ == 'testStart':
+                      t = event.get('test') or {}
+                      tid = t.get('id')
+                      if tid is not None:
+                          tests[tid] = {'name': str(t.get('name') or ''), 'url': str(t.get('url') or '')}
+                  elif typ == 'error':
+                      tid = event.get('testID')
+                      if tid is not None:
+                          msg = str(event.get('error') or '')
+                          msg = re.sub(r'[\x00-\x1f\x7f]+', ' ', msg).strip()[:700]
+                          errors.setdefault(tid, []).append(msg)
+                          failed.add(tid)
+                  elif typ == 'testDone':
+                      tid = event.get('testID')
+                      result = str(event.get('result') or '')
+                      if tid is not None and result not in ('success', 'skipped', ''):
+                          failed.add(tid)
+          out = []
+          for tid in sorted(failed, key=lambda x: str(x)):
+              t = tests.get(tid, {})
+              url = t.get('url', '')
+              file_name = url.rsplit('/', 1)[-1] if url else ''
+              out.append({'testId': tid, 'file': file_name[:180], 'name': t.get('name','')[:300], 'errors': errors.get(tid, [])[:3]})
+          print(json.dumps(out, ensure_ascii=False, separators=(',', ':')))
+          PY
+          failures="$(cat "$RUNNER_TEMP/failures.json")"
+          echo "failures=$failures" >> "$GITHUB_OUTPUT"
+      - name: Publish diagnostic receipt
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.target.outputs.sha }}
+          TEST_PATH: ${{ steps.target.outputs.test_path }}
+          EXIT_CODE: ${{ steps.test.outputs.exit_code }}
+          FAILURES: ${{ steps.parse.outputs.failures }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="${EXIT_CODE:-99}"
+          failures="${FAILURES:-[]}"; jq -e . >/dev/null <<<"$failures" || failures='[]'
+          state=failure; [[ "$code" == 0 ]] && state=success
+          key="$(printf '%s' "$TEST_PATH" | sha256sum | cut -c1-12)"
+          result="$(jq -cn --arg sha "$SHA" --arg state "$state" --arg path "$TEST_PATH" --arg code "$code" --argjson failures "$failures" '{schemaVersion:1,goanimeSha:$sha,state:$state,testPath:$path,exitCode:($code|tonumber),failures:$failures,exactSha:true}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          path="results/goanime-test-machine-diagnostic/$SHA-$key.json"
+          for attempt in 1 2 3 4 5; do
+            existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): GoAnime test diagnostic ${SHA:0:8}" -f content="$encoded")
+            [[ -n "$existing" ]] && args+=(-f sha="$existing")
+            if gh api "${args[@]}" >/dev/null 2>&1; then exit 0; fi
+            sleep $((attempt * 2))
+          done
+          exit 1
