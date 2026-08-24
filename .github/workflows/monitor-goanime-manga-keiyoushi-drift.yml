@@ -1,0 +1,147 @@
+name: Monitor GoAnime manga Keiyoushi drift
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 */6 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-manga-keiyoushi-drift
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    if: github.actor == github.repository_owner || github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout Toolchains control repository
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: true
+          show-progress: false
+
+      - name: Resolve current manga parity head
+        id: goanime
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch='codex/manga-parity-20260823'
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          sha="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$branch" | awk '{print $1}')"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.goanime.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: goanime
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Checkout Keiyoushi behavior source with history
+        uses: actions/checkout@v6
+        with:
+          repository: keiyoushi/extensions-source
+          ref: main
+          path: keiyoushi-source
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+
+      - name: Checkout Keiyoushi inventory repository
+        uses: actions/checkout@v6
+        with:
+          repository: keiyoushi/extensions
+          ref: repo
+          path: keiyoushi-inventory
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Audit enabled provider drift
+        id: audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_head="$(git -C keiyoushi-source rev-parse HEAD)"
+          inventory_head="$(git -C keiyoushi-inventory rev-parse HEAD)"
+          mkdir -p "$RUNNER_TEMP/goanime-drift"
+          raw="$RUNNER_TEMP/goanime-drift/raw.json"
+          set +e
+          python3 goanime/tools/manga/audit_keiyoushi_provider_drift.py \
+            --manifest goanime/docs/manga_sources_ptbr.json \
+            --source-repo keiyoushi-source \
+            --head "$source_head" \
+            --json-output "$raw"
+          code=$?
+          set -e
+          if [[ "$code" != 0 && "$code" != 2 ]]; then
+            echo "unexpected drift auditor exit=$code" >&2
+            exit "$code"
+          fi
+          report="$RUNNER_TEMP/goanime-drift/report.json"
+          python3 - "$raw" "$report" "$inventory_head" "${{ steps.goanime.outputs.sha }}" <<'PY'
+          import json, sys
+          source, target, inventory_head, goanime_sha = sys.argv[1:]
+          payload = json.load(open(source, encoding='utf-8'))
+          payload['inventoryRepoHead'] = inventory_head
+          payload['goanimeRevision'] = goanime_sha
+          with open(target, 'w', encoding='utf-8') as fh:
+              json.dump(payload, fh, ensure_ascii=False, indent=2, sort_keys=True)
+              fh.write('\n')
+          PY
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "source_head=$source_head" >> "$GITHUB_OUTPUT"
+          echo "inventory_head=$inventory_head" >> "$GITHUB_OUTPUT"
+          echo "report=$report" >> "$GITHUB_OUTPUT"
+
+      - name: Publish sanitized current and historical reports
+        working-directory: control
+        env:
+          SOURCE_HEAD: ${{ steps.audit.outputs.source_head }}
+          REPORT: ${{ steps.audit.outputs.report }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports/goanime-manga-keiyoushi-drift
+          cp "$REPORT" reports/goanime-manga-keiyoushi-drift/current.json
+          cp "$REPORT" "reports/goanime-manga-keiyoushi-drift/${SOURCE_HEAD}.json"
+          git add reports/goanime-manga-keiyoushi-drift
+          if git diff --cached --quiet; then
+            echo 'drift_report_changed=false'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m "ci(goanime): refresh manga Keiyoushi drift ${SOURCE_HEAD:0:8}"
+          git push
+
+      - name: Surface review-required drift
+        if: steps.audit.outputs.code == '2'
+        shell: bash
+        run: |
+          echo 'Enabled manga provider drift requires review. See reports/goanime-manga-keiyoushi-drift/current.json.' >&2
+          exit 2
+
+      - name: Clean private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/goanime" "$GITHUB_WORKSPACE/keiyoushi-source" "$GITHUB_WORKSPACE/keiyoushi-inventory"
