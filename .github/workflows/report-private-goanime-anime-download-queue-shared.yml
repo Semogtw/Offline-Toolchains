@@ -1,0 +1,54 @@
+name: Report GoAnime Anime shared download queue migration
+
+on:
+  workflow_run:
+    workflows:
+      - Apply GoAnime Anime shared download queue migration
+    types:
+      - completed
+
+permissions:
+  contents: write
+
+jobs:
+  report:
+    name: Publish sanitized Anime queue apply result
+    if: github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Publish sanitized result
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APPLY_RUN_ID: ${{ github.event.workflow_run.id }}
+          APPLY_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          APPLY_RESULT: ${{ github.event.workflow_run.conclusion }}
+          APPLY_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/goanime-anime-download-queue-apply.json"
+          python3 - "$report" <<'PY'
+          import json
+          import os
+          import sys
+          from datetime import datetime, timezone
+
+          payload = {
+              "schemaVersion": 1,
+              "runId": int(os.environ["APPLY_RUN_ID"]),
+              "runAttempt": int(os.environ["APPLY_ATTEMPT"]),
+              "applyResult": os.environ["APPLY_RESULT"],
+              "toolchainsHeadSha": os.environ["APPLY_HEAD_SHA"],
+              "finishedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+          }
+          with open(sys.argv[1], "w", encoding="utf-8") as stream:
+              json.dump(payload, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          PY
+          encoded="$(base64 -w0 < "$report")"
+          path="reports/goanime-anime-download-queue-shared/${APPLY_RUN_ID}.json"
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/${path}" \
+            -f "message=ci(goanime): report Anime queue apply run ${APPLY_RUN_ID}" \
+            -f "content=${encoded}" >/dev/null
