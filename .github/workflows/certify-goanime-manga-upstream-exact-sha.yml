@@ -1,0 +1,174 @@
+name: Certify GoAnime manga upstream exact SHA
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-upstream-exact/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-manga-upstream-exact
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.request.outputs.sha }}
+      branch: ${{ steps.request.outputs.branch }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-upstream-exact/*.request' | head -n1)"
+          read -r project branch sha < "$request"
+          test "$project" = goanime
+          test "$branch" = 'codex/manga-parity-20260823'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+  static:
+    needs: resolve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ needs.resolve.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - working-directory: source
+        run: |
+          flutter config --no-analytics
+          flutter pub get >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+      - name: Provider, manifest and tooling gates
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format --output=none --set-exit-if-changed \
+            lib/services/manga/providers/mangalivre_org_manga_provider.dart \
+            test/services/manga/providers/mangalivre_org_manga_provider_test.dart >/dev/null
+          flutter test --no-pub --concurrency=2 test/services/manga/providers
+          flutter test --no-pub --concurrency=1 \
+            test/architecture/manga_provider_registry_manifest_test.dart \
+            test/architecture/manga_provider_manifest_validator_test.dart \
+            test/architecture/manga_planned_provider_definitions_test.dart
+          python3 -m unittest tools.tests.test_audit_keiyoushi_provider_drift
+          python3 -m unittest discover -s tools/tests -p 'test_*.py'
+          python3 -m compileall -q tools
+          python3 tools/validate_repository_guards.py
+          bash tools/validate_release_workflows.sh
+          bash tools/validate_project_health.sh
+          flutter analyze --no-pub
+          git diff --check
+
+  live:
+    needs: resolve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      matrix:
+        source:
+          - ptbr.arthurscan
+          - ptbr.astratoons
+          - ptbr.capitoons
+          - ptbr.hqnow
+          - ptbr.hipertoon
+          - ptbr.kamisamaexplorer
+          - ptbr.kivaratoons
+          - ptbr.leituramanga
+          - ptbr.ler999
+          - ptbr.littletyrant
+          - ptbr.maidscan
+          - ptbr.mangadash
+          - ptbr.mangaflix
+          - ptbr.mangalivreblog
+          - ptbr.mangalivreorg
+          - ptbr.ninjascan
+    steps:
+      - env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ needs.resolve.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - working-directory: source
+        run: flutter pub get >/dev/null
+      - name: Search through reader bytes
+        working-directory: source
+        env:
+          SOURCE_ID: ${{ matrix.source }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/live.log"
+          set +e
+          timeout 300s dart run tools/manga/audit_planned_provider_stage.dart "$SOURCE_ID" > "$log" 2>&1
+          code=$?
+          set -e
+          terminal="$(grep -E '^terminal=' "$log" | tail -n1 | cut -d= -f2- || true)"
+          stage="$(grep -E '^stage=' "$log" | tail -n1 | cut -d= -f2- || true)"
+          if [[ "$code" -ne 0 || "$terminal" != readable ]]; then
+            cat "$log"
+            exit 1
+          fi
+          printf 'source=%s stage=%s terminal=%s\n' "$SOURCE_ID" "$stage" "$terminal"
+
+  receipt:
+    needs: [resolve, static, live]
+    if: always() && needs.resolve.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Publish exact-SHA receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+          STATIC: ${{ needs.static.result }}
+          LIVE: ${{ needs.live.result }}
+          CONTROL_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          state=failure
+          if [[ "$STATIC" == success && "$LIVE" == success ]]; then state=success; fi
+          result="$(jq -cn --arg state "$state" --arg sha "$SHA" --arg static "$STATIC" --arg live "$LIVE" --arg control "$CONTROL_SHA" '{schemaVersion:1,state:$state,goanimeSha:$sha,static:$static,live:$live,enabledProviders:16,exactSha:true,controlSha:$control}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          path="results/goanime-manga-upstream-exact/${SHA}.json"
+          existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): record manga upstream exact $SHA" -f content="$encoded")
+          if [[ -n "$existing" ]]; then args+=(-f sha="$existing"); fi
+          gh api "${args[@]}" >/dev/null
+          echo "$result" >> "$GITHUB_STEP_SUMMARY"
