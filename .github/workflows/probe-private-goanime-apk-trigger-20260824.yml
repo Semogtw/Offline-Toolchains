@@ -1,0 +1,43 @@
+name: Probe private GoAnime APK trigger
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/private-goanime-apk.json'
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Record trigger execution
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const report = {
+              schema_version: 1,
+              run_id: context.runId,
+              head_sha: context.sha,
+              source_request: '7bd636136b7dac88bd679f1b98f9bec2d605efde',
+              event: context.eventName,
+              actor: context.actor,
+              recorded_at: new Date().toISOString()
+            };
+            const path = 'reports/goanime-private-release-apk/trigger-probe.json';
+            let sha;
+            try {
+              const current = await github.rest.repos.getContent({owner,repo,path,ref:'main'});
+              if (!Array.isArray(current.data)) sha = current.data.sha;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            await github.rest.repos.createOrUpdateFileContents({
+              owner, repo, path,
+              message: `ci(goanime): record APK trigger ${context.runId} [skip ci]`,
+              content: Buffer.from(JSON.stringify(report,null,2)+'\n').toString('base64'),
+              branch: 'main', sha
+            });
