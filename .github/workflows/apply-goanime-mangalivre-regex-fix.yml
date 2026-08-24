@@ -1,0 +1,167 @@
+name: Apply GoAnime MangaLivre regex fix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-mangalivre-regex-fix/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-mangalivre-regex-fix
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+      - name: Resolve exact GoAnime revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-mangalivre-regex-fix/*.request' | head -n1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          test "$branch" = 'codex/manga-parity-20260823'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+      - name: Refuse branch race
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+      - name: Correct reviewed raw regex escaping
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('lib/services/manga/providers/mangalivre_org_manga_provider.dart')
+          text = p.read_text()
+          replacements = {
+              r'''r''' + "'''(?:X-ML-Nonce|Nonce\\\"]\\\\.join\\\\(\\\"-\\\"\\\\))\\\"?\\\\]\\\\s*=\\\\s*(\\\\w+)'''" + r''' ''': r'''r''' + "'''(?:X-ML-Nonce|Nonce\"]\\.join\\(\"-\"\\))\"?]\\s*=\\s*(\\w+)'''" + r''' ''',
+          }
+          # Use direct line replacements to avoid Python raw/triple-quote ambiguity.
+          pairs = [
+              ('    r\'\'\'(?:X-ML-Nonce|Nonce\\"]\\\\.join\\\\(\\"-\\"\\\\))\\"?\\\\]\\\\s*=\\\\s*(\\\\w+)\'\'\',',
+               '    r\'\'\'(?:X-ML-Nonce|Nonce"]\\.join\\("-"\\))"?]\\s*=\\s*(\\w+)\'\'\','),
+              ('    r\'\'\'[\\"\'`]([0-9a-fA-F]{32})[\\"\'`]\'\'\',',
+               '    r\'\'\'["\'`]([0-9a-fA-F]{32})["\'`]\'\'\','),
+              ('    r\'\'\'atob\\\\(\\\\s*[\\"\']([A-Za-z0-9+/=]+)[\\"\']\'\'\',',
+               '    r\'\'\'atob\\(\\s*["\']([A-Za-z0-9+/=]+)["\']\'\'\','),
+              ('    r\'\'\'(?:String\\\\.)?fromCharCode\\\\(([\\\\d,\\\\s]+)\\\\)\'\'\',',
+               '    r\'\'\'(?:String\\.)?fromCharCode\\(([\\d,\\s]+)\\)\'\'\','),
+          ]
+          for old, new in pairs:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected one reviewed regex anchor, found {count}: {old}')
+              text = text.replace(old, new, 1)
+          p.write_text(text)
+          PY
+          git diff --check
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+      - name: Format and validate fix
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format lib/services/manga/providers/mangalivre_org_manga_provider.dart test/services/manga/providers/mangalivre_org_manga_provider_test.dart >/dev/null
+          flutter test --no-pub --concurrency=1 \
+            test/services/manga/providers/mangalivre_org_manga_provider_test.dart \
+            test/services/manga/providers/little_tyrant_manga_provider_test.dart \
+            test/services/manga/providers/kivaratoons_manga_provider_test.dart
+          flutter test --no-pub --concurrency=1 \
+            test/architecture/manga_provider_registry_manifest_test.dart \
+            test/architecture/manga_provider_manifest_validator_test.dart \
+            test/architecture/manga_planned_provider_definitions_test.dart
+          flutter analyze --no-pub
+          git diff --check
+      - name: Commit and publish validated checkpoint
+        id: publish
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/services/manga/providers/mangalivre_org_manga_provider.dart test/services/manga/providers/mangalivre_org_manga_provider_test.dart
+          git commit -m 'fix(manga): correct MangaLivre nonce parser escaping'
+          new_sha="$(git rev-parse HEAD)"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/goanime-mobile.git "HEAD:refs/heads/$TARGET_BRANCH"
+          echo "new_sha=$new_sha" >> "$GITHUB_OUTPUT"
+      - name: Publish receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OLD_SHA: ${{ steps.request.outputs.sha }}
+          NEW_SHA: ${{ steps.publish.outputs.new_sha }}
+          CONTROL_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          result="$(jq -cn --arg oldSha "$OLD_SHA" --arg newSha "$NEW_SHA" --arg controlSha "$CONTROL_SHA" '{schemaVersion:1,state:"success",oldSha:$oldSha,newSha:$newSha,controlSha:$controlSha,providerGreen:true}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/results/goanime-mangalivre-regex-fix/$OLD_SHA.json" \
+            -f message="ci(result): record MangaLivre regex fix $OLD_SHA" \
+            -f content="$encoded" >/dev/null
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
