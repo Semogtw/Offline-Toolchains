@@ -27,7 +27,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           path: control
-          fetch-depth: 2
+          fetch-depth: 0
           persist-credentials: true
           show-progress: false
 
@@ -56,6 +56,13 @@ jobs:
           lfs: false
           submodules: false
           show-progress: false
+
+      - name: Validate drift auditor
+        working-directory: goanime
+        run: |
+          set -euo pipefail
+          python3 -m unittest tools.tests.test_audit_keiyoushi_provider_drift
+          python3 -m compileall -q tools/manga/audit_keiyoushi_provider_drift.py tools/tests/test_audit_keiyoushi_provider_drift.py
 
       - name: Checkout Keiyoushi behavior source with history
         uses: actions/checkout@v6
@@ -133,7 +140,13 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m "ci(goanime): refresh manga Keiyoushi drift ${SOURCE_HEAD:0:8}"
-          git push
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin main && git push origin HEAD:main; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 5 ]; then sleep $((attempt * 2)); fi
+          done
+          exit 1
 
       - name: Surface review-required drift
         if: steps.audit.outputs.code == '2'
