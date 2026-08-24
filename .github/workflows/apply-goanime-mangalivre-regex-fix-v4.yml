@@ -1,0 +1,200 @@
+name: Apply GoAnime MangaLivre regex fix v4
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-mangalivre-regex-fix-v4/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-mangalivre-regex-fix-v4
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout Toolchains control repository
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: true
+          show-progress: false
+
+      - name: Resolve requested branch
+        id: request
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-mangalivre-regex-fix-v4/*.request' | head -n1)"
+          test -n "$request"
+          read -r project branch < "control/$request"
+          test "$project" = goanime
+          test "$branch" = 'codex/manga-parity-20260823'
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          sha="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$branch" | awk '{print $1}')"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout private GoAnime branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.branch }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Normalize only MangaLivre nonce regex block
+        id: patch
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = '${{ steps.request.outputs.sha }}'
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('lib/services/manga/providers/mangalivre_org_manga_provider.dart')
+          lines = path.read_text(encoding='utf-8').splitlines()
+          start = next(i for i, line in enumerate(lines) if 'static final RegExp _nonceVariableRegex' in line)
+          end = next(i for i, line in enumerate(lines) if 'static final RegExp _nonceShapeRegex' in line)
+          changed = 0
+          for index in range(start + 1, end):
+              line = lines[index]
+              if "r'''" not in line:
+                  continue
+              normalized = line.replace('\\\\', '\\').replace('\\"', '"')
+              if normalized != line:
+                  lines[index] = normalized
+                  changed += 1
+          if changed not in (0, 4):
+              raise SystemExit(f'unexpected MangaLivre nonce regex normalization count={changed}')
+          path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          print(f'changed={changed}')
+          PY
+          if git diff --quiet; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+          git diff --check
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+
+      - name: Validate MangaLivre repair
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format lib/services/manga/providers/mangalivre_org_manga_provider.dart test/services/manga/providers/mangalivre_org_manga_provider_test.dart >/dev/null
+          flutter test --no-pub --concurrency=1 \
+            test/services/manga/providers/mangalivre_org_manga_provider_test.dart \
+            test/services/manga/providers/little_tyrant_manga_provider_test.dart \
+            test/services/manga/providers/kivaratoons_manga_provider_test.dart
+          flutter test --no-pub --concurrency=1 \
+            test/architecture/manga_provider_registry_manifest_test.dart \
+            test/architecture/manga_provider_manifest_validator_test.dart \
+            test/architecture/manga_planned_provider_definitions_test.dart
+          flutter analyze --no-pub
+          git diff --check
+
+      - name: Commit repair if needed
+        id: commit
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/services/manga/providers/mangalivre_org_manga_provider.dart test/services/manga/providers/mangalivre_org_manga_provider_test.dart
+          if git diff --cached --quiet; then
+            echo 'created=false' >> "$GITHUB_OUTPUT"
+          else
+            git commit -m 'fix(manga): correct MangaLivre nonce parser escaping'
+            echo 'created=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rebase over concurrent work and publish safely
+        id: publish
+        working-directory: private-source
+        shell: bash
+        env:
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          published=false
+          for attempt in 1 2 3 4 5; do
+            git fetch origin "$TARGET_BRANCH" --quiet
+            remote="$(git rev-parse "origin/$TARGET_BRANCH")"
+            if ! git merge-base --is-ancestor "$remote" HEAD; then
+              git rebase "origin/$TARGET_BRANCH"
+              dart format --output=none --set-exit-if-changed lib/services/manga/providers/mangalivre_org_manga_provider.dart test/services/manga/providers/mangalivre_org_manga_provider_test.dart >/dev/null
+              flutter test --no-pub --concurrency=1 test/services/manga/providers/mangalivre_org_manga_provider_test.dart
+            fi
+            if git push origin "HEAD:refs/heads/$TARGET_BRANCH"; then
+              published=true
+              break
+            fi
+            sleep 1
+          done
+          test "$published" = true
+          new_sha="$(git rev-parse HEAD)"
+          printf 'new_sha=%s\n' "$new_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Publish sanitized receipt
+        working-directory: control
+        env:
+          NEW_SHA: ${{ steps.publish.outputs.new_sha }}
+          CONTROL_SHA: ${{ github.sha }}
+          CHANGED: ${{ steps.patch.outputs.changed }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/goanime-mangalivre-regex-fix-v4
+          file="results/goanime-mangalivre-regex-fix-v4/${NEW_SHA}.json"
+          jq -n \
+            --arg newSha "$NEW_SHA" \
+            --arg controlSha "$CONTROL_SHA" \
+            --arg changed "$CHANGED" \
+            '{schemaVersion:1,state:"success",newSha:$newSha,controlSha:$controlSha,changed:($changed=="true"),providerGreen:true}' > "$file"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$file"
+          git commit -m "ci(result): record MangaLivre regex fix v4 ${NEW_SHA:0:8}"
+          git push
+
+      - name: Clean private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
