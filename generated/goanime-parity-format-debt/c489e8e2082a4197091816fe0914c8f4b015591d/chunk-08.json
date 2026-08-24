@@ -1,0 +1,6 @@
+[
+  {
+    "path": "windows/flutter/generated_plugins.cmake",
+    "content": "#\n# Generated file, do not edit.\n#\n\nlist(APPEND FLUTTER_PLUGIN_LIST\n  animated_item\n  auto_updater_windows\n  flutter_secure_storage_windows\n  media_kit_libs_windows_video\n  media_kit_video\n  url_launcher_windows\n  webview_windows\n)\n\nlist(APPEND FLUTTER_FFI_PLUGIN_LIST\n  flutter_discord_rpc\n  jni\n)\n\nset(PLUGIN_BUNDLED_LIBRARIES)\n\nforeach(plugin ${FLUTTER_PLUGIN_LIST})\n  add_subdirectory(flutter/ephemeral/.plugin_symlinks/${plugin}/windows plugins/${plugin})\n  target_link_libraries(${BINARY_NAME} PRIVATE ${plugin}_plugin)\n  list(APPEND PLUGIN_BUNDLED_LIBRARIES $<TARGET_FILE:${plugin}_plugin>)\n  list(APPEND PLUGIN_BUNDLED_LIBRARIES ${${plugin}_bundled_libraries})\nendforeach(plugin)\n\nforeach(ffi_plugin ${FLUTTER_FFI_PLUGIN_LIST})\n  add_subdirectory(flutter/ephemeral/.plugin_symlinks/${ffi_plugin}/windows plugins/${ffi_plugin})\n  list(APPEND PLUGIN_BUNDLED_LIBRARIES ${${ffi_plugin}_bundled_libraries})\nendforeach(ffi_plugin)\n"
+  }
+]
