@@ -1,0 +1,126 @@
+name: Apply GoAnime manga behavior pins v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-behavior-pins-v2/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: true
+      - name: Resolve branch
+        id: target
+        run: |
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-behavior-pins-v2/*.request' | head -n1)"
+          read -r project branch < "control/$request"
+          test "$project" = goanime
+          test "$branch" = 'codex/manga-parity-20260823'
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.target.outputs.branch }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Track all enabled providers against reviewed Keiyoushi behavior
+        working-directory: source
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          HEAD='ddfe050009c20da11bd69c1fbbae3933a5089ef8'
+          MADARA='66535bd04bec51a1063532cc72fb5e25de30effd'
+          reviewed = {
+            'ptbr.arthurscan': ('src/pt/arthurscan', HEAD),
+            'ptbr.astratoons': ('src/pt/astratoons', '5083ff5d06b9cb7736216ae0fbd0be3828bcce2c'),
+            'ptbr.capitoons': ('src/pt/apecomics', '5083ff5d06b9cb7736216ae0fbd0be3828bcce2c'),
+            'ptbr.hqnow': ('src/pt/hqnow', 'd2aebed872070d18ba225002bcb9734545baaf41'),
+            'ptbr.hipertoon': ('src/pt/hipertoon', HEAD),
+            'ptbr.kamisamaexplorer': ('src/pt/kamisamaexplorer', MADARA),
+            'ptbr.kivaratoons': ('src/pt/kivaratoons', HEAD),
+            'ptbr.leituramanga': ('src/pt/leituramanga', HEAD),
+            'ptbr.ler999': ('src/pt/ler999', HEAD),
+            'ptbr.littletyrant': ('src/pt/littletyrant', HEAD),
+            'ptbr.maidscan': ('src/pt/maidscan', HEAD),
+            'ptbr.mangadash': ('src/pt/mangadash', 'd2aebed872070d18ba225002bcb9734545baaf41'),
+            'ptbr.mangaflix': ('src/pt/mangaflix', HEAD),
+            'ptbr.mangalivreblog': ('src/pt/mangalivreblog', HEAD),
+            'ptbr.mangalivreorg': ('src/pt/mangalivreorg', HEAD),
+            'ptbr.ninjascan': ('src/pt/ninjascan', MADARA),
+          }
+          p=Path('docs/manga_sources_ptbr.json')
+          data=json.loads(p.read_text(encoding='utf-8'))
+          records={r['goanimeSourceId']:r for r in data['providerRecords'] if r.get('implementationState')=='enabled'}
+          if set(records) != set(reviewed):
+            raise SystemExit(f'enabled/reviewed mismatch enabled={sorted(records)} reviewed={sorted(reviewed)}')
+          for sid,(source_path,behavior) in reviewed.items():
+            rec=records[sid]
+            ref=rec.get('referenceImplementation')
+            if not isinstance(ref,dict):
+              ref={'repository':'keiyoushi/extensions-source','revision':behavior,'path':source_path}
+              rec['referenceImplementation']=ref
+            if ref.get('repository') != 'keiyoushi/extensions-source':
+              raise SystemExit(f'{sid}: unexpected repository {ref.get("repository")}')
+            if ref.get('path') not in (None,source_path):
+              raise SystemExit(f'{sid}: unexpected path {ref.get("path")}')
+            ref['path']=source_path
+            ref['behaviorRevision']=behavior
+          p.write_text(json.dumps(data,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+          PY
+          python3 -m json.tool docs/manga_sources_ptbr.json >/dev/null
+          git diff --check
+      - name: Commit and rebase-push
+        id: publish
+        working-directory: source
+        env:
+          BRANCH: ${{ steps.target.outputs.branch }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/manga_sources_ptbr.json
+          if git diff --cached --quiet; then
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git commit -m 'docs(manga): track all enabled provider behavior revisions'
+          for attempt in 1 2 3 4 5; do
+            git fetch origin "$BRANCH" --quiet
+            git rebase "origin/$BRANCH"
+            if git push origin "HEAD:refs/heads/$BRANCH"; then
+              echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          exit 1
+      - name: Receipt
+        working-directory: control
+        env:
+          SHA: ${{ steps.publish.outputs.sha }}
+        run: |
+          mkdir -p results/goanime-manga-behavior-pins-v2
+          jq -n --arg sha "$SHA" '{schemaVersion:2,state:"success",goanimeSha:$sha,trackedEnabledProviders:16}' > "results/goanime-manga-behavior-pins-v2/${SHA}.json"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add results/goanime-manga-behavior-pins-v2
+          git commit -m "ci(result): record manga behavior pins v2 ${SHA:0:8}"
+          git push
