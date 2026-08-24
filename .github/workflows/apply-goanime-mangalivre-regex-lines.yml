@@ -1,0 +1,98 @@
+name: Apply GoAnime MangaLivre regex lines
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-mangalivre-regex-lines/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: true
+      - name: Resolve target
+        id: target
+        run: |
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-mangalivre-regex-lines/*.request' | head -n1)"
+          read -r project branch < "control/$request"
+          test "$project" = goanime
+          test "$branch" = 'codex/manga-parity-20260823'
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.target.outputs.branch }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Normalize raw regex lines
+        working-directory: source
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('lib/services/manga/providers/mangalivre_org_manga_provider.dart')
+          lines=p.read_text(encoding='utf-8').splitlines()
+          start=next(i for i,x in enumerate(lines) if '_nonceVariableRegex' in x)
+          end=next(i for i,x in enumerate(lines) if '_nonceShapeRegex' in x)
+          changed=[]
+          for i in range(start+1,end):
+              if "r'''" not in lines[i]:
+                  continue
+              before=lines[i]
+              after=before.replace(chr(92)+chr(92), chr(92)).replace(chr(92)+'"','"')
+              if after != before:
+                  lines[i]=after
+                  changed.append(i+1)
+          if len(changed) != 4:
+              raise SystemExit(f'expected exactly 4 changed regex lines, got {changed}')
+          p.write_text('\n'.join(lines)+'\n',encoding='utf-8')
+          print('changed_lines=' + ','.join(map(str,changed)))
+          PY
+          git diff --check
+          git diff --exit-code --quiet && exit 1 || true
+      - name: Commit and rebase-push
+        id: publish
+        working-directory: source
+        env:
+          BRANCH: ${{ steps.target.outputs.branch }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/services/manga/providers/mangalivre_org_manga_provider.dart
+          git commit -m 'fix(manga): correct MangaLivre nonce parser escaping'
+          for attempt in 1 2 3 4 5; do
+            git fetch origin "$BRANCH" --quiet
+            git rebase "origin/$BRANCH"
+            if git push origin "HEAD:refs/heads/$BRANCH"; then
+              echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          exit 1
+      - name: Receipt
+        working-directory: control
+        env:
+          SHA: ${{ steps.publish.outputs.sha }}
+        run: |
+          mkdir -p results/goanime-mangalivre-regex-lines
+          jq -n --arg sha "$SHA" '{schemaVersion:1,state:"success",goanimeSha:$sha,changedLines:4}' > "results/goanime-mangalivre-regex-lines/${SHA}.json"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add results/goanime-mangalivre-regex-lines
+          git commit -m "ci(result): record MangaLivre regex lines ${SHA:0:8}"
+          git push
