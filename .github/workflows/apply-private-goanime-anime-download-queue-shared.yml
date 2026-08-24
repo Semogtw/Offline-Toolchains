@@ -1,0 +1,230 @@
+name: Apply GoAnime Anime shared download queue migration
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-anime-download-queue-shared/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-anime-download-queue-shared
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    name: Patch, validate and publish Anime shared queue migration
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact source revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-anime-download-queue-shared/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = "goanime"
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Require unchanged remote branch head
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+
+      - name: Apply guarded Anime queue migration
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('lib/services/download/download_queue_manager.dart')
+          text = path.read_text(encoding='utf-8')
+
+          def replace_once(old: str, new: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'Expected exactly one guarded anchor, found {count}: {old[:100]!r}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              "import '../app_work_coordinator.dart';\nimport '../notification_service.dart';",
+              "import '../app_work_coordinator.dart';\nimport '../media/download_queue_coordinator.dart';\nimport '../notification_service.dart';",
+          )
+
+          replace_once(
+              "  final DownloadTransferSampleReporter _onTransferHealthSample;\n  final HlsQueueDownloadCoordinator _hlsCoordinator;",
+              "  final DownloadTransferSampleReporter _onTransferHealthSample;\n  final DownloadQueueCoordinator<String> _queueCoordinator;\n  final HlsQueueDownloadCoordinator _hlsCoordinator;",
+          )
+
+          replace_once(
+              "  final Map<String, http.Client> _downloadClients = {};\n  int _maxConcurrentDownloads = 3;\n  int _activeDownloadCount = 0;",
+              "  final Map<String, http.Client> _downloadClients = {};",
+          )
+
+          replace_once(
+              "       _onTransferHealthSample =\n           onTransferHealthSample ??\n           DownloadTransferHealthService.instance.record,\n       _hlsCoordinator =",
+              "       _onTransferHealthSample =\n           onTransferHealthSample ??\n           DownloadTransferHealthService.instance.record,\n       _queueCoordinator = DownloadQueueCoordinator<String>(\n         policy: DownloadConcurrencyPolicy(maxConcurrent: 3),\n       ),\n       _hlsCoordinator =",
+          )
+
+          replace_once(
+              "  int get maxConcurrentDownloads => _maxConcurrentDownloads;\n\n  set maxConcurrentDownloads(int value) {\n    _maxConcurrentDownloads = value.clamp(1, 5);\n    _onChanged();\n  }\n\n  int get activeDownloadCount => _activeDownloadCount;",
+              "  int get maxConcurrentDownloads => _queueCoordinator.policy.maxConcurrent;\n\n  set maxConcurrentDownloads(int value) {\n    _queueCoordinator.updatePolicy(\n      DownloadConcurrencyPolicy(maxConcurrent: value.clamp(1, 5)),\n    );\n    _onChanged();\n  }\n\n  int get activeDownloadCount => _queueCoordinator.activeCount;",
+          )
+
+          replace_once(
+              "  void _processQueue() {\n    if (_activeDownloadCount >= _maxConcurrentDownloads) {\n      return;\n    }\n\n    final queuedDownloads =\n        _downloads.values\n            .where((d) => d.status == DownloadStatus.queued)\n            .toList()\n          ..sort((a, b) => a.createdAt.compareTo(b.createdAt));\n\n    for (var download in queuedDownloads) {\n      if (_activeDownloadCount >= _maxConcurrentDownloads) break;\n      _startDownload(download.id);\n    }\n  }",
+              "  void _processQueue() {\n    final queuedDownloads =\n        _downloads.values\n            .where((d) => d.status == DownloadStatus.queued)\n            .toList()\n          ..sort((a, b) => a.createdAt.compareTo(b.createdAt));\n\n    for (final download in queuedDownloads) {\n      if (_queueCoordinator.isKnown(download.id)) continue;\n      final future = _queueCoordinator.enqueue<void>(\n        key: download.id,\n        operation: (_) => _startDownload(download.id),\n      );\n      unawaited(\n        future.then<void>(\n          (_) {},\n          onError: (Object error, StackTrace stackTrace) {\n            if (error is MediaDownloadQueueCancelledException) return;\n            debugPrint(\n              '[Download] Queue execution failed for ${download.id}: $error',\n            );\n          },\n        ),\n      );\n    }\n  }",
+          )
+
+          replace_once(
+              "  Future<void> _startDownload(String id) async {\n    final download = _downloads[id];\n    if (download == null) return;\n\n    _activeDownloadCount++;\n    _workCoordinator.setDownloadActive(true);",
+              "  Future<void> _startDownload(String id) async {\n    final download = _downloads[id];\n    if (download == null || download.status != DownloadStatus.queued) return;\n\n    _workCoordinator.setDownloadActive(true);",
+          )
+
+          replace_once(
+              "    } finally {\n      _activeDownloadCount--;\n      _workCoordinator.setDownloadActive(_activeDownloadCount > 0);\n      _activeDownloads.remove(id);\n      _downloadClients.remove(id);\n      _onChanged();\n      _processQueue();\n    }\n  }\n\n  Future<void> _downloadHttp(String id) async {",
+              "    } finally {\n      // The shared coordinator still counts this operation as active until\n      // _startDownload returns. More than one means another transfer remains.\n      _workCoordinator.setDownloadActive(_queueCoordinator.activeCount > 1);\n      _activeDownloads.remove(id);\n      _downloadClients.remove(id);\n      _onChanged();\n    }\n  }\n\n  Future<void> _downloadHttp(String id) async {",
+          )
+
+          replace_once(
+              "  Future<void> cancelDownload(String id) async {\n    final download = _downloads[id];\n    if (download == null) return;\n    final hlsWasActive = _hlsCoordinator.cancel(id);",
+              "  Future<void> cancelDownload(String id) async {\n    final download = _downloads[id];\n    if (download == null) return;\n    _queueCoordinator.cancel(id);\n    final hlsWasActive = _hlsCoordinator.cancel(id);",
+          )
+
+          replace_once(
+              "  Future<void> deleteDownload(String id) async {\n    final download = _downloads[id];\n    if (download == null) return;\n    final wasDownloading = download.status == DownloadStatus.downloading;",
+              "  Future<void> deleteDownload(String id) async {\n    final download = _downloads[id];\n    if (download == null) return;\n    _queueCoordinator.cancel(id);\n    final wasDownloading = download.status == DownloadStatus.downloading;",
+          )
+
+          replace_once(
+              "  void dispose() {\n    for (var client in _downloadClients.values) {",
+              "  void dispose() {\n    _queueCoordinator.dispose();\n    for (var client in _downloadClients.values) {",
+          )
+
+          path.write_text(text, encoding='utf-8')
+          PY
+          git diff --check
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get >/dev/null 2>&1
+          (cd packages/goanime_core && dart pub get >/dev/null 2>&1)
+
+      - name: Format migration
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format lib/services/download/download_queue_manager.dart >/dev/null
+          git diff --check
+
+      - name: Analyze migration slice
+        working-directory: private-source
+        run: |
+          flutter analyze --no-pub \
+            lib/services/download/download_queue_manager.dart \
+            lib/services/media/download_queue_coordinator.dart \
+            test/architecture/shared_anime_download_queue_adoption_guard_test.dart \
+            test/services/media/download_queue_coordinator_test.dart \
+            test/services/download/download_components_test.dart
+
+      - name: Run shared queue and Anime manager tests
+        working-directory: private-source
+        run: |
+          flutter test --no-pub test/services/media/download_queue_coordinator_test.dart
+          flutter test --no-pub test/architecture/shared_anime_download_queue_adoption_guard_test.dart
+          flutter test --no-pub test/services/download/download_components_test.dart
+          flutter test --no-pub test/services/download/download_restart_recovery_test.dart
+          flutter test --no-pub test/services/download/download_resume_content_range_test.dart
+
+      - name: Commit migration
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/services/download/download_queue_manager.dart
+          git commit -m 'refactor(download): delegate Anime queue to shared coordinator'
+          test -z "$(git status --porcelain)"
+
+      - name: Fast-forward private branch
+        id: publish
+        working-directory: private-source
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          new_sha="$(git rev-parse HEAD)"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/goanime-mobile.git "HEAD:refs/heads/$TARGET_BRANCH"
+          echo "sha=$new_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        run: echo "Published Anime shared download queue SHA ${{ steps.publish.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
