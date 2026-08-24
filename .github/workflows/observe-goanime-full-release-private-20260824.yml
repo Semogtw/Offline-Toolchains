@@ -1,0 +1,84 @@
+name: Observe GoAnime full private release handoff
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/observe-goanime-full-release-private-20260824.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  SOURCE_SHA: 7bd636136b7dac88bd679f1b98f9bec2d605efde
+
+jobs:
+  observe:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Resolve current handoff and GoAnime build runs
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPOSITORIES_TOKEN"
+          auth=(-H "Authorization: Bearer $PRIVATE_REPOSITORIES_TOKEN" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+
+          toolchains_json="$(curl --fail --silent --show-error "${auth[@]}" \
+            'https://api.github.com/repos/Semogtw/Offline-Toolchains/actions/workflows/handoff-goanime-full-release-private-20260824.yml/runs?branch=main&per_page=10')"
+          goanime_json="$(curl --fail --silent --show-error "${auth[@]}" \
+            'https://api.github.com/repos/Semogtw/goanime-mobile/actions/workflows/build_full_credentialed_apk.yml/runs?event=workflow_dispatch&branch=main&per_page=20')"
+
+          mkdir -p reports/goanime-full-main-private-release
+          TOOLCHAINS_JSON="$toolchains_json" GOANIME_JSON="$goanime_json" python3 - <<'PY'
+          import json, os, pathlib, datetime
+          source_sha = os.environ['SOURCE_SHA']
+          t = json.loads(os.environ['TOOLCHAINS_JSON']).get('workflow_runs', [])
+          g = json.loads(os.environ['GOANIME_JSON']).get('workflow_runs', [])
+          tr = t[0] if t else None
+          gr = next((r for r in g if r.get('head_sha') == source_sha), None)
+          def compact(r):
+              if not r: return None
+              return {
+                  'id': r.get('id'),
+                  'status': r.get('status'),
+                  'conclusion': r.get('conclusion'),
+                  'event': r.get('event'),
+                  'head_sha': r.get('head_sha'),
+                  'created_at': r.get('created_at'),
+                  'updated_at': r.get('updated_at'),
+                  'html_url': r.get('html_url'),
+              }
+          out = {
+              'schema_version': 1,
+              'source_sha': source_sha,
+              'toolchains_handoff': compact(tr),
+              'goanime_build': compact(gr),
+              'observed_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+          }
+          pathlib.Path('reports/goanime-full-main-private-release/observer.json').write_text(
+              json.dumps(out, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          print(json.dumps(out, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit observer report
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add reports/goanime-full-main-private-release/observer.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'ci(goanime): record private release observer [skip ci]'
+            git push "https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main
+          fi
