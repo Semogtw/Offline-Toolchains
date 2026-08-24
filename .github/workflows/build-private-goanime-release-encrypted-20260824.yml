@@ -105,6 +105,51 @@ jobs:
         shell: bash
         run: flutter analyze --no-pub
 
+      - name: Home direct bundled fallback regression
+        id: home_direct
+        continue-on-error: true
+        working-directory: private-source
+        shell: bash
+        run: flutter test --no-pub test/services/runtime_home_catalog_direct_seed_fallback_test.dart
+
+      - name: Home resilience regression
+        id: home_resilience
+        continue-on-error: true
+        working-directory: private-source
+        shell: bash
+        run: flutter test --no-pub test/services/runtime_home_catalog_resilience_test.dart
+
+      - name: Home loading regression
+        id: home_loading
+        continue-on-error: true
+        working-directory: private-source
+        shell: bash
+        run: flutter test --no-pub test/services/runtime_home_catalog_loading_regression_test.dart
+
+      - name: Home seed fallback regression
+        id: home_seed
+        continue-on-error: true
+        working-directory: private-source
+        shell: bash
+        run: flutter test --no-pub test/services/runtime_home_catalog_seed_fallback_test.dart
+
+      - name: Home partial cache regression
+        id: home_partial
+        continue-on-error: true
+        working-directory: private-source
+        shell: bash
+        run: flutter test --no-pub test/services/runtime_home_catalog_partial_cache_repair_test.dart
+
+      - name: Require focused Home regressions to pass
+        shell: bash
+        run: |
+          set -euo pipefail
+          test '${{ steps.home_direct.outcome }}' = success
+          test '${{ steps.home_resilience.outcome }}' = success
+          test '${{ steps.home_loading.outcome }}' = success
+          test '${{ steps.home_seed.outcome }}' = success
+          test '${{ steps.home_partial.outcome }}' = success
+
       - name: Run Flutter tests
         working-directory: private-source
         shell: bash
