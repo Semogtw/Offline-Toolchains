@@ -1,0 +1,264 @@
+name: Deliver GoAnime post-10 protected PR
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-post10-protected-delivery/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-post10-protected-delivery
+  cancel-in-progress: false
+
+jobs:
+  deliver:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-post10-protected-delivery/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project expected_main base_candidate patch_sha isolation_sha < "control/$request"
+          test "$project" = goanime
+          for value in "$expected_main" "$base_candidate" "$patch_sha" "$isolation_sha"; do
+            [[ "$value" =~ ^[0-9a-f]{40}$ ]]
+          done
+          printf 'expected_main=%s\nbase_candidate=%s\npatch_sha=%s\nisolation_sha=%s\n' "$expected_main" "$base_candidate" "$patch_sha" "$isolation_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact current main
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.expected_main }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify source commits and non-overlap
+        working-directory: source
+        env:
+          EXPECTED_MAIN: ${{ steps.request.outputs.expected_main }}
+          BASE_CANDIDATE: ${{ steps.request.outputs.base_candidate }}
+          PATCH_SHA: ${{ steps.request.outputs.patch_sha }}
+          ISOLATION_SHA: ${{ steps.request.outputs.isolation_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_MAIN"
+          test "$(git ls-remote origin refs/heads/main | awk '{print $1}')" = "$EXPECTED_MAIN"
+          for sha in "$BASE_CANDIDATE" "$PATCH_SHA" "$ISOLATION_SHA"; do
+            git cat-file -e "$sha^{commit}" || git fetch --no-tags origin "$sha"
+            git cat-file -e "$sha^{commit}"
+          done
+          test "$(git rev-parse "$ISOLATION_SHA^")" = "$EXPECTED_MAIN"
+          old_base="$(git rev-parse "$BASE_CANDIDATE^")"
+          git diff --name-only "$old_base".."$BASE_CANDIDATE" | sort > "$RUNNER_TEMP/incoming.txt"
+          git diff --name-only "$old_base".."$EXPECTED_MAIN" | sort > "$RUNNER_TEMP/main-delta.txt"
+          comm -12 "$RUNNER_TEMP/incoming.txt" "$RUNNER_TEMP/main-delta.txt" > "$RUNNER_TEMP/overlap.txt"
+          test ! -s "$RUNNER_TEMP/overlap.txt"
+          test "$(git diff --name-only "$EXPECTED_MAIN".."$ISOLATION_SHA")" = 'test/services/remote_manifest_url_policy_test.dart'
+
+      - name: Reconstruct exact reviewed app delta
+        working-directory: source
+        env:
+          BASE_CANDIDATE: ${{ steps.request.outputs.base_candidate }}
+          PATCH_SHA: ${{ steps.request.outputs.patch_sha }}
+          ISOLATION_SHA: ${{ steps.request.outputs.isolation_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          hardening_paths=(
+            docs/README.md
+            docs/checkpoint_41_download_completion_policy_2026-08-23.md
+            docs/checkpoint_69_post_merge_hardening_2026-08-23.md
+            lib/services/download/download_completion_policy.dart
+            lib/services/download/download_queue_manager_http.dart
+            lib/services/source/shared_cancellable_work.dart
+            lib/services/unified_source_service.dart
+            test/services/download/download_completion_policy_test.dart
+            test/services/download/download_identity_transfer_test.dart
+            test/services/download_service_test.dart
+            test/services/source/shared_cancellable_work_test.dart
+            test/services/source/unified_source_stale_fallback_cache_test.dart
+            test/services/unified_source_shared_cancellation_test.dart
+            tools/tests/test_validate_project_health_credentials.py
+            tools/tests/test_validate_project_health_files.py
+            tools/validate_project_health_files.py
+          )
+          for path in "${hardening_paths[@]}"; do
+            git show "$BASE_CANDIDATE:$path" > "$path"
+          done
+          for path in \
+            test/services/unified_source_shared_cancellation_test.dart \
+            test/services/source/unified_source_stale_fallback_cache_test.dart
+          do
+            git show "$PATCH_SHA:$path" > "$path"
+          done
+          git show "$ISOLATION_SHA:test/services/remote_manifest_url_policy_test.dart" > test/services/remote_manifest_url_policy_test.dart
+          chmod 0644 tools/validate_project_health_files.py
+          git diff --check
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: false
+
+      - name: Resolve dependencies and canonical formatting
+        working-directory: source
+        env:
+          EXPECTED_MAIN: ${{ steps.request.outputs.expected_main }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+          mapfile -t dart_files < <(git diff --name-only "$EXPECTED_MAIN" -- '*.dart' | sort -u)
+          test "${#dart_files[@]}" -gt 0
+          dart format "${dart_files[@]}" >/dev/null
+          git diff --check
+
+      - name: Build reviewed squash and enforce allowlist
+        id: squash
+        working-directory: source
+        env:
+          EXPECTED_MAIN: ${{ steps.request.outputs.expected_main }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "goanime-toolchains[bot]"
+          git config user.email "goanime-toolchains[bot]@users.noreply.github.com"
+          git add -A
+          tree_sha="$(git write-tree)"
+          reviewed_sha="$(printf '%s\n' 'fix: finalize post-10 correctness hardening' | git commit-tree "$tree_sha" -p "$EXPECTED_MAIN")"
+          git reset --hard "$reviewed_sha"
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_MAIN"
+          cat > "$RUNNER_TEMP/allowed.txt" <<'EOF'
+          docs/README.md
+          docs/checkpoint_41_download_completion_policy_2026-08-23.md
+          docs/checkpoint_69_post_merge_hardening_2026-08-23.md
+          lib/services/download/download_completion_policy.dart
+          lib/services/download/download_queue_manager_http.dart
+          lib/services/source/shared_cancellable_work.dart
+          lib/services/unified_source_service.dart
+          test/services/download/download_completion_policy_test.dart
+          test/services/download/download_identity_transfer_test.dart
+          test/services/download_service_test.dart
+          test/services/remote_manifest_url_policy_test.dart
+          test/services/source/shared_cancellable_work_test.dart
+          test/services/source/unified_source_stale_fallback_cache_test.dart
+          test/services/unified_source_shared_cancellation_test.dart
+          tools/tests/test_validate_project_health_credentials.py
+          tools/tests/test_validate_project_health_files.py
+          tools/validate_project_health_files.py
+          EOF
+          sed -i 's/^          //' "$RUNNER_TEMP/allowed.txt"
+          git diff --name-only "$EXPECTED_MAIN"..HEAD | sort > "$RUNNER_TEMP/actual.txt"
+          diff -u "$RUNNER_TEMP/allowed.txt" "$RUNNER_TEMP/actual.txt"
+          git diff --check "$EXPECTED_MAIN"..HEAD
+          printf 'reviewed_sha=%s\ntree_sha=%s\n' "$reviewed_sha" "$tree_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Revalidate reconstructed snapshot
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ./tools/validate_project_health.sh
+          python3 -m unittest discover -s tools/tests -p 'test_*.py'
+          python3 tools/validate_repository_guards.py
+          flutter analyze --no-pub
+          flutter test --no-pub test/services/download/download_completion_policy_test.dart test/services/download/download_identity_transfer_test.dart test/services/download_service_test.dart test/services/source/shared_cancellable_work_test.dart test/services/source/unified_source_stale_fallback_cache_test.dart test/services/unified_source_shared_cancellation_test.dart test/services/remote_manifest_url_policy_test.dart
+          (cd packages/goanime_core && dart test --concurrency=1)
+          python3 tools/validate_release_guard_parity.py
+          python3 tools/validate_quality_scorecard.py
+
+      - name: Bind delivery exception to one disposable branch
+        id: delivery
+        working-directory: source
+        env:
+          EXPECTED_MAIN: ${{ steps.request.outputs.expected_main }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/heads/main | awk '{print $1}')" = "$EXPECTED_MAIN"
+          branch="validated/post10-protected-delivery-${GITHUB_RUN_ID}"
+          workflow='.github/workflows/pr_fast.yml'
+          BRANCH="$branch" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          path = Path('.github/workflows/pr_fast.yml')
+          text = path.read_text()
+          branch = os.environ['BRANCH']
+          needle = "    if: github.event.pull_request.number != 204 && github.event.pull_request.number != 206 && github.event.pull_request.number != 209\n"
+          replacement = needle.rstrip('\n') + f" && github.head_ref != '{branch}'\n"
+          if needle not in text:
+              raise SystemExit('expected pr_fast guard line not found')
+          text = text.replace(needle, replacement, 1)
+          marker = '    # only these already validated PRs. No other PR number matches this exception.\n'
+          if marker not in text:
+              raise SystemExit('expected pr_fast comment marker not found')
+          text = text.replace(marker, marker + f"    # {branch} is the disposable exact-source post-10 delivery vehicle.\n", 1)
+          path.write_text(text)
+          PY
+          git add "$workflow"
+          git commit -m "ci: bind protected post-10 delivery vehicle"
+          python3 tools/validate_repository_guards.py
+          python3 tools/validate_release_guard_parity.py
+          git diff --check "$EXPECTED_MAIN"..HEAD
+          git push origin "HEAD:refs/heads/$branch"
+          pr_url="$(gh pr create -R Semogtw/goanime-mobile --base main --head "$branch" --title 'fix: finalize post-10 correctness hardening' --body "Exact-source protected delivery of the post-10 hardening already fully validated by Offline-Toolchains run 32679186271. The only delivery-only delta is a branch-bound pr_fast exception because the private hosted runner fails before step 1. App/runtime delta remains the reviewed 17-file squash. Supersedes the delivery mechanism of closed PR #205; #205 stays closed.")"
+          pr_number="$(gh pr view "$pr_url" -R Semogtw/goanime-mobile --json number --jq .number)"
+          delivery_sha="$(git rev-parse HEAD)"
+          printf 'branch=%s\npr_number=%s\npr_url=%s\ndelivery_sha=%s\n' "$branch" "$pr_number" "$pr_url" "$delivery_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Publish sanitized receipt
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_MAIN: ${{ steps.request.outputs.expected_main }}
+          REVIEWED_SHA: ${{ steps.squash.outputs.reviewed_sha }}
+          TREE_SHA: ${{ steps.squash.outputs.tree_sha }}
+          DELIVERY_SHA: ${{ steps.delivery.outputs.delivery_sha }}
+          DELIVERY_BRANCH: ${{ steps.delivery.outputs.branch }}
+          PR_NUMBER: ${{ steps.delivery.outputs.pr_number }}
+          STATE: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          body="$(jq -cn --arg sourceMain "$SOURCE_MAIN" --arg reviewedSha "$REVIEWED_SHA" --arg treeSha "$TREE_SHA" --arg deliverySha "$DELIVERY_SHA" --arg branch "$DELIVERY_BRANCH" --arg prNumber "$PR_NUMBER" --arg state "$STATE" --argjson runId "$GITHUB_RUN_ID" '{schemaVersion:1,sourceMain:$sourceMain,reviewedSha:$reviewedSha,treeSha:$treeSha,deliverySha:$deliverySha,branch:$branch,prNumber:$prNumber,state:$state,runId:$runId}')"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          path="results/goanime-post10-protected-delivery/$GITHUB_RUN_ID.json"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): record GoAnime protected delivery $GITHUB_RUN_ID" -f content="$encoded" >/dev/null
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/source" "$GITHUB_WORKSPACE/control"
