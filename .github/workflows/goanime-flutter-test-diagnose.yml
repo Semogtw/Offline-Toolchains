@@ -1,0 +1,171 @@
+name: GoAnime Flutter test diagnostics
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-flutter-test-diagnose/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-flutter-test-diagnose
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Resolve exact GoAnime request
+        id: request
+        shell: bash
+        run: >-
+          python scripts/goanime_resolve_request.py
+          --request-dir triggers/goanime-flutter-test-diagnose
+          --workspace .
+
+      - name: Checkout exact GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.source_hint }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify immutable source
+        working-directory: private-source
+        env:
+          EXPECTED_SHA: ${{ steps.request.outputs.source_hint }}
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+
+      - name: Run Flutter tests with machine reporter
+        id: tests
+        working-directory: private-source
+        shell: bash
+        run: |
+          set +e
+          flutter test --no-pub --reporter=json > "$RUNNER_TEMP/flutter-tests.jsonl" 2> "$RUNNER_TEMP/flutter-tests.stderr"
+          status=$?
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Build sanitized failure report
+        env:
+          SOURCE_SHA: ${{ steps.request.outputs.source_hint }}
+          TEST_EXIT_CODE: ${{ steps.tests.outputs.exit_code }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports/goanime-flutter-test-diagnostics
+          python3 - "$RUNNER_TEMP/flutter-tests.jsonl" "$RUNNER_TEMP/flutter-tests.stderr" "reports/goanime-flutter-test-diagnostics/${SOURCE_SHA}-${GITHUB_RUN_ID}.json" <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          events_path = pathlib.Path(sys.argv[1])
+          stderr_path = pathlib.Path(sys.argv[2])
+          out_path = pathlib.Path(sys.argv[3])
+
+          tests = {}
+          groups = {}
+          errors = {}
+          failed_ids = set()
+          suite_paths = {}
+
+          if events_path.exists():
+              for raw in events_path.read_text(encoding='utf-8', errors='replace').splitlines():
+                  try:
+                      event = json.loads(raw)
+                  except json.JSONDecodeError:
+                      continue
+                  etype = event.get('type')
+                  if etype == 'suite':
+                      suite = event.get('suite') or {}
+                      suite_paths[suite.get('id')] = suite.get('path')
+                  elif etype == 'group':
+                      group = event.get('group') or {}
+                      groups[group.get('id')] = group
+                  elif etype == 'testStart':
+                      test = event.get('test') or {}
+                      tests[test.get('id')] = test
+                  elif etype == 'error':
+                      tid = event.get('testID')
+                      if tid is not None:
+                          errors.setdefault(tid, []).append({
+                              'error': str(event.get('error') or '')[:4000],
+                              'stackTrace': str(event.get('stackTrace') or '')[:6000],
+                          })
+                  elif etype == 'testDone' and event.get('result') not in (None, 'success', 'skipped'):
+                      failed_ids.add(event.get('testID'))
+
+          failures = []
+          for tid in sorted(failed_ids, key=lambda value: str(value)):
+              test = tests.get(tid) or {}
+              group_ids = test.get('groupIDs') or []
+              group_names = [groups.get(gid, {}).get('name') for gid in group_ids]
+              suite_id = test.get('suiteID')
+              failures.append({
+                  'testId': tid,
+                  'name': test.get('name'),
+                  'suitePath': suite_paths.get(suite_id),
+                  'groups': [name for name in group_names if name],
+                  'errors': errors.get(tid, []),
+              })
+
+          stderr = stderr_path.read_text(encoding='utf-8', errors='replace') if stderr_path.exists() else ''
+          payload = {
+              'schemaVersion': 1,
+              'sourceSha': os.environ['SOURCE_SHA'],
+              'runId': int(os.environ['GITHUB_RUN_ID']),
+              'exitCode': int(os.environ.get('TEST_EXIT_CODE') or 0),
+              'failureCount': len(failures),
+              'failures': failures,
+              'stderrTail': stderr[-6000:],
+          }
+          out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+          print(json.dumps({'exitCode': payload['exitCode'], 'failureCount': payload['failureCount']}))
+          PY
+
+      - name: Publish sanitized diagnostic receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add reports/goanime-flutter-test-diagnostics
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "ci(goanime): record Flutter test diagnostics $GITHUB_RUN_ID"
+          git fetch origin main
+          git rebase origin/main
+          git push origin HEAD:main
