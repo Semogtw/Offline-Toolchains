@@ -1,0 +1,76 @@
+name: Probe GoAnime private branch head
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-branch-head/*.request'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-private-branch-head
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: Resolve request and remote head
+        id: probe
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-branch-head/*.request' | head -n 1)"
+          test -n "$request"
+          read -r branch < "$request"
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          sha="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$branch" | awk '{print $1}')"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Publish sanitized receipt
+        env:
+          BRANCH: ${{ steps.probe.outputs.branch }}
+          SHA: ${{ steps.probe.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports/goanime-branch-head
+          report="reports/goanime-branch-head/${GITHUB_RUN_ID}.json"
+          python3 - "$report" <<'PY'
+          import json, os, sys
+          path = sys.argv[1]
+          payload = {
+              'schemaVersion': 1,
+              'runId': int(os.environ['GITHUB_RUN_ID']),
+              'branch': os.environ['BRANCH'],
+              'sha': os.environ['SHA'],
+          }
+          with open(path, 'w', encoding='utf-8') as fh:
+              json.dump(payload, fh, indent=2, sort_keys=True)
+              fh.write('\n')
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$report"
+          git commit -m "ci(goanime): report private branch head ${GITHUB_RUN_ID}"
+          git push
