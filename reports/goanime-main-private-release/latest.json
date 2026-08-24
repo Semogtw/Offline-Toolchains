@@ -1,12 +1,13 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "source_sha": "7bd636136b7dac88bd679f1b98f9bec2d605efde",
-  "workflow_run_id": 32719056386,
-  "workflow_run_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/32719056386",
+  "workflow_name": "Build current GoAnime main private release APK v2",
+  "workflow_run_id": 32719526567,
+  "workflow_run_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/32719526567",
   "conclusion": "failure",
   "artifact_id": null,
   "artifact_name": null,
   "artifact_expired": null,
-  "completed_at": "2026-08-24T10:54:49Z",
+  "completed_at": "2026-08-24T11:00:58Z",
   "distribution": "private encrypted Actions artifact only; no GitHub Release, Play Store, updater publication, or rollout"
 }
