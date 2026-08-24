@@ -26,15 +26,26 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
       - id: request
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
+          test -n "$PRIVATE_REPOSITORIES_TOKEN"
           request="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-upstream-exact/*.request' | head -n1)"
-          read -r project branch sha < "$request"
+          test -n "$request"
+          read -r project branch requested_sha < "$request"
           test "$project" = goanime
           test "$branch" = 'codex/manga-parity-20260823'
+          if [[ -n "${requested_sha:-}" ]]; then
+            sha="$requested_sha"
+          else
+            auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+            sha="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$branch" | awk '{print $1}')"
+          fi
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
           printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+          printf 'Resolved %s to exact SHA %s\n' "$branch" "$sha" >> "$GITHUB_STEP_SUMMARY"
 
   static:
     needs: resolve
@@ -164,11 +175,11 @@ jobs:
           set -euo pipefail
           state=failure
           if [[ "$STATIC" == success && "$LIVE" == success ]]; then state=success; fi
-          result="$(jq -cn --arg state "$state" --arg sha "$SHA" --arg static "$STATIC" --arg live "$LIVE" --arg control "$CONTROL_SHA" '{schemaVersion:1,state:$state,goanimeSha:$sha,static:$static,live:$live,enabledProviders:16,exactSha:true,controlSha:$control}')"
+          result="$(jq -cn --arg state "$state" --arg sha "$SHA" --arg static "$STATIC" --arg live "$LIVE" --arg control "$CONTROL_SHA" '{schemaVersion:2,state:$state,goanimeSha:$sha,static:$static,live:$live,enabledProviders:16,exactSha:true,controlSha:$control}')"
           encoded="$(printf '%s\n' "$result" | base64 -w0)"
           path="results/goanime-manga-upstream-exact/${SHA}.json"
           existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
-          args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): record manga upstream exact $SHA" -f content="$encoded")
+          args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): record manga upstream exact ${SHA:0:8}" -f content="$encoded")
           if [[ -n "$existing" ]]; then args+=(-f sha="$existing"); fi
           gh api "${args[@]}" >/dev/null
           echo "$result" >> "$GITHUB_STEP_SUMMARY"
