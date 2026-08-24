@@ -1,0 +1,9 @@
+{
+  "finishedAt": "2026-08-24T04:30:00.620231Z",
+  "migrateResult": "failure",
+  "pushedSha": null,
+  "runAttempt": 1,
+  "runId": 32690137631,
+  "schemaVersion": 1,
+  "toolchainsTriggerSha": "3dc165510f28eace402ff56445181e4ef84ceeac"
+}
