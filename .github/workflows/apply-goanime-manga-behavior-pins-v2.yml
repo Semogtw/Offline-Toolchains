@@ -9,11 +9,15 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: goanime-manga-control-results
+  cancel-in-progress: false
+
 jobs:
   apply:
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 15
     steps:
       - env:
           PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
@@ -22,11 +26,13 @@ jobs:
         with:
           path: control
           fetch-depth: 2
-          persist-credentials: true
+          persist-credentials: false
       - name: Resolve branch
         id: target
         run: |
+          set -euo pipefail
           request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-behavior-pins-v2/*.request' | head -n1)"
+          test -n "$request"
           read -r project branch < "control/$request"
           test "$project" = goanime
           test "$branch" = 'codex/manga-parity-20260823'
@@ -39,11 +45,19 @@ jobs:
           path: source
           fetch-depth: 0
           persist-credentials: true
+      - name: Capture source head
+        id: source
+        run: echo "sha=$(git -C source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Track all enabled providers against reviewed Keiyoushi behavior
+        id: track
+        continue-on-error: true
         working-directory: source
+        shell: bash
         run: |
-          set -euo pipefail
-          python3 - <<'PY'
+          set +e
+          {
+            set -euo pipefail
+            python3 - <<'PY'
           import json
           from pathlib import Path
 
@@ -86,13 +100,21 @@ jobs:
             ref['behaviorRevision']=behavior
           p.write_text(json.dumps(data,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
           PY
-          python3 -m json.tool docs/manga_sources_ptbr.json >/dev/null
-          git diff --check
+            python3 -m json.tool docs/manga_sources_ptbr.json >/dev/null
+            git diff --check
+          } > "$RUNNER_TEMP/pins.log" 2>&1
+          code=$?
+          set -e
+          cat "$RUNNER_TEMP/pins.log"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          exit "$code"
       - name: Commit and rebase-push
         id: publish
+        if: steps.track.outcome == 'success'
         working-directory: source
         env:
           BRANCH: ${{ steps.target.outputs.branch }}
+        shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
@@ -105,22 +127,40 @@ jobs:
           git commit -m 'docs(manga): track all enabled provider behavior revisions'
           for attempt in 1 2 3 4 5; do
             git fetch origin "$BRANCH" --quiet
-            git rebase "origin/$BRANCH"
+            if ! git rebase "origin/$BRANCH"; then
+              git rebase --abort || true
+              exit 1
+            fi
             if git push origin "HEAD:refs/heads/$BRANCH"; then
               echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
               exit 0
             fi
+            sleep $((attempt * 2))
           done
           exit 1
-      - name: Receipt
-        working-directory: control
+      - name: Publish diagnostic receipt
+        if: always() && steps.target.outputs.branch != ''
         env:
-          SHA: ${{ steps.publish.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          PUBLISHED_SHA: ${{ steps.publish.outputs.sha }}
+          TRACK_OUTCOME: ${{ steps.track.outcome }}
+          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+        shell: bash
         run: |
-          mkdir -p results/goanime-manga-behavior-pins-v2
-          jq -n --arg sha "$SHA" '{schemaVersion:2,state:"success",goanimeSha:$sha,trackedEnabledProviders:16}' > "results/goanime-manga-behavior-pins-v2/${SHA}.json"
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add results/goanime-manga-behavior-pins-v2
-          git commit -m "ci(result): record manga behavior pins v2 ${SHA:0:8}"
-          git push
+          set -euo pipefail
+          sha="${PUBLISHED_SHA:-$SOURCE_SHA}"
+          state=failure
+          if [[ "$TRACK_OUTCOME" == success && "$PUBLISH_OUTCOME" == success ]]; then state=success; fi
+          tail_text="$(tail -n 100 "$RUNNER_TEMP/pins.log" 2>/dev/null || true)"
+          result="$(jq -cn --arg state "$state" --arg sha "$sha" --arg track "$TRACK_OUTCOME" --arg publish "$PUBLISH_OUTCOME" --arg tail "$tail_text" '{schemaVersion:3,state:$state,goanimeSha:$sha,trackedEnabledProviders:16,trackOutcome:$track,publishOutcome:$publish,diagnosticTail:$tail}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          path="results/goanime-manga-behavior-pins-v2/${sha}.json"
+          existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): record manga behavior pins v2 ${sha:0:8}" -f content="$encoded")
+          if [[ -n "$existing" ]]; then args+=(-f sha="$existing"); fi
+          gh api "${args[@]}" >/dev/null
+          echo "$result" >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce apply
+        if: always() && (steps.track.outcome != 'success' || steps.publish.outcome != 'success')
+        run: exit 1
