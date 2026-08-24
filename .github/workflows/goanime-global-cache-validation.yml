@@ -83,16 +83,37 @@ jobs:
 
       - name: Check Dart formatting
         working-directory: private-source
+        shell: bash
         run: |
-          dart format --output=none --set-exit-if-changed \
-            lib/app/bootstrap.dart \
-            lib/services/discovery_evidence_service.dart \
-            lib/services/global_discovery_overlay_service.dart \
-            lib/services/new_release_scanner.dart \
-            lib/services/remote_catalog_endpoints.dart \
-            test/services/discovery_evidence_service_test.dart \
-            test/services/global_discovery_overlay_service_test.dart \
+          set -euo pipefail
+          candidates=(
+            lib/app/bootstrap.dart
+            lib/services/catalog_discovery_reporting_service.dart
+            lib/services/mal_provider_availability_service.dart
+            lib/services/discovery_evidence_service.dart
+            lib/services/global_discovery_overlay_service.dart
+            lib/services/new_release_scanner.dart
+            lib/services/remote_catalog_endpoints.dart
+            test/architecture/service_singleton_inventory_guard_test.dart
+            test/screens/home_bootstrap_single_flight_contract_test.dart
+            test/services/catalog_discovery_reporting_service_test.dart
+            test/services/discovery_evidence_service_test.dart
+            test/services/global_discovery_overlay_service_test.dart
+            test/services/mal_provider_availability_service_test.dart
             test/services/remote_catalog_endpoints_test.dart
+          )
+          files=()
+          for candidate in "${candidates[@]}"; do
+            if [[ -f "$candidate" ]]; then
+              files+=("$candidate")
+            fi
+          done
+          if (( ${#files[@]} == 0 )); then
+            echo '::error::No catalog architecture Dart files were found to format.'
+            exit 1
+          fi
+          printf 'Formatting %s\n' "${files[@]}"
+          dart format --output=none --set-exit-if-changed "${files[@]}"
 
       - name: Analyze project
         working-directory: private-source
@@ -100,15 +121,44 @@ jobs:
 
       - name: Run focused catalog tests
         working-directory: private-source
+        shell: bash
         run: |
-          flutter test --no-pub --concurrency=1 \
-            test/services/remote_catalog_endpoints_test.dart \
-            test/services/discovery_evidence_service_test.dart \
-            test/services/global_discovery_overlay_service_test.dart \
-            test/services/new_release_scanner_test.dart \
-            test/services/new_release_scanner_batch_registration_test.dart \
-            test/services/runtime_database_update_service_test.dart \
+          set -euo pipefail
+          candidates=(
+            test/services/catalog_discovery_reporting_service_test.dart
             test/services/mal_provider_availability_service_test.dart
+            test/architecture/service_singleton_inventory_guard_test.dart
+            test/screens/home_bootstrap_single_flight_contract_test.dart
+            test/services/remote_catalog_endpoints_test.dart
+            test/services/discovery_evidence_service_test.dart
+            test/services/global_discovery_overlay_service_test.dart
+            test/services/new_release_scanner_test.dart
+            test/services/new_release_scanner_batch_registration_test.dart
+            test/services/runtime_database_update_service_test.dart
+          )
+          tests=()
+          for candidate in "${candidates[@]}"; do
+            if [[ -f "$candidate" ]]; then
+              tests+=("$candidate")
+            fi
+          done
+          if (( ${#tests[@]} == 0 )); then
+            echo '::error::No focused catalog tests were found.'
+            exit 1
+          fi
+          printf 'Running %s\n' "${tests[@]}"
+          flutter test --no-pub --concurrency=1 "${tests[@]}"
+
+      - name: Test catalog discovery consensus promotion
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f tools/tests/test_apply_catalog_discovery_consensus.py ]]; then
+            python tools/tests/test_apply_catalog_discovery_consensus.py -v
+          else
+            echo 'Consensus promotion test is not present on this source revision; skipping legacy revision.'
+          fi
 
       - name: Validate provider cache contract
         working-directory: private-source
