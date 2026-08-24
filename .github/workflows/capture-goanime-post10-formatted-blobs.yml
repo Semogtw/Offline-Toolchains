@@ -1,0 +1,122 @@
+name: Capture GoAnime post-10 formatted blobs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-post10-formatted-blobs/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  capture:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout trusted request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-post10-formatted-blobs/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project expected_main base_candidate patch_sha isolation_sha < "control/$request"
+          test "$project" = goanime
+          printf 'expected_main=%s\nbase_candidate=%s\npatch_sha=%s\nisolation_sha=%s\n' "$expected_main" "$base_candidate" "$patch_sha" "$isolation_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout GoAnime
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.expected_main }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+
+      - name: Reconstruct reviewed files
+        working-directory: source
+        env:
+          BASE_CANDIDATE: ${{ steps.request.outputs.base_candidate }}
+          PATCH_SHA: ${{ steps.request.outputs.patch_sha }}
+          ISOLATION_SHA: ${{ steps.request.outputs.isolation_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          paths=(
+            docs/README.md
+            docs/checkpoint_41_download_completion_policy_2026-08-23.md
+            docs/checkpoint_69_post_merge_hardening_2026-08-23.md
+            lib/services/download/download_completion_policy.dart
+            lib/services/download/download_queue_manager_http.dart
+            lib/services/source/shared_cancellable_work.dart
+            lib/services/unified_source_service.dart
+            test/services/download/download_completion_policy_test.dart
+            test/services/download/download_identity_transfer_test.dart
+            test/services/download_service_test.dart
+            test/services/source/shared_cancellable_work_test.dart
+            test/services/source/unified_source_stale_fallback_cache_test.dart
+            test/services/unified_source_shared_cancellation_test.dart
+            tools/tests/test_validate_project_health_credentials.py
+            tools/tests/test_validate_project_health_files.py
+            tools/validate_project_health_files.py
+          )
+          for path in "${paths[@]}"; do git show "$BASE_CANDIDATE:$path" > "$path"; done
+          git show "$PATCH_SHA:test/services/unified_source_shared_cancellation_test.dart" > test/services/unified_source_shared_cancellation_test.dart
+          git show "$PATCH_SHA:test/services/source/unified_source_stale_fallback_cache_test.dart" > test/services/source/unified_source_stale_fallback_cache_test.dart
+          git show "$ISOLATION_SHA:test/services/remote_manifest_url_policy_test.dart" > test/services/remote_manifest_url_policy_test.dart
+          chmod 0644 tools/validate_project_health_files.py
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: false
+
+      - name: Format and publish changed blobs
+        working-directory: source
+        env:
+          EXPECTED_MAIN: ${{ steps.request.outputs.expected_main }}
+          GH_TOKEN: ${{ github.token }}
+          CONTROL_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t dart_files < <(git diff --name-only "$EXPECTED_MAIN" -- '*.dart' | sort -u)
+          before="$RUNNER_TEMP/before.tsv"
+          : > "$before"
+          for file in "${dart_files[@]}"; do printf '%s\t%s\n' "$file" "$(git hash-object "$file")" >> "$before"; done
+          dart format "${dart_files[@]}" >/dev/null
+          manifest="$RUNNER_TEMP/manifest.tsv"
+          : > "$manifest"
+          out_root="results/goanime-post10-formatted-blobs/$GITHUB_RUN_ID"
+          for file in "${dart_files[@]}"; do
+            before_sha="$(awk -F '\t' -v f="$file" '$1==f{print $2}' "$before")"
+            after_sha="$(git hash-object "$file")"
+            changed=false
+            if test "$before_sha" != "$after_sha"; then
+              changed=true
+              encoded="$(base64 -w0 < "$file")"
+              out_path="$out_root/files/$file"
+              gh api --method PUT "repos/$CONTROL_REPO/contents/$out_path" -f message="ci(result): capture formatted blob $GITHUB_RUN_ID $file" -f content="$encoded" >/dev/null
+            fi
+            printf '%s\t%s\t%s\t%s\n' "$file" "$before_sha" "$after_sha" "$changed" >> "$manifest"
+          done
+          encoded_manifest="$(base64 -w0 < "$manifest")"
+          gh api --method PUT "repos/$CONTROL_REPO/contents/$out_root/manifest.tsv" -f message="ci(result): capture formatted blob manifest $GITHUB_RUN_ID" -f content="$encoded_manifest" >/dev/null
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/source" "$GITHUB_WORKSPACE/control"
