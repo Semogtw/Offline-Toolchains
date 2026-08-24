@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-24T02:57:57.584207Z",
+  "generatedAt": "2026-08-24T03:00:10.472776Z",
   "schemaVersion": 1,
   "workflows": {
     "finalizer": [
@@ -67,13 +67,33 @@
     "fullCi": [
       {
         "conclusion": "",
+        "createdAt": "2026-08-24T02:59:53Z",
+        "databaseId": 32684892097,
+        "displayTitle": "ci(goanime): rerun PR 210 after concurrency isolation",
+        "event": "push",
+        "headSha": "ff99d9ece0e6b4424f044a7610878fd13aaeb418",
+        "status": "in_progress",
+        "updatedAt": "2026-08-24T03:00:03Z"
+      },
+      {
+        "conclusion": "",
+        "createdAt": "2026-08-24T02:59:42Z",
+        "databaseId": 32684882729,
+        "displayTitle": "ci(goanime): isolate full CI concurrency by source",
+        "event": "push",
+        "headSha": "29064eb49e3d11312498adf667b5bbd97fe471d9",
+        "status": "in_progress",
+        "updatedAt": "2026-08-24T02:59:51Z"
+      },
+      {
+        "conclusion": "failure",
         "createdAt": "2026-08-24T02:57:09Z",
         "databaseId": 32684749231,
         "displayTitle": "ci(goanime): validate shared search checkpoint",
         "event": "push",
         "headSha": "194bf853d68244488da6825d4edf47784dd8858b",
-        "status": "in_progress",
-        "updatedAt": "2026-08-24T02:57:49Z"
+        "status": "completed",
+        "updatedAt": "2026-08-24T02:59:36Z"
       },
       {
         "conclusion": "cancelled",
@@ -104,26 +124,6 @@
         "headSha": "f0a9d0fa67d94209d87ad89b6ca76fa109c539a7",
         "status": "completed",
         "updatedAt": "2026-08-24T01:19:04Z"
-      },
-      {
-        "conclusion": "cancelled",
-        "createdAt": "2026-08-24T01:16:05Z",
-        "databaseId": 32679242087,
-        "displayTitle": "ci(goanime): run full CI for formatted PR 210",
-        "event": "push",
-        "headSha": "ecd9ed64767d1fdafd59e08d237ca4911cddc4ea",
-        "status": "completed",
-        "updatedAt": "2026-08-24T01:19:21Z"
-      },
-      {
-        "conclusion": "failure",
-        "createdAt": "2026-08-23T23:40:11Z",
-        "databaseId": 32674291122,
-        "displayTitle": "ci(goanime): rerun full CI after scorecard refresh",
-        "event": "push",
-        "headSha": "93b878c50e1b931ddc7a5dc8c7976e5c51f122f5",
-        "status": "completed",
-        "updatedAt": "2026-08-23T23:42:28Z"
       }
     ],
     "workerDeploy": [
