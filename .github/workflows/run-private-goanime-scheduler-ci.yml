@@ -1,0 +1,144 @@
+name: Validate GoAnime shared scheduler privately
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-scheduler-private/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-scheduler-private
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate shared provider scheduling
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact source revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-scheduler-private/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = "goanime"
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies privately
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Analyze scheduler slice
+        working-directory: private-source
+        run: |
+          flutter analyze --no-pub \
+            lib/services/media/provider_request_scheduler.dart \
+            lib/services/source/episode_aggregator.dart \
+            lib/services/unified_source_service.dart \
+            lib/services/manga/manga_request_scheduler.dart \
+            test/services/media/provider_request_scheduler_test.dart \
+            test/services/media/provider_request_scheduler_validation_test.dart \
+            test/services/source/episode_aggregator_staged_pipeline_test.dart \
+            test/architecture/shared_provider_scheduler_adoption_guard_test.dart
+
+      - name: Run scheduler tests
+        working-directory: private-source
+        run: |
+          flutter test --no-pub test/services/media/provider_request_scheduler_test.dart
+          flutter test --no-pub test/services/media/provider_request_scheduler_validation_test.dart
+          flutter test --no-pub test/services/source/episode_aggregator_staged_pipeline_test.dart
+          flutter test --no-pub test/architecture/shared_provider_scheduler_adoption_guard_test.dart
+          flutter test --no-pub test/services/unified_source_service_test.dart
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
+
+  report:
+    name: Publish sanitized GoAnime scheduler result
+    if: always()
+    needs: [validate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+
+    steps:
+      - name: Publish sanitized GoAnime scheduler result
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          TOOLCHAINS_TRIGGER_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/goanime-scheduler-report.json"
+          python3 - "$report" <<'PY'
+          import json
+          import os
+          import sys
+          from datetime import datetime, timezone
+          payload = {
+              "schemaVersion": 1,
+              "runId": int(os.environ["RUN_ID"]),
+              "runAttempt": int(os.environ["RUN_ATTEMPT"]),
+              "toolchainsTriggerSha": os.environ["TOOLCHAINS_TRIGGER_SHA"],
+              "validateResult": os.environ["VALIDATE_RESULT"],
+              "finishedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+          }
+          with open(sys.argv[1], "w", encoding="utf-8") as stream:
+              json.dump(payload, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          PY
+          encoded="$(base64 -w0 < "$report")"
+          path="reports/goanime-scheduler-private/${RUN_ID}.json"
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/${path}" \
+            -f "message=ci(goanime): report scheduler run ${RUN_ID}" \
+            -f "content=${encoded}" >/dev/null
