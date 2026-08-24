@@ -1,0 +1,57 @@
+name: Dispatch GoAnime MegaPlay cache refresh
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - triggers/goanime-megaplay-cache.json
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: goanime-megaplay-cache-dispatch
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Read and validate refresh request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$GITHUB_WORKSPACE/triggers/goanime-megaplay-cache.json"
+          mode="$(python3 - "$request" <<'PY'
+          import json
+          import sys
+
+          payload = json.load(open(sys.argv[1], encoding='utf-8'))
+          mode = str(payload.get('mode') or '').strip().lower()
+          if mode not in {'recent', 'backfill'}:
+              raise SystemExit('mode must be recent or backfill')
+          print(mode)
+          PY
+          )"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch canonical MegaPlay cache workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ steps.request.outputs.mode }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run goanime-megaplay-cache.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f mode="$MODE"
