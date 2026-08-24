@@ -1,0 +1,71 @@
+name: Test GoAnime manga drift overlay exact SHA
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-drift-overlay-exact/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-drift-overlay-exact/*.request' | head -n1)"
+          read -r project sha < "$request"
+          test "$project" = goanime
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+      - id: check
+        working-directory: source
+        shell: bash
+        run: |
+          set +e
+          python3 -m unittest tools.tests.test_audit_keiyoushi_provider_drift > "$RUNNER_TEMP/test.log" 2>&1
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+      - name: Publish receipt
+        if: always() && steps.request.outputs.sha != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.request.outputs.sha }}
+          CODE: ${{ steps.check.outputs.code }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="${CODE:-99}"
+          tail_text="$(tail -n 120 "$RUNNER_TEMP/test.log" 2>/dev/null || true)"
+          result="$(jq -cn --arg sha "$SHA" --arg code "$code" --arg tail "$tail_text" '{schemaVersion:1,goanimeSha:$sha,testExit:($code|tonumber),testTail:$tail,state:(if ($code|tonumber)==0 then "success" else "failure" end)}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          path="results/goanime-manga-drift-overlay-exact/${SHA}.json"
+          existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): record manga drift overlay ${SHA:0:8}" -f content="$encoded")
+          if [[ -n "$existing" ]]; then args+=(-f sha="$existing"); fi
+          gh api "${args[@]}" >/dev/null
+      - name: Enforce test
+        if: steps.check.outputs.code != '0'
+        run: exit 1
