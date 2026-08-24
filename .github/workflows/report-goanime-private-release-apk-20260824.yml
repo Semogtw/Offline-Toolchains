@@ -1,0 +1,52 @@
+name: Report encrypted GoAnime private release APK
+
+on:
+  workflow_run:
+    workflows: ['Build encrypted private GoAnime release APK']
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Record sanitized artifact handoff
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const { owner, repo } = context.repo;
+            const artifacts = await github.paginate(
+              github.rest.actions.listWorkflowRunArtifacts,
+              { owner, repo, run_id: run.id, per_page: 100 }
+            );
+            const artifact = artifacts.find(a => a.name === 'goanime-private-release-apk-encrypted');
+            const report = {
+              schema_version: 1,
+              source_sha: '7bd636136b7dac88bd679f1b98f9bec2d605efde',
+              workflow_run_id: run.id,
+              workflow_run_url: run.html_url,
+              conclusion: run.conclusion,
+              artifact_id: artifact?.id ?? null,
+              artifact_name: artifact?.name ?? null,
+              artifact_expired: artifact?.expired ?? null,
+              completed_at: run.updated_at,
+              distribution: 'private encrypted artifact only; no release or rollout'
+            };
+            const path = 'reports/goanime-private-release-apk/latest.json';
+            let sha;
+            try {
+              const existing = await github.rest.repos.getContent({ owner, repo, path, ref: 'main' });
+              if (!Array.isArray(existing.data)) sha = existing.data.sha;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            await github.rest.repos.createOrUpdateFileContents({
+              owner, repo, path,
+              message: `ci(goanime): record encrypted release APK run ${run.id} [skip ci]`,
+              content: Buffer.from(JSON.stringify(report, null, 2) + '\n').toString('base64'),
+              branch: 'main', sha
+            });
