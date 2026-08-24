@@ -2,7 +2,7 @@
   "behaviorPins": 16,
   "behaviorPinsFile": "manga_provider_behavior_pins.json",
   "enabledProviders": 16,
-  "goanimeRevision": "4a843a7c8b6d246e1d139811018e47e0f80f5a06",
+  "goanimeRevision": "6746598eb48ad04d3278975119d4f3dc5e9b9a5c",
   "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
   "inventoryRepoHead": "6927c0a7cc3b919624b0799992d7a22faa112cb9",
   "providers": [
