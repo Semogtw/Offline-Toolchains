@@ -1,0 +1,187 @@
+name: Apply GoAnime Manga Home lifecycle privately
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-home-migration/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-home-migration
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    name: Migrate and validate Manga Home lifecycle
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      pushed_sha: ${{ steps.push.outputs.pushed_sha }}
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout toolchain request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact source revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-home-migration/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = "goanime"
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]
+          [[ "$branch" != /* ]]
+          [[ "$branch" != */ ]]
+          [[ "$branch" != *..* ]]
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies privately
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter pub get >/dev/null 2>&1
+          (cd packages/goanime_core && dart pub get >/dev/null 2>&1)
+
+      - name: Apply lifecycle migration
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 ../control/scripts/goanime/migrate_manga_home_lifecycle.py
+          dart format lib/screens/manga/manga_home_screen.dart test/widgets/manga/manga_home_refresh_resilience_test.dart >/dev/null
+          git diff --check
+
+      - name: Analyze focused Home slice
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter analyze --no-pub \
+            lib/controllers/media \
+            lib/screens/manga/manga_home_screen.dart \
+            test/controllers/media/home_snapshot_controller_test.dart \
+            test/widgets/manga/manga_home_screen_test.dart \
+            test/widgets/manga/manga_home_refresh_resilience_test.dart
+
+      - name: Run focused Home tests
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter test --no-pub test/controllers/media/home_snapshot_controller_test.dart
+          flutter test --no-pub test/widgets/manga/manga_home_screen_test.dart
+          flutter test --no-pub test/widgets/manga/manga_home_refresh_resilience_test.dart
+
+      - name: Commit and push validated migration
+        id: push
+        working-directory: private-source
+        shell: bash
+        env:
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          remote_sha="$(git ls-remote origin "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_sha" = "$EXPECTED_SHA"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add lib/screens/manga/manga_home_screen.dart test/widgets/manga/manga_home_refresh_resilience_test.dart
+          git commit -m "feat(manga): adopt shared Home lifecycle controller"
+          pushed_sha="$(git rev-parse HEAD)"
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+          echo "pushed_sha=$pushed_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
+
+  report:
+    name: Publish sanitized Manga Home migration result
+    if: always()
+    needs: [migrate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+
+    steps:
+      - name: Publish sanitized result
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MIGRATE_RESULT: ${{ needs.migrate.result }}
+          PUSHED_SHA: ${{ needs.migrate.outputs.pushed_sha }}
+          TOOLCHAINS_TRIGGER_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/goanime-manga-home-migration.json"
+          python3 - "$report" <<'PY'
+          import json
+          import os
+          import sys
+          from datetime import datetime, timezone
+
+          payload = {
+              "schemaVersion": 1,
+              "runId": int(os.environ["RUN_ID"]),
+              "runAttempt": int(os.environ["RUN_ATTEMPT"]),
+              "toolchainsTriggerSha": os.environ["TOOLCHAINS_TRIGGER_SHA"],
+              "migrateResult": os.environ["MIGRATE_RESULT"],
+              "pushedSha": os.environ.get("PUSHED_SHA") or None,
+              "finishedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+          }
+          with open(sys.argv[1], "w", encoding="utf-8") as stream:
+              json.dump(payload, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          PY
+          encoded="$(base64 -w0 < "$report")"
+          path="reports/goanime-manga-home-migration/${RUN_ID}.json"
+          gh api \
+            --method PUT \
+            "repos/${GITHUB_REPOSITORY}/contents/${path}" \
+            -f "message=ci(goanime): report Manga Home migration ${RUN_ID}" \
+            -f "content=${encoded}" \
+            >/dev/null
