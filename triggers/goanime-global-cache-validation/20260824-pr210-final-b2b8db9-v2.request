@@ -1,0 +1,3 @@
+target_branch=feat/global-catalog-refresh-final-20260823
+source_hint=b2b8db958beca7c5f5315a576e0266b4b3383e3e
+reason=Re-run exact-SHA validation after fixing focused test selection for the consolidated catalog architecture.
