@@ -1,0 +1,183 @@
+name: Build encrypted private GoAnime release APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/private-goanime-apk.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-goanime-release-apk
+  cancel-in-progress: true
+
+env:
+  FIREBASE_PROJECT_ID: goanime-5e605
+  FIREBASE_WEB_API_KEY: AIzaSyDd8lZtWzWd4cSyMFaN-MPAVdEJa58znig
+  UPDATE_MANIFEST_URL: https://github.com/Semogtw/goanime-mobile/releases/latest/download/update.json
+  UPDATE_APPCAST_URL: https://github.com/Semogtw/goanime-mobile/releases/latest/download/appcast.xml
+  ANIME_METADATA_SEED_MANIFEST_URL: https://github.com/Semogtw/goanime-mobile/releases/latest/download/anime_metadata_manifest.json
+  RUNTIME_DATABASE_MANIFEST_URL: https://github.com/Semogtw/goanime-mobile/releases/latest/download/runtime_database_manifest.json
+
+jobs:
+  build:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout trusted toolchain source
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: trusted-source
+          persist-credentials: false
+
+      - name: Read exact source request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$GITHUB_WORKSPACE/trusted-source/triggers/private-goanime-apk.json"
+          sha="$(python3 - "$request" <<'PY'
+          import json,re,sys
+          payload=json.load(open(sys.argv[1],encoding='utf-8'))
+          sha=str(payload.get('ref') or '').strip().lower()
+          if not re.fullmatch(r'[0-9a-f]{40}',sha): raise SystemExit('ref must be exact 40-char SHA')
+          print(sha)
+          PY
+          )"
+          echo "ref=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Require private source token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout exact GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify immutable source
+        shell: bash
+        run: test "$(git -C private-source rev-parse HEAD)" = '${{ steps.request.outputs.ref }}'
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Expose Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd private-source && flutter config --no-analytics && flutter pub get)
+          (cd private-source/packages/goanime_core && dart pub get)
+
+      - name: Validate current main gates
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format --output=none --set-exit-if-changed lib test packages tools
+          flutter analyze --no-pub
+          flutter test --no-pub --concurrency=2
+          (cd packages/goanime_core && dart test)
+
+      - name: Build release AOT arm64 APK
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter build apk --release --target-platform android-arm64 --no-pub \
+            --dart-define="FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID" \
+            --dart-define="FIREBASE_WEB_API_KEY=$FIREBASE_WEB_API_KEY" \
+            --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL" \
+            --dart-define="UPDATE_APPCAST_URL=$UPDATE_APPCAST_URL" \
+            --dart-define="ANIME_METADATA_SEED_MANIFEST_URL=$ANIME_METADATA_SEED_MANIFEST_URL" \
+            --dart-define="RUNTIME_DATABASE_MANIFEST_URL=$RUNTIME_DATABASE_MANIFEST_URL"
+
+      - name: Validate release and encrypt handoff
+        id: package
+        env:
+          SOURCE_SHA: ${{ steps.request.outputs.ref }}
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="$(find "$GITHUB_WORKSPACE/private-source/build/app/outputs/flutter-apk" -type f -name '*.apk' -print -quit)"
+          test -s "$apk"
+          unzip -tq "$apk" >/dev/null
+          test "$(unzip -Z1 "$apk" 'lib/*/libapp.so')" = 'lib/arm64-v8a/libapp.so'
+          ! unzip -Z1 "$apk" | grep -q 'assets/flutter_assets/kernel_blob.bin'
+
+          sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          apksigner="$(find "$sdk_root/build-tools" -type f -name apksigner | sort -V | tail -n1)"
+          "$apksigner" verify --verbose --print-certs "$apk" > "$RUNNER_TEMP/apksigner.txt"
+
+          work="$RUNNER_TEMP/goanime-release-apk"
+          mkdir -p "$work/transfer" "$work/gpg"
+          chmod 700 "$work/gpg"
+          export GNUPGHOME="$work/gpg"
+          sha256="$(sha256sum "$apk" | awk '{print $1}')"
+          size="$(stat -c '%s' "$apk")"
+
+          gpg --batch --import "$GITHUB_WORKSPACE/trusted-source/keys/source-bundles-public.asc" >/dev/null 2>&1
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1=="fpr"{print $10;exit}')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          encrypted="$work/transfer/GoAnime-${SOURCE_SHA:0:12}-release-arm64.apk.gpg"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" --output "$encrypted" --encrypt "$apk"
+          cp "$RUNNER_TEMP/apksigner.txt" "$work/transfer/apksigner.txt"
+
+          python3 - "$work/transfer/manifest.json" "$SOURCE_SHA" "$sha256" "$size" <<'PY'
+          import datetime,json,sys
+          path,source,sha,size=sys.argv[1:]
+          json.dump({
+            'schema_version':2,
+            'source_sha':source,
+            'build_type':'release-private-test',
+            'flutter_mode':'release-aot',
+            'target_platform':'android-arm64',
+            'firebase_rest_configured':True,
+            'native_google_services_configured':False,
+            'signing':'project release build type; debug certificate fallback because production keystore is intentionally unavailable to Offline-Toolchains',
+            'distribution':'private encrypted artifact only; no GitHub Release, Play Store, Shorebird, update publication, or rollout',
+            'apk_sha256':sha,
+            'apk_size_bytes':int(size),
+            'created_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),
+          },open(path,'w',encoding='utf-8'),indent=2,sort_keys=True)
+          PY
+          rm -rf "$GITHUB_WORKSPACE/private-source" "$work/gpg"
+          echo "transfer_dir=$work/transfer" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+          echo "size=$size" >> "$GITHUB_OUTPUT"
+
+      - name: Upload encrypted private release APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-private-release-apk-encrypted
+          path: ${{ steps.package.outputs.transfer_dir }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
