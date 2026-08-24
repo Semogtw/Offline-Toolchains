@@ -105,6 +105,12 @@ jobs:
             echo "unexpected drift auditor exit=$code" >&2
             exit "$code"
           fi
+          enabled="$(jq -r '.enabledProviders' "$raw")"
+          pins="$(jq -r '.behaviorPins // 0' "$raw")"
+          untracked="$(jq -r '.summary.untracked // 0' "$raw")"
+          if [[ "$pins" != "$enabled" || "$untracked" != 0 ]]; then
+            code=2
+          fi
           report="$RUNNER_TEMP/goanime-drift/report.json"
           python3 - "$raw" "$report" "$inventory_head" "${{ steps.goanime.outputs.sha }}" <<'PY'
           import json, sys
@@ -152,7 +158,7 @@ jobs:
         if: steps.audit.outputs.code == '2'
         shell: bash
         run: |
-          echo 'Enabled manga provider drift requires review. See reports/goanime-manga-keiyoushi-drift/current.json.' >&2
+          echo 'Enabled manga provider drift or behavior-pin coverage requires review. See reports/goanime-manga-keiyoushi-drift/current.json.' >&2
           exit 2
 
       - name: Clean private checkout
