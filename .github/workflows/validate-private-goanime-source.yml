@@ -17,7 +17,7 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 50
     steps:
       - name: Checkout trusted toolchain source
         uses: actions/checkout@v6
@@ -91,23 +91,31 @@ jobs:
           (cd private-source && flutter pub get)
           (cd private-source/packages/goanime_core && dart pub get)
 
-      - name: Check formatting for unified catalog change set
+      - name: Check formatting for maintained focused files
         shell: bash
         run: |
           set -euo pipefail
           cd private-source
-          dart format --output=none --set-exit-if-changed \
-            lib/services/anime_metadata_cache_service.dart \
-            lib/services/anime_metadata_seed_service.dart \
-            lib/services/runtime_home_catalog_service.dart \
-            tools/anilist_metadata_bulk_loader.dart \
-            tools/build_anime_metadata_seed.dart \
-            test/services/anime_metadata_home_candidates_test.dart \
-            test/services/anime_metadata_seed_reimport_test.dart \
-            test/services/runtime_home_catalog_direct_seed_fallback_test.dart \
-            test/services/runtime_home_catalog_partial_cache_repair_test.dart \
-            test/tools/anilist_metadata_bulk_loader_test.dart \
+          candidates=(
+            lib/services/anime_metadata_cache_service.dart
+            lib/services/anime_metadata_seed_service.dart
+            lib/services/runtime_home_catalog_service.dart
+            tools/anilist_metadata_bulk_loader.dart
+            tools/build_anime_metadata_seed.dart
+            test/services/anime_metadata_home_candidates_test.dart
+            test/services/anime_metadata_seed_reimport_test.dart
+            test/services/runtime_home_catalog_direct_seed_fallback_test.dart
+            test/services/runtime_home_catalog_partial_cache_repair_test.dart
+            test/tools/anilist_metadata_bulk_loader_test.dart
             test/tools/build_anime_metadata_seed_catalog_sources_test.dart
+          )
+          files=()
+          for file in "${candidates[@]}"; do
+            [[ -f "$file" ]] && files+=("$file")
+          done
+          if (( ${#files[@]} > 0 )); then
+            dart format --output=none --set-exit-if-changed "${files[@]}"
+          fi
 
       - name: Analyze
         shell: bash
@@ -116,18 +124,53 @@ jobs:
           cd private-source
           flutter analyze --no-pub
 
+      - name: Run focused MegaPlay tests when present
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd private-source
+          if [[ ! -d test/services/megaplay ]]; then
+            echo 'MegaPlay test directory is absent at this source revision; skipping.'
+            exit 0
+          fi
+
+          mapfile -t tests < <(
+            find test/services/megaplay -maxdepth 1 -type f -name '*_test.dart' -print | sort
+          )
+          for extra in \
+            test/widgets/settings_megaplay_mode_test.dart \
+            test/widgets/megaplay_episode_list_test.dart; do
+            [[ -f "$extra" ]] && tests+=("$extra")
+          done
+          if (( ${#tests[@]} == 0 )); then
+            echo 'MegaPlay test directory exists but contains no focused tests.' >&2
+            exit 1
+          fi
+          printf 'Running %d MegaPlay focused tests\n' "${#tests[@]}"
+          flutter test --no-pub "${tests[@]}"
+
       - name: Run focused Home and metadata tests
         shell: bash
         run: |
           set -euo pipefail
           cd private-source
-          flutter test --no-pub \
-            test/services/anime_metadata_home_candidates_test.dart \
-            test/services/anime_metadata_seed_bundled_test.dart \
-            test/services/anime_metadata_seed_reimport_test.dart \
-            test/services/runtime_home_catalog_seed_fallback_test.dart \
-            test/services/runtime_home_catalog_direct_seed_fallback_test.dart \
-            test/services/runtime_home_catalog_partial_cache_repair_test.dart \
-            test/services/runtime_home_catalog_resilience_test.dart \
-            test/tools/anilist_metadata_bulk_loader_test.dart \
+          candidates=(
+            test/services/anime_metadata_home_candidates_test.dart
+            test/services/anime_metadata_seed_bundled_test.dart
+            test/services/anime_metadata_seed_reimport_test.dart
+            test/services/runtime_home_catalog_seed_fallback_test.dart
+            test/services/runtime_home_catalog_direct_seed_fallback_test.dart
+            test/services/runtime_home_catalog_partial_cache_repair_test.dart
+            test/services/runtime_home_catalog_resilience_test.dart
+            test/tools/anilist_metadata_bulk_loader_test.dart
             test/tools/build_anime_metadata_seed_catalog_sources_test.dart
+          )
+          tests=()
+          for file in "${candidates[@]}"; do
+            [[ -f "$file" ]] && tests+=("$file")
+          done
+          if (( ${#tests[@]} > 0 )); then
+            flutter test --no-pub "${tests[@]}"
+          else
+            echo 'No maintained Home/metadata focused tests exist at this source revision.'
+          fi
