@@ -71,6 +71,12 @@ jobs:
           set -euo pipefail
           flutter pub get
           (cd packages/goanime_core && dart pub get)
+          # Dependency resolution may regenerate tracked desktop plugin files.
+          # The candidate formatter must publish only the repo-wide Dart format
+          # delta, so restore tracked files while keeping ignored .dart_tool
+          # dependency metadata available for the formatter/toolchain.
+          git restore --source=HEAD --staged --worktree -- .
+          test -z "$(git status --porcelain --untracked-files=no)"
 
       - name: Format candidate
         working-directory: private-source
