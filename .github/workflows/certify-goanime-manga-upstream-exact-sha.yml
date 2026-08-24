@@ -198,10 +198,17 @@ jobs:
             '{schemaVersion:1,controlSha:$control,goanimeSha:$sha,sourceId:$source,classification:$classification,terminal:$terminal,problem:$problem,statusCode:$status,host:$host,failureKind:$kind,exitCode:$exitCode}')"
           encoded="$(printf '%s\n' "$result" | base64 -w0)"
           path="results/goanime-manga-upstream-exact-live/$CONTROL_SHA/$SOURCE_ID.json"
-          existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
-          args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): record manga exact live $SOURCE_ID" -f content="$encoded")
-          if [[ -n "$existing" ]]; then args+=(-f sha="$existing"); fi
-          gh api "${args[@]}" >/dev/null
+          for attempt in 1 2 3 4 5; do
+            existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): record manga exact live $SOURCE_ID" -f content="$encoded")
+            if [[ -n "$existing" ]]; then args+=(-f sha="$existing"); fi
+            if gh api "${args[@]}" >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep $((attempt * 2))
+          done
+          echo "failed to publish per-source receipt after retries: $SOURCE_ID" >&2
+          exit 1
       - name: Enforce readable live result
         if: always() && steps.probe.outputs.classification != 'readable'
         run: exit 1
@@ -270,8 +277,14 @@ jobs:
             '{schemaVersion:3,state:$state,goanimeSha:$sha,static:$static,live:$live,matrixLiveResult:$matrixLive,enabledProviders:$expected,accountedProviders:$accounted,readableProviders:$readable,externalHttp403Providers:$blocked,failedProviders:$failures,blockedSources:$blockedSources,failureSources:$failureSources,exactSha:true,controlSha:$control}')"
           encoded="$(printf '%s\n' "$result" | base64 -w0)"
           path="results/goanime-manga-upstream-exact/${SHA}.json"
-          existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
-          args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): record manga upstream exact ${SHA:0:8}" -f content="$encoded")
-          if [[ -n "$existing" ]]; then args+=(-f sha="$existing"); fi
-          gh api "${args[@]}" >/dev/null
-          echo "$result" >> "$GITHUB_STEP_SUMMARY"
+          for attempt in 1 2 3 4 5; do
+            existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): record manga upstream exact ${SHA:0:8}" -f content="$encoded")
+            if [[ -n "$existing" ]]; then args+=(-f sha="$existing"); fi
+            if gh api "${args[@]}" >/dev/null 2>&1; then
+              echo "$result" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep $((attempt * 2))
+          done
+          exit 1
