@@ -16,9 +16,6 @@
     "lib/services/media/user_media_state_sync_dispatcher.dart",
     "lib/services/source/episode_aggregator.dart",
     "lib/services/unified_source_service.dart",
-    "linux/flutter/generated_plugin_registrant.cc",
-    "linux/flutter/generated_plugins.cmake",
-    "macos/Flutter/GeneratedPluginRegistrant.swift",
     "packages/goanime_core/lib/src/media/media_progress_event.dart",
     "packages/goanime_core/lib/src/media/user_media_state_event.dart",
     "packages/goanime_core/test/media/media_download_job_test.dart",
@@ -55,9 +52,7 @@
     "test/widgets/home_refresh_resilience_test.dart",
     "test/widgets/manga/manga_home_refresh_resilience_test.dart",
     "test/widgets/manga/manga_library_refresh_resilience_test.dart",
-    "test/widgets/watchlist_refresh_resilience_test.dart",
-    "windows/flutter/generated_plugin_registrant.cc",
-    "windows/flutter/generated_plugins.cmake"
+    "test/widgets/watchlist_refresh_resilience_test.dart"
   ],
-  "chunks": 8
+  "chunks": 7
 }
