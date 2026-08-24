@@ -346,3 +346,5 @@ jobs:
             echo "- SHA-256: \`$APK_SHA256\`"
             echo "- Bytes: \`$APK_SIZE\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+# Retriggered after installing the workflow_run handoff reporter.
