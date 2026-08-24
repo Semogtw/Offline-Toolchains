@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 2,
+  "state": "success",
+  "goanimeSha": "37798515b5d58f51b630045d033ca38fe9ea47f6",
+  "sourceHead": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
+  "auditExit": 2,
+  "unitTests": true
+}
