@@ -91,6 +91,7 @@ jobs:
             lib/screens/watchlist_screen.dart \
             test/controllers/media/library_snapshot_controller_test.dart \
             test/services/media/manga_library_snapshot_adapter_test.dart \
+            test/services/media/anime_watchlist_snapshot_adapter_test.dart \
             test/widgets/manga/manga_library_screen_test.dart \
             test/widgets/manga/manga_library_refresh_resilience_test.dart \
             test/widgets/watchlist_clear_feedback_test.dart
@@ -106,6 +107,10 @@ jobs:
       - name: Run Manga Library adapter tests
         working-directory: private-source
         run: flutter test --no-pub test/services/media/manga_library_snapshot_adapter_test.dart
+
+      - name: Run Anime Watchlist adapter tests
+        working-directory: private-source
+        run: flutter test --no-pub test/services/media/anime_watchlist_snapshot_adapter_test.dart
 
       - name: Run Manga Library tests
         working-directory: private-source
