@@ -1,0 +1,216 @@
+name: Validate GoAnime manga upstream refresh
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-upstream-refresh/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-upstream-refresh
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.request.outputs.sha }}
+      branch: ${{ steps.request.outputs.branch }}
+      mode: ${{ steps.request.outputs.mode }}
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+      - name: Resolve exact GoAnime checkpoint
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-upstream-refresh/*.request' | head -n1)"
+          test -n "$request"
+          read -r project branch sha mode < "$request"
+          test "$project" = goanime
+          test "$branch" = 'codex/manga-parity-20260823'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          case "$mode" in
+            red|provider-green|full) ;;
+            *) echo "unsupported mode=$mode" >&2; exit 1 ;;
+          esac
+          printf 'branch=%s\nsha=%s\nmode=%s\n' "$branch" "$sha" "$mode" >> "$GITHUB_OUTPUT"
+
+  checks:
+    needs: resolve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ needs.resolve.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+      - name: Verify branch did not race
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ needs.resolve.outputs.sha }}
+          TARGET_BRANCH: ${{ needs.resolve.outputs.branch }}
+        run: |
+          set -euo pipefail
+          test "$(git -C private-source rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+      - name: Verify RED checkpoint
+        if: needs.resolve.outputs.mode == 'red'
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/mangalivre-red.log"
+          set +e
+          flutter test --no-pub --concurrency=1 test/services/manga/providers/mangalivre_org_manga_provider_test.dart >"$log" 2>&1
+          code=$?
+          set -e
+          cat "$log"
+          test "$code" -ne 0
+          grep -Eq 'search uses the dedicated API host|maps current API chapter ids|refreshes a rotated runtime nonce' "$log"
+          echo 'red_checkpoint=confirmed'
+      - name: Verify provider GREEN checkpoint
+        if: needs.resolve.outputs.mode != 'red'
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format --output=none --set-exit-if-changed \
+            lib/services/manga/providers/mangalivre_org_manga_provider.dart \
+            test/services/manga/providers/mangalivre_org_manga_provider_test.dart
+          flutter test --no-pub --concurrency=1 \
+            test/services/manga/providers/mangalivre_org_manga_provider_test.dart \
+            test/services/manga/providers/little_tyrant_manga_provider_test.dart \
+            test/services/manga/providers/kivaratoons_manga_provider_test.dart
+          flutter test --no-pub --concurrency=1 \
+            test/architecture/manga_provider_registry_manifest_test.dart \
+            test/architecture/manga_provider_manifest_validator_test.dart \
+            test/architecture/manga_planned_provider_definitions_test.dart
+          flutter analyze --no-pub
+      - name: Verify full tooling and repository guards
+        if: needs.resolve.outputs.mode == 'full'
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest tools.tests.test_audit_keiyoushi_provider_drift
+          python3 -m unittest discover -s tools/tests -p 'test_*.py'
+          python3 -m compileall -q tools
+          python3 tools/validate_repository_guards.py
+          bash tools/validate_release_workflows.sh
+          bash tools/validate_project_health.sh
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
+
+  live:
+    needs: resolve
+    if: needs.resolve.outputs.mode == 'full'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        source:
+          - ptbr.arthurscan
+          - ptbr.astratoons
+          - ptbr.capitoons
+          - ptbr.hqnow
+          - ptbr.hipertoon
+          - ptbr.kamisamaexplorer
+          - ptbr.kivaratoons
+          - ptbr.leituramanga
+          - ptbr.ler999
+          - ptbr.littletyrant
+          - ptbr.maidscan
+          - ptbr.mangadash
+          - ptbr.mangaflix
+          - ptbr.mangalivreblog
+          - ptbr.mangalivreorg
+          - ptbr.ninjascan
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ needs.resolve.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null
+      - name: Prove search through reader bytes
+        working-directory: private-source
+        env:
+          SOURCE_ID: ${{ matrix.source }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/live.log"
+          set +e
+          timeout 240s dart run tools/manga/audit_planned_provider_stage.dart "$SOURCE_ID" >"$log" 2>&1
+          code=$?
+          set -e
+          terminal="$(grep -E '^terminal=' "$log" | tail -n1 | cut -d= -f2- || true)"
+          stage="$(grep -E '^stage=' "$log" | tail -n1 | cut -d= -f2- || true)"
+          cat "$log"
+          test "$code" -eq 0
+          test "$terminal" = readable
+          printf 'source=%s stage=%s live_byte_readable=true\n' "$SOURCE_ID" "$stage"
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
