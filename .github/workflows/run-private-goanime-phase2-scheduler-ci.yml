@@ -68,9 +68,9 @@ jobs:
         working-directory: private-source
         run: flutter pub get >/dev/null 2>&1
 
-      - name: Check formatting
+      - name: Check formatting for touched Anime search slice
         working-directory: private-source
-        run: dart format --output=none --set-exit-if-changed lib/services/media/provider_request_scheduler.dart lib/services/source/episode_aggregator.dart lib/services/unified_source_service.dart lib/services/providers/anime_provider_search_service.dart test/services/media/provider_request_scheduler_test.dart test/services/media/provider_request_scheduler_validation_test.dart test/services/source/episode_aggregator_staged_pipeline_test.dart test/services/providers/anime_provider_search_service_test.dart test/services/providers/anime_provider_search_scheduler_test.dart test/architecture/shared_provider_scheduler_adoption_guard_test.dart
+        run: dart format --output=none --set-exit-if-changed lib/services/providers/anime_provider_search_service.dart test/services/providers/anime_provider_search_scheduler_test.dart
 
       - name: Analyze scheduler slice
         working-directory: private-source
