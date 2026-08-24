@@ -139,6 +139,8 @@ jobs:
       - working-directory: source
         run: flutter pub get >/dev/null
       - name: Search through reader bytes
+        id: probe
+        continue-on-error: true
         working-directory: source
         env:
           SOURCE_ID: ${{ matrix.source }}
@@ -151,12 +153,58 @@ jobs:
           code=$?
           set -e
           terminal="$(grep -E '^terminal=' "$log" | tail -n1 | cut -d= -f2- || true)"
-          stage="$(grep -E '^stage=' "$log" | tail -n1 | cut -d= -f2- || true)"
-          if [[ "$code" -ne 0 || "$terminal" != readable ]]; then
-            cat "$log"
-            exit 1
+          problem="$(grep -E '^(search_[0-9]+|details|chapters|content_[0-9]+|transport_[0-9]+)=(failure|unreadable)$' "$log" | tail -n1 || true)"
+          status="$(grep -E '^[a-z0-9_]+_status=' "$log" | tail -n1 | cut -d= -f2- || true)"
+          host="$(grep -E '^[a-z0-9_]+_host=' "$log" | tail -n1 | cut -d= -f2- || true)"
+          kind="$(grep -E '^[a-z0-9_]+_kind=' "$log" | tail -n1 | cut -d= -f2- || true)"
+          classification=failure
+          if [[ "$code" -eq 0 && "$terminal" == readable ]]; then
+            classification=readable
+          elif [[ "$status" == 403 && "$kind" == httpStatus ]]; then
+            classification=external_http_403
           fi
-          printf 'source=%s stage=%s terminal=%s\n' "$SOURCE_ID" "$stage" "$terminal"
+          printf 'classification=%s\nterminal=%s\nproblem=%s\nstatus=%s\nhost=%s\nkind=%s\nexit_code=%s\n' \
+            "$classification" "${terminal:-unknown}" "${problem:-none}" "${status:-none}" "${host:-none}" "${kind:-none}" "$code" >> "$GITHUB_OUTPUT"
+          grep -E '^(search_[0-9]+|search_[0-9]+_results|details|chapters|chapter_count|content_[0-9]+|content_[0-9]+_kind|transport_[0-9]+|verifier|terminal|[a-z0-9_]+_(type|kind|status|host))=' "$log" \
+            | sed -E 's#https?://[^ ]+#<url>#g' || true
+      - name: Publish sanitized per-source receipt
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTROL_SHA: ${{ github.sha }}
+          REVIEWED_SHA: ${{ needs.resolve.outputs.sha }}
+          SOURCE_ID: ${{ matrix.source }}
+          CLASSIFICATION: ${{ steps.probe.outputs.classification }}
+          TERMINAL: ${{ steps.probe.outputs.terminal }}
+          PROBLEM: ${{ steps.probe.outputs.problem }}
+          STATUS_CODE: ${{ steps.probe.outputs.status }}
+          HOST: ${{ steps.probe.outputs.host }}
+          KIND: ${{ steps.probe.outputs.kind }}
+          EXIT_CODE: ${{ steps.probe.outputs.exit_code }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          result="$(jq -cn \
+            --arg control "$CONTROL_SHA" \
+            --arg sha "$REVIEWED_SHA" \
+            --arg source "$SOURCE_ID" \
+            --arg classification "${CLASSIFICATION:-failure}" \
+            --arg terminal "${TERMINAL:-unknown}" \
+            --arg problem "${PROBLEM:-none}" \
+            --arg status "${STATUS_CODE:-none}" \
+            --arg host "${HOST:-none}" \
+            --arg kind "${KIND:-none}" \
+            --arg exitCode "${EXIT_CODE:-unknown}" \
+            '{schemaVersion:1,controlSha:$control,goanimeSha:$sha,sourceId:$source,classification:$classification,terminal:$terminal,problem:$problem,statusCode:$status,host:$host,failureKind:$kind,exitCode:$exitCode}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          path="results/goanime-manga-upstream-exact-live/$CONTROL_SHA/$SOURCE_ID.json"
+          existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): record manga exact live $SOURCE_ID" -f content="$encoded")
+          if [[ -n "$existing" ]]; then args+=(-f sha="$existing"); fi
+          gh api "${args[@]}" >/dev/null
+      - name: Enforce readable live result
+        if: always() && steps.probe.outputs.classification != 'readable'
+        run: exit 1
 
   receipt:
     needs: [resolve, static, live]
@@ -168,14 +216,58 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ needs.resolve.outputs.sha }}
           STATIC: ${{ needs.static.result }}
-          LIVE: ${{ needs.live.result }}
+          MATRIX_LIVE: ${{ needs.live.result }}
           CONTROL_SHA: ${{ github.sha }}
         shell: bash
         run: |
           set -euo pipefail
+          dir="results/goanime-manga-upstream-exact-live/$CONTROL_SHA"
+          files_json="$(gh api "repos/$GITHUB_REPOSITORY/contents/$dir" 2>/dev/null || printf '[]')"
+          mapfile -t paths < <(printf '%s' "$files_json" | jq -r '.[].path')
+          combined='[]'
+          for path in "${paths[@]}"; do
+            encoded="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .content | tr -d '\n')"
+            payload="$(printf '%s' "$encoded" | base64 -d)"
+            combined="$(jq -cn --argjson current "$combined" --argjson item "$payload" '$current + [$item]')"
+          done
+
+          expected=16
+          accounted="$(printf '%s' "$combined" | jq 'length')"
+          readable="$(printf '%s' "$combined" | jq '[.[] | select(.classification == "readable")] | length')"
+          blocked="$(printf '%s' "$combined" | jq '[.[] | select(.classification == "external_http_403")] | length')"
+          failures="$(printf '%s' "$combined" | jq '[.[] | select(.classification != "readable" and .classification != "external_http_403")] | length')"
+          blocked_sources="$(printf '%s' "$combined" | jq -c '[.[] | select(.classification == "external_http_403") | .sourceId] | sort')"
+          failure_sources="$(printf '%s' "$combined" | jq -c '[.[] | select(.classification != "readable" and .classification != "external_http_403") | .sourceId] | sort')"
+
+          live_state=failure
+          if [[ "$accounted" -eq "$expected" && "$readable" -eq "$expected" ]]; then
+            live_state=success
+          elif [[ "$accounted" -eq "$expected" && "$failures" -eq 0 && $((readable + blocked)) -eq "$expected" && "$blocked" -gt 0 ]]; then
+            live_state=blocked_external
+          fi
+
           state=failure
-          if [[ "$STATIC" == success && "$LIVE" == success ]]; then state=success; fi
-          result="$(jq -cn --arg state "$state" --arg sha "$SHA" --arg static "$STATIC" --arg live "$LIVE" --arg control "$CONTROL_SHA" '{schemaVersion:2,state:$state,goanimeSha:$sha,static:$static,live:$live,enabledProviders:16,exactSha:true,controlSha:$control}')"
+          if [[ "$STATIC" == success && "$live_state" == success ]]; then
+            state=success
+          elif [[ "$STATIC" == success && "$live_state" == blocked_external ]]; then
+            state=blocked_external
+          fi
+
+          result="$(jq -cn \
+            --arg state "$state" \
+            --arg sha "$SHA" \
+            --arg static "$STATIC" \
+            --arg live "$live_state" \
+            --arg matrixLive "$MATRIX_LIVE" \
+            --arg control "$CONTROL_SHA" \
+            --argjson expected "$expected" \
+            --argjson accounted "$accounted" \
+            --argjson readable "$readable" \
+            --argjson blocked "$blocked" \
+            --argjson failures "$failures" \
+            --argjson blockedSources "$blocked_sources" \
+            --argjson failureSources "$failure_sources" \
+            '{schemaVersion:3,state:$state,goanimeSha:$sha,static:$static,live:$live,matrixLiveResult:$matrixLive,enabledProviders:$expected,accountedProviders:$accounted,readableProviders:$readable,externalHttp403Providers:$blocked,failedProviders:$failures,blockedSources:$blockedSources,failureSources:$failureSources,exactSha:true,controlSha:$control}')"
           encoded="$(printf '%s\n' "$result" | base64 -w0)"
           path="results/goanime-manga-upstream-exact/${SHA}.json"
           existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
