@@ -146,8 +146,14 @@ jobs:
             echo 'MegaPlay test directory exists but contains no focused tests.' >&2
             exit 1
           fi
-          printf 'Running %d MegaPlay focused tests\n' "${#tests[@]}"
-          flutter test --no-pub "${tests[@]}"
+
+          printf 'Running %d MegaPlay focused test files in isolated processes\n' "${#tests[@]}"
+          for test_file in "${tests[@]}"; do
+            echo "::group::MegaPlay test: $test_file"
+            timeout --signal=TERM --kill-after=10s 90s \
+              flutter test --no-pub "$test_file"
+            echo "::endgroup::"
+          done
 
       - name: Run focused Home and metadata tests
         shell: bash
