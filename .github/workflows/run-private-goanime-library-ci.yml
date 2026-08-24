@@ -94,7 +94,8 @@ jobs:
             test/services/media/anime_watchlist_snapshot_adapter_test.dart \
             test/widgets/manga/manga_library_screen_test.dart \
             test/widgets/manga/manga_library_refresh_resilience_test.dart \
-            test/widgets/watchlist_clear_feedback_test.dart
+            test/widgets/watchlist_clear_feedback_test.dart \
+            test/widgets/watchlist_refresh_resilience_test.dart
 
       - name: Run core Library contract
         working-directory: private-source/packages/goanime_core
@@ -120,7 +121,9 @@ jobs:
 
       - name: Run Anime Watchlist tests
         working-directory: private-source
-        run: flutter test --no-pub test/widgets/watchlist_clear_feedback_test.dart
+        run: |
+          flutter test --no-pub test/widgets/watchlist_clear_feedback_test.dart
+          flutter test --no-pub test/widgets/watchlist_refresh_resilience_test.dart
 
       - name: Remove private checkout
         if: always()
