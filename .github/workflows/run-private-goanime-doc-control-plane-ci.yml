@@ -70,13 +70,6 @@ jobs:
         working-directory: private-source
         run: flutter pub get >/dev/null 2>&1
 
-      - name: Check documentation guard formatting
-        working-directory: private-source
-        run: |
-          dart format --output=none --set-exit-if-changed \
-            test/architecture/documentation_drift_test.dart \
-            test/architecture/active_parity_documentation_guard_test.dart
-
       - name: Analyze documentation guards
         working-directory: private-source
         run: |
@@ -88,6 +81,13 @@ jobs:
         working-directory: private-source
         run: |
           flutter test --no-pub \
+            test/architecture/documentation_drift_test.dart \
+            test/architecture/active_parity_documentation_guard_test.dart
+
+      - name: Check documentation guard formatting
+        working-directory: private-source
+        run: |
+          dart format --output=none --set-exit-if-changed \
             test/architecture/documentation_drift_test.dart \
             test/architecture/active_parity_documentation_guard_test.dart
 
