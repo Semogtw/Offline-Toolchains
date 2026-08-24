@@ -4,6 +4,23 @@ This cache belongs to the opt-in MegaPlay English Mode in `Semogtw/goanime-mobil
 It is intentionally independent from the normal PT-BR provider cache and is not
 consumed when the mode is disabled.
 
+## Ownership / merged state
+
+The server-side MegaPlay cache infrastructure is already merged to
+`Semogtw/Offline-Toolchains` `main`.
+
+- cache pipeline PR `#43` -> merged as
+  `dfbf7c3af1bda0363f03544781dcb9d4af0b2896`;
+- file-driven refresh trigger PR `#44` -> merged as
+  `9c7d7cb6e01e6f0e72eaf9b185926b8bddfc6587`.
+
+The app implementation is still under review in `Semogtw/goanime-mobile#217`.
+Its current continuation checklist is documented in:
+
+`docs/handoffs/2026-08-24-megaplay-codex-handoff.md`
+
+inside the GoAnime-Mobile feature branch.
+
 ## Publication
 
 Workflow: `.github/workflows/goanime-megaplay-cache.yml`
@@ -51,6 +68,45 @@ R2 publication reuses the existing GoAnime secrets:
 Incomplete or absent R2 credentials only skip the optional R2 upload. They do
 not invalidate a successfully published GitHub Release generation.
 
+## File-driven refresh control plane
+
+The canonical collector supports `workflow_dispatch`, schedule and PR tests.
+For automation clients that cannot directly dispatch Actions, a small trusted
+file-driven dispatcher is also available.
+
+Dispatcher workflow:
+
+`.github/workflows/dispatch-goanime-megaplay-cache.yml`
+
+Request file:
+
+`triggers/goanime-megaplay-cache.json`
+
+Accepted payload:
+
+```json
+{
+  "mode": "recent",
+  "requested_by": "chatgpt-or-codex",
+  "requested_at": "ISO-8601 timestamp"
+}
+```
+
+`mode` must be exactly one of:
+
+- `recent`;
+- `backfill`.
+
+A push changing that file on `main` dispatches the canonical
+`goanime-megaplay-cache.yml` workflow. The dispatcher owns no collection or
+publication logic; it only validates the request and invokes the canonical
+workflow.
+
+The first `recent` request was written in commit
+`fb26aaf5a6a9372157d9e4285ccb9558edb99d3a`. The next owner should confirm the
+resulting first public release generation and record/fix any operational failure
+without weakening validation rules.
+
 ## Refresh policy
 
 - recent pages: every 6 hours;
@@ -95,6 +151,24 @@ confidence.
 It never stores cookies, authorization, user identifiers, history, request
 headers, signed media URLs or complete MegaPlay embed URLs.
 
+## Initial/public-generation acceptance checks
+
+Before treating a newly published generation as healthy, verify:
+
+1. `manifest.json` exists in release tag `goanime-megaplay-cache-latest`;
+2. one active `megaplay_catalog_<sha-prefix>.db` exists;
+3. manifest asset URL points to the active DB in that same GitHub Release;
+4. manifest and asset `schemaVersion` are both `1`;
+5. SHA-256 in the manifest matches the actual DB;
+6. `sizeBytes` matches the actual DB;
+7. initial publication has non-zero `seriesCount` and `episodeCount`;
+8. remote `route_health` has zero rows;
+9. no remote row contains device-only `localVerified` evidence;
+10. no cookies, credentials, signed media URLs or user data are present.
+
+If optional R2 publication fails, the canonical GitHub Release may still be
+healthy. Do not weaken the GitHub generation checks to accommodate R2.
+
 ## Validation
 
 Local/CI unit tests:
@@ -115,3 +189,24 @@ python -m tools.megaplay_cache.build_megaplay_cache \
 Validation requires SQLite `PRAGMA integrity_check = ok`, schema version 1,
 required columns, canonical MAL/AniList keys, valid episode availability values,
 and no device-local route health in the remote database.
+
+## Related app exact-source gate
+
+The app is validated through:
+
+`.github/workflows/validate-private-goanime-source.yml`
+
+Request file:
+
+`triggers/private-goanime-validate.json`
+
+The current gate runs MegaPlay focused test files in isolated Flutter processes
+with a 90-second per-file timeout, which prevents one leaked async resource from
+hiding the responsible test file.
+
+At the 2026-08-24 handoff, exact-source run `#31` (`32771058820`) for app SHA
+`77ae6ff25f050cb39be31a17b0e2aa3491a261a0` passed analyzer and 15 of 16
+focused MegaPlay test files. The only blocker was
+`test/widgets/megaplay_episode_list_test.dart`, which timed out after 90 seconds
+(exit `124`). The GoAnime-Mobile handoff document contains the required
+investigation and merge order.
