@@ -1,0 +1,182 @@
+{
+  "enabledProviders": 16,
+  "goanimeRevision": "5a593aeb985dae3ea67e82e65bcff559b4290e06",
+  "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
+  "inventoryRepoHead": "6927c0a7cc3b919624b0799992d7a22faa112cb9",
+  "providers": [
+    {
+      "changedCommits": [],
+      "diagnostic": "reviewed revision is not present in source history: 6702cd8ab39e0a4cf87f02850d915337bfcafe72",
+      "goanimeSourceId": "ptbr.arthurscan",
+      "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
+      "reviewedRevision": "6702cd8ab39e0a4cf87f02850d915337bfcafe72",
+      "sourceName": "Arthur Scan",
+      "sourcePath": "src/pt/arthurscan",
+      "state": "critical"
+    },
+    {
+      "changedCommits": [],
+      "goanimeSourceId": "ptbr.astratoons",
+      "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
+      "reviewedRevision": "5083ff5d06b9cb7736216ae0fbd0be3828bcce2c",
+      "sourceName": "Astratoons",
+      "sourcePath": "src/pt/astratoons",
+      "state": "clean"
+    },
+    {
+      "changedCommits": [],
+      "goanimeSourceId": "ptbr.capitoons",
+      "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
+      "reviewedRevision": "5083ff5d06b9cb7736216ae0fbd0be3828bcce2c",
+      "sourceName": "Capitoons",
+      "sourcePath": "src/pt/apecomics",
+      "state": "clean"
+    },
+    {
+      "changedCommits": [],
+      "diagnostic": "no Keiyoushi reference implementation is declared",
+      "goanimeSourceId": "ptbr.hipertoon",
+      "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
+      "reviewedRevision": null,
+      "sourceName": "Hipertoon",
+      "sourcePath": null,
+      "state": "untracked"
+    },
+    {
+      "changedCommits": [],
+      "goanimeSourceId": "ptbr.hqnow",
+      "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
+      "reviewedRevision": "d2aebed872070d18ba225002bcb9734545baaf41",
+      "sourceName": "HQ Now!",
+      "sourcePath": "src/pt/hqnow",
+      "state": "clean"
+    },
+    {
+      "changedCommits": [
+        {
+          "message": "Madara 1.6 (#18075)",
+          "sha": "66535bd04bec51a1063532cc72fb5e25de30effd"
+        }
+      ],
+      "diagnostic": "source-specific upstream commits exist after the reviewed revision",
+      "goanimeSourceId": "ptbr.kamisamaexplorer",
+      "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
+      "reviewedRevision": "eabaae5738cda3dfcafc5355fa3c9c6e2f00194b",
+      "sourceName": "Kami Sama Explorer",
+      "sourcePath": "src/pt/kamisamaexplorer",
+      "state": "review-needed"
+    },
+    {
+      "changedCommits": [],
+      "diagnostic": "no Keiyoushi reference implementation is declared",
+      "goanimeSourceId": "ptbr.kivaratoons",
+      "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
+      "reviewedRevision": null,
+      "sourceName": "KivaraToons",
+      "sourcePath": null,
+      "state": "untracked"
+    },
+    {
+      "changedCommits": [],
+      "diagnostic": "no Keiyoushi reference implementation is declared",
+      "goanimeSourceId": "ptbr.leituramanga",
+      "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
+      "reviewedRevision": null,
+      "sourceName": "Leitura Mangá",
+      "sourcePath": null,
+      "state": "untracked"
+    },
+    {
+      "changedCommits": [],
+      "diagnostic": "no Keiyoushi reference implementation is declared",
+      "goanimeSourceId": "ptbr.ler999",
+      "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
+      "reviewedRevision": null,
+      "sourceName": "Ler 999",
+      "sourcePath": null,
+      "state": "untracked"
+    },
+    {
+      "changedCommits": [],
+      "diagnostic": "no Keiyoushi reference implementation is declared",
+      "goanimeSourceId": "ptbr.littletyrant",
+      "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
+      "reviewedRevision": null,
+      "sourceName": "Little Tyrant",
+      "sourcePath": null,
+      "state": "untracked"
+    },
+    {
+      "changedCommits": [],
+      "diagnostic": "no Keiyoushi reference implementation is declared",
+      "goanimeSourceId": "ptbr.maidscan",
+      "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
+      "reviewedRevision": null,
+      "sourceName": "Maid Scan",
+      "sourcePath": null,
+      "state": "untracked"
+    },
+    {
+      "changedCommits": [],
+      "goanimeSourceId": "ptbr.mangadash",
+      "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
+      "reviewedRevision": "d2aebed872070d18ba225002bcb9734545baaf41",
+      "sourceName": "MangaDash",
+      "sourcePath": "src/pt/mangadash",
+      "state": "clean"
+    },
+    {
+      "changedCommits": [],
+      "diagnostic": "no Keiyoushi reference implementation is declared",
+      "goanimeSourceId": "ptbr.mangaflix",
+      "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
+      "reviewedRevision": null,
+      "sourceName": "MangaFlix",
+      "sourcePath": null,
+      "state": "untracked"
+    },
+    {
+      "changedCommits": [],
+      "diagnostic": "no Keiyoushi reference implementation is declared",
+      "goanimeSourceId": "ptbr.mangalivreblog",
+      "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
+      "reviewedRevision": null,
+      "sourceName": "Manga Livre Blog",
+      "sourcePath": null,
+      "state": "untracked"
+    },
+    {
+      "changedCommits": [],
+      "diagnostic": "no Keiyoushi reference implementation is declared",
+      "goanimeSourceId": "ptbr.mangalivreorg",
+      "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
+      "reviewedRevision": null,
+      "sourceName": "MangaLivre.org",
+      "sourcePath": null,
+      "state": "untracked"
+    },
+    {
+      "changedCommits": [
+        {
+          "message": "Madara 1.6 (#18075)",
+          "sha": "66535bd04bec51a1063532cc72fb5e25de30effd"
+        }
+      ],
+      "diagnostic": "source-specific upstream commits exist after the reviewed revision",
+      "goanimeSourceId": "ptbr.ninjascan",
+      "headRevision": "ddfe050009c20da11bd69c1fbbae3933a5089ef8",
+      "reviewedRevision": "5083ff5d06b9cb7736216ae0fbd0be3828bcce2c",
+      "sourceName": "Ninja Scan",
+      "sourcePath": "src/pt/ninjascan",
+      "state": "review-needed"
+    }
+  ],
+  "schemaVersion": 1,
+  "sourceRepository": "keiyoushi/extensions-source",
+  "summary": {
+    "clean": 4,
+    "critical": 1,
+    "review-needed": 2,
+    "untracked": 9
+  }
+}
