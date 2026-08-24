@@ -1,0 +1,71 @@
+name: Capture GoAnime MangaLivre format patch
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-mangalivre-format-patch/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  capture:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Resolve exact SHA
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-mangalivre-format-patch/*.request' | head -n1)"
+          test -n "$request"
+          read -r project sha < "control/$request"
+          test "$project" = goanime
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Require private token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.target.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - name: Format and capture diff
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format lib/services/manga/providers/mangalivre_org_manga_provider.dart test/services/manga/providers/mangalivre_org_manga_provider_test.dart >/dev/null
+          git diff --no-ext-diff --unified=5 -- lib/services/manga/providers/mangalivre_org_manga_provider.dart test/services/manga/providers/mangalivre_org_manga_provider_test.dart > "$RUNNER_TEMP/mangalivre-format.patch"
+          test -s "$RUNNER_TEMP/mangalivre-format.patch"
+      - name: Publish patch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.target.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          path="results/goanime-mangalivre-format-patch/$SHA.patch"
+          encoded="$(base64 -w0 "$RUNNER_TEMP/mangalivre-format.patch")"
+          existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): publish MangaLivre format patch ${SHA:0:8}" -f content="$encoded")
+          if [[ -n "$existing" ]]; then args+=(-f sha="$existing"); fi
+          gh api "${args[@]}" >/dev/null
