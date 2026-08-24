@@ -1,0 +1,81 @@
+name: Verify GoAnime Little Tyrant TDD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-littletyrant-tdd/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-littletyrant-tdd/*.request' | head -n1)"
+          test -n "$request"
+          read -r project sha < "$request"
+          test "$project" = goanime
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.target.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - name: Run focused regression
+        id: test
+        working-directory: source
+        shell: bash
+        run: |
+          set -uo pipefail
+          flutter pub get >/dev/null
+          log="$RUNNER_TEMP/test.log"
+          set +e
+          flutter test --no-pub test/services/manga/providers/little_tyrant_live_policy_regression_test.dart >"$log" 2>&1
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          if grep -q 'cdn.tiraninha.world' "$log"; then echo 'expected_signal=true' >> "$GITHUB_OUTPUT"; else echo 'expected_signal=false' >> "$GITHUB_OUTPUT"; fi
+      - name: Publish sanitized result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.target.outputs.sha }}
+          EXIT_CODE: ${{ steps.test.outputs.exit_code }}
+          EXPECTED_SIGNAL: ${{ steps.test.outputs.expected_signal }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          result="$(jq -cn --arg sha "$SHA" --arg exitCode "$EXIT_CODE" --arg signal "$EXPECTED_SIGNAL" '{schemaVersion:1,goanimeSha:$sha,exitCode:($exitCode|tonumber),expectedCdnAssertionObserved:($signal=="true"),state:(if ($exitCode|tonumber)==0 then "green" else "red" end)}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          path="results/goanime-littletyrant-tdd/$SHA.json"
+          for attempt in 1 2 3 4 5; do
+            existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
+            args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): Little Tyrant TDD ${SHA:0:8}" -f content="$encoded")
+            if [[ -n "$existing" ]]; then args+=(-f sha="$existing"); fi
+            if gh api "${args[@]}" >/dev/null 2>&1; then exit 0; fi
+            sleep $((attempt * 2))
+          done
+          exit 1
