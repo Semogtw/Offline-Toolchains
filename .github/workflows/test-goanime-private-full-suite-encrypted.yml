@@ -44,7 +44,7 @@ jobs:
           test -n "$request"
           read -r project branch sha < "toolchain-control/$request"
           test "$project" = "goanime"
-          test "$branch" = "feature/manga-platform"
+          [[ "$branch" == "feature/manga-platform" || "$branch" == "codex/manga-parity-20260823" ]]
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
