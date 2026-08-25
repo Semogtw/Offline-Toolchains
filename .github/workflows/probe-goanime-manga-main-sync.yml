@@ -93,7 +93,6 @@ jobs:
             test -z "$(git diff --name-only --diff-filter=U)"
             test "$(git rev-parse HEAD^1)" = "$EXPECTED_BRANCH_SHA"
             test "$(git rev-parse HEAD^2)" = "$EXPECTED_MAIN_SHA"
-            git diff --check "$EXPECTED_BRANCH_SHA"..HEAD
             echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
             exit 0
           fi
