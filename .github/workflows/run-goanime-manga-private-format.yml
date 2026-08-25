@@ -124,6 +124,13 @@ jobs:
               raise SystemExit(f'unexpected CAS gate count: {count}')
           text = text.replace(old, new)
 
+          db_path_patch = '"    path,\\n"'
+          if text.count(db_path_patch) != 1:
+              raise SystemExit(
+                  f'unexpected previous-cache path patch count: {text.count(db_path_patch)}'
+              )
+          text = text.replace(db_path_patch, '"    file.absolute.path,\\n"', 1)
+
           marker = '''git add -- \\
             assets/data/manga_availability.db \\
           '''
