@@ -34,7 +34,7 @@ jobs:
       - name: Verify expected source
         working-directory: private-source
         shell: bash
-        run: test "$(git rev-parse HEAD)" = '801a8542b18ed007c46d2b8cd0cbf03180ace4fe'
+        run: test "$(git rev-parse HEAD)" = '61019921aaae743b832a1d797f17ef752569e242'
 
       - name: Set up Flutter 3.44.1
         uses: subosito/flutter-action@v2
