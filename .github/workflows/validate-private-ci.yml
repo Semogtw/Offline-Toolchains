@@ -9,6 +9,7 @@ on:
       - scripts/test-private-ci-toolchain-policy.py
       - scripts/test-semogsite-install-policy.py
       - scripts/validate-private-ci-workflows.py
+      - scripts/validate-runner-policy.py
       - triggers/private-ci.json
       - docs/private-project-ci.md
       - docs/superpowers/specs/2026-08-01-public-private-ci-hub-design.md
@@ -25,6 +26,7 @@ on:
       - scripts/test-private-ci-toolchain-policy.py
       - scripts/test-semogsite-install-policy.py
       - scripts/validate-private-ci-workflows.py
+      - scripts/validate-runner-policy.py
       - triggers/private-ci.json
       - docs/private-project-ci.md
       - docs/superpowers/specs/2026-08-01-public-private-ci-hub-design.md
@@ -71,6 +73,9 @@ jobs:
 
       - name: Enforce project toolchain policy
         run: python3 scripts/test-private-ci-toolchain-policy.py
+
+      - name: Enforce GitHub Actions runner policy
+        run: python3 scripts/validate-runner-policy.py
 
       - name: Enforce SemogSite install policy
         run: python3 scripts/test-semogsite-install-policy.py
