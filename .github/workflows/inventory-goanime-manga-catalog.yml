@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   inventory:
-    name: Refresh global manga availability
+    name: Inventory manga providers
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -32,7 +32,6 @@ jobs:
         with:
           path: toolchain-control
           fetch-depth: 2
-          persist-credentials: true
 
       - name: Resolve exact private revision
         id: request
@@ -56,7 +55,7 @@ jobs:
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
           fetch-depth: 1
-          persist-credentials: true
+          persist-credentials: false
           lfs: false
           submodules: false
           show-progress: false
@@ -73,86 +72,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          flutter config --no-analytics
           flutter pub get >/dev/null
           (cd packages/goanime_core && dart pub get >/dev/null)
-
-      - name: Sync MangaLivre.org API headers with current upstream behavior
-        working-directory: private-source
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('lib/services/manga/providers/mangalivre_org_manga_provider.dart')
-          text = path.read_text(encoding='utf-8')
-          stale = "    'Accept-Language': NetworkHeaders.acceptLanguagePtBr,\n    'Origin': baseUri.origin,\n"
-          clean = "    'Accept-Language': NetworkHeaders.acceptLanguagePtBr,\n"
-          count = text.count(stale)
-          if count > 1:
-              raise SystemExit(f'unexpected duplicate stale Origin blocks: {count}')
-          if count == 1:
-              path.write_text(text.replace(stale, clean, 1), encoding='utf-8')
-          if "'Origin': baseUri.origin" in path.read_text(encoding='utf-8'):
-              raise SystemExit('stale cross-host Origin header remains')
-          PY
-
-      - name: Format global availability implementation
-        working-directory: private-source
-        shell: bash
-        run: |
-          set -euo pipefail
-          files=(
-            lib/services/manga/manga_availability_service.dart
-            lib/services/manga/manga_runtime_availability_source.dart
-            lib/services/manga/manga_bundled_catalog_source.dart
-            lib/services/manga/manga_repository_browse_data_source.dart
-            lib/services/manga/providers/mangalivre_org_manga_provider.dart
-            tools/manga/inventory_manga_catalog.dart
-            tools/manga/manga_availability_v3_builder.dart
-            tools/manga/build_global_manga_availability.dart
-            test/services/manga/manga_catalog_availability_service_test.dart
-            test/services/manga/manga_bundled_catalog_v3_source_test.dart
-            test/tools/manga_availability_v3_builder_test.dart
-            test/tools/build_global_manga_availability_test.dart
-          )
-          dart format "${files[@]}"
-          dart format --output=none --set-exit-if-changed "${files[@]}"
-          git diff --check
-
-      - name: Analyze global availability surface
-        working-directory: private-source
-        shell: bash
-        run: |
-          set -euo pipefail
-          flutter analyze --no-pub \
-            lib/services/manga/manga_availability_service.dart \
-            lib/services/manga/manga_runtime_availability_source.dart \
-            lib/services/manga/manga_bundled_catalog_source.dart \
-            lib/services/manga/manga_repository_browse_data_source.dart \
-            lib/services/manga/providers/mangalivre_org_manga_provider.dart \
-            tools/manga/inventory_manga_catalog.dart \
-            tools/manga/manga_availability_v3_builder.dart \
-            tools/manga/build_global_manga_availability.dart \
-            test/services/manga/manga_catalog_availability_service_test.dart \
-            test/services/manga/manga_bundled_catalog_v3_source_test.dart \
-            test/tools/manga_availability_v3_builder_test.dart \
-            test/tools/build_global_manga_availability_test.dart
-
-      - name: Run focused availability tests
-        working-directory: private-source
-        shell: bash
-        run: |
-          set -euo pipefail
-          flutter test --no-pub --concurrency=1 \
-            test/services/manga/manga_availability_service_test.dart \
-            test/services/manga/manga_catalog_availability_service_test.dart \
-            test/services/manga/manga_runtime_availability_source_test.dart \
-            test/services/manga/manga_bundled_catalog_source_test.dart \
-            test/services/manga/manga_bundled_catalog_v3_source_test.dart \
-            test/services/manga/manga_repository_browse_data_source_test.dart \
-            test/tools/manga_availability_v3_builder_test.dart \
-            test/tools/build_global_manga_availability_test.dart
 
       - name: Run exhaustive manga inventory
         id: inventory
@@ -170,86 +91,13 @@ jobs:
             --timeout-minutes 105
           test -s "$OUT_DIR/manga_catalog_inventory.json"
           test -s "$OUT_DIR/manga_catalog_inventory.md"
-          test -s "$OUT_DIR/manga_catalog_snapshot.private.json"
           echo "out_dir=$OUT_DIR" >> "$GITHUB_OUTPUT"
 
-      - name: Build fail-safe global SQLite cache
-        working-directory: private-source
-        shell: bash
-        env:
-          OUT_DIR: ${{ steps.inventory.outputs.out_dir }}
-        run: |
-          set -euo pipefail
-          dart run tools/manga/build_global_manga_availability.dart \
-            --snapshot "$OUT_DIR/manga_catalog_snapshot.private.json" \
-            --previous-db assets/data/manga_availability.db \
-            --output-db "$OUT_DIR/manga_availability.db" \
-            --receipt "$OUT_DIR/global_availability_receipt.json"
-          test -s "$OUT_DIR/manga_availability.db"
-          test -s "$OUT_DIR/global_availability_receipt.json"
-          python3 - "$OUT_DIR/global_availability_receipt.json" <<'PY'
-          import json, sys
-          data = json.load(open(sys.argv[1], encoding='utf-8'))
-          assert data['works'] >= 1000, data
-          assert data['sourceLinks'] >= data['works'], data
-          assert data['enabledProviders'] == 16, data
-          PY
-
-      - name: Validate generated bundled DB with Flutter source contract
-        working-directory: private-source
-        shell: bash
-        env:
-          OUT_DIR: ${{ steps.inventory.outputs.out_dir }}
-        run: |
-          set -euo pipefail
-          cp "$OUT_DIR/manga_availability.db" assets/data/manga_availability.db
-          flutter test --no-pub --concurrency=1 \
-            test/services/manga/manga_bundled_catalog_source_test.dart \
-            test/services/manga/manga_bundled_catalog_v3_source_test.dart
-          git diff --check
-
-      - name: Publish validated cache to exact private branch
-        id: publish
-        working-directory: private-source
-        env:
-          BRANCH: ${{ steps.request.outputs.branch }}
-          REQUESTED_SHA: ${{ steps.request.outputs.sha }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch origin "$BRANCH" --quiet
-          test "$(git rev-parse "origin/$BRANCH")" = "$REQUESTED_SHA"
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -- \
-            assets/data/manga_availability.db \
-            lib/services/manga/manga_availability_service.dart \
-            lib/services/manga/manga_runtime_availability_source.dart \
-            lib/services/manga/manga_bundled_catalog_source.dart \
-            lib/services/manga/manga_repository_browse_data_source.dart \
-            lib/services/manga/providers/mangalivre_org_manga_provider.dart \
-            tools/manga/inventory_manga_catalog.dart \
-            tools/manga/manga_availability_v3_builder.dart \
-            tools/manga/build_global_manga_availability.dart \
-            test/services/manga/manga_catalog_availability_service_test.dart \
-            test/services/manga/manga_bundled_catalog_v3_source_test.dart \
-            test/tools/manga_availability_v3_builder_test.dart \
-            test/tools/build_global_manga_availability_test.dart
-          if git diff --cached --quiet; then
-            published_sha="$REQUESTED_SHA"
-          else
-            git commit -m 'chore(manga): refresh global availability cache'
-            git push origin HEAD:"$BRANCH"
-            published_sha="$(git rev-parse HEAD)"
-          fi
-          echo "published_sha=$published_sha" >> "$GITHUB_OUTPUT"
-
-      - name: Publish sanitized inventory and cache receipts
+      - name: Publish sanitized inventory receipt
         env:
           OUT_DIR: ${{ steps.inventory.outputs.out_dir }}
           GOANIME_BRANCH: ${{ steps.request.outputs.branch }}
           GOANIME_SHA: ${{ steps.request.outputs.sha }}
-          GOANIME_PUBLISHED_SHA: ${{ steps.publish.outputs.published_sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -257,26 +105,23 @@ jobs:
           mkdir -p "$target"
           cp "$OUT_DIR/manga_catalog_inventory.json" "$target/inventory.json"
           cp "$OUT_DIR/manga_catalog_inventory.md" "$target/inventory.md"
-          cp "$OUT_DIR/global_availability_receipt.json" "$target/global_availability.json"
-          python3 - "$target/inventory.json" "$target/global_availability.json" "$GOANIME_BRANCH" "$GOANIME_SHA" "$GOANIME_PUBLISHED_SHA" "$GITHUB_RUN_ID" <<'PY'
+          python3 - "$target/inventory.json" "$GOANIME_BRANCH" "$GOANIME_SHA" "$GITHUB_RUN_ID" <<'PY'
           import json, sys
-          inventory_path, global_path, branch, sha, published_sha, run_id = sys.argv[1:]
-          for path in (inventory_path, global_path):
-              with open(path, encoding='utf-8') as fh:
-                  data = json.load(fh)
-              data['goanimeBranch'] = branch
-              data['goanimeInputSha'] = sha
-              data['goanimePublishedSha'] = published_sha
-              data['toolchainsRunId'] = int(run_id)
-              with open(path, 'w', encoding='utf-8') as fh:
-                  json.dump(data, fh, indent=2, sort_keys=True)
-                  fh.write('\n')
+          path, branch, sha, run_id = sys.argv[1:]
+          with open(path, encoding='utf-8') as fh:
+              data = json.load(fh)
+          data['goanimeBranch'] = branch
+          data['goanimeSha'] = sha
+          data['toolchainsRunId'] = int(run_id)
+          with open(path, 'w', encoding='utf-8') as fh:
+              json.dump(data, fh, indent=2, sort_keys=True)
+              fh.write('\n')
           PY
           cd toolchain-control
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add "reports/goanime-manga-inventory/${GITHUB_RUN_ID}"
-          git commit -m "ci(goanime): publish manga availability ${GITHUB_RUN_ID}"
+          git commit -m "ci(goanime): publish manga inventory ${GITHUB_RUN_ID}"
           git pull --rebase origin main
           git push origin HEAD:main
 
@@ -286,4 +131,3 @@ jobs:
         run: |
           rm -rf "$GITHUB_WORKSPACE/private-source"
           rm -rf "$RUNNER_TEMP/goanime-manga-inventory"
-          rm -rf "$GITHUB_WORKSPACE/toolchain-control"
