@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'triggers/goanime-playback-provider-race/*.request'
+      - '.github/workflows/test-goanime-playback-provider-race.yml'
 
 permissions:
   contents: read
@@ -18,26 +18,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - name: Checkout trusted Toolchains source
-        uses: actions/checkout@v6
-        with:
-          ref: main
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Resolve exact GoAnime request
-        id: request
-        shell: bash
-        run: >-
-          python scripts/goanime_resolve_request.py
-          --request-dir triggers/goanime-playback-provider-race
-          --workspace .
-
       - name: Checkout exact GoAnime source
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
-          ref: ${{ steps.request.outputs.source_hint }}
+          ref: aa2fc17d389a77d2da8b70a198aa3b4ede6c63ff
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
           fetch-depth: 1
@@ -48,10 +33,8 @@ jobs:
 
       - name: Verify immutable source
         working-directory: private-source
-        env:
-          EXPECTED_SHA: ${{ steps.request.outputs.source_hint }}
         shell: bash
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+        run: test "$(git rev-parse HEAD)" = 'aa2fc17d389a77d2da8b70a198aa3b4ede6c63ff'
 
       - name: Set up Flutter 3.44.1
         uses: subosito/flutter-action@v2
