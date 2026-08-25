@@ -1,0 +1,32 @@
+# Manga catalog inventory
+
+- Generated: `2026-08-25T06:09:15.066759Z`
+- Enabled providers: **16**
+- Exhaustively paginated providers: **11**
+- Unique source occurrences: **11078**
+- Conservative title-deduplicated works: **9573**
+
+> Deduplication is intentionally conservative: exact normalized titles are merged only across providers; a normalized-title collision inside one provider is never auto-merged.
+
+| Provider | Status | Pages | Raw | Unique | Duplicates | Stop reason |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `ptbr.arthurscan` | failed | 0 | 0 | 0 | 0 | `provider_failure` |
+| `ptbr.astratoons` | exhausted | 18 | 177 | 176 | 1 | `next_page_token_null` |
+| `ptbr.hqnow` | exhausted | 1 | 2856 | 2856 | 0 | `next_page_token_null` |
+| `ptbr.hipertoon` | exhausted | 106 | 2538 | 2538 | 0 | `next_page_token_null` |
+| `ptbr.capitoons` | exhausted | 3 | 24 | 24 | 0 | `next_page_token_null` |
+| `ptbr.kamisamaexplorer` | failed | 0 | 0 | 0 | 0 | `provider_failure` |
+| `ptbr.kivaratoons` | exhausted | 132 | 3156 | 3156 | 0 | `next_page_token_null` |
+| `ptbr.leituramanga` | exhausted | 59 | 1398 | 1398 | 0 | `next_page_token_null` |
+| `ptbr.ler999` | exhausted | 1 | 7 | 7 | 0 | `next_page_token_null` |
+| `ptbr.littletyrant` | exhausted | 29 | 290 | 290 | 0 | `next_page_token_null` |
+| `ptbr.maidscan` | exhausted | 6 | 154 | 154 | 0 | `next_page_token_null` |
+| `ptbr.mangadash` | exhausted | 15 | 343 | 343 | 0 | `next_page_token_null` |
+| `ptbr.mangaflix` | exhausted | 1 | 100 | 100 | 0 | `next_page_token_null` |
+| `ptbr.mangalivreblog` | partial | 3 | 36 | 36 | 0 | `provider_failure` |
+| `ptbr.mangalivreorg` | failed | 0 | 0 | 0 | 0 | `provider_failure` |
+| `ptbr.ninjascan` | failed | 0 | 0 | 0 | 0 | `provider_failure` |
+
+## Interpretation
+
+The source-occurrence count is exact for providers marked `exhausted`. Providers marked `partial`, `failed` or `not_enumerable` are explicitly excluded from any claim that this is the absolute upstream universe.
