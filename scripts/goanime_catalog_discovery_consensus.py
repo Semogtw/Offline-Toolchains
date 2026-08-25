@@ -249,7 +249,11 @@ def _load_service_account(encoded: str) -> dict[str, Any]:
     return decoded
 
 
-def fetch_firestore_documents(service_account_info: dict[str, Any]) -> list[dict[str, Any]]:
+def fetch_firestore_documents(
+    service_account_info: dict[str, Any],
+    *,
+    collection_id: str = "catalogDiscoveries",
+) -> list[dict[str, Any]]:
     try:
         from google.auth.transport.requests import Request
         from google.oauth2 import service_account as google_service_account
@@ -271,7 +275,7 @@ def fetch_firestore_documents(service_account_info: dict[str, Any]) -> list[dict
             "structuredQuery": {
                 "from": [
                     {
-                        "collectionId": "catalogDiscoveries",
+                        "collectionId": collection_id,
                         "allDescendants": True,
                     }
                 ]

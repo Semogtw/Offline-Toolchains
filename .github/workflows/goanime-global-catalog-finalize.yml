@@ -2,7 +2,9 @@ name: GoAnime Global Catalog Finalize
 
 on:
   workflow_run:
-    workflows: ["GoAnime Scrapling provider cache"]
+    workflows:
+      - GoAnime Scrapling provider cache
+      - GoAnime Manga Global Cache
     types: [completed]
   push:
     branches: [main]
@@ -57,7 +59,10 @@ jobs:
         working-directory: trusted-source
         shell: bash
         env:
-          DISPATCH_TARGET: ${{ github.event.inputs.target_ref || '' }}
+          DISPATCH_TARGET: ${{ github.event.inputs.target_ref || github.event.workflow_run.head_branch || '' }}
+          # A refresh workflow may push a new CAS-validated catalog commit
+          # during its run. Resolve its branch, then checkout that branch's
+          # post-run tip instead of pinning the workflow-run trigger SHA.
           DISPATCH_SOURCE_HINT: ${{ github.event.inputs.source_hint || '' }}
         run: |
           set -euo pipefail
@@ -168,6 +173,16 @@ jobs:
           --min-reporters 2
           --max-age-days 14
 
+      - name: Collect Manga readability discovery consensus
+        working-directory: trusted-source
+        env:
+          GOANIME_FIREBASE_SERVICE_ACCOUNT_JSON_B64: ${{ secrets.GOANIME_FIREBASE_SERVICE_ACCOUNT_JSON_B64 }}
+        run: >-
+          python scripts/goanime_manga_catalog_discovery_consensus.py
+          --output ../private-source/build/manga_catalog_discovery_consensus.json
+          --min-reporters 2
+          --max-age-days 14
+
       - name: Validate provider base before community overlay
         working-directory: private-source
         run: >-
@@ -184,7 +199,12 @@ jobs:
 
       - name: Run promotion unit tests
         working-directory: private-source
-        run: python -m unittest tools/tests/test_apply_catalog_discovery_consensus.py -v
+        run: |
+          set -euo pipefail
+          python -m unittest tools/tests/test_apply_catalog_discovery_consensus.py -v
+          if [ -f tools/tests/test_apply_manga_catalog_discovery_overlay.py ]; then
+            python -m unittest tools/tests/test_apply_manga_catalog_discovery_overlay.py -v
+          fi
 
       - name: Validate promoted JSON shapes
         working-directory: private-source
@@ -221,6 +241,35 @@ jobs:
         env:
           RUNTIME_DATABASE_PUBLIC_BASE_URL: ${{ steps.policy.outputs.runtime_base_url }}
         run: dart run tools/build_runtime_database_manifest.dart
+
+      - name: Apply Manga consensus as runtime-only overlay
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f tools/apply_manga_catalog_discovery_overlay.py ] || \
+             [ ! -f dist/runtime_database_cache/manga_availability.db ] || \
+             [ ! -f build/manga_catalog_discovery_consensus.json ]; then
+            echo 'Manga runtime overlay is unavailable on this GoAnime revision; preserving base assets.'
+            exit 0
+          fi
+          python tools/apply_manga_catalog_discovery_overlay.py \
+            --database dist/runtime_database_cache/manga_availability.db \
+            --consensus build/manga_catalog_discovery_consensus.json \
+            --output dist/runtime_database_cache/manga_availability.db \
+            --summary-output build/manga_catalog_discovery_overlay_summary.json
+
+      - name: Rebuild runtime manifest after Manga overlay
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f dist/runtime_database_cache/manga_availability.db ] && \
+             [ -f tools/build_runtime_database_manifest.dart ]; then
+            dart run tools/build_runtime_database_manifest.dart \
+              --no-copy-assets \
+              --manga-source-path=dist/runtime_database_cache/manga_availability.db
+          fi
 
       - name: Validate runtime publication outputs
         id: runtime_assets
