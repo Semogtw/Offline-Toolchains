@@ -223,26 +223,54 @@ jobs:
         run: dart run tools/build_runtime_database_manifest.dart
 
       - name: Validate runtime publication outputs
+        id: runtime_assets
         working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
+          manifest=dist/runtime_database_cache/runtime_database_manifest.json
           test -s assets/data/title_availability.db
           test -s assets/data/title_availability.db.sha256
-          test -s dist/runtime_database_cache/runtime_database_manifest.json
+          test -s "$manifest"
           test -s dist/runtime_database_cache/title_availability.db
           test -s dist/runtime_database_cache/franchise_availability.db
-          python -m json.tool dist/runtime_database_cache/runtime_database_manifest.json >/dev/null
+          python -m json.tool "$manifest" >/dev/null
+
           expected="$(tr -d '[:space:]' < assets/data/title_availability.db.sha256)"
           actual="$(sha256sum assets/data/title_availability.db | awk '{print $1}')"
           test "$expected" = "$actual"
+
+          # Backward-compatible rollout: main currently emits the two anime
+          # databases. Once GoAnime main contains manga runtime support, the
+          # same generator emits the third payload and it becomes mandatory for
+          # that manifest generation. This lets Toolchains land first safely.
+          asset_count="$(jq '.assets | length' "$manifest")"
+          case "$asset_count" in
+            2|3) ;;
+            *) echo "::error::Unexpected runtime database asset count: $asset_count"; exit 1 ;;
+          esac
+
+          manga_count="$(jq '[.assets[] | select(.databaseId == "manga_availability")] | length' "$manifest")"
+          if [ "$manga_count" = '1' ]; then
+            test "$asset_count" = '3'
+            test -s dist/runtime_database_cache/manga_availability.db
+            test "$(jq -r '.assets[] | select(.databaseId == "manga_availability") | .schemaVersion' "$manifest")" = '3'
+            echo 'manga_runtime=true' >> "$GITHUB_OUTPUT"
+          elif [ "$manga_count" = '0' ]; then
+            test "$asset_count" = '2'
+            echo 'manga_runtime=false' >> "$GITHUB_OUTPUT"
+          else
+            echo '::error::Duplicate manga runtime database entries in manifest.'
+            exit 1
+          fi
+          echo "asset_count=$asset_count" >> "$GITHUB_OUTPUT"
 
       - name: Verify generated repository diff scope
         working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
-          allowed='^(assets/data/(available_animes\.json|available_anime_modes\.json|mal_provider_availability_map\.json|title_availability\.db|title_availability\.db\.sha256|franchise_availability\.db\.sha256))$'
+          allowed='^(assets/data/(available_animes\.json|available_anime_modes\.json|mal_provider_availability_map\.json|title_availability\.db|title_availability\.db\.sha256|franchise_availability\.db\.sha256|manga_availability\.db\.sha256))$'
           changed="$(git status --porcelain=v1 | sed -E 's/^.. //' | grep -Ev '^(build|dist)/' || true)"
           unexpected="$(printf '%s\n' "$changed" | sed '/^$/d' | grep -Ev "$allowed" || true)"
           if [ -n "$unexpected" ]; then
@@ -270,6 +298,9 @@ jobs:
             assets/data/title_availability.db \
             assets/data/title_availability.db.sha256 \
             assets/data/franchise_availability.db.sha256
+          if [ -f assets/data/manga_availability.db.sha256 ]; then
+            git add assets/data/manga_availability.db.sha256
+          fi
           if git diff --cached --quiet; then
             echo 'No global catalog artifact changes to commit.'
           else
@@ -299,12 +330,17 @@ jobs:
         run: |
           set -euo pipefail
           endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          manifest=dist/runtime_database_cache/runtime_database_manifest.json
           # Publish payloads first and the manifest last. Clients only observe a
           # new generation after every referenced database has reached R2.
           aws s3 cp dist/runtime_database_cache/franchise_availability.db "s3://${R2_BUCKET}/latest/franchise_availability.db" --endpoint-url "$endpoint"
           aws s3 cp dist/runtime_database_cache/title_availability.db "s3://${R2_BUCKET}/latest/title_availability.db" --endpoint-url "$endpoint"
+          if jq -e '.assets[] | select(.databaseId == "manga_availability")' "$manifest" >/dev/null; then
+            test -s dist/runtime_database_cache/manga_availability.db
+            aws s3 cp dist/runtime_database_cache/manga_availability.db "s3://${R2_BUCKET}/latest/manga_availability.db" --endpoint-url "$endpoint"
+          fi
           aws s3 cp assets/data/mal_provider_availability_map.json "s3://${R2_BUCKET}/latest/mal_provider_availability_map.json" --endpoint-url "$endpoint"
-          aws s3 cp dist/runtime_database_cache/runtime_database_manifest.json "s3://${R2_BUCKET}/latest/runtime_database_manifest.json" --endpoint-url "$endpoint"
+          aws s3 cp "$manifest" "s3://${R2_BUCKET}/latest/runtime_database_manifest.json" --endpoint-url "$endpoint"
 
       - name: Warn when runtime publication is requested but unavailable
         if: steps.policy.outputs.publish_runtime == 'true' && steps.policy.outputs.r2_configured != 'true'
@@ -320,6 +356,8 @@ jobs:
           FIRESTORE_CONFIGURED: ${{ steps.policy.outputs.firestore_configured }}
           R2_CONFIGURED: ${{ steps.policy.outputs.r2_configured }}
           PUBLISH_RUNTIME: ${{ steps.policy.outputs.publish_runtime }}
+          RUNTIME_ASSET_COUNT: ${{ steps.runtime_assets.outputs.asset_count }}
+          MANGA_RUNTIME: ${{ steps.runtime_assets.outputs.manga_runtime }}
           STATE: ${{ job.status }}
         shell: bash
         run: |
@@ -333,8 +371,10 @@ jobs:
             --arg firestoreConfigured "${FIRESTORE_CONFIGURED:-unknown}" \
             --arg r2Configured "${R2_CONFIGURED:-unknown}" \
             --arg publishRuntime "${PUBLISH_RUNTIME:-false}" \
+            --arg runtimeAssetCount "${RUNTIME_ASSET_COUNT:-unknown}" \
+            --arg mangaRuntime "${MANGA_RUNTIME:-unknown}" \
             --argjson runId "$GITHUB_RUN_ID" \
-            '{schemaVersion:1,sourceSha:$sourceSha,targetRef:$targetRef,state:$state,firestoreConfigured:$firestoreConfigured,r2Configured:$r2Configured,publishRuntime:$publishRuntime,runId:$runId}')"
+            '{schemaVersion:1,sourceSha:$sourceSha,targetRef:$targetRef,state:$state,firestoreConfigured:$firestoreConfigured,r2Configured:$r2Configured,publishRuntime:$publishRuntime,runtimeAssetCount:$runtimeAssetCount,mangaRuntime:$mangaRuntime,runId:$runId}')"
           encoded="$(printf '%s\n' "$body" | base64 -w0)"
           path="results/goanime-global-catalog-finalize/${source_sha}-${GITHUB_RUN_ID}.json"
           gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" \
@@ -351,6 +391,8 @@ jobs:
           FIRESTORE_CONFIGURED: ${{ steps.policy.outputs.firestore_configured }}
           R2_CONFIGURED: ${{ steps.policy.outputs.r2_configured }}
           PUBLISH_RUNTIME: ${{ steps.policy.outputs.publish_runtime }}
+          RUNTIME_ASSET_COUNT: ${{ steps.runtime_assets.outputs.asset_count }}
+          MANGA_RUNTIME: ${{ steps.runtime_assets.outputs.manga_runtime }}
         run: |
           {
             echo '## GoAnime global catalog finalization'
@@ -360,6 +402,8 @@ jobs:
             echo "- Firestore consensus configured: \`$FIRESTORE_CONFIGURED\`"
             echo "- runtime publication requested: \`$PUBLISH_RUNTIME\`"
             echo "- R2 configured: \`$R2_CONFIGURED\`"
+            echo "- runtime DB assets: \`${RUNTIME_ASSET_COUNT:-unknown}\`"
+            echo "- manga runtime DB present: \`${MANGA_RUNTIME:-unknown}\`"
             if [ -f build/catalog_discovery_promotion_summary.json ]; then
               echo '- promotion summary:'
               echo '```json'
