@@ -1,0 +1,63 @@
+name: Format GoAnime playback race once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/format-goanime-playback-race-once.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout GoAnime playback race branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: fix/playback-provider-race-20260825
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Format changed Dart files
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format \
+            lib/services/video_playback_resolver.dart \
+            test/services/video_playback_resolver_late_provider_test.dart \
+            test/services/playback_provider_enrichment_service_test.dart
+
+      - name: Commit and push formatting
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'No formatting changes required.'
+            exit 0
+          fi
+          git config user.name 'Arthur Almeida'
+          git config user.email 'arthurgva1602@gmail.com'
+          git add \
+            lib/services/video_playback_resolver.dart \
+            test/services/video_playback_resolver_late_provider_test.dart \
+            test/services/playback_provider_enrichment_service_test.dart
+          git commit -m 'style(playback): apply dart formatter'
+          git push origin HEAD:fix/playback-provider-race-20260825
