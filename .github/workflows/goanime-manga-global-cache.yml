@@ -1,0 +1,177 @@
+name: GoAnime Manga Global Cache
+
+on:
+  schedule:
+    - cron: '45 6 * * *'
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: Allowlisted GoAnime-Mobile branch to refresh
+        required: true
+        default: codex/manga-parity-20260823
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goanime-manga-global-cache
+  cancel-in-progress: false
+
+env:
+  FLUTTER_CHANNEL: stable
+  FLUTTER_VERSION: 3.44.1
+  # Development activation. Change this single value to `main` only after the
+  # manga cache-parity implementation is merged and validated there.
+  SCHEDULED_TARGET_REF: codex/manga-parity-20260823
+
+jobs:
+  refresh:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Resolve trusted target
+        id: target
+        shell: bash
+        env:
+          DISPATCH_TARGET: ${{ github.event.inputs.target_ref || '' }}
+        run: |
+          set -euo pipefail
+          target="${DISPATCH_TARGET:-$SCHEDULED_TARGET_REF}"
+          case "$target" in
+            codex/manga-parity-20260823|main) ;;
+            *)
+              echo "::error::Ref is not allowlisted for manga global-cache maintenance."
+              exit 1
+              ;;
+          esac
+          echo "ref=$target" >> "$GITHUB_OUTPUT"
+
+      - name: Require private write credential
+        shell: bash
+        env:
+          WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$WRITE_TOKEN" || {
+            echo '::error::GOANIME_CATALOG_WRITE_TOKEN is required for manga cache publication.'
+            exit 1
+          }
+
+      - name: Checkout exact private GoAnime target
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.target.outputs.ref }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Record immutable source revision
+        id: source
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          test -x tools/manga/materialize_global_manga_availability_ci.sh || \
+            test -f tools/manga/materialize_global_manga_availability_ci.sh
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get --enforce-lockfile >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+
+      - name: Bind materializer CAS to trusted target
+        working-directory: private-source
+        shell: bash
+        env:
+          TARGET_REF: ${{ steps.target.outputs.ref }}
+        run: |
+          set -euo pipefail
+          python3 - "$TARGET_REF" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          target = sys.argv[1]
+          path = Path('tools/manga/materialize_global_manga_availability_ci.sh')
+          text = path.read_text(encoding='utf-8')
+          pattern = r'^TARGET_BRANCH="[^"]+"$'
+          matches = re.findall(pattern, text, flags=re.MULTILINE)
+          if len(matches) != 1:
+              raise SystemExit(f'unexpected TARGET_BRANCH declarations: {matches!r}')
+          text = re.sub(
+              pattern,
+              f'TARGET_BRANCH="{target}"',
+              text,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          path.write_text(text, encoding='utf-8')
+          PY
+          git diff --check
+
+      - name: Materialize and publish global manga availability
+        working-directory: private-source
+        shell: bash
+        run: bash tools/manga/materialize_global_manga_availability_ci.sh
+
+      - name: Publish sanitized refresh receipt
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          TARGET_REF: ${{ steps.target.outputs.ref }}
+          STATE: ${{ job.status }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha="${SOURCE_SHA:-unknown}"
+          target_ref="${TARGET_REF:-unknown}"
+          body="$(jq -cn \
+            --arg sourceSha "$source_sha" \
+            --arg targetRef "$target_ref" \
+            --arg state "$STATE" \
+            --argjson runId "$GITHUB_RUN_ID" \
+            '{schemaVersion:1,sourceSha:$sourceSha,targetRef:$targetRef,state:$state,runId:$runId}')"
+          encoded="$(printf '%s\n' "$body" | base64 -w0)"
+          path="results/goanime-manga-global-cache/${source_sha}-${GITHUB_RUN_ID}.json"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" \
+            -f message="ci(result): record manga cache refresh $GITHUB_RUN_ID" \
+            -f content="$encoded" >/dev/null
+
+      - name: Write summary
+        if: always()
+        env:
+          TARGET_REF: ${{ steps.target.outputs.ref }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        shell: bash
+        run: |
+          {
+            echo '## GoAnime manga global cache refresh'
+            echo
+            echo "- runner: \`ubuntu-24.04\`"
+            echo "- target: \`${TARGET_REF:-unknown}\`"
+            echo "- source SHA: \`${SOURCE_SHA:-unknown}\`"
+            echo '- private source/artifacts are not uploaded to Toolchains'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
