@@ -3,10 +3,7 @@ name: Validate private CI hub
 on:
   pull_request:
     paths:
-      - .github/workflows/request-private-project-ci.yml
-      - .github/workflows/run-private-project-ci.yml
-      - .github/workflows/report-private-project-ci-runs.yml
-      - .github/workflows/validate-private-ci.yml
+      - '.github/workflows/**'
       - scripts/private_ci_request.py
       - scripts/test_private_ci_request.py
       - scripts/test-private-ci-toolchain-policy.py
@@ -22,10 +19,7 @@ on:
       - feature/**
       - fix/**
     paths:
-      - .github/workflows/request-private-project-ci.yml
-      - .github/workflows/run-private-project-ci.yml
-      - .github/workflows/report-private-project-ci-runs.yml
-      - .github/workflows/validate-private-ci.yml
+      - '.github/workflows/**'
       - scripts/private_ci_request.py
       - scripts/test_private_ci_request.py
       - scripts/test-private-ci-toolchain-policy.py
@@ -59,17 +53,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mapfile -t workflows < <(
+            find .github/workflows -maxdepth 1 -type f \
+              \( -name '*.yml' -o -name '*.yaml' \) -print | sort
+          )
+          test "${#workflows[@]}" -gt 0
           ruby -e '
             require "psych"
             ARGV.each do |path|
               Psych.parse_file(path)
               puts "YAML syntax: PASS: #{path}"
             end
-          ' \
-            .github/workflows/request-private-project-ci.yml \
-            .github/workflows/run-private-project-ci.yml \
-            .github/workflows/report-private-project-ci-runs.yml \
-            .github/workflows/validate-private-ci.yml
+          ' "${workflows[@]}"
 
       - name: Run request validator tests
         run: python3 scripts/test_private_ci_request.py
