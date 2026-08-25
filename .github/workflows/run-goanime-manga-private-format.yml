@@ -104,10 +104,22 @@ jobs:
           flutter pub get >/dev/null
           (cd packages/goanime_core && dart pub get >/dev/null)
 
+      - name: Configure sanitized materializer diagnostics
+        if: steps.request.outputs.project == 'goanime'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/manga-materializer-bash-env" <<'EOF'
+          set -E
+          trap 'status=$?; printf "[manga-materializer] failed status=%s line=%s\n" "$status" "$LINENO" >&2' ERR
+          EOF
+
       - name: Materialize global manga availability v3
         if: steps.request.outputs.project == 'goanime'
         working-directory: private-source
         shell: bash
+        env:
+          BASH_ENV: ${{ runner.temp }}/manga-materializer-bash-env
         run: bash tools/manga/materialize_global_manga_availability_ci.sh
 
       - name: Remove private checkout
