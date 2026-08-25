@@ -1,4 +1,4 @@
-name: Inventory and refresh GoAnime manga catalog
+name: Inventory GoAnime manga catalog
 
 on:
   push:
@@ -6,8 +6,6 @@ on:
       - main
     paths:
       - 'triggers/goanime-manga-inventory/*.request'
-  schedule:
-    - cron: '23 5 * * *'
 
 permissions:
   contents: write
@@ -16,13 +14,10 @@ concurrency:
   group: goanime-manga-inventory
   cancel-in-progress: false
 
-env:
-  SCHEDULED_GOANIME_BRANCH: codex/manga-parity-20260823
-
 jobs:
   inventory:
     name: Refresh global manga availability
-    if: github.actor == github.repository_owner || github.event_name == 'schedule'
+    if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
     timeout-minutes: 120
 
@@ -41,20 +36,13 @@ jobs:
 
       - name: Resolve exact private revision
         id: request
-        env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$GITHUB_EVENT_NAME" = push ]; then
-            request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-inventory/*.request' | head -n 1)"
-            test -n "$request"
-            read -r project branch sha < "toolchain-control/$request"
-            test "$project" = "goanime"
-          else
-            branch="$SCHEDULED_GOANIME_BRANCH"
-            sha="$(git ls-remote "https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git" "refs/heads/$branch" | awk '{print $1}')"
-          fi
+          request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-inventory/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "toolchain-control/$request"
+          test "$project" = "goanime"
           [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
@@ -104,8 +92,7 @@ jobs:
           if count > 1:
               raise SystemExit(f'unexpected duplicate stale Origin blocks: {count}')
           if count == 1:
-              text = text.replace(stale, clean, 1)
-              path.write_text(text, encoding='utf-8')
+              path.write_text(text.replace(stale, clean, 1), encoding='utf-8')
           if "'Origin': baseUri.origin" in path.read_text(encoding='utf-8'):
               raise SystemExit('stale cross-host Origin header remains')
           PY
@@ -115,32 +102,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          dart format \
-            lib/services/manga/manga_availability_service.dart \
-            lib/services/manga/manga_runtime_availability_source.dart \
-            lib/services/manga/manga_bundled_catalog_source.dart \
-            lib/services/manga/manga_repository_browse_data_source.dart \
-            lib/services/manga/providers/mangalivre_org_manga_provider.dart \
-            tools/manga/inventory_manga_catalog.dart \
-            tools/manga/manga_availability_v3_builder.dart \
-            tools/manga/build_global_manga_availability.dart \
-            test/services/manga/manga_catalog_availability_service_test.dart \
-            test/services/manga/manga_bundled_catalog_v3_source_test.dart \
-            test/tools/manga_availability_v3_builder_test.dart \
+          files=(
+            lib/services/manga/manga_availability_service.dart
+            lib/services/manga/manga_runtime_availability_source.dart
+            lib/services/manga/manga_bundled_catalog_source.dart
+            lib/services/manga/manga_repository_browse_data_source.dart
+            lib/services/manga/providers/mangalivre_org_manga_provider.dart
+            tools/manga/inventory_manga_catalog.dart
+            tools/manga/manga_availability_v3_builder.dart
+            tools/manga/build_global_manga_availability.dart
+            test/services/manga/manga_catalog_availability_service_test.dart
+            test/services/manga/manga_bundled_catalog_v3_source_test.dart
+            test/tools/manga_availability_v3_builder_test.dart
             test/tools/build_global_manga_availability_test.dart
-          dart format --output=none --set-exit-if-changed \
-            lib/services/manga/manga_availability_service.dart \
-            lib/services/manga/manga_runtime_availability_source.dart \
-            lib/services/manga/manga_bundled_catalog_source.dart \
-            lib/services/manga/manga_repository_browse_data_source.dart \
-            lib/services/manga/providers/mangalivre_org_manga_provider.dart \
-            tools/manga/inventory_manga_catalog.dart \
-            tools/manga/manga_availability_v3_builder.dart \
-            tools/manga/build_global_manga_availability.dart \
-            test/services/manga/manga_catalog_availability_service_test.dart \
-            test/services/manga/manga_bundled_catalog_v3_source_test.dart \
-            test/tools/manga_availability_v3_builder_test.dart \
-            test/tools/build_global_manga_availability_test.dart
+          )
+          dart format "${files[@]}"
+          dart format --output=none --set-exit-if-changed "${files[@]}"
           git diff --check
 
       - name: Analyze global availability surface
@@ -197,7 +174,6 @@ jobs:
           echo "out_dir=$OUT_DIR" >> "$GITHUB_OUTPUT"
 
       - name: Build fail-safe global SQLite cache
-        id: global
         working-directory: private-source
         shell: bash
         env:
@@ -218,8 +194,6 @@ jobs:
           assert data['sourceLinks'] >= data['works'], data
           assert data['enabledProviders'] == 16, data
           PY
-          echo "database=$OUT_DIR/manga_availability.db" >> "$GITHUB_OUTPUT"
-          echo "receipt=$OUT_DIR/global_availability_receipt.json" >> "$GITHUB_OUTPUT"
 
       - name: Validate generated bundled DB with Flutter source contract
         working-directory: private-source
