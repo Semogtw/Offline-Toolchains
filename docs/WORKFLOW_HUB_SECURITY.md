@@ -1,76 +1,40 @@
-# Workflow hub security and consolidation policy
+# Workflow and artifact security
 
-`Offline-Toolchains` is the canonical home for expensive CI, build, cache and encrypted-transfer workflows used by the actively developed projects listed in `config/workflow-hub-projects.json`.
-
-The goal is to keep GitHub-hosted compute in this public repository whenever the work can safely run here, while treating private source and generated outputs as confidential by default.
+This repository is public. Workflows, logs, committed metadata, artifacts, and documentation should therefore be designed with public visibility in mind.
 
 ## Core rules
 
-1. **Private source is ephemeral.** Checkouts of private repositories use a fine-grained, read-only token, `persist-credentials: false`, no LFS/submodules unless a profile explicitly requires them, and are removed in an `always()` cleanup path whenever practical.
-2. **No persistent Actions cache for private checkouts.** Package-manager caches derived from private repositories can leak dependency names, paths or build metadata and outlive a runner. Private CI jobs therefore hydrate dependencies inside the disposable runner instead of using `actions/cache` or setup-action cache integration.
-3. **Private build outputs are discarded by default.** Tests may build an APK, installer or production bundle to prove that the build works, but the output is deleted with the checkout unless a transfer workflow explicitly packages it.
-4. **Sensitive transfer is ciphertext-only.** APKs, source bundles, diagnostics, databases, backups, signing material and similar data must never be uploaded in plaintext from this public repository. Transfer workflows encrypt first with the committed OpenPGP public key and upload only ciphertext plus sanitized hashes/metadata.
-5. **Retention follows sensitivity.** Sensitive/private transfers use `retention-days: 1`. Explicitly public toolchains and redacted public reports may use up to 7 days so they can be reused instead of rebuilt constantly. Every `upload-artifact` must declare its retention explicitly.
-6. **Secrets stay out of untrusted code paths.** Workflows that receive `PRIVATE_REPOSITORIES_TOKEN` must not use `pull_request_target`, `secrets: inherit`, persisted checkout credentials, arbitrary repository/command inputs, or code from request branches as privileged implementation.
-7. **Least privilege by workflow.** Workflows declare explicit permissions. Private checkout/build jobs use `contents: read`; reporter workflows may add only the narrow write capability they require.
-8. **Public logs are treated as public.** Private jobs must avoid debug logging and should not print secret values, environment dumps, private source contents, user data, or sensitive manifests.
+1. **Use least privilege.** Workflows should request only the permissions required for their task.
+2. **Do not persist credentials.** Authentication material must not be committed, printed, cached, or embedded in generated artifacts.
+3. **Treat logs as public.** Avoid environment dumps, verbose credential-bearing commands, private source output, and sensitive diagnostic payloads.
+4. **Validate artifacts before reuse.** Toolchain bundles and cache packages should ship with integrity metadata such as checksums or manifests.
+5. **Keep generated state scoped.** Temporary build directories, working copies, and credential helpers should be removed when they are no longer needed.
+6. **Bound artifact retention.** Public generated artifacts should use explicit retention appropriate to their purpose rather than relying on implicit defaults.
+7. **Separate privileged operations.** Signing, deployment, production credentials, and other privileged actions should use narrowly scoped workflows and credentials.
+8. **Do not accept arbitrary execution input.** Reusable automation should validate inputs and avoid turning user-controlled strings into unrestricted repository names, shell commands, or artifact destinations.
 
-## Active project coverage
+## Public documentation boundary
 
-The versioned inventory is `config/workflow-hub-projects.json`.
+Documentation committed here should describe reusable public behavior: toolchain formats, cache restoration, validation, reproducibility, and supported environments.
 
-Current central coverage:
+Internal operational details are not part of the public contract. Do not commit credential inventories, permission maps, private project state, production topology, incident notes, internal handoffs, or private source references merely for maintainer convenience.
 
-- GoAnime: private CI, Android debug verification, encrypted APK transfer, encrypted source export and incremental catalog refresh.
-- ZapZap: private Android CI, encrypted debug APK transfer and encrypted source export.
-- SemogSite: private checks/builds, public offline toolchain and encrypted source export. The CI default follows integrated `main`, not an old bootstrap branch.
-- Hydra: private validation, public offline toolchain and encrypted source export.
-- Receitas: executable React/TypeScript PWA with a dedicated read-only private runner. The runner executes fixed Node/pnpm lint, typecheck, unit, source-security and static Pages build gates, discards all source/output, and deliberately receives no E2E/backend/deploy credentials.
-- Fichário Virtual: public source, so its full verification remains token-free in this repository.
-- Codex desktop/Gemini helper repositories: public toolchain workflows remain here and do not need the private token.
+## Toolchain integrity
 
-Historical or one-shot workflows may remain temporarily for compatibility, but new work should target the canonical shared profiles instead of adding another consumer-specific privileged workflow.
+When publishing or restoring a generated toolchain:
 
-## Secret scope
+- pin or record relevant versions;
+- verify checksums/manifests before extraction or execution;
+- keep restore scripts deterministic where practical;
+- fail closed when required integrity metadata does not match;
+- update validation tests when the artifact contract changes.
 
-`PRIVATE_REPOSITORIES_TOKEN` must be a fine-grained token with only `Contents: Read-only` for private repositories actually served by the hub. As private projects are added, expand only the repository allowlist; do not add Actions administration, secrets, packages or write access.
+## Workflow changes
 
-The GoAnime catalog refresh is the only current central workflow that needs to publish generated source data back to a private repository. It uses a separate secret named `GOANIME_CATALOG_WRITE_TOKEN`, which should be a fine-grained token scoped **only** to `Semogtw/goanime-mobile` with `Contents: Read and write`. The token is injected only into the publish step, used through a one-shot HTTP authorization header, and never persisted by `actions/checkout`.
+When a workflow gains new permissions, credentials, write access, external publication, or a new artifact class, review that change as a security boundary change rather than a routine refactor.
 
-Any future private consumer that needs cross-repository writes must get its own narrowly scoped credential. Do not reuse the read-only checkout token for writes and do not create one organization-wide write token for convenience.
-
-## Receitas public-runner boundary
-
-Receitas uses two workflows so the untrusted request path never receives the private checkout token:
-
-- `Request Receitas CI` accepts only an owner-authored push to `build/receitas-ci` changing `triggers/receitas-ci.json`; the JSON contains exactly one validated Git `ref` field and the request workflow receives no secret.
-- trusted `Run Receitas CI` is launched through `workflow_run`, revalidates the request, hardcodes `Semogtw/Receitas`, checks out the private ref with `Contents: Read-only`, and executes only fixed repository gates.
-
-The Receitas runner never accepts repository names, shell commands, environment dumps, artifact destinations or credentials from the request. It does not run E2E requiring a staging password, service-role operations, Supabase/PowerSync provisioning or Cloudflare deployment. Synthetic `.invalid` public endpoints are used only to prove the static browser build.
-
-A missing `pnpm-lock.yaml` remains a failing reproducibility condition. Until the private repository gains one, the runner may resolve dependencies ephemerally to expose independent compile/test failures, but it must still fail the job for the absent lockfile and must not persist that resolution as an Actions cache or public artifact.
-
-## APK and binary outputs
-
-A private build job may create an APK/installer only inside the disposable checkout to verify the build. It must not feed that plaintext path to `actions/upload-artifact`.
-
-For downloadable private binaries, follow the shared encrypted-transfer pattern now used by GoAnime and ZapZap:
-
-- resolve and validate the source ref using a fixed repository mapping;
-- build in the private checkout;
-- validate the binary before packaging;
-- calculate a plaintext SHA-256 and size for sanitized transfer metadata;
-- import only the public OpenPGP key and verify its pinned fingerprint;
-- encrypt into a separate transfer directory;
-- remove the private checkout, plaintext binary/archive and temporary keyring **before** upload;
-- upload only `.gpg` ciphertext and sanitized metadata;
-- set `retention-days: 1`;
-- perform an `always()` cleanup as a fallback if an earlier step fails.
-
-The private decryption key must never enter GitHub Actions. Production signing/deployment credentials are not introduced into the public runner merely to create a downloadable build; ZapZap's centralized handoff intentionally produces its ordinary debug-signed APK and then encrypts it.
+Prefer narrowly scoped credentials and isolated publish steps over broad repository-wide permissions.
 
 ## Validation
 
-`Validate workflow hub security` runs the static policy checker. It enforces explicit bounded artifact retention, one-day retention for sensitive/private transfers, ciphertext-only private APK/data uploads, non-persisted private checkout credentials and selected cache/permission invariants.
-
-When a legitimate workflow needs an exception, document the exact threat model and scope it narrowly instead of weakening the global rule.
+Security and workflow validators live under `scripts/` and `tests/`. Run the relevant checks after changing permissions, artifact handling, restoration logic, or workflow input contracts.
