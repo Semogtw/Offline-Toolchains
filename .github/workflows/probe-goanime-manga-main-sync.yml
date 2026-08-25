@@ -15,16 +15,19 @@ concurrency:
 
 jobs:
   probe:
-    name: Probe manga branch merge conflicts
+    name: Probe or build manga-main sync
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 60
 
     steps:
-      - name: Require private repository token
+      - name: Require private repository tokens
         env:
           PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+          GOANIME_WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: |
+          test -n "$PRIVATE_REPOSITORIES_TOKEN"
+          test -n "$GOANIME_WRITE_TOKEN"
 
       - name: Checkout control request
         uses: actions/checkout@v6
@@ -41,21 +44,25 @@ jobs:
           set -euo pipefail
           request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-sync-probe/*.request' | head -n 1)"
           test -n "$request"
-          read -r project branch branch_sha main_sha < "control/$request"
+          read -r project branch branch_sha main_sha mode < "control/$request"
           test "$project" = goanime
           test "$branch" = codex/manga-parity-20260823
           [[ "$branch_sha" =~ ^[0-9a-f]{40}$ ]]
           [[ "$main_sha" =~ ^[0-9a-f]{40}$ ]]
+          mode="${mode:-probe}"
+          case "$mode" in probe|candidate) ;; *) echo "Unsupported mode: $mode" >&2; exit 1 ;; esac
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
           echo "branch_sha=$branch_sha" >> "$GITHUB_OUTPUT"
           echo "main_sha=$main_sha" >> "$GITHUB_OUTPUT"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "temp_branch=toolchain/manga-main-sync-${branch_sha:0:7}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout exact manga branch revision
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
           ref: ${{ steps.request.outputs.branch_sha }}
-          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
           path: private-source
           fetch-depth: 0
           persist-credentials: true
@@ -63,13 +70,15 @@ jobs:
           submodules: false
           show-progress: false
 
-      - name: Probe merge against exact main
+      - name: Probe or create merge against exact main
+        id: merge
         working-directory: private-source
         shell: bash
         env:
           TARGET_BRANCH: ${{ steps.request.outputs.branch }}
           EXPECTED_BRANCH_SHA: ${{ steps.request.outputs.branch_sha }}
           EXPECTED_MAIN_SHA: ${{ steps.request.outputs.main_sha }}
+          MODE: ${{ steps.request.outputs.mode }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_BRANCH_SHA"
@@ -78,6 +87,17 @@ jobs:
           test "$(git rev-parse origin/$TARGET_BRANCH)" = "$EXPECTED_BRANCH_SHA"
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+
+          if [[ "$MODE" = candidate ]]; then
+            git merge --no-ff -X theirs -m 'merge: sync latest main into manga parity' "$EXPECTED_MAIN_SHA"
+            test -z "$(git diff --name-only --diff-filter=U)"
+            test "$(git rev-parse HEAD^1)" = "$EXPECTED_BRANCH_SHA"
+            test "$(git rev-parse HEAD^2)" = "$EXPECTED_MAIN_SHA"
+            git diff --check "$EXPECTED_BRANCH_SHA"..HEAD
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           set +e
           git merge --no-ff --no-commit "$EXPECTED_MAIN_SHA"
           rc=$?
@@ -92,9 +112,82 @@ jobs:
             echo 'CONFLICT_PATHS_END'
           fi
           git merge --abort >/dev/null 2>&1 || true
-          if [[ "$rc" -ne 0 ]]; then
-            exit 1
-          fi
+          if [[ "$rc" -ne 0 ]]; then exit 1; fi
+
+      - name: Verify manga integration survived conflict resolution
+        if: steps.request.outputs.mode == 'candidate'
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d lib/services/manga
+          test -d lib/screens/manga
+          test -d lib/widgets/manga
+          test -f lib/services/manga/metadata/manga_jikan_metadata_service.dart
+          test -f test/services/manga/metadata/manga_jikan_metadata_routing_test.dart
+          grep -R -qi "manga" lib/screens/main_navigation_screen.dart lib/widgets/navigation/goanime_desktop_sidebar.dart
+          grep -R -qi "manga" lib/app lib/screens/home_screen.dart lib/screens/search_screen.dart lib/screens/history_screen.dart lib/screens/watchlist_screen.dart
+          grep -q "assets/data/manga_availability_seed.json" pubspec.yaml
+          grep -q "assets/data/manga_availability.db" pubspec.yaml
+
+      - name: Set up Flutter 3.44.1
+        if: steps.request.outputs.mode == 'candidate'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        if: steps.request.outputs.mode == 'candidate'
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics >/dev/null
+          flutter pub get >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+
+      - name: Check formatting
+        if: steps.request.outputs.mode == 'candidate'
+        working-directory: private-source
+        run: dart format --output=none --set-exit-if-changed lib test packages tools
+
+      - name: Analyze merged project
+        if: steps.request.outputs.mode == 'candidate'
+        working-directory: private-source
+        run: flutter analyze --no-pub
+
+      - name: Validate manga and shared-media contracts
+        if: steps.request.outputs.mode == 'candidate'
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter test --no-pub test/services/manga
+          flutter test --no-pub test/widgets/manga
+          if [[ -d test/screens/manga ]]; then flutter test --no-pub test/screens/manga; fi
+          flutter test --no-pub test/services/media
+          flutter test --no-pub test/controllers/media
+          flutter test --no-pub test/architecture/shared_media_infrastructure_guard_test.dart
+          flutter test --no-pub test/architecture/shared_search_lifecycle_guard_test.dart
+          flutter test --no-pub test/architecture/manga_offline_persistence_boundary_test.dart
+
+      - name: Publish validated temporary candidate
+        if: steps.request.outputs.mode == 'candidate'
+        working-directory: private-source
+        shell: bash
+        env:
+          EXPECTED_BRANCH_SHA: ${{ steps.request.outputs.branch_sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          TEMP_BRANCH: ${{ steps.request.outputs.temp_branch }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$TARGET_BRANCH"
+          test "$(git rev-parse origin/$TARGET_BRANCH)" = "$EXPECTED_BRANCH_SHA"
+          git push --force origin "HEAD:refs/heads/$TEMP_BRANCH"
+          echo "Candidate SHA: $(git rev-parse HEAD)"
+          echo "Candidate branch: $TEMP_BRANCH"
 
       - name: Remove private checkout
         if: always()
