@@ -1,0 +1,7 @@
+lib/services/manga/sync/manga_account_sync_service.dart
+lib/services/manga/sync/manga_firebase_sync_client.dart
+lib/services/manga/sync/manga_sync_local_store.dart
+lib/services/manga/sync/manga_sync_record.dart
+lib/services/manga/sync/manga_sync_recorder.dart
+test/services/manga/sync/manga_firebase_sync_client_test.dart
+test/services/manga/sync/manga_sync_local_store_test.dart
