@@ -1,0 +1,184 @@
+{
+  "ambiguousSameProviderTitleGroups": 15,
+  "crossProviderTitleGroups": 1258,
+  "dedupeMethod": "exact normalized title across providers; same-provider collisions fail closed",
+  "enabledProviders": 16,
+  "exhaustiveProviders": 12,
+  "generatedAt": "2026-08-25T05:59:42.853047Z",
+  "goanimeBranch": "codex/manga-parity-20260823",
+  "goanimeSha": "8ed14ffc67348a8d1284e31e42a228a1f4b1579c",
+  "normalizedTitleGroups": 9547,
+  "partialOrFailedProviders": 4,
+  "providers": [
+    {
+      "duplicateOccurrences": 0,
+      "failure": "httpStatus:http_403",
+      "name": "Arthur Scan",
+      "pagesScanned": 0,
+      "rawItems": 0,
+      "sourceId": "ptbr.arthurscan",
+      "status": "failed",
+      "stopReason": "provider_failure",
+      "uniqueOccurrences": 0
+    },
+    {
+      "duplicateOccurrences": 1,
+      "name": "Astratoons",
+      "pagesScanned": 18,
+      "rawItems": 177,
+      "sourceId": "ptbr.astratoons",
+      "status": "exhausted",
+      "stopReason": "next_page_token_null",
+      "uniqueOccurrences": 176
+    },
+    {
+      "duplicateOccurrences": 0,
+      "name": "HQ Now!",
+      "pagesScanned": 1,
+      "rawItems": 2856,
+      "sourceId": "ptbr.hqnow",
+      "status": "exhausted",
+      "stopReason": "next_page_token_null",
+      "uniqueOccurrences": 2856
+    },
+    {
+      "duplicateOccurrences": 0,
+      "name": "Hipertoon",
+      "pagesScanned": 106,
+      "rawItems": 2538,
+      "sourceId": "ptbr.hipertoon",
+      "status": "exhausted",
+      "stopReason": "next_page_token_null",
+      "uniqueOccurrences": 2538
+    },
+    {
+      "duplicateOccurrences": 0,
+      "name": "Capitoons",
+      "pagesScanned": 3,
+      "rawItems": 24,
+      "sourceId": "ptbr.capitoons",
+      "status": "exhausted",
+      "stopReason": "next_page_token_null",
+      "uniqueOccurrences": 24
+    },
+    {
+      "duplicateOccurrences": 0,
+      "name": "Kami Sama Explorer",
+      "pagesScanned": 4,
+      "rawItems": 34,
+      "sourceId": "ptbr.kamisamaexplorer",
+      "status": "exhausted",
+      "stopReason": "next_page_token_null",
+      "uniqueOccurrences": 34
+    },
+    {
+      "duplicateOccurrences": 0,
+      "name": "KivaraToons",
+      "pagesScanned": 132,
+      "rawItems": 3156,
+      "sourceId": "ptbr.kivaratoons",
+      "status": "exhausted",
+      "stopReason": "next_page_token_null",
+      "uniqueOccurrences": 3156
+    },
+    {
+      "duplicateOccurrences": 0,
+      "name": "Leitura Mang\u00e1",
+      "pagesScanned": 59,
+      "rawItems": 1398,
+      "sourceId": "ptbr.leituramanga",
+      "status": "exhausted",
+      "stopReason": "next_page_token_null",
+      "uniqueOccurrences": 1398
+    },
+    {
+      "duplicateOccurrences": 0,
+      "name": "Ler 999",
+      "pagesScanned": 1,
+      "rawItems": 7,
+      "sourceId": "ptbr.ler999",
+      "status": "exhausted",
+      "stopReason": "next_page_token_null",
+      "uniqueOccurrences": 7
+    },
+    {
+      "duplicateOccurrences": 0,
+      "name": "Little Tyrant",
+      "pagesScanned": 29,
+      "rawItems": 290,
+      "sourceId": "ptbr.littletyrant",
+      "status": "exhausted",
+      "stopReason": "next_page_token_null",
+      "uniqueOccurrences": 290
+    },
+    {
+      "duplicateOccurrences": 0,
+      "name": "Maid Scan",
+      "pagesScanned": 6,
+      "rawItems": 154,
+      "sourceId": "ptbr.maidscan",
+      "status": "exhausted",
+      "stopReason": "next_page_token_null",
+      "uniqueOccurrences": 154
+    },
+    {
+      "duplicateOccurrences": 0,
+      "name": "MangaDash",
+      "pagesScanned": 15,
+      "rawItems": 343,
+      "sourceId": "ptbr.mangadash",
+      "status": "exhausted",
+      "stopReason": "next_page_token_null",
+      "uniqueOccurrences": 343
+    },
+    {
+      "duplicateOccurrences": 0,
+      "name": "MangaFlix",
+      "pagesScanned": 1,
+      "rawItems": 100,
+      "sourceId": "ptbr.mangaflix",
+      "status": "exhausted",
+      "stopReason": "next_page_token_null",
+      "uniqueOccurrences": 100
+    },
+    {
+      "duplicateOccurrences": 0,
+      "failure": "timeout",
+      "name": "Manga Livre Blog",
+      "pagesScanned": 1,
+      "rawItems": 12,
+      "sourceId": "ptbr.mangalivreblog",
+      "status": "partial",
+      "stopReason": "provider_failure",
+      "uniqueOccurrences": 12
+    },
+    {
+      "duplicateOccurrences": 0,
+      "failure": "httpStatus:http_403",
+      "name": "MangaLivre.org",
+      "pagesScanned": 0,
+      "rawItems": 0,
+      "sourceId": "ptbr.mangalivreorg",
+      "status": "failed",
+      "stopReason": "provider_failure",
+      "uniqueOccurrences": 0
+    },
+    {
+      "duplicateOccurrences": 0,
+      "failure": "timeout",
+      "name": "Ninja Scan",
+      "pagesScanned": 0,
+      "rawItems": 0,
+      "sourceId": "ptbr.ninjascan",
+      "status": "failed",
+      "stopReason": "provider_failure",
+      "uniqueOccurrences": 0
+    }
+  ],
+  "rawItems": 11089,
+  "schemaVersion": 1,
+  "startedAt": "2026-08-25T05:52:30.481936Z",
+  "titleDeduplicatedWorksConservative": 9582,
+  "toolchainsRunId": 32814102730,
+  "uniqueSourceOccurrences": 11088
+}
