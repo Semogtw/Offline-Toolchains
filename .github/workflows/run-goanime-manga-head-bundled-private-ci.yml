@@ -42,8 +42,9 @@ jobs:
           set -euo pipefail
           request="$(git -C toolchain-control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-bundled/*.request' 'triggers/goanime-manga-inventory/*.request' | head -n 1)"
           test -n "$request"
-          if [[ "$request" == triggers/goanime-manga-inventory/* ]]; then
-            read -r project branch sha < "toolchain-control/$request"
+          line="$(cat "toolchain-control/$request")"
+          read -r project branch sha extra <<< "$line"
+          if [[ "$request" == triggers/goanime-manga-inventory/* ]] || { [[ "$project" == "goanime" ]] && [[ -n "${branch:-}" ]] && [[ -n "${sha:-}" ]] && [[ -z "${extra:-}" ]]; }; then
             test "$project" = "goanime"
             [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]
             [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
