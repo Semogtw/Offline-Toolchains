@@ -1,0 +1,3 @@
+target_branch=fix/playback-provider-race-20260825
+source_hint=aa2fc17d389a77d2da8b70a198aa3b4ede6c63ff
+reason=playback-provider-race-tdd-red
