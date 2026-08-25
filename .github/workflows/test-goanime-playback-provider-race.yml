@@ -34,7 +34,7 @@ jobs:
       - name: Verify expected source
         working-directory: private-source
         shell: bash
-        run: test "$(git rev-parse HEAD)" = '8887c9c1bb1fe9af0c241cda144982b9c0ec4c31'
+        run: test "$(git rev-parse HEAD)" = '801a8542b18ed007c46d2b8cd0cbf03180ace4fe'
 
       - name: Set up Flutter 3.44.1
         uses: subosito/flutter-action@v2
@@ -50,6 +50,32 @@ jobs:
           set -euo pipefail
           flutter config --no-analytics
           flutter pub get
+
+      - name: Check formatting
+        working-directory: private-source
+        shell: bash
+        run: >-
+          dart format --output=none --set-exit-if-changed
+          lib/services/video_playback_resolver.dart
+          lib/services/playback_provider_enrichment_service.dart
+          lib/platform/mobile/screens/mobile_media_kit_video_player_screen.dart
+          lib/platform/mobile/screens/mobile_media_kit_video_player_screen_methods_1.dart
+          lib/platform/mobile/screens/mobile_media_kit_video_player_screen_methods_3.dart
+          lib/platform/desktop/screens/desktop_video_player_screen.dart
+          lib/platform/desktop/screens/desktop_video_player_screen_methods_2.dart
+          lib/platform/desktop/screens/desktop_video_player_screen_methods_4.dart
+          test/services/video_playback_resolver_late_provider_test.dart
+          test/services/playback_provider_enrichment_service_test.dart
+
+      - name: Analyze changed libraries
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart analyze lib/services/video_playback_resolver.dart
+          dart analyze lib/services/playback_provider_enrichment_service.dart
+          dart analyze lib/platform/mobile/screens/mobile_media_kit_video_player_screen.dart
+          dart analyze lib/platform/desktop/screens/desktop_video_player_screen.dart
 
       - name: Run playback provider race regression tests
         working-directory: private-source
