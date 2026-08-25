@@ -46,10 +46,6 @@ env:
   UPDATE_MANIFEST_PUBLIC_KEY_B64: ${{ secrets.UPDATE_MANIFEST_PUBLIC_KEY_B64 }}
   ANIME_METADATA_SEED_MANIFEST_URL: ${{ secrets.ANIME_METADATA_SEED_MANIFEST_URL }}
   RUNTIME_DATABASE_MANIFEST_URL: ${{ secrets.RUNTIME_DATABASE_MANIFEST_URL }}
-  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-  R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-  R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-  R2_BUCKET: ${{ secrets.R2_BUCKET }}
   SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_TOKEN }}
 
 jobs:
@@ -62,6 +58,7 @@ jobs:
       release_tag: ${{ steps.prepare.outputs.release_tag }}
       version_name: ${{ steps.prepare.outputs.version_name }}
       build_number: ${{ steps.prepare.outputs.build_number }}
+      platforms: ${{ steps.prepare.outputs.platforms }}
 
     steps:
       - name: Checkout trusted toolchain
@@ -90,6 +87,10 @@ jobs:
           PLATFORMS: ${{ inputs.platforms }}
           RELEASE_NOTES: ${{ inputs.release_notes }}
           UPDATE_MANIFEST_SIGNING_PRIVATE_KEY: ${{ secrets.UPDATE_MANIFEST_SIGNING_PRIVATE_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -101,7 +102,7 @@ jobs:
   android:
     name: Android arm64 release
     needs: prepare
-    if: ${{ contains(format(',{0},', inputs.platforms), ',android,') }}
+    if: ${{ contains(format(',{0},', needs.prepare.outputs.platforms), ',android,') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
 
@@ -144,7 +145,7 @@ jobs:
   windows:
     name: Windows x64 release
     needs: prepare
-    if: ${{ contains(format(',{0},', inputs.platforms), ',windows,') }}
+    if: ${{ contains(format(',{0},', needs.prepare.outputs.platforms), ',windows,') }}
     runs-on: windows-latest
     timeout-minutes: 120
     outputs:
@@ -193,7 +194,7 @@ jobs:
   linux:
     name: Linux x64 release
     needs: prepare
-    if: ${{ contains(format(',{0},', inputs.platforms), ',linux,') }}
+    if: ${{ contains(format(',{0},', needs.prepare.outputs.platforms), ',linux,') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
 
@@ -266,8 +267,13 @@ jobs:
           BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
           SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
           RELEASE_NOTES: ${{ inputs.release_notes }}
+          GOANIME_RELEASE_PLATFORMS: ${{ needs.prepare.outputs.platforms }}
           WINDOWS_DSA_SIGNATURE: ${{ needs.windows.outputs.dsa_signature }}
           UPDATE_ASSET_URL_TEMPLATE: ${{ secrets.UPDATE_ASSET_URL_TEMPLATE }}
           UPDATE_RELEASE_PAGE_URL: ${{ secrets.UPDATE_RELEASE_PAGE_URL }}
           UPDATE_MANIFEST_SIGNING_PRIVATE_KEY: ${{ secrets.UPDATE_MANIFEST_SIGNING_PRIVATE_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: bash scripts/goanime-release/publish.sh private-source
