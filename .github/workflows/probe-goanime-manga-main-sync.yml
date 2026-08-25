@@ -113,6 +113,48 @@ jobs:
           git merge --abort >/dev/null 2>&1 || true
           if [[ "$rc" -ne 0 ]]; then exit 1; fi
 
+      - name: Repair merge-sensitive shared files and known manga provider contract
+        if: steps.request.outputs.mode == 'candidate'
+        working-directory: private-source
+        shell: bash
+        env:
+          EXPECTED_MAIN_SHA: ${{ steps.request.outputs.main_sha }}
+        run: |
+          set -euo pipefail
+          # These files are anime/Home infrastructure. Main is authoritative;
+          # the automatic three-way merge can splice incompatible method bodies.
+          git checkout "$EXPECTED_MAIN_SHA" -- \
+            lib/screens/home_screen_data.dart \
+            lib/services/source/episode_aggregator.dart
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('lib/services/manga/providers/mangalivre_org_manga_provider.dart')
+          text = path.read_text(encoding='utf-8')
+          old = "    'Accept-Language': NetworkHeaders.acceptLanguagePtBr,\n  };"
+          new = "    'Accept-Language': NetworkHeaders.acceptLanguagePtBr,\n    'Origin': baseUri.origin,\n  };"
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif "'Origin': baseUri.origin" not in text:
+              raise SystemExit('MangaLivre.org API header shape changed unexpectedly')
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Normalize merged Dart sources
+        if: steps.request.outputs.mode == 'candidate'
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format lib test packages tools >/dev/null
+          dart format --output=none --set-exit-if-changed lib test packages tools >/dev/null
+          git diff --check
+          git add -- lib test packages tools
+          if ! git diff --cached --quiet; then
+            git commit -m 'fix(manga): reconcile latest main integration' >/dev/null
+          fi
+
       - name: Verify manga integration survived conflict resolution
         if: steps.request.outputs.mode == 'candidate'
         working-directory: private-source
@@ -146,11 +188,6 @@ jobs:
           flutter config --no-analytics >/dev/null
           flutter pub get >/dev/null
           (cd packages/goanime_core && dart pub get >/dev/null)
-
-      - name: Check formatting
-        if: steps.request.outputs.mode == 'candidate'
-        working-directory: private-source
-        run: dart format --output=none --set-exit-if-changed lib test packages tools
 
       - name: Analyze merged project
         if: steps.request.outputs.mode == 'candidate'
