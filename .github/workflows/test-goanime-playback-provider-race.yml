@@ -1,0 +1,74 @@
+name: GoAnime playback provider race TDD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-playback-provider-race/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-playback-provider-race
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve exact GoAnime request
+        id: request
+        shell: bash
+        run: >-
+          python scripts/goanime_resolve_request.py
+          --request-dir triggers/goanime-playback-provider-race
+          --workspace .
+
+      - name: Checkout exact GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.source_hint }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify immutable source
+        working-directory: private-source
+        env:
+          EXPECTED_SHA: ${{ steps.request.outputs.source_hint }}
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+
+      - name: Run playback provider race regression test
+        working-directory: private-source
+        shell: bash
+        run: flutter test --no-pub test/services/video_playback_resolver_late_provider_test.dart
