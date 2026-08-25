@@ -228,6 +228,22 @@ jobs:
         working-directory: private-source
         run: flutter pub get --enforce-lockfile
 
+      - name: Preserve source-controlled platform registrations
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          # flutter pub get may rewrite these tracked generated registrants.
+          # They are unrelated to catalog artifacts and must not cross the
+          # finalizer's narrow generated-diff boundary.
+          git restore --worktree -- \
+            linux/flutter/generated_plugin_registrant.cc \
+            linux/flutter/generated_plugins.cmake \
+            macos/Flutter/GeneratedPluginRegistrant.swift \
+            windows/flutter/generated_plugin_registrant.cc \
+            windows/flutter/generated_plugins.cmake
+          git diff --check
+
       - name: Validate client discovery reporter
         working-directory: private-source
         run: flutter test --no-pub test/services/catalog_discovery_reporting_service_test.dart
