@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "sourceSha": "aa2fc17d389a77d2da8b70a198aa3b4ede6c63ff",
+  "runId": 32881105322,
+  "exitCode": 1,
+  "failureCount": 1,
+  "failures": [
+    {
+      "testId": 2891,
+      "name": "loading /home/runner/work/Offline-Toolchains/Offline-Toolchains/private-source/test/services/video_playback_resolver_late_provider_test.dart",
+      "suitePath": "/home/runner/work/Offline-Toolchains/Offline-Toolchains/private-source/test/services/video_playback_resolver_late_provider_test.dart",
+      "groups": [],
+      "errors": [
+        {
+          "error": "Failed to load \"/home/runner/work/Offline-Toolchains/Offline-Toolchains/private-source/test/services/video_playback_resolver_late_provider_test.dart\":\nCompilation failed for testPath=/home/runner/work/Offline-Toolchains/Offline-Toolchains/private-source/test/services/video_playback_resolver_late_provider_test.dart: test/services/video_playback_resolver_late_provider_test.dart:37:47: Error: Member not found: 'VideoPlaybackResolver.resolveCandidatesWithLateProviders'.\n      final resolving = VideoPlaybackResolver.resolveCandidatesWithLateProviders(\n                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\ntest/services/video_playback_resolver_late_provider_test.dart:67:54: Error: Member not found: 'VideoPlaybackResolver.resolveCandidatesWithLateProviders'.\n      final candidates = await VideoPlaybackResolver.resolveCandidatesWithLateProviders(\n                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n.",
+          "stackTrace": ""
+        }
+      ]
+    }
+  ],
+  "stderrTail": "test/services/video_playback_resolver_late_provider_test.dart:37:47: Error: Member not found: 'VideoPlaybackResolver.resolveCandidatesWithLateProviders'.\n      final resolving = VideoPlaybackResolver.resolveCandidatesWithLateProviders(\n                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\ntest/services/video_playback_resolver_late_provider_test.dart:67:54: Error: Member not found: 'VideoPlaybackResolver.resolveCandidatesWithLateProviders'.\n      final candidates = await VideoPlaybackResolver.resolveCandidatesWithLateProviders(\n                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"
+}
