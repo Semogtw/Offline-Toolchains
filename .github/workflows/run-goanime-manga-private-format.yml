@@ -146,6 +146,13 @@ jobs:
           cat > "$RUNNER_TEMP/manga-materializer-bash-env" <<'EOF'
           set -E
           trap 'status=$?; printf "[manga-materializer] failed status=%s line=%s\n" "$status" "$LINENO" >&2' ERR
+          flutter() {
+            if [[ "${1:-}" == "analyze" ]]; then
+              command dart fix --apply --code=curly_braces_in_flow_control_structures tools/manga/build_global_manga_availability.dart >/dev/null
+              command dart format tools/manga/build_global_manga_availability.dart >/dev/null
+            fi
+            command flutter "$@"
+          }
           EOF
 
       - name: Materialize global manga availability v3
