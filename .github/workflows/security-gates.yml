@@ -25,6 +25,24 @@ jobs:
           bash -n scripts/check-no-private-material.sh
           bash -n scripts/build-fichario-offline.sh
           bash -n tests/fichario-builder-contract.sh
+          for script in scripts/goanime-release/*.sh; do
+            bash -n "$script"
+          done
+
+      - name: Validate GoAnime release PowerShell syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "scripts/goanime-release/windows.ps1",
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.ToString() }
+            exit 1
+          }
 
       - name: Validate Fichário builder contract
         run: bash tests/fichario-builder-contract.sh
