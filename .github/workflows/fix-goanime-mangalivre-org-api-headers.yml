@@ -1,0 +1,90 @@
+name: Fix GoAnime MangaLivre.org API headers
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-mangalivre-org-header-fix/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  fix:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-mangalivre-org-header-fix/*.request' | head -n1)"
+          test -n "$request"
+          read -r project branch < "control/$request"
+          test "$project" = goanime
+          test "$branch" = codex/manga-parity-20260823
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout private branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.branch }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: true
+          show-progress: false
+
+      - name: Remove stale cross-host Origin header
+        id: patch
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          start_sha="$(git rev-parse HEAD)"
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('lib/services/manga/providers/mangalivre_org_manga_provider.dart')
+          text = path.read_text(encoding='utf-8')
+          old = "    'Accept-Language': NetworkHeaders.acceptLanguagePtBr,\n    'Origin': baseUri.origin,\n"
+          new = "    'Accept-Language': NetworkHeaders.acceptLanguagePtBr,\n"
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'expected one stale API header block, got {count}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          dart format lib/services/manga/providers/mangalivre_org_manga_provider.dart
+          git diff --check
+          grep -A6 "Map<String, String> get _apiHeaders" lib/services/manga/providers/mangalivre_org_manga_provider.dart
+          echo "start_sha=$start_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Publish provider sync
+        working-directory: private-source
+        env:
+          BRANCH: ${{ steps.request.outputs.branch }}
+          START_SHA: ${{ steps.patch.outputs.start_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH" --quiet
+          test "$(git rev-parse "origin/$BRANCH")" = "$START_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/services/manga/providers/mangalivre_org_manga_provider.dart
+          git commit -m 'fix(manga): sync MangaLivre.org API headers'
+          git push origin HEAD:"$BRANCH"
