@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   probe:
-    if: github.actor == github.repository_owner && !contains(github.event.head_commit.message, 'manga inventory')
+    if: "${{ github.actor == github.repository_owner && !contains(github.event.head_commit.message, 'manga inventory') }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -76,7 +76,7 @@ jobs:
           git push
 
   manga_inventory:
-    if: github.actor == github.repository_owner && contains(github.event.head_commit.message, 'manga inventory')
+    if: "${{ github.actor == github.repository_owner && contains(github.event.head_commit.message, 'manga inventory') }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
