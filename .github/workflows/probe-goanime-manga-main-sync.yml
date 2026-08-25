@@ -121,8 +121,6 @@ jobs:
           EXPECTED_MAIN_SHA: ${{ steps.request.outputs.main_sha }}
         run: |
           set -euo pipefail
-          # These files are anime/Home infrastructure. Main is authoritative;
-          # the automatic three-way merge can splice incompatible method bodies.
           git checkout "$EXPECTED_MAIN_SHA" -- \
             lib/screens/home_screen_data.dart \
             lib/services/source/episode_aggregator.dart
@@ -140,6 +138,14 @@ jobs:
               raise SystemExit('MangaLivre.org API header shape changed unexpectedly')
           path.write_text(text, encoding='utf-8')
           PY
+
+      - name: Set up Flutter 3.44.1
+        if: steps.request.outputs.mode == 'candidate'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
 
       - name: Normalize merged Dart sources
         if: steps.request.outputs.mode == 'candidate'
@@ -170,14 +176,6 @@ jobs:
           grep -R -qi "manga" lib/app lib/screens/home_screen.dart lib/screens/search_screen.dart lib/screens/history_screen.dart lib/screens/watchlist_screen.dart
           grep -q "assets/data/manga_availability_seed.json" pubspec.yaml
           grep -q "assets/data/manga_availability.db" pubspec.yaml
-
-      - name: Set up Flutter 3.44.1
-        if: steps.request.outputs.mode == 'candidate'
-        uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          flutter-version: 3.44.1
-          cache: true
 
       - name: Resolve dependencies
         if: steps.request.outputs.mode == 'candidate'
