@@ -1,0 +1,101 @@
+name: Probe GoAnime manga-main sync
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-sync-probe/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-main-sync-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: Probe manga branch merge conflicts
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact revisions
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-sync-probe/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch branch_sha main_sha < "control/$request"
+          test "$project" = goanime
+          test "$branch" = codex/manga-parity-20260823
+          [[ "$branch_sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$main_sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "branch_sha=$branch_sha" >> "$GITHUB_OUTPUT"
+          echo "main_sha=$main_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact manga branch revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.branch_sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Probe merge against exact main
+        working-directory: private-source
+        shell: bash
+        env:
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_BRANCH_SHA: ${{ steps.request.outputs.branch_sha }}
+          EXPECTED_MAIN_SHA: ${{ steps.request.outputs.main_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_BRANCH_SHA"
+          git fetch --no-tags origin main "$TARGET_BRANCH"
+          test "$(git rev-parse origin/main)" = "$EXPECTED_MAIN_SHA"
+          test "$(git rev-parse origin/$TARGET_BRANCH)" = "$EXPECTED_BRANCH_SHA"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          set +e
+          git merge --no-ff --no-commit "$EXPECTED_MAIN_SHA"
+          rc=$?
+          set -e
+          conflicts="$(git diff --name-only --diff-filter=U | sort)"
+          count="$(printf '%s\n' "$conflicts" | sed '/^$/d' | wc -l | tr -d ' ')"
+          echo "MERGE_EXIT=$rc"
+          echo "CONFLICT_COUNT=$count"
+          if [[ -n "$conflicts" ]]; then
+            echo 'CONFLICT_PATHS_BEGIN'
+            printf '%s\n' "$conflicts"
+            echo 'CONFLICT_PATHS_END'
+          fi
+          git merge --abort >/dev/null 2>&1 || true
+          if [[ "$rc" -ne 0 ]]; then
+            exit 1
+          fi
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
