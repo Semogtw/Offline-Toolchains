@@ -1,63 +1,25 @@
-# Hydra offline toolchain and encrypted source export
+# Hydra offline toolchain
 
-Hydra uses two separate public-runner paths in `Offline-Toolchains`:
+This document describes the public Linux x64 toolchain used to prepare a reproducible Hydra development environment.
 
-- `Build Hydra offline toolchain` creates a Linux x64 cache of **public third-party runtimes/dependencies** needed by the private project, while sanitizing private project metadata before upload.
-- `Build encrypted private source bundle` exports Hydra source only as OpenPGP ciphertext through the shared private-source pipeline.
+The published bundle contains public runtimes, package-manager caches, compatibility metadata, and restore helpers. It is not intended to contain application source, credentials, or runtime secrets.
 
-Private source is never intentionally published as a normal Actions artifact.
+## Contents
 
-## Required secret
+The toolchain may include:
 
-Both paths use:
+- Node.js and Yarn;
+- Rust toolchain components;
+- GTK4 / GTK4 Layer Shell build prerequisites;
+- Yarn, Cargo, Electron, electron-builder, and node-gyp caches;
+- activation, doctor, and offline-install helpers;
+- integrity manifests and compatibility fingerprints.
 
-```text
-PRIVATE_REPOSITORIES_TOKEN
-```
+## Restore
 
-Use a fine-grained token with `Contents: Read-only` and repository access limited to the private projects served by this hub. Do not grant write access.
+After downloading all parts of a toolchain generation, verify the supplied checksums before reconstruction and extraction.
 
-## Offline toolchain
-
-Workflow:
-
-```text
-.github/workflows/build-hydra.yml
-```
-
-The job:
-
-1. validates an allowlisted Hydra ref;
-2. checks out only `Semogtw/HydraPersonalizado`, with `persist-credentials: false`, no LFS and no submodules;
-3. installs pinned Node `22.23.1`, Yarn `1.22.22`, Rust and GTK4 Layer Shell prerequisites;
-4. hydrates Yarn/Cargo/Electron/electron-builder/node-gyp caches from the exact private dependency inputs;
-5. runs Hydra typechecks/tests online;
-6. proves a second install with registries, mirrors, proxies and Cargo networking forced offline;
-7. removes the private checkout;
-8. replaces copied `package.json`, `yarn.lock` and both `Cargo.lock` files with SHA-256 fingerprints only;
-9. redacts the selected private ref from the public manifest;
-10. rebuilds the archive **after** sanitization and uploads the sanitized split transfer only.
-
-The uploaded artifact is:
-
-```text
-hydra-toolchain-linux-x64-sanitized
-```
-
-It expires after one day and contains:
-
-- `hydra-toolchain-linux-x64.part-*` — split sanitized archive;
-- `SHA256SUMS.parts` — per-part integrity;
-- `ARCHIVE.sha256` — reassembled archive hash;
-- `PARTS.txt` — restore commands and compatibility fingerprints;
-- `MANIFEST.txt` — runtime/toolchain versions with the private ref redacted;
-- `INPUT-SHA256.txt` — fingerprints of the exact private dependency inputs, not their contents.
-
-The exact private lockfiles/package manifest are **not** included in the public transfer anymore.
-
-### Restore
-
-Download/extract the single Actions artifact and run:
+Typical flow:
 
 ```bash
 sha256sum -c SHA256SUMS.parts
@@ -67,45 +29,41 @@ tar --zstd -xf hydra-toolchain-linux-x64.tar.zst
 
 source ./hydra-toolchain/scripts/activate.sh
 ./hydra-toolchain/scripts/doctor.sh
-./hydra-toolchain/scripts/install-offline.sh /path/to/HydraPersonalizado
+./hydra-toolchain/scripts/install-offline.sh /path/to/project
 ```
 
-`install-offline.sh` hashes the target project's `package.json`, `yarn.lock` and Cargo lockfiles locally and compares them to `INPUT-SHA256.txt`. A mismatch fails closed without needing the original private input files inside the toolchain.
+The installer should compare the target project's dependency fingerprints with the compatibility metadata bundled with the toolchain and fail closed when they do not match.
 
-The host still needs distribution-specific system libraries checked by `doctor.sh`, notably Python 3, `pkg-config`, GTK 4 and GTK4 Layer Shell development metadata.
+## Offline behavior
 
-## Encrypted private source
+A valid toolchain generation should be able to install the supported dependency set without contacting package registries or mirrors during the offline validation phase.
 
-Use the canonical workflow:
+Where practical, validation should cover:
 
-```text
-.github/workflows/build-private-source-bundle.yml
-```
+- dependency restoration;
+- TypeScript/type checks;
+- project tests;
+- Rust/Cargo resolution;
+- native dependency discovery;
+- representative build commands.
 
-Select:
+## Host requirements
 
-```text
-project=hydra
-mode=full | ref | snapshot
-ref=<optional validated branch/tag/SHA>
-```
+Some system libraries remain host responsibilities. The bundled `doctor.sh` should report missing prerequisites such as Python, `pkg-config`, GTK 4, or GTK4 Layer Shell development metadata.
 
-The workflow packages private Git/source data in temporary storage, encrypts it to the committed OpenPGP public key, deletes the plaintext archive/private checkout/keyring before upload and publishes only ciphertext plus sanitized transport metadata with one-day retention.
+## Regeneration policy
 
-Recipient fingerprint:
+Regenerate the toolchain when a material compatibility input changes, such as:
 
-```text
-2DE29DC31427CF0A911AB96175679291435059B0
-```
+- Node or Yarn version;
+- Rust toolchain requirements;
+- Electron or native build dependencies;
+- package-manager lockfile compatibility;
+- GTK/native host requirements;
+- restore or validation logic.
 
-The private OpenPGP key never enters GitHub Actions.
+Small dependency changes should prefer incremental cache updates when the artifact format supports them.
 
-## Security invariants
+## Public boundary
 
-- Private checkout token is read-only and repository-scoped.
-- Checkout credentials are never persisted.
-- Private source is removed in cleanup paths.
-- Toolchain artifacts contain public runtime/dependency caches plus one-way compatibility fingerprints, not raw private package/lock inputs.
-- Exact private ref/commit details are omitted from public toolchain transfer metadata wherever they are not required.
-- Source export is ciphertext-only and expires after one day.
-- Any future write/deploy capability must use a separate narrowly scoped credential rather than expanding `PRIVATE_REPOSITORIES_TOKEN`.
+Documentation for this public artifact should cover only the reusable toolchain contract, integrity checks, restoration, and compatibility behavior. Private source handling, credential topology, operational handoffs, and privileged publication procedures are outside this public contract.
