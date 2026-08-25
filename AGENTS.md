@@ -1,16 +1,21 @@
 # Project Instructions for AI Agents
 
-This repository provides shared offline toolchains, artifact workflows, caches, restoration helpers, and validation support for multiple consumer repositories. Keep consumer-specific state isolated and do not let work for one project silently change another project's artifact contract.
+This is a public infrastructure repository. Keep all changes compatible with that boundary.
 
-<!-- auto-preference-learner:start -->
-## Learned working preferences
+## Working rules
 
-- Before changing shared infrastructure, identify the consumer project, active branch or PR, exact artifact/profile being served, and the current live Git/GitHub state. Do not revive an older consumer workflow merely because its branch still exists.
-- Continue useful independent work while the current infrastructure objective has safe, resolvable tasks; do not stop after a trivial checkpoint solely because one consumer-specific gate is unavailable.
-- Create and push frequent coherent checkpoints so ephemeral environments do not erase useful infrastructure work. Keep unrelated GoAnime, FicharioVirtual, SemogSite, Zapzap, or other consumer changes in separate checkpoints when they do not share one atomic infrastructure change.
-- Prefer validation in the agent environment when practical. Install missing tooling when reasonable; when a consumer gate cannot run in the current environment, record the exact limitation, preserve any safely produced workspace/artifact needed for later validation, and continue independent resolvable work.
-- Treat GitHub Actions as infrastructure that must be justified by this repository's artifact/CI purpose, not as the default substitute for local development checks in consumer repositories.
-- Reserve self-hosted runners exclusively for release/publishing workflows. CI, validation, cache/materialization, maintenance, and other non-release jobs must use GitHub-hosted runners (for example `ubuntu-24.04`).
-- Keep documentation, artifact manifests, continuation notes, and security boundaries synchronized with material workflow changes, especially source provenance, credentials, retention, restoration, and consumer compatibility.
-- Use available plugins and integrations when they materially improve correctness, verification, artifact handling, or development efficiency; do not invoke them merely for ceremony.
-<!-- auto-preference-learner:end -->
+- Identify the toolchain, artifact, manifest, or validation path affected before changing shared infrastructure.
+- Prefer small, coherent changes with validation at each meaningful checkpoint.
+- Keep unrelated consumer-specific changes separate when they do not share one atomic infrastructure change.
+- Validate generated artifacts and manifests whenever practical before committing them.
+- Keep public documentation focused on reusable tooling, formats, restoration, and validation behavior.
+- Do not add private source code, credentials, signing material, production configuration, internal runbooks, private commit references, operational handoffs, or secret names to this repository.
+- Do not record sensitive infrastructure topology or permission maps in public documentation.
+- If work requires consumer-specific or privileged operational context, use that project's private source of truth rather than documenting it here.
+- Treat logs, workflow summaries, committed reports, manifests, and generated metadata as public unless proven otherwise.
+- Keep documentation and tests synchronized with material changes to public artifact contracts.
+- Use frequent coherent commits so useful work is not lost, without splitting one logical change into unnecessary micro-commits.
+
+## Public documentation rule
+
+Anything committed here should be safe to expose to an unauthenticated reader. Internal agent notes belong outside this public repository.
