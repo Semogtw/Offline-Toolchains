@@ -121,9 +121,16 @@ jobs:
           EXPECTED_MAIN_SHA: ${{ steps.request.outputs.main_sha }}
         run: |
           set -euo pipefail
+          # Current main owns anime/provider infrastructure. Long-lived branch
+          # history can otherwise splice or resurrect pre-refactor versions.
           git checkout "$EXPECTED_MAIN_SHA" -- \
             lib/screens/home_screen_data.dart \
-            lib/services/source/episode_aggregator.dart
+            lib/services/source/episode_aggregator.dart \
+            lib/services/availability_service.dart
+          git rm -f --ignore-unmatch -- \
+            lib/services/image_source_resolver_service.dart \
+            test/services/availability_service_feature_flag_test.dart \
+            test/services/image_source_resolver_service_test.dart
 
           python3 - <<'PY'
           from pathlib import Path
