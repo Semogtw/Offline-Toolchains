@@ -18,11 +18,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - name: Checkout exact GoAnime source
+      - name: Checkout GoAnime playback race branch
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
-          ref: 044db058541052e4be8df0db8f03ab0e31d9006c
+          ref: fix/playback-provider-race-20260825
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
           fetch-depth: 1
@@ -31,10 +31,10 @@ jobs:
           submodules: false
           show-progress: false
 
-      - name: Verify immutable source
+      - name: Verify expected source
         working-directory: private-source
         shell: bash
-        run: test "$(git rev-parse HEAD)" = '044db058541052e4be8df0db8f03ab0e31d9006c'
+        run: test "$(git rev-parse HEAD)" = '8887c9c1bb1fe9af0c241cda144982b9c0ec4c31'
 
       - name: Set up Flutter 3.44.1
         uses: subosito/flutter-action@v2
@@ -59,3 +59,5 @@ jobs:
           test/services/video_playback_resolver_test.dart
           test/services/video_playback_resolver_late_provider_test.dart
           test/services/playback_provider_enrichment_service_test.dart
+          test/screens/mobile_player_resolution_cancellation_contract_test.dart
+          test/screens/desktop_player_resolution_cancellation_contract_test.dart
