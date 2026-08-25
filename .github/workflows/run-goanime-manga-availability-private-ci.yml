@@ -24,7 +24,7 @@ jobs:
       github.event.workflow_run.actor.login == github.repository_owner &&
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 120
 
     steps:
       - name: Require private repository token
@@ -81,7 +81,7 @@ jobs:
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
           fetch-depth: 1
-          persist-credentials: false
+          persist-credentials: true
           lfs: false
           submodules: false
           show-progress: false
@@ -102,6 +102,12 @@ jobs:
           set -euo pipefail
           flutter config --no-analytics
           flutter pub get
+
+      - name: Materialize global manga availability v3
+        if: steps.request.outputs.project == 'goanime'
+        working-directory: private-source
+        shell: bash
+        run: bash tools/manga/materialize_global_manga_availability_ci.sh
 
       - name: Test manga provider registry and scope
         if: steps.request.outputs.project == 'goanime'
