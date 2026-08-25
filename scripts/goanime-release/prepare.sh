@@ -27,6 +27,31 @@ test "${INPUT_VERSION:-}" = "$version" || {
   exit 1
 }
 
+normalized_platforms="$(PLATFORMS="${PLATFORMS:-}" python3 - <<'PY'
+import os
+
+allowed = {"android", "windows", "linux"}
+raw = os.environ.get("PLATFORMS", "")
+parts = [part.strip().lower() for part in raw.split(",") if part.strip()]
+if not parts:
+    raise SystemExit("::error::At least one release platform is required.")
+unknown = [part for part in parts if part not in allowed]
+if unknown:
+    raise SystemExit(
+        "::error::Unsupported release platform(s): " + ", ".join(sorted(set(unknown)))
+    )
+seen = set()
+normalized = []
+for part in parts:
+    if part not in seen:
+        seen.add(part)
+        normalized.append(part)
+print(",".join(normalized))
+PY
+)"
+PLATFORMS="$normalized_platforms"
+export PLATFORMS
+
 release_tag="release-v${version}"
 
 pwsh -NoLogo -NoProfile -File ./tools/validate_release_workflows.ps1
@@ -68,7 +93,7 @@ for name in "${required[@]}"; do
   }
 done
 
-if [[ ",${PLATFORMS:-}," == *",android,"* ]]; then
+if [[ ",$PLATFORMS," == *",android,"* ]]; then
   for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
     test -n "${!name:-}" || {
       echo "::error::$name secret is required for Android releases."
@@ -77,7 +102,7 @@ if [[ ",${PLATFORMS:-}," == *",android,"* ]]; then
   done
 fi
 
-if [[ ",${PLATFORMS:-}," == *",windows,"* ]]; then
+if [[ ",$PLATFORMS," == *",windows,"* ]]; then
   for name in AUTO_UPDATER_DSA_PUBLIC_KEY AUTO_UPDATER_DSA_PRIVATE_KEY; do
     test -n "${!name:-}" || {
       echo "::error::$name secret is required for Windows releases."
@@ -116,6 +141,17 @@ if gh release view "$release_tag" --repo "$GOANIME_REPOSITORY" >/dev/null 2>&1; 
     echo "::error::Release $release_tag is already published; refusing to overwrite it."
     exit 1
   }
+
+  tag_type="$(gh api "repos/$GOANIME_REPOSITORY/git/ref/tags/$release_tag" --jq .object.type)"
+  tag_sha="$(gh api "repos/$GOANIME_REPOSITORY/git/ref/tags/$release_tag" --jq .object.sha)"
+  if [[ "$tag_type" == "tag" ]]; then
+    tag_sha="$(gh api "repos/$GOANIME_REPOSITORY/git/tags/$tag_sha" --jq .object.sha)"
+  fi
+  test "$tag_sha" = "$source_sha" || {
+    echo "::error::Existing draft $release_tag points to $tag_sha, but this run resolved $source_sha. Refusing a mixed-source release."
+    exit 1
+  }
+
   gh release edit "$release_tag" \
     --repo "$GOANIME_REPOSITORY" \
     --draft=true \
@@ -137,4 +173,5 @@ fi
   echo "release_tag=$release_tag"
   echo "version_name=$version"
   echo "build_number=$build_number"
+  echo "platforms=$PLATFORMS"
 } >> "$GITHUB_OUTPUT"
