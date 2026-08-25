@@ -110,32 +110,30 @@ jobs:
               "    server.listen((request) async {\n      expect(request.headers.value(HttpHeaders.rangeHeader), isNull);\n      expect(\n        request.headers.value(HttpHeaders.acceptEncodingHeader),\n        'identity',\n      );\n      final response = request.response;\n",
           )
           anchor = "  test('resumes a partial file with a real HTTP 206 response', () async {\n"
-          addition = r'''  test('rejects non-identity direct responses before writing bytes', () async {
-    final body = payload.codeUnits;
-    server.listen((request) async {
-      expect(
-        request.headers.value(HttpHeaders.acceptEncodingHeader),
-        'identity',
-      );
-      final response = request.response;
-      response.headers.set(HttpHeaders.contentEncodingHeader, 'gzip');
-      response.headers.contentLength = body.length;
-      response.add(body);
-      await response.close();
-    });
-
-    final item = await _download(
-      server: server,
-      storage: storage,
-      root: tempDir,
-      payload: body,
-      expectedStatus: DownloadStatus.failed,
-    );
-
-    expect(item.error, contains('content encoding'));
-  });
-
-'''
+          addition = (
+              "  test('rejects non-identity direct responses before writing bytes', () async {\n"
+              "    final body = payload.codeUnits;\n"
+              "    server.listen((request) async {\n"
+              "      expect(\n"
+              "        request.headers.value(HttpHeaders.acceptEncodingHeader),\n"
+              "        'identity',\n"
+              "      );\n"
+              "      final response = request.response;\n"
+              "      response.headers.set(HttpHeaders.contentEncodingHeader, 'gzip');\n"
+              "      response.headers.contentLength = body.length;\n"
+              "      response.add(body);\n"
+              "      await response.close();\n"
+              "    });\n\n"
+              "    final item = await _download(\n"
+              "      server: server,\n"
+              "      storage: storage,\n"
+              "      root: tempDir,\n"
+              "      payload: body,\n"
+              "      expectedStatus: DownloadStatus.failed,\n"
+              "    );\n\n"
+              "    expect(item.error, contains('content encoding'));\n"
+              "  });\n\n"
+          )
           replace_once(test_file, anchor, addition + anchor)
 
           checkpoint = 'docs/checkpoint_69_post_merge_hardening_2026-08-23.md'
