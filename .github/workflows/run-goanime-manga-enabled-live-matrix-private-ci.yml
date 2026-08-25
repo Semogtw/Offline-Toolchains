@@ -7,7 +7,7 @@ on:
       - 'triggers/goanime-manga-enabled-live-matrix/*.request'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: goanime-manga-enabled-live-matrix-${{ github.sha }}
@@ -16,7 +16,7 @@ concurrency:
 jobs:
   live-source:
     name: Live ${{ matrix.source }}
-    if: github.actor == github.repository_owner
+    if: "${{ github.actor == github.repository_owner && !contains(github.event.head_commit.message, 'manga catalog inventory') }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     strategy:
@@ -107,3 +107,113 @@ jobs:
       - name: Remove private checkout
         if: always()
         run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control" /tmp/goanime-manga-enabled-live.log
+
+  inventory:
+    name: Exhaustive manga catalog inventory
+    if: "${{ github.actor == github.repository_owner && contains(github.event.head_commit.message, 'manga catalog inventory') }}"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: true
+          show-progress: false
+
+      - name: Resolve exact inventory revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-enabled-live-matrix/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = goanime
+          test "$branch" = codex/manga-parity-20260823
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics >/dev/null
+          flutter pub get >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+
+      - name: Run exhaustive manga inventory
+        id: inventory_run
+        working-directory: private-source
+        shell: bash
+        env:
+          OUT_DIR: ${{ runner.temp }}/goanime-manga-inventory
+        run: |
+          set -euo pipefail
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
+          dart run tools/manga/inventory_manga_catalog.dart --output-dir "$OUT_DIR" --max-pages 5000 --timeout-minutes 105
+          test -s "$OUT_DIR/manga_catalog_inventory.json"
+          test -s "$OUT_DIR/manga_catalog_inventory.md"
+          echo "out_dir=$OUT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Publish sanitized inventory receipt
+        env:
+          OUT_DIR: ${{ steps.inventory_run.outputs.out_dir }}
+          GOANIME_BRANCH: ${{ steps.request.outputs.branch }}
+          GOANIME_SHA: ${{ steps.request.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="control/reports/goanime-manga-inventory/${GITHUB_RUN_ID}"
+          mkdir -p "$target"
+          cp "$OUT_DIR/manga_catalog_inventory.json" "$target/inventory.json"
+          cp "$OUT_DIR/manga_catalog_inventory.md" "$target/inventory.md"
+          python3 - "$target/inventory.json" "$GOANIME_BRANCH" "$GOANIME_SHA" "$GITHUB_RUN_ID" <<'PY'
+          import json, sys
+          path, branch, sha, run_id = sys.argv[1:]
+          with open(path, encoding='utf-8') as fh:
+              data = json.load(fh)
+          data['goanimeBranch'] = branch
+          data['goanimeSha'] = sha
+          data['toolchainsRunId'] = int(run_id)
+          with open(path, 'w', encoding='utf-8') as fh:
+              json.dump(data, fh, indent=2, sort_keys=True)
+              fh.write('\n')
+          PY
+          cd control
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "reports/goanime-manga-inventory/${GITHUB_RUN_ID}"
+          git commit -m "ci(goanime): publish manga inventory ${GITHUB_RUN_ID}"
+          git pull --rebase origin main
+          git push origin HEAD:main
+
+      - name: Remove private checkout and transient output
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$RUNNER_TEMP/goanime-manga-inventory"
