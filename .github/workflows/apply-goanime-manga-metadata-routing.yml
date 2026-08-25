@@ -1,0 +1,211 @@
+name: Apply GoAnime manga metadata routing
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-metadata-apply/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-metadata-apply
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout trusted request
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact source request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-metadata-apply/*.request' | head -n 1)"
+          test -n "$request"
+          read -r branch sha < "trusted-source/$request"
+          test "$branch" = 'codex/manga-parity-20260823'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Require private write token
+        env:
+          GOANIME_WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: test -n "$GOANIME_WRITE_TOKEN"
+
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: true
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Apply shared Jikan transport to all runtime consumers
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = '${{ steps.request.outputs.sha }}'
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              assert count == 1, f'{path}: expected one match, found {count}'
+              p.write_text(text.replace(old, new, 1))
+
+          # Manga metadata enrichment: default to the process-wide routed client.
+          path = 'lib/services/manga/metadata/manga_jikan_metadata_service.dart'
+          replace_once(
+              path,
+              "import 'package:http/http.dart' as http;\n\nimport '../manga_availability_models.dart';\n",
+              "import 'package:http/http.dart' as http;\n\nimport '../../jikan_http_client_registry.dart';\nimport '../manga_availability_models.dart';\n",
+          )
+          replace_once(
+              path,
+              "  }) : _client = client ?? http.Client(),\n       _ownsClient = client == null,\n       _clock = clock ?? DateTime.now,\n",
+              "  }) : _client = client ?? JikanHttpClientRegistry.client,\n       _clock = clock ?? DateTime.now,\n",
+          )
+          replace_once(path, '  final bool _ownsClient;\n', '')
+          replace_once(
+              path,
+              "  void close() {\n    if (_closed) return;\n    _closed = true;\n    if (_ownsClient) _client.close();\n  }\n",
+              "  void close() {\n    if (_closed) return;\n    _closed = true;\n  }\n",
+          )
+
+          # Manga relevance: AniList remains independently owned; Jikan shares routing.
+          path = 'lib/services/manga/metadata/manga_relevance_service.dart'
+          replace_once(
+              path,
+              "import 'package:shared_preferences/shared_preferences.dart';\n\nimport '../manga_browse_data_source.dart';\n",
+              "import 'package:shared_preferences/shared_preferences.dart';\n\nimport '../../jikan_http_client_registry.dart';\nimport '../manga_browse_data_source.dart';\n",
+          )
+          replace_once(
+              path,
+              "  }) : _anilistClient = anilistClient ?? http.Client(),\n       _jikanClient = jikanClient ?? http.Client(),\n       _ownsAniListClient = anilistClient == null,\n       _ownsJikanClient = jikanClient == null,\n       _clock = clock ?? DateTime.now,\n",
+              "  }) : _anilistClient = anilistClient ?? http.Client(),\n       _jikanClient = jikanClient ?? JikanHttpClientRegistry.client,\n       _ownsAniListClient = anilistClient == null,\n       _clock = clock ?? DateTime.now,\n",
+          )
+          replace_once(path, '  final bool _ownsJikanClient;\n', '')
+          replace_once(
+              path,
+              "  void close() {\n    if (_ownsAniListClient) _anilistClient.close();\n    if (_ownsJikanClient) _jikanClient.close();\n  }\n",
+              "  void close() {\n    if (_ownsAniListClient) _anilistClient.close();\n  }\n",
+          )
+
+          # Weekly schedule: shared bootstrap owns the default transport.
+          path = 'lib/services/weekly_schedule_service.dart'
+          replace_once(
+              path,
+              "import 'availability_service.dart';\nimport 'broadcast_schedule_cache.dart';\n",
+              "import 'availability_service.dart';\nimport 'broadcast_schedule_cache.dart';\nimport 'jikan_http_client_registry.dart';\n",
+          )
+          replace_once(
+              path,
+              "  }) : _client = client ?? http.Client(),\n       _ownsClient = client == null,\n       _now = now ?? DateTime.now,\n",
+              "  }) : _client = client ?? JikanHttpClientRegistry.client,\n       _now = now ?? DateTime.now,\n",
+          )
+          replace_once(path, '  final bool _ownsClient;\n', '')
+          replace_once(
+              path,
+              "  void dispose() {\n    if (_ownsClient) _client.close();\n  }\n",
+              "  /// The shared app transport is owned by application bootstrap.\n  /// Explicit clients are caller-owned, so this service closes neither.\n  void dispose() {}\n",
+          )
+
+          # Broadcast cache: use the same default transport and never close it.
+          path = 'lib/services/broadcast_schedule_cache.dart'
+          replace_once(
+              path,
+              "import '../utils/network_headers.dart';\n\n/// Lightweight record",
+              "import '../utils/network_headers.dart';\nimport 'jikan_http_client_registry.dart';\n\n/// Lightweight record",
+          )
+          replace_once(
+              path,
+              '    final httpClient = client ?? http.Client();\n',
+              '    final httpClient = client ?? JikanHttpClientRegistry.client;\n',
+          )
+          replace_once(
+              path,
+              "    } finally {\n      if (client == null) httpClient.close();\n    }\n",
+              "    }\n",
+          )
+          PY
+
+          dart format \
+            lib/services/manga/metadata/manga_jikan_metadata_service.dart \
+            lib/services/manga/metadata/manga_relevance_service.dart \
+            lib/services/weekly_schedule_service.dart \
+            lib/services/broadcast_schedule_cache.dart \
+            test/services/manga/metadata/manga_jikan_metadata_routing_test.dart
+          git -c core.whitespace=cr-at-eol diff --check
+
+      - name: Validate focused metadata routing
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter test --no-pub test/services/manga/metadata/manga_jikan_metadata_routing_test.dart
+          flutter test --no-pub test/services/manga/metadata/manga_jikan_metadata_service_test.dart
+          flutter test --no-pub test/services/manga/metadata/manga_relevance_service_test.dart
+          if [[ -f test/services/weekly_schedule_resilience_test.dart ]]; then
+            flutter test --no-pub test/services/weekly_schedule_resilience_test.dart
+          fi
+          flutter analyze --no-pub \
+            lib/services/manga/metadata/manga_jikan_metadata_service.dart \
+            lib/services/manga/metadata/manga_relevance_service.dart \
+            lib/services/weekly_schedule_service.dart \
+            lib/services/broadcast_schedule_cache.dart \
+            test/services/manga/metadata/manga_jikan_metadata_routing_test.dart
+
+      - name: Publish validated patch
+        working-directory: private-source
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$TARGET_BRANCH"
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            lib/services/manga/metadata/manga_jikan_metadata_service.dart \
+            lib/services/manga/metadata/manga_relevance_service.dart \
+            lib/services/weekly_schedule_service.dart \
+            lib/services/broadcast_schedule_cache.dart \
+            test/services/manga/metadata/manga_jikan_metadata_routing_test.dart
+          git commit -m 'fix(manga): route Jikan through shared metadata transport'
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+          echo "Published GoAnime SHA: $(git rev-parse HEAD)"
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
