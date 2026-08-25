@@ -104,6 +104,40 @@ jobs:
           flutter pub get >/dev/null
           (cd packages/goanime_core && dart pub get >/dev/null)
 
+      - name: Bootstrap detached checkout CAS fix
+        if: steps.request.outputs.project == 'goanime'
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tools/manga/materialize_global_manga_availability_ci.sh')
+          text = path.read_text(encoding='utf-8')
+          old = '''git fetch origin "$TARGET_BRANCH" --quiet
+          test "$(git rev-parse "origin/$TARGET_BRANCH")" = "$START_SHA"'''
+          new = '''REMOTE_SHA="$(git ls-remote --exit-code origin "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$REMOTE_SHA" = "$START_SHA"'''
+          count = text.count(old)
+          if count != 2:
+              raise SystemExit(f'unexpected CAS gate count: {count}')
+          text = text.replace(old, new)
+
+          marker = '''git add -- \\
+            assets/data/manga_availability.db \\
+          '''
+          replacement = '''git add -- \\
+            tools/manga/materialize_global_manga_availability_ci.sh \\
+            assets/data/manga_availability.db \\
+          '''
+          if marker not in text:
+              raise SystemExit('materializer git-add marker not found')
+          text = text.replace(marker, replacement, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+          git diff --check
+
       - name: Configure sanitized materializer diagnostics
         if: steps.request.outputs.project == 'goanime'
         shell: bash
