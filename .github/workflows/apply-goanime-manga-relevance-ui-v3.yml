@@ -1,0 +1,193 @@
+name: Apply GoAnime manga relevance UI v3
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-relevance-ui-v3/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-relevance-ui-v3
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+
+      - id: request
+        working-directory: control
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-relevance-ui-v3/*.request' | head -n1)"
+          test -n "$request"
+          read -r project branch sha < "$request"
+          test "$project" = goanime
+          test "$branch" = codex/manga-parity-20260823
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Require fresh branch head
+        working-directory: private-source
+        env:
+          BRANCH: ${{ steps.request.outputs.branch }}
+          REQUESTED_SHA: ${{ steps.request.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH" --quiet
+          test "$(git rev-parse HEAD)" = "$REQUESTED_SHA"
+          test "$(git rev-parse "origin/$BRANCH")" = "$REQUESTED_SHA"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get
+
+      - name: Apply relevance presentation
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected 1 occurrence, got {count}')
+              return text.replace(old, new, 1)
+
+          home = Path('lib/screens/manga/manga_home_screen.dart')
+          text = home.read_text(encoding='utf-8')
+          text = replace_once(
+              text,
+              """    final rawBannerCandidates = snapshot.newChapters.length >= 2\n        ? snapshot.newChapters\n        : (snapshot.availableCatalog.length >= 3\n              ? snapshot.availableCatalog\n              : <MangaBrowseItem>[]);""",
+              """    final rawBannerCandidates = snapshot.featured.isNotEmpty\n        ? snapshot.featured\n        : (snapshot.newChapters.length >= 2\n              ? snapshot.newChapters\n              : (snapshot.availableCatalog.length >= 3\n                    ? snapshot.availableCatalog\n                    : <MangaBrowseItem>[]));""",
+              'carousel',
+          )
+          text = replace_once(
+              text,
+              """    final availableCatalog = snapshot.availableCatalog\n        .where(\n          (item) =>\n              MangaContentFilter.isSafeForGeneralAudience(item.metadata.genres),\n        )\n        .toList();""",
+              """    final availableCatalog = snapshot.availableCatalog\n        .where(\n          (item) =>\n              MangaContentFilter.isSafeForGeneralAudience(item.metadata.genres),\n        )\n        .toList();\n    List<MangaBrowseItem> safeRanking(List<MangaBrowseItem> items) => items\n        .where(\n          (item) =>\n              MangaContentFilter.isSafeForGeneralAudience(item.metadata.genres),\n        )\n        .toList(growable: false);\n    final popularItems = safeRanking(snapshot.popular);\n    final topRatedItems = safeRanking(snapshot.topRated);\n    final trendingMangaItems = safeRanking(snapshot.trendingManga);\n    final trendingManhwaItems = safeRanking(snapshot.trendingManhwa);\n    final trendingManhuaItems = safeRanking(snapshot.trendingManhua);\n    final isPortuguese = Localizations.localeOf(context).languageCode == 'pt';""",
+              'ranked collections',
+          )
+          text = replace_once(
+              text,
+              """              // 2. Novos Capítulos\n              if (newChapters.isNotEmpty)""",
+              """              // 2. Relevância externa, sempre cruzada com obras legíveis.\n              if (popularItems.isNotEmpty)\n                _buildModernSection(\n                  context,\n                  title: 'Popular',\n                  icon: Icons.local_fire_department_rounded,\n                  gradient: const LinearGradient(\n                    colors: [Color(0xFFFF6B6B), Color(0xFFFFA500)],\n                  ),\n                  items: popularItems,\n                ),\n              if (trendingManhwaItems.isNotEmpty)\n                _buildModernSection(\n                  context,\n                  title: isPortuguese ? 'Manhwas em alta' : 'Trending manhwa',\n                  icon: Icons.trending_up_rounded,\n                  gradient: const LinearGradient(\n                    colors: [Color(0xFF7F7FD5), Color(0xFF86A8E7)],\n                  ),\n                  items: trendingManhwaItems,\n                ),\n              if (trendingMangaItems.isNotEmpty)\n                _buildModernSection(\n                  context,\n                  title: isPortuguese ? 'Mangás em alta' : 'Trending manga',\n                  icon: Icons.auto_stories_rounded,\n                  gradient: const LinearGradient(\n                    colors: [Color(0xFF11998E), Color(0xFF38EF7D)],\n                  ),\n                  items: trendingMangaItems,\n                ),\n              if (trendingManhuaItems.isNotEmpty)\n                _buildModernSection(\n                  context,\n                  title: isPortuguese ? 'Manhuas em alta' : 'Trending manhua',\n                  icon: Icons.public_rounded,\n                  gradient: const LinearGradient(\n                    colors: [Color(0xFFFF9966), Color(0xFFFF5E62)],\n                  ),\n                  items: trendingManhuaItems,\n                ),\n              if (topRatedItems.isNotEmpty)\n                _buildModernSection(\n                  context,\n                  title: isPortuguese ? 'Mais bem avaliados' : 'Top rated',\n                  icon: Icons.star_rounded,\n                  gradient: const LinearGradient(\n                    colors: [Color(0xFFF7971E), Color(0xFFFFD200)],\n                  ),\n                  items: topRatedItems,\n                ),\n\n              // 3. Novos Capítulos\n              if (newChapters.isNotEmpty)""",
+              'relevance sections',
+          )
+          text = replace_once(
+              text,
+              "badge: isPortuguese ? 'Destaque Mangá' : 'Featured Manga',",
+              "badge: isPortuguese ? 'Em alta' : 'Trending',",
+              'hero badge',
+          )
+          home.write_text(text, encoding='utf-8')
+
+          relevance = Path('lib/services/manga/metadata/manga_relevance_service.dart')
+          text = relevance.read_text(encoding='utf-8')
+          raw_map = '.whereType<Map>()'
+          count = text.count(raw_map)
+          if count != 4:
+              raise SystemExit(f'raw maps: expected 4 occurrences, got {count}')
+          text = text.replace(raw_map, '.whereType<Map<Object?, Object?>>()')
+          relevance.write_text(text, encoding='utf-8')
+
+          widget_test = Path('test/widgets/manga/manga_home_relevance_test.dart')
+          text = widget_test.read_text(encoding='utf-8')
+          text = replace_once(
+              text,
+              "import 'package:goanime/services/manga/manga_availability_service.dart';\n",
+              "import 'package:goanime/services/manga/manga_availability_models.dart';\n",
+              'availability models import',
+          )
+          widget_test.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Format and analyze relevance surface
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            lib/screens/manga/manga_home_screen.dart
+            lib/services/manga/manga_browse_data_source.dart
+            lib/services/manga/manga_repository_browse_data_source.dart
+            lib/services/manga/manga_platform_runtime.dart
+            lib/services/manga/metadata/manga_relevance_service.dart
+            test/services/manga/metadata/manga_relevance_service_test.dart
+            test/widgets/manga/manga_home_relevance_test.dart
+          )
+          dart format "${files[@]}"
+          dart format --output=none --set-exit-if-changed "${files[@]}"
+          git diff --check
+          flutter analyze --no-pub "${files[@]}"
+
+      - name: Run focused relevance tests
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter test --no-pub --concurrency=1 \
+            test/services/manga/metadata/manga_relevance_service_test.dart \
+            test/widgets/manga/manga_home_relevance_test.dart \
+            test/widgets/manga/manga_home_screen_test.dart \
+            test/widgets/manga/manga_home_refresh_resilience_test.dart
+
+      - name: Publish validated private change
+        working-directory: private-source
+        env:
+          BRANCH: ${{ steps.request.outputs.branch }}
+          REQUESTED_SHA: ${{ steps.request.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH" --quiet
+          test "$(git rev-parse "origin/$BRANCH")" = "$REQUESTED_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- \
+            lib/screens/manga/manga_home_screen.dart \
+            lib/services/manga/manga_browse_data_source.dart \
+            lib/services/manga/manga_repository_browse_data_source.dart \
+            lib/services/manga/manga_platform_runtime.dart \
+            lib/services/manga/metadata/manga_relevance_service.dart \
+            test/services/manga/metadata/manga_relevance_service_test.dart \
+            test/widgets/manga/manga_home_relevance_test.dart
+          git commit -m 'feat(manga): surface relevance-ranked home'
+          git push origin HEAD:"$BRANCH"
