@@ -1,0 +1,129 @@
+name: Apply validated GoAnime final fixes
+
+on:
+  push:
+    branches:
+      - toolchain/export-flutter-sdk-3.44.1-20260826
+    paths:
+      - .github/workflows/apply-goanime-megaplay-final-fixes.yml
+
+permissions:
+  contents: read
+
+env:
+  GOANIME_BASE_SHA: 681f6145ee60e5b07e4e3204f3d88a6bc2007feb
+  GOANIME_BRANCH: fix/megaplay-bootstrap-shorebird-20260826
+  PATCH_BLOB_SHA: 1e66f3f52c8edf1c5a1e5a4423f88fb4a4055d4b
+  PATCH_SHA256: ae769b40fb1202d0dfb5f9c223a98a8b2061b1e4d760156bd644cd2f93f5c28b
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout exact private GoAnime candidate
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.GOANIME_BASE_SHA }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Fetch and verify private patch blob
+        shell: bash
+        working-directory: private-source
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GOANIME_BASE_SHA"
+          python3 - "$PATCH_BLOB_SHA" "$PATCH_SHA256" "$PRIVATE_REPOSITORIES_TOKEN" <<'PY'
+          import base64, hashlib, json, sys, urllib.request
+          blob_sha, expected_sha256, token = sys.argv[1:]
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/Semogtw/goanime-mobile/git/blobs/{blob_sha}",
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {token}",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              payload = json.load(response)
+          if payload.get("sha") != blob_sha or payload.get("encoding") != "base64":
+              raise SystemExit("unexpected private patch blob response")
+          data = base64.b64decode(payload["content"])
+          actual = hashlib.sha256(data).hexdigest()
+          if actual != expected_sha256:
+              raise SystemExit(f"patch sha256 mismatch: {actual}")
+          open("../validated.patch", "wb").write(data)
+          PY
+          git apply --check ../validated.patch
+          git apply ../validated.patch
+          git diff --check
+
+      - name: Verify exact validated delta
+        shell: bash
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          cat > ../expected-files.txt <<'EOF'
+          README_AI.md
+          docs/ai/context_manifest.json
+          docs/manga_foundation.md
+          docs/manga_offline_archive_status.md
+          docs/manga_product_parity.md
+          test/architecture/active_parity_documentation_guard_test.dart
+          test/architecture/documentation_drift_test.dart
+          test/architecture/shared_request_primitives_adoption_guard_test.dart
+          test/services/download/download_identity_transfer_test.dart
+          test/services/download/download_local_http_server_contract_test.dart
+          EOF
+          git diff --name-only | LC_ALL=C sort > ../actual-files.txt
+          LC_ALL=C sort ../expected-files.txt -o ../expected-files.txt
+          diff -u ../expected-files.txt ../actual-files.txt
+          cat > ../expected-blobs.txt <<'EOF'
+          README_AI.md bd238c2b6a499628f6c7acf26630ca7cbb9a8ad0
+          docs/ai/context_manifest.json 28779e5d96889ab8889b36e6d12fd8e074d747a1
+          docs/manga_foundation.md 23b0175fef6f5f285dd741132471aff8726024e9
+          docs/manga_offline_archive_status.md 81f065ea567ca03a411c3a694a6b53d70b126458
+          docs/manga_product_parity.md b661dd6bdf01a133ad94d213a53a3334606aedf9
+          test/architecture/active_parity_documentation_guard_test.dart 8192d096b6e4b5ec245687012e00ef79ef47447d
+          test/architecture/documentation_drift_test.dart 4a9a7ec540b3f755c49379575280ba6a64fef5ea
+          test/architecture/shared_request_primitives_adoption_guard_test.dart 1f73f51ee66fc11cc40cfbcc13b95593ba295503
+          test/services/download/download_identity_transfer_test.dart 8c3a46a1e9b610f02043cb50d6fedffb45076cb3
+          test/services/download/download_local_http_server_contract_test.dart a055226b30c35dd0b21634d66bb0deee8bd07d52
+          EOF
+          while read -r path expected; do
+            actual="$(git hash-object "$path")"
+            test "$actual" = "$expected" || { echo "$path blob mismatch: $actual != $expected"; exit 1; }
+          done < ../expected-blobs.txt
+
+      - name: Commit and push candidate branch
+        shell: bash
+        working-directory: private-source
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README_AI.md docs/ai/context_manifest.json docs/manga_foundation.md docs/manga_offline_archive_status.md docs/manga_product_parity.md test/architecture/active_parity_documentation_guard_test.dart test/architecture/documentation_drift_test.dart test/architecture/shared_request_primitives_adoption_guard_test.dart test/services/download/download_identity_transfer_test.dart test/services/download/download_local_http_server_contract_test.dart
+          git commit -m "test: stabilize full validation contracts [skip ci]"
+          new_sha="$(git rev-parse HEAD)"
+          current_remote="$(git ls-remote https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git refs/heads/${GOANIME_BRANCH} | cut -f1)"
+          test "$current_remote" = "$GOANIME_BASE_SHA" || { echo "candidate branch moved: $current_remote"; exit 1; }
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/goanime-mobile.git HEAD:refs/heads/${GOANIME_BRANCH}
+          echo "NEW_GOANIME_SHA=$new_sha"
