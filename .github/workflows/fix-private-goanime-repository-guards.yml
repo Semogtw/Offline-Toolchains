@@ -144,7 +144,6 @@ jobs:
 
           mapfile -t changed < <(git status --short | sed -E 's/^.. //' | sort)
           expected=(
-            docs/quality_scorecard.json
             test/controllers/media/flutter_test_config.dart
             test/helpers/flutter_test_config.dart
             test/integration/flutter_test_config.dart
