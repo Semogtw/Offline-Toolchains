@@ -1,0 +1,146 @@
+name: Probe Dart formatter layout
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/dart-format-probe/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: source
+          fetch-depth: 1
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - name: Format synthetic scheduler variants
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > probe.dart <<'DART'
+          class UnifiedEpisode {}
+
+          class Provider {
+            Future<List<UnifiedEpisode>> schedule<T>({
+              required String providerKey,
+              required int priority,
+              required int priorityRank,
+              required Future<T> Function() operation,
+            }) async => await operation() as List<UnifiedEpisode>;
+          }
+
+          Future<void> main() async {
+            final episodePhaseScheduler = Provider();
+            final provider = 'provider';
+            final match = 'match';
+            final cancellation = Object();
+            final index = 0;
+
+            final resolvedA = await episodePhaseScheduler.schedule<List<UnifiedEpisode>>(
+              providerKey: provider,
+              priority: 0,
+              priorityRank: 0,
+              operation: () async {
+                final providerAggregator = Provider();
+                return providerAggregator.schedule<List<UnifiedEpisode>>(
+                  providerKey: provider,
+                  priority: 0,
+                  priorityRank: 0,
+                  operation: () async {
+                    return <UnifiedEpisode>[];
+                  },
+                );
+              },
+            );
+            print(resolvedA);
+
+            final resolvedB = await episodePhaseScheduler
+                .schedule<List<UnifiedEpisode>>(
+                  providerKey: provider,
+                  priority: 0,
+                  priorityRank: 0,
+                  operation: () async {
+                    final providerAggregator = Provider();
+                    return providerAggregator.schedule<List<UnifiedEpisode>>(
+                      providerKey: provider,
+                      priority: 0,
+                      priorityRank: 0,
+                      operation: () async {
+                        return <UnifiedEpisode>[];
+                      },
+                    );
+                  },
+                );
+            print(resolvedB);
+
+            final resolvedC =
+                await episodePhaseScheduler.schedule<List<UnifiedEpisode>>(
+              providerKey: provider,
+              priority: 0,
+              priorityRank: 0,
+              operation: () async {
+                final providerAggregator = Provider();
+                return providerAggregator.schedule<List<UnifiedEpisode>>(
+                  providerKey: provider,
+                  priority: 0,
+                  priorityRank: 0,
+                  operation: () async {
+                    return <UnifiedEpisode>[];
+                  },
+                );
+              },
+            );
+            print(resolvedC);
+
+            final resolvedD =
+                await episodePhaseScheduler
+                    .schedule<List<UnifiedEpisode>>(
+                  providerKey: provider,
+                  priority: 0,
+                  priorityRank: 0,
+                  operation: () async {
+                    final providerAggregator = Provider();
+                    return providerAggregator.schedule<List<UnifiedEpisode>>(
+                      providerKey: provider,
+                      priority: 0,
+                      priorityRank: 0,
+                      operation: () async {
+                        return <UnifiedEpisode>[];
+                      },
+                    );
+                  },
+                );
+            print(resolvedD);
+
+            final resolvedE = await episodePhaseScheduler
+                .schedule<List<UnifiedEpisode>>(
+              providerKey: provider,
+              priority: 0,
+              priorityRank: 0,
+              operation: () async {
+                final providerAggregator = Provider();
+                return providerAggregator.schedule<List<UnifiedEpisode>>(
+                  providerKey: provider,
+                  priority: 0,
+                  priorityRank: 0,
+                  operation: () async {
+                    return <UnifiedEpisode>[];
+                  },
+                );
+              },
+            );
+            print(resolvedE);
+          }
+          DART
+          dart format --output=show probe.dart
