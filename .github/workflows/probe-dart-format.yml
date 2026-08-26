@@ -164,41 +164,47 @@ jobs:
             }) async => <UnifiedEpisode>[];
           }
 
-          Future<void> exact() async {
-            final episodePhaseScheduler = Provider();
-            final provider = Provider();
-            final match = Object();
-            final cancellation = Object();
-            final index = 0;
-            final episodeSourceTimeout = Duration.zero;
+          class Example {
+            Future<void> outer() async {
+              Future<void> exact() async {
+                final episodePhaseScheduler = Provider();
+                final provider = Provider();
+                final match = Object();
+                final cancellation = Object();
+                final index = 0;
+                final episodeSourceTimeout = Duration.zero;
 
-            void publishProviderSnapshot(
-              int index,
-              List<UnifiedEpisode> snapshot,
-            ) {}
+                void publishProviderSnapshot(
+                  int index,
+                  List<UnifiedEpisode> snapshot,
+                ) {}
 
-            final resolved = await episodePhaseScheduler
-                .schedule<List<UnifiedEpisode>>(
-                  providerKey: provider.providerKey,
-                  priority: 0,
-                  priorityRank: 0,
-                  operation: () async {
-                    cancellation.throwIfCancelled();
-                    final providerAggregator = EpisodeAggregator(
-                      episodeSourceTimeout: episodeSourceTimeout,
-                      maxConcurrentEpisodeLoads: 1,
-                    );
-                    return providerAggregator.aggregate(
-                      providerMatches: [match],
-                      preliminary: const [],
-                      cancellation: cancellation,
-                      onPartialResult: (snapshot) {
-                        publishProviderSnapshot(index, snapshot);
+                final resolved = await episodePhaseScheduler
+                    .schedule<List<UnifiedEpisode>>(
+                      providerKey: provider.providerKey,
+                      priority: 0,
+                      priorityRank: 0,
+                      operation: () async {
+                        cancellation.throwIfCancelled();
+                        final providerAggregator = EpisodeAggregator(
+                          episodeSourceTimeout: episodeSourceTimeout,
+                          maxConcurrentEpisodeLoads: 1,
+                        );
+                        return providerAggregator.aggregate(
+                          providerMatches: [match],
+                          preliminary: const [],
+                          cancellation: cancellation,
+                          onPartialResult: (snapshot) {
+                            publishProviderSnapshot(index, snapshot);
+                          },
+                        );
                       },
                     );
-                  },
-                );
-            print(resolved);
+                print(resolved);
+              }
+
+              await exact();
+            }
           }
           DART
           dart format --output=show probe_exact.dart
