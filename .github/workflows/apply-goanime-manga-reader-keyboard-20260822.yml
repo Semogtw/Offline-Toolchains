@@ -117,90 +117,90 @@ jobs:
           )
           keyboard_methods = r'''
 
-  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent || _openingReaderRoute) {
-      return KeyEventResult.ignored;
-    }
-    final key = event.logicalKey;
-    if (key == LogicalKeyboardKey.escape) {
-      _toggleChrome();
-      return KeyEventResult.handled;
-    }
-    if (!_supportsImageModes) return KeyEventResult.ignored;
+            KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+              if (event is! KeyDownEvent || _openingReaderRoute) {
+                return KeyEventResult.ignored;
+              }
+              final key = event.logicalKey;
+              if (key == LogicalKeyboardKey.escape) {
+                _toggleChrome();
+                return KeyEventResult.handled;
+              }
+              if (!_supportsImageModes) return KeyEventResult.ignored;
 
-    if (_readerMode == MangaReaderMode.continuousVertical) {
-      if (key == LogicalKeyboardKey.arrowDown ||
-          key == LogicalKeyboardKey.pageDown ||
-          key == LogicalKeyboardKey.space) {
-        _scrollContinuousBy(1);
-        return KeyEventResult.handled;
-      }
-      if (key == LogicalKeyboardKey.arrowUp ||
-          key == LogicalKeyboardKey.pageUp) {
-        _scrollContinuousBy(-1);
-        return KeyEventResult.handled;
-      }
-      return KeyEventResult.ignored;
-    }
+              if (_readerMode == MangaReaderMode.continuousVertical) {
+                if (key == LogicalKeyboardKey.arrowDown ||
+                    key == LogicalKeyboardKey.pageDown ||
+                    key == LogicalKeyboardKey.space) {
+                  _scrollContinuousBy(1);
+                  return KeyEventResult.handled;
+                }
+                if (key == LogicalKeyboardKey.arrowUp ||
+                    key == LogicalKeyboardKey.pageUp) {
+                  _scrollContinuousBy(-1);
+                  return KeyEventResult.handled;
+                }
+                return KeyEventResult.ignored;
+              }
 
-    final nextKey = switch (_readerMode) {
-      MangaReaderMode.pagedRtl => LogicalKeyboardKey.arrowLeft,
-      MangaReaderMode.pagedLtr => LogicalKeyboardKey.arrowRight,
-      MangaReaderMode.pagedVertical => LogicalKeyboardKey.arrowDown,
-      MangaReaderMode.continuousVertical => LogicalKeyboardKey.arrowDown,
-    };
-    final previousKey = switch (_readerMode) {
-      MangaReaderMode.pagedRtl => LogicalKeyboardKey.arrowRight,
-      MangaReaderMode.pagedLtr => LogicalKeyboardKey.arrowLeft,
-      MangaReaderMode.pagedVertical => LogicalKeyboardKey.arrowUp,
-      MangaReaderMode.continuousVertical => LogicalKeyboardKey.arrowUp,
-    };
-    if (key == nextKey ||
-        key == LogicalKeyboardKey.pageDown ||
-        key == LogicalKeyboardKey.space) {
-      _movePagedReader(1);
-      return KeyEventResult.handled;
-    }
-    if (key == previousKey || key == LogicalKeyboardKey.pageUp) {
-      _movePagedReader(-1);
-      return KeyEventResult.handled;
-    }
-    return KeyEventResult.ignored;
-  }
+              final nextKey = switch (_readerMode) {
+                MangaReaderMode.pagedRtl => LogicalKeyboardKey.arrowLeft,
+                MangaReaderMode.pagedLtr => LogicalKeyboardKey.arrowRight,
+                MangaReaderMode.pagedVertical => LogicalKeyboardKey.arrowDown,
+                MangaReaderMode.continuousVertical => LogicalKeyboardKey.arrowDown,
+              };
+              final previousKey = switch (_readerMode) {
+                MangaReaderMode.pagedRtl => LogicalKeyboardKey.arrowRight,
+                MangaReaderMode.pagedLtr => LogicalKeyboardKey.arrowLeft,
+                MangaReaderMode.pagedVertical => LogicalKeyboardKey.arrowUp,
+                MangaReaderMode.continuousVertical => LogicalKeyboardKey.arrowUp,
+              };
+              if (key == nextKey ||
+                  key == LogicalKeyboardKey.pageDown ||
+                  key == LogicalKeyboardKey.space) {
+                _movePagedReader(1);
+                return KeyEventResult.handled;
+              }
+              if (key == previousKey || key == LogicalKeyboardKey.pageUp) {
+                _movePagedReader(-1);
+                return KeyEventResult.handled;
+              }
+              return KeyEventResult.ignored;
+            }
 
-  void _movePagedReader(int delta) {
-    final controller = _imageController;
-    final count = _pageCount;
-    if (controller == null || !controller.hasClients || count == null || count <= 0) {
-      return;
-    }
-    final target = (_pageIndex + delta).clamp(0, count - 1).toInt();
-    if (target == _pageIndex) return;
-    unawaited(
-      controller.animateToPage(
-        target,
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOutCubic,
-      ),
-    );
-  }
+            void _movePagedReader(int delta) {
+              final controller = _imageController;
+              final count = _pageCount;
+              if (controller == null || !controller.hasClients || count == null || count <= 0) {
+                return;
+              }
+              final target = (_pageIndex + delta).clamp(0, count - 1).toInt();
+              if (target == _pageIndex) return;
+              unawaited(
+                controller.animateToPage(
+                  target,
+                  duration: const Duration(milliseconds: 180),
+                  curve: Curves.easeOutCubic,
+                ),
+              );
+            }
 
-  void _scrollContinuousBy(int direction) {
-    final controller = _continuousController;
-    if (controller == null || !controller.hasClients) return;
-    final position = controller.position;
-    final target = (controller.offset + position.viewportDimension * 0.85 * direction)
-        .clamp(position.minScrollExtent, position.maxScrollExtent)
-        .toDouble();
-    unawaited(
-      controller.animateTo(
-        target,
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOutCubic,
-      ),
-    );
-  }
-'''
+            void _scrollContinuousBy(int direction) {
+              final controller = _continuousController;
+              if (controller == null || !controller.hasClients) return;
+              final position = controller.position;
+              final target = (controller.offset + position.viewportDimension * 0.85 * direction)
+                  .clamp(position.minScrollExtent, position.maxScrollExtent)
+                  .toDouble();
+              unawaited(
+                controller.animateTo(
+                  target,
+                  duration: const Duration(milliseconds: 180),
+                  curve: Curves.easeOutCubic,
+                ),
+              );
+            }
+          '''
           replace_once(
               reader,
               "\n  @override\n  Widget build(BuildContext context) {",
@@ -225,69 +225,69 @@ jobs:
           )
           keyboard_tests = r'''
 
-  testWidgets('keyboard arrows navigate paged vertical reader', (tester) async {
-    const threePageManifest = LocalPackageContentManifest(
-      sourceId: 'local.test',
-      mangaId: 'work-source-1',
-      chapterId: 'chapter-source-1',
-      packageId: 'package-1',
-      sourceContentKind: MangaContentKind.imageSequence,
-      pageCount: 3,
-    );
-    await preferences.saveReaderMode('work-1', MangaReaderMode.pagedVertical);
+            testWidgets('keyboard arrows navigate paged vertical reader', (tester) async {
+              const threePageManifest = LocalPackageContentManifest(
+                sourceId: 'local.test',
+                mangaId: 'work-source-1',
+                chapterId: 'chapter-source-1',
+                packageId: 'package-1',
+                sourceContentKind: MangaContentKind.imageSequence,
+                pageCount: 3,
+              );
+              await preferences.saveReaderMode('work-1', MangaReaderMode.pagedVertical);
 
-    await tester.pumpWidget(
-      _readerApp(
-        preferences: preferences,
-        progress: progress,
-        manifest: threePageManifest,
-        loader: (_) async => MangaLocalImageReaderContent(
-          <File>[pageFile, pageFile, pageFile],
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
+              await tester.pumpWidget(
+                _readerApp(
+                  preferences: preferences,
+                  progress: progress,
+                  manifest: threePageManifest,
+                  loader: (_) async => MangaLocalImageReaderContent(
+                    <File>[pageFile, pageFile, pageFile],
+                  ),
+                ),
+              );
+              await tester.pumpAndSettle();
 
-    expect(find.text('Page 1 of 3'), findsOneWidget);
-    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
-    await tester.pumpAndSettle();
-    expect(find.text('Page 2 of 3'), findsOneWidget);
-    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
-    await tester.pumpAndSettle();
-    expect(find.text('Page 1 of 3'), findsOneWidget);
-  });
+              expect(find.text('Page 1 of 3'), findsOneWidget);
+              await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+              await tester.pumpAndSettle();
+              expect(find.text('Page 2 of 3'), findsOneWidget);
+              await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+              await tester.pumpAndSettle();
+              expect(find.text('Page 1 of 3'), findsOneWidget);
+            });
 
-  testWidgets('keyboard arrows respect RTL reading direction', (tester) async {
-    const threePageManifest = LocalPackageContentManifest(
-      sourceId: 'local.test',
-      mangaId: 'work-source-1',
-      chapterId: 'chapter-source-1',
-      packageId: 'package-1',
-      sourceContentKind: MangaContentKind.imageSequence,
-      pageCount: 3,
-    );
-    await preferences.saveReaderMode('work-1', MangaReaderMode.pagedRtl);
+            testWidgets('keyboard arrows respect RTL reading direction', (tester) async {
+              const threePageManifest = LocalPackageContentManifest(
+                sourceId: 'local.test',
+                mangaId: 'work-source-1',
+                chapterId: 'chapter-source-1',
+                packageId: 'package-1',
+                sourceContentKind: MangaContentKind.imageSequence,
+                pageCount: 3,
+              );
+              await preferences.saveReaderMode('work-1', MangaReaderMode.pagedRtl);
 
-    await tester.pumpWidget(
-      _readerApp(
-        preferences: preferences,
-        progress: progress,
-        manifest: threePageManifest,
-        loader: (_) async => MangaLocalImageReaderContent(
-          <File>[pageFile, pageFile, pageFile],
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
+              await tester.pumpWidget(
+                _readerApp(
+                  preferences: preferences,
+                  progress: progress,
+                  manifest: threePageManifest,
+                  loader: (_) async => MangaLocalImageReaderContent(
+                    <File>[pageFile, pageFile, pageFile],
+                  ),
+                ),
+              );
+              await tester.pumpAndSettle();
 
-    await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
-    await tester.pumpAndSettle();
-    expect(find.text('Page 2 of 3'), findsOneWidget);
-    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
-    await tester.pumpAndSettle();
-    expect(find.text('Page 1 of 3'), findsOneWidget);
-  });
-'''
+              await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+              await tester.pumpAndSettle();
+              expect(find.text('Page 2 of 3'), findsOneWidget);
+              await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+              await tester.pumpAndSettle();
+              expect(find.text('Page 1 of 3'), findsOneWidget);
+            });
+          '''
           replace_once(
               test,
               "    expect(\n      find.text('This offline package could not be opened.'),\n      findsNothing,\n    );\n  });\n}",

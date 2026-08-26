@@ -104,42 +104,42 @@ jobs:
           test = 'test/widgets/manga/manga_readable_search_view_test.dart'
           new_test = r'''
 
-  testWidgets('local plus terminal live failure stays retryable', (tester) async {
-    final source = _HandlerAvailabilitySource((query) async {
-      throw StateError('local unavailable');
-    });
-    final live = StreamController<MangaSearchUpdate>();
-    addTearDown(live.close);
+            testWidgets('local plus terminal live failure stays retryable', (tester) async {
+              final source = _HandlerAvailabilitySource((query) async {
+                throw StateError('local unavailable');
+              });
+              final live = StreamController<MangaSearchUpdate>();
+              addTearDown(live.close);
 
-    await _pump(
-      tester,
-      MangaReadableSearchView(
-        availability: source,
-        liveSearch: (query, ownerToken) => live.stream,
-        debounceDuration: Duration.zero,
-        labels: const MangaReadableSearchLabels(
-          hint: 'Search manga',
-          prompt: 'Type to search',
-          empty: 'No results',
-          unreadable: 'Unavailable',
-          clear: 'Clear',
-        ),
-      ),
-    );
+              await _pump(
+                tester,
+                MangaReadableSearchView(
+                  availability: source,
+                  liveSearch: (query, ownerToken) => live.stream,
+                  debounceDuration: Duration.zero,
+                  labels: const MangaReadableSearchLabels(
+                    hint: 'Search manga',
+                    prompt: 'Type to search',
+                    empty: 'No results',
+                    unreadable: 'Unavailable',
+                    clear: 'Clear',
+                  ),
+                ),
+              );
 
-    await tester.enterText(find.byType(TextField), 'vinland');
-    await tester.pump();
-    await tester.pump();
-    live.addError(StateError('live unavailable'));
-    await live.close();
-    await tester.pump();
-    await tester.pump();
+              await tester.enterText(find.byType(TextField), 'vinland');
+              await tester.pump();
+              await tester.pump();
+              live.addError(StateError('live unavailable'));
+              await live.close();
+              await tester.pump();
+              await tester.pump();
 
-    expect(find.text('Manga content could not be loaded.'), findsOneWidget);
-    expect(find.text('Try again'), findsOneWidget);
-    expect(find.text('No results'), findsNothing);
-  });
-'''
+              expect(find.text('Manga content could not be loaded.'), findsOneWidget);
+              expect(find.text('Try again'), findsOneWidget);
+              expect(find.text('No results'), findsNothing);
+            });
+          '''
           replace_once(
               test,
               "  testWidgets('live failure does not hide successful local empty result', (\n",

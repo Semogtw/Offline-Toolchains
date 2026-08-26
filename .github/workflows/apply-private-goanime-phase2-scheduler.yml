@@ -87,104 +87,104 @@ jobs:
           aggregator = replace_once(
               aggregator,
               """  EpisodeAggregator({
-    this.episodeSourceTimeout = const Duration(seconds: 14),
-    this.onHealthSample,
-    this.maxConcurrentEpisodeLoads = defaultMaxConcurrentEpisodeLoads,
-  });
+              this.episodeSourceTimeout = const Duration(seconds: 14),
+              this.onHealthSample,
+              this.maxConcurrentEpisodeLoads = defaultMaxConcurrentEpisodeLoads,
+            });
 
-  final Duration episodeSourceTimeout;
-  final ProviderHealthSampleReporter? onHealthSample;
-""",
+            final Duration episodeSourceTimeout;
+            final ProviderHealthSampleReporter? onHealthSample;
+          """,
               """  EpisodeAggregator({
-    this.episodeSourceTimeout = const Duration(seconds: 14),
-    this.onHealthSample,
-    this.maxConcurrentEpisodeLoads = defaultMaxConcurrentEpisodeLoads,
-    ProviderRequestScheduler? requestScheduler,
-  }) : _requestScheduler = requestScheduler;
+              this.episodeSourceTimeout = const Duration(seconds: 14),
+              this.onHealthSample,
+              this.maxConcurrentEpisodeLoads = defaultMaxConcurrentEpisodeLoads,
+              ProviderRequestScheduler? requestScheduler,
+            }) : _requestScheduler = requestScheduler;
 
-  final Duration episodeSourceTimeout;
-  final ProviderHealthSampleReporter? onHealthSample;
-  final ProviderRequestScheduler? _requestScheduler;
-""",
+            final Duration episodeSourceTimeout;
+            final ProviderHealthSampleReporter? onHealthSample;
+            final ProviderRequestScheduler? _requestScheduler;
+          """,
               'aggregator constructor',
           )
           old_runner = """    Future<void> runWithConcurrency(
-      List<({ProviderAnimeMatches match, Anime anime})> jobs,
-      int concurrency,
-    ) async {
-      if (jobs.isEmpty) return;
-      var next = 0;
-      Future<void> worker() async {
-        while (true) {
-          final index = next;
-          next += 1;
-          if (index >= jobs.length) return;
-          await loadProviderEpisodes(jobs[index].match, jobs[index].anime);
-          tryEmitPartial();
-        }
-      }
+                List<({ProviderAnimeMatches match, Anime anime})> jobs,
+                int concurrency,
+              ) async {
+                if (jobs.isEmpty) return;
+                var next = 0;
+                Future<void> worker() async {
+                  while (true) {
+                    final index = next;
+                    next += 1;
+                    if (index >= jobs.length) return;
+                    await loadProviderEpisodes(jobs[index].match, jobs[index].anime);
+                    tryEmitPartial();
+                  }
+                }
 
-      final workerCount = concurrency < 1
-          ? 1
-          : (concurrency > jobs.length ? jobs.length : concurrency);
-      await Future.wait([
-        for (var slot = 0; slot < workerCount; slot++) worker(),
-      ]);
-    }
+                final workerCount = concurrency < 1
+                    ? 1
+                    : (concurrency > jobs.length ? jobs.length : concurrency);
+                await Future.wait([
+                  for (var slot = 0; slot < workerCount; slot++) worker(),
+                ]);
+              }
 
-    await runWithConcurrency(confirmedJobs, maxConcurrentEpisodeLoads);
-"""
+              await runWithConcurrency(confirmedJobs, maxConcurrentEpisodeLoads);
+          """
           new_runner = """    final normalizedConcurrency = maxConcurrentEpisodeLoads < 1
-        ? 1
-        : maxConcurrentEpisodeLoads;
-    final ownsScheduler = _requestScheduler == null;
-    final scheduler =
-        _requestScheduler ??
-        ProviderRequestScheduler(
-          globalLimit: normalizedConcurrency,
-          policies: {
-            for (final match in providerMatches)
-              match.provider.providerKey: ProviderPolicy(
-                providerKey: match.provider.providerKey,
-                maxConcurrent: normalizedConcurrency,
-                requestTimeout: episodeSourceTimeout,
-              ),
-          },
-        );
+                  ? 1
+                  : maxConcurrentEpisodeLoads;
+              final ownsScheduler = _requestScheduler == null;
+              final scheduler =
+                  _requestScheduler ??
+                  ProviderRequestScheduler(
+                    globalLimit: normalizedConcurrency,
+                    policies: {
+                      for (final match in providerMatches)
+                        match.provider.providerKey: ProviderPolicy(
+                          providerKey: match.provider.providerKey,
+                          maxConcurrent: normalizedConcurrency,
+                          requestTimeout: episodeSourceTimeout,
+                        ),
+                    },
+                  );
 
-    Future<void> scheduleJobs(
-      List<({ProviderAnimeMatches match, Anime anime})> jobs,
-    ) async {
-      await Future.wait([
-        for (final job in jobs)
-          scheduler.schedule<void>(
-            providerKey: job.match.provider.providerKey,
-            priority: RequestPriority.userInitiated,
-            operation: () async {
-              await loadProviderEpisodes(job.match, job.anime);
-              tryEmitPartial();
-            },
-          ),
-      ]);
-    }
+              Future<void> scheduleJobs(
+                List<({ProviderAnimeMatches match, Anime anime})> jobs,
+              ) async {
+                await Future.wait([
+                  for (final job in jobs)
+                    scheduler.schedule<void>(
+                      providerKey: job.match.provider.providerKey,
+                      priority: RequestPriority.userInitiated,
+                      operation: () async {
+                        await loadProviderEpisodes(job.match, job.anime);
+                        tryEmitPartial();
+                      },
+                    ),
+                ]);
+              }
 
-    try {
-      await scheduleJobs(confirmedJobs);
-"""
+              try {
+                await scheduleJobs(confirmedJobs);
+          """
           aggregator = replace_once(aggregator, old_runner, new_runner, 'aggregator concurrency runner')
           aggregator = replace_once(
               aggregator,
               """    await runWithConcurrency(gapJobs, maxConcurrentEpisodeLoads);
 
-    final unifiedList = aggregated.values.toList()
-""",
+              final unifiedList = aggregated.values.toList()
+          """,
               """      await scheduleJobs(gapJobs);
-    } finally {
-      if (ownsScheduler) scheduler.dispose();
-    }
+              } finally {
+                if (ownsScheduler) scheduler.dispose();
+              }
 
-    final unifiedList = aggregated.values.toList()
-""",
+              final unifiedList = aggregated.values.toList()
+          """,
               'aggregator gap scheduling',
           )
           aggregator_path.write_text(aggregator)
@@ -200,74 +200,74 @@ jobs:
           unified = replace_once(
               unified,
               """    final episodePhasePermits = _AsyncPermitPool(
-      EpisodeAggregator.defaultMaxConcurrentEpisodeLoads,
-    );
-""",
+                EpisodeAggregator.defaultMaxConcurrentEpisodeLoads,
+              );
+          """,
               """    final episodeScheduler = ProviderRequestScheduler(
-      globalLimit: EpisodeAggregator.defaultMaxConcurrentEpisodeLoads,
-      policies: {
-        for (final provider in _sourceProviders)
-          provider.providerKey: ProviderPolicy(
-            providerKey: provider.providerKey,
-            maxConcurrent: 1,
-            requestTimeout: _episodeSourceTimeout,
-          ),
-      },
-    );
-""",
+                globalLimit: EpisodeAggregator.defaultMaxConcurrentEpisodeLoads,
+                policies: {
+                  for (final provider in _sourceProviders)
+                    provider.providerKey: ProviderPolicy(
+                      providerKey: provider.providerKey,
+                      maxConcurrent: 1,
+                      requestTimeout: _episodeSourceTimeout,
+                    ),
+                },
+              );
+          """,
               'unified scheduler construction',
           )
           unified = replace_once(
               unified,
               """      final resolved = await episodePhasePermits.run(() async {
-        final providerAggregator = EpisodeAggregator(
-          episodeSourceTimeout: _episodeSourceTimeout,
-          maxConcurrentEpisodeLoads: 1,
-        );
-        return providerAggregator.aggregate(
-          providerMatches: [match],
-          preliminary: const [],
-          onPartialResult: (snapshot) {
-            publishProviderSnapshot(index, snapshot);
-          },
-        );
-      });
-""",
+                  final providerAggregator = EpisodeAggregator(
+                    episodeSourceTimeout: _episodeSourceTimeout,
+                    maxConcurrentEpisodeLoads: 1,
+                  );
+                  return providerAggregator.aggregate(
+                    providerMatches: [match],
+                    preliminary: const [],
+                    onPartialResult: (snapshot) {
+                      publishProviderSnapshot(index, snapshot);
+                    },
+                  );
+                });
+          """,
               """      final providerAggregator = EpisodeAggregator(
-        episodeSourceTimeout: _episodeSourceTimeout,
-        maxConcurrentEpisodeLoads: 1,
-        requestScheduler: episodeScheduler,
-      );
-      final resolved = await providerAggregator.aggregate(
-        providerMatches: [match],
-        preliminary: const [],
-        onPartialResult: (snapshot) {
-          publishProviderSnapshot(index, snapshot);
-        },
-      );
-""",
+                  episodeSourceTimeout: _episodeSourceTimeout,
+                  maxConcurrentEpisodeLoads: 1,
+                  requestScheduler: episodeScheduler,
+                );
+                final resolved = await providerAggregator.aggregate(
+                  providerMatches: [match],
+                  preliminary: const [],
+                  onPartialResult: (snapshot) {
+                    publishProviderSnapshot(index, snapshot);
+                  },
+                );
+          """,
               'unified provider episode phase',
           )
           unified = replace_once(
               unified,
               """    await Future.wait([
-      for (var index = 0; index < _sourceProviders.length; index++)
-        loadProvider(index, _sourceProviders[index]),
-    ]);
+                for (var index = 0; index < _sourceProviders.length; index++)
+                  loadProvider(index, _sourceProviders[index]),
+              ]);
 
-    final resolved = _combineResolvedSnapshots(
-""",
+              final resolved = _combineResolvedSnapshots(
+          """,
               """    try {
-      await Future.wait([
-        for (var index = 0; index < _sourceProviders.length; index++)
-          loadProvider(index, _sourceProviders[index]),
-      ]);
-    } finally {
-      episodeScheduler.dispose();
-    }
+                await Future.wait([
+                  for (var index = 0; index < _sourceProviders.length; index++)
+                    loadProvider(index, _sourceProviders[index]),
+                ]);
+              } finally {
+                episodeScheduler.dispose();
+              }
 
-    final resolved = _combineResolvedSnapshots(
-""",
+              final resolved = _combineResolvedSnapshots(
+          """,
               'unified scheduler disposal',
           )
           pool_start = unified.find('\nclass _AsyncPermitPool {')
