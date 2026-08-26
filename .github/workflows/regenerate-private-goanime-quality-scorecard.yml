@@ -1,0 +1,117 @@
+name: Regenerate private GoAnime quality scorecard
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - triggers/private-goanime-quality-scorecard.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-goanime-quality-scorecard
+  cancel-in-progress: false
+
+env:
+  GOANIME_REPOSITORY: Semogtw/goanime-mobile
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted Toolchains request
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Parse exact regeneration request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path('triggers/private-goanime-quality-scorecard.json').read_text())
+          required = {
+              'project': 'goanime',
+              'operation': 'regenerate_quality_scorecard',
+              'branch': 'fix/megaplay-bootstrap-shorebird-20260826',
+              'expected_ref': '8aaec2194ac47d01a0c5b69c5c5c6062725983e0',
+          }
+          for key, expected in required.items():
+              if data.get(key) != expected:
+                  raise SystemExit(f'{key} must be {expected!r}, got {data.get(key)!r}')
+          print(f"branch={data['branch']}")
+          print(f"expected_ref={data['expected_ref']}")
+          PY
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          GOANIME_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$GOANIME_TOKEN"
+
+      - name: Checkout exact private GoAnime candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.expected_ref }}
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Regenerate canonically and commit exact delta
+        id: regenerate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          SOURCE_REF: ${{ steps.request.outputs.expected_ref }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          cd private-source
+
+          test "$(git rev-parse HEAD)" = "$SOURCE_REF"
+          encoded_branch="${TARGET_BRANCH//\//%2F}"
+          branch_tip="$(gh api "repos/${GOANIME_REPOSITORY}/git/ref/heads/${encoded_branch}" --jq .object.sha)"
+          test "$branch_tip" = "$SOURCE_REF" || {
+            echo "::error::Candidate branch moved from $SOURCE_REF to $branch_tip"
+            exit 1
+          }
+
+          python3 tools/generate_quality_scorecard.py --write
+          python3 tools/generate_quality_scorecard.py
+
+          test "$(git diff --name-only)" = 'docs/quality_scorecard.json' || {
+            echo "::error::Scorecard regeneration changed unexpected paths"
+            git diff --name-only
+            exit 1
+          }
+          test -n "$(git diff -- docs/quality_scorecard.json)" || {
+            echo "::error::Scorecard regeneration produced no delta"
+            exit 1
+          }
+
+          base_tree="$(gh api "repos/${GOANIME_REPOSITORY}/git/commits/${SOURCE_REF}" --jq .tree.sha)"
+          scorecard_blob="$(jq -Rs '{content: ., encoding: "utf-8"}' docs/quality_scorecard.json | gh api --method POST "repos/${GOANIME_REPOSITORY}/git/blobs" --input - --jq .sha)"
+          tree_payload="$(jq -n --arg base_tree "$base_tree" --arg blob "$scorecard_blob" '{base_tree:$base_tree,tree:[{path:"docs/quality_scorecard.json",mode:"100644",type:"blob",sha:$blob}]}')"
+          new_tree="$(printf '%s' "$tree_payload" | gh api --method POST "repos/${GOANIME_REPOSITORY}/git/trees" --input - --jq .sha)"
+          commit_payload="$(jq -n --arg message 'chore(quality): refresh repository scorecard [skip ci]' --arg tree "$new_tree" --arg parent "$SOURCE_REF" '{message:$message,tree:$tree,parents:[$parent]}')"
+          new_sha="$(printf '%s' "$commit_payload" | gh api --method POST "repos/${GOANIME_REPOSITORY}/git/commits" --input - --jq .sha)"
+          gh api --method PATCH "repos/${GOANIME_REPOSITORY}/git/refs/heads/${encoded_branch}" -f sha="$new_sha" -F force=false >/dev/null
+          test "$(gh api "repos/${GOANIME_REPOSITORY}/git/ref/heads/${encoded_branch}" --jq .object.sha)" = "$new_sha"
+
+          mapfile -t changed < <(gh api "repos/${GOANIME_REPOSITORY}/compare/${SOURCE_REF}...${new_sha}" --jq '.files[].filename')
+          test "${#changed[@]}" -eq 1
+          test "${changed[0]}" = 'docs/quality_scorecard.json'
+
+          echo "new_sha=$new_sha" >> "$GITHUB_OUTPUT"
+          echo "Regenerated GoAnime scorecard at $new_sha" >> "$GITHUB_STEP_SUMMARY"
