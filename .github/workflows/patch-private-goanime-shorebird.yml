@@ -1,0 +1,281 @@
+name: Patch private GoAnime with Shorebird
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - triggers/private-goanime-validate.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-goanime-shorebird-patch
+  cancel-in-progress: false
+
+env:
+  GOANIME_REPOSITORY: Semogtw/goanime-mobile
+  FLUTTER_CHANNEL: stable
+  FLUTTER_VERSION: 3.44.1
+  FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+  FIREBASE_WEB_API_KEY: ${{ secrets.FIREBASE_WEB_API_KEY }}
+  UPDATE_MANIFEST_URL: ${{ secrets.UPDATE_MANIFEST_URL }}
+  UPDATE_APPCAST_URL: ${{ secrets.UPDATE_APPCAST_URL }}
+  UPDATE_MANIFEST_PUBLIC_KEY_ID: ${{ secrets.UPDATE_MANIFEST_PUBLIC_KEY_ID }}
+  UPDATE_MANIFEST_PUBLIC_KEY_B64: ${{ secrets.UPDATE_MANIFEST_PUBLIC_KEY_B64 }}
+  ANIME_METADATA_SEED_MANIFEST_URL: ${{ secrets.ANIME_METADATA_SEED_MANIFEST_URL }}
+  RUNTIME_DATABASE_MANIFEST_URL: ${{ secrets.RUNTIME_DATABASE_MANIFEST_URL }}
+  SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_TOKEN }}
+
+jobs:
+  request:
+    name: Read patch request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      should_patch: ${{ steps.request.outputs.should_patch }}
+      source_ref: ${{ steps.request.outputs.source_ref }}
+      release_version: ${{ steps.request.outputs.release_version }}
+      platforms: ${{ steps.request.outputs.platforms }}
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Parse request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          request = json.loads(Path('triggers/private-goanime-validate.json').read_text())
+          operation = request.get('operation', '')
+          if operation != 'shorebird_patch':
+              print('should_patch=false')
+              print('source_ref=')
+              print('release_version=')
+              print('platforms=')
+              raise SystemExit(0)
+
+          source_ref = request.get('ref', '')
+          release_version = request.get('release_version', '')
+          platforms = request.get('platforms', '')
+          if not source_ref or not release_version or not platforms:
+              raise SystemExit('shorebird_patch request requires ref, release_version and platforms')
+          allowed_platforms = {'android', 'windows', 'linux'}
+          requested = [item.strip() for item in platforms.split(',') if item.strip()]
+          if not requested or any(item not in allowed_platforms for item in requested):
+              raise SystemExit(f'invalid platforms: {platforms}')
+
+          print('should_patch=true')
+          print(f'source_ref={source_ref}')
+          print(f'release_version={release_version}')
+          print(f'platforms={','.join(requested)}')
+          PY
+
+  promote:
+    name: Promote validated source to GoAnime main
+    needs: request
+    if: ${{ needs.request.outputs.should_patch == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          GOANIME_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          test -n "$GOANIME_TOKEN" || {
+            echo "::error::Private repository token is required."
+            exit 1
+          }
+
+      - name: Checkout validated GoAnime source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ needs.request.outputs.source_ref }}
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify exact source and safe delta
+        shell: bash
+        env:
+          SOURCE_REF: ${{ needs.request.outputs.source_ref }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$SOURCE_REF" || {
+            echo "::error::Expected source $SOURCE_REF but checked out $actual"
+            exit 1
+          }
+
+          git fetch origin main
+          git merge-base --is-ancestor origin/main HEAD || {
+            echo "::error::Validated source is not a fast-forward of current GoAnime main."
+            exit 1
+          }
+
+          mapfile -t changed < <(git diff --name-only origin/main...HEAD)
+          test "${#changed[@]}" -gt 0 || {
+            echo "::error::No source delta to promote."
+            exit 1
+          }
+          for path in "${changed[@]}"; do
+            case "$path" in
+              lib/app/bootstrap.dart|test/services/megaplay/megaplay_bootstrap_wiring_test.dart) ;;
+              *)
+                echo "::error::Unexpected file in patch source: $path"
+                exit 1
+                ;;
+            esac
+          done
+
+      - name: Promote without starting GoAnime CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin HEAD:refs/heads/main
+
+  patch:
+    name: Shorebird patch (${{ matrix.platform }})
+    needs: [request, promote]
+    if: ${{ needs.request.outputs.should_patch == 'true' && needs.promote.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: android
+            os: ubuntu-24.04
+          - platform: windows
+            os: windows-latest
+          - platform: linux
+            os: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+
+    steps:
+      - name: Skip unrequested platform
+        id: platform
+        shell: bash
+        env:
+          REQUESTED_PLATFORMS: ${{ needs.request.outputs.platforms }}
+          PATCH_PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          if [[ ",${REQUESTED_PLATFORMS}," == *",${PATCH_PLATFORM},"* ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout exact GoAnime source
+        if: ${{ steps.platform.outputs.enabled == 'true' }}
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ needs.request.outputs.source_ref }}
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter
+        if: ${{ steps.platform.outputs.enabled == 'true' }}
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Enable Git long paths
+        if: ${{ steps.platform.outputs.enabled == 'true' && matrix.platform == 'windows' }}
+        shell: pwsh
+        run: git config --system core.longpaths true
+
+      - name: Set up Shorebird
+        if: ${{ steps.platform.outputs.enabled == 'true' }}
+        uses: shorebirdtech/setup-shorebird@4dd9d7dc2d7930bfeadb053b6e94b5110779d1e5 # v1
+        with:
+          cache: true
+
+      - name: Install Linux build dependencies
+        if: ${{ steps.platform.outputs.enabled == 'true' && matrix.platform == 'linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake curl file libgtk-3-dev libjsoncpp-dev liblzma-dev libmpv-dev \
+            libsecret-1-0 libsecret-1-dev \
+            libsoup-3.0-dev libwebkit2gtk-4.1-dev \
+            gstreamer1.0-libav gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
+            lld llvm ninja-build pkg-config
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Resolve dependencies
+        if: ${{ steps.platform.outputs.enabled == 'true' }}
+        shell: bash
+        run: flutter pub get --enforce-lockfile
+
+      - name: Validate release identity and runtime config
+        if: ${{ steps.platform.outputs.enabled == 'true' }}
+        shell: bash
+        env:
+          EXPECTED_RELEASE: ${{ needs.request.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          test -f shorebird.yaml || { echo "::error::shorebird.yaml is missing."; exit 1; }
+          actual_version="$(awk '/^version:/ {print $2; exit}' pubspec.yaml)"
+          test "$actual_version" = "$EXPECTED_RELEASE" || {
+            echo "::error::pubspec version $actual_version does not match Shorebird release $EXPECTED_RELEASE"
+            exit 1
+          }
+          test -n "${SHOREBIRD_TOKEN:-}" || { echo "::error::SHOREBIRD_TOKEN is required."; exit 1; }
+          test -n "${FIREBASE_PROJECT_ID:-}" || { echo "::error::FIREBASE_PROJECT_ID is required."; exit 1; }
+          test -n "${FIREBASE_WEB_API_KEY:-}" || { echo "::error::FIREBASE_WEB_API_KEY is required."; exit 1; }
+          test -n "${UPDATE_MANIFEST_URL:-}" || { echo "::error::UPDATE_MANIFEST_URL is required."; exit 1; }
+          test -n "${UPDATE_APPCAST_URL:-}" || { echo "::error::UPDATE_APPCAST_URL is required."; exit 1; }
+          test -n "${UPDATE_MANIFEST_PUBLIC_KEY_ID:-}" || { echo "::error::UPDATE_MANIFEST_PUBLIC_KEY_ID is required."; exit 1; }
+          test -n "${UPDATE_MANIFEST_PUBLIC_KEY_B64:-}" || { echo "::error::UPDATE_MANIFEST_PUBLIC_KEY_B64 is required."; exit 1; }
+          if [ -z "${RUNTIME_DATABASE_MANIFEST_URL:-}" ]; then
+            case "$UPDATE_MANIFEST_URL" in
+              */latest/update.json)
+                echo "RUNTIME_DATABASE_MANIFEST_URL=${UPDATE_MANIFEST_URL%/update.json}/runtime_database_manifest.json" >> "$GITHUB_ENV"
+                ;;
+              *)
+                echo "::error::RUNTIME_DATABASE_MANIFEST_URL is empty and cannot be derived."
+                exit 1
+                ;;
+            esac
+          fi
+
+      - name: Publish Shorebird patch
+        if: ${{ steps.platform.outputs.enabled == 'true' }}
+        shell: bash
+        env:
+          PATCH_PLATFORM: ${{ matrix.platform }}
+          RELEASE_VERSION: ${{ needs.request.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          shorebird patch \
+            --platforms="$PATCH_PLATFORM" \
+            --flutter-version="$FLUTTER_VERSION" \
+            --release-version="$RELEASE_VERSION" \
+            --dart-define="FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID" \
+            --dart-define="FIREBASE_WEB_API_KEY=$FIREBASE_WEB_API_KEY" \
+            --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL" \
+            --dart-define="UPDATE_APPCAST_URL=$UPDATE_APPCAST_URL" \
+            --dart-define="UPDATE_MANIFEST_PUBLIC_KEY_ID=$UPDATE_MANIFEST_PUBLIC_KEY_ID" \
+            --dart-define="UPDATE_MANIFEST_PUBLIC_KEY_B64=$UPDATE_MANIFEST_PUBLIC_KEY_B64" \
+            --dart-define=UPDATE_MANIFEST_SIGNATURE_REQUIRED=true \
+            --dart-define="ANIME_METADATA_SEED_MANIFEST_URL=$ANIME_METADATA_SEED_MANIFEST_URL" \
+            --dart-define="RUNTIME_DATABASE_MANIFEST_URL=$RUNTIME_DATABASE_MANIFEST_URL"
