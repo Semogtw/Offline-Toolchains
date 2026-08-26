@@ -1,0 +1,95 @@
+name: Apply final GoAnime scorecard
+
+on:
+  push:
+    branches:
+      - toolchain/export-flutter-sdk-3.44.1-20260826
+    paths:
+      - .github/workflows/apply-goanime-scorecard-final.yml
+
+permissions:
+  contents: read
+
+env:
+  GOANIME_BASE_SHA: a43cce84f6ae49f34c741c0da4cb451f7503bfe0
+  GOANIME_BRANCH: fix/megaplay-bootstrap-shorebird-20260826
+  PATCH_BLOB_SHA: dc9e88eb4641b819e405a2cc146daaf4addbe08f
+  PATCH_SHA256: 14e684dd48b4b8703add0057ebd6c666048bfbe4fe7666774a864d0565ef47a9
+  EXPECTED_SCORECARD_BLOB: 1e921a44e20594b09909a4e02ffdfee0f0b9ea42
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout exact private GoAnime candidate
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.GOANIME_BASE_SHA }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Fetch and verify scorecard patch
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GOANIME_BASE_SHA"
+          python3 - "$PATCH_BLOB_SHA" "$PATCH_SHA256" "$PRIVATE_REPOSITORIES_TOKEN" <<'PY'
+          import base64, hashlib, json, sys, urllib.request
+          blob_sha, expected_sha256, token = sys.argv[1:]
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/Semogtw/goanime-mobile/git/blobs/{blob_sha}",
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {token}",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              payload = json.load(response)
+          data = base64.b64decode(payload["content"])
+          actual = hashlib.sha256(data).hexdigest()
+          if payload.get("sha") != blob_sha or actual != expected_sha256:
+              raise SystemExit(f"invalid scorecard patch receipt: blob={payload.get('sha')} sha256={actual}")
+          open("../scorecard.patch", "wb").write(data)
+          PY
+          git apply --check ../scorecard.patch
+          git apply ../scorecard.patch
+          git diff --check
+          test "$(git diff --name-only)" = "docs/quality_scorecard.json"
+          test "$(git hash-object docs/quality_scorecard.json)" = "$EXPECTED_SCORECARD_BLOB"
+          python3 tools/generate_quality_scorecard.py --check
+          python3 -m unittest tools.tests.test_generate_quality_scorecard
+
+      - name: Commit and push exact scorecard delta
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/quality_scorecard.json
+          git commit -m "docs: regenerate quality scorecard [skip ci]"
+          new_sha="$(git rev-parse HEAD)"
+          current_remote="$(git ls-remote https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git refs/heads/${GOANIME_BRANCH} | cut -f1)"
+          test "$current_remote" = "$GOANIME_BASE_SHA" || { echo "candidate branch moved: $current_remote"; exit 1; }
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/goanime-mobile.git HEAD:refs/heads/${GOANIME_BRANCH}
+          echo "NEW_GOANIME_SHA=$new_sha"
