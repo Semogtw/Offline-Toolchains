@@ -4,5 +4,6 @@
   "branch": "fix/megaplay-bootstrap-shorebird-20260826",
   "expected_ref": "87aa609a71f3ffade986fc9c99336cc6a34e9169",
   "requested_by": "chatgpt",
-  "purpose": "clear-preexisting-repository-guard-drift-before-shorebird-patch"
+  "purpose": "clear-preexisting-repository-guard-drift-before-shorebird-patch",
+  "attempt": 2
 }
