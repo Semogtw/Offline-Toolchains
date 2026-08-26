@@ -1,0 +1,61 @@
+name: Update GoAnime patch allowlist
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - triggers/update-goanime-patch-allowlist.json
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout trusted Toolchains source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Validate one-shot request and update allowlist
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          request = json.loads(Path('triggers/update-goanime-patch-allowlist.json').read_text())
+          expected = {
+              'operation': 'update_goanime_patch_allowlist',
+              'candidate': '8aaec2194ac47d01a0c5b69c5c5c6062725983e0',
+          }
+          for key, value in expected.items():
+              if request.get(key) != value:
+                  raise SystemExit(f'{key} mismatch')
+
+          path = Path('.github/workflows/patch-private-goanime-shorebird.yml')
+          text = path.read_text()
+          old = 'lib/app/bootstrap.dart|test/services/megaplay/megaplay_bootstrap_wiring_test.dart|docs/offline_toolchains.md) ;;'
+          new = 'lib/app/bootstrap.dart|test/services/megaplay/megaplay_bootstrap_wiring_test.dart|docs/offline_toolchains.md|docs/technical_status.json|pubspec.yaml) ;;'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one old allowlist marker, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+          path='.github/workflows/patch-private-goanime-shorebird.yml'
+          current_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=main" --jq .sha)"
+          content="$(base64 -w0 "$path")"
+          gh api --method PUT \
+            "repos/${GITHUB_REPOSITORY}/contents/${path}" \
+            -f message='ci(goanime): allow final release drift files in patch promotion' \
+            -f content="$content" \
+            -f sha="$current_sha" \
+            -f branch=main >/tmp/update.json
+          new_commit="$(jq -r '.commit.sha' /tmp/update.json)"
+          test -n "$new_commit" -a "$new_commit" != null
+          echo "Updated patch workflow at $new_commit" >> "$GITHUB_STEP_SUMMARY"
