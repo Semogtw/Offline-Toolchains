@@ -1,0 +1,7 @@
+{
+  "project": "goanime",
+  "operation": "format_megaplay_test",
+  "branch": "fix/megaplay-bootstrap-shorebird-20260826",
+  "expected_ref": "1a9c6ae7d58e788c97ae5cc2add00634d7e98a18",
+  "requested_by": "chatgpt"
+}
