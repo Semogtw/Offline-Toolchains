@@ -626,6 +626,23 @@ jobs:
           auth="$(printf 'x-access-token:%s' "$GOANIME_WRITE_TOKEN" | base64 -w0)"
           git -c http.extraheader="AUTHORIZATION: basic $auth" fetch --no-tags origin "$TARGET_BRANCH"
           test "$(git rev-parse origin/$TARGET_BRANCH)" = "$EXPECTED_BRANCH_SHA"
+          candidate_sha="$(git rev-parse HEAD)"
+          git switch --detach "$EXPECTED_MAIN_SHA"
+          git diff --binary "$EXPECTED_MAIN_SHA..$candidate_sha" -- \
+            ':(exclude).github/workflows/**' \
+            ':(exclude)**/.github/workflows/**' | git apply --index
+          git diff --cached --check -- \
+            ':(exclude)*.md' \
+            ':(exclude)**/*.md'
+          if git diff --cached --quiet; then
+            echo 'Candidate delta is empty; refusing publication.' >&2
+            exit 1
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'fix(manga): publish validated candidate delta' >/dev/null
+          test "$(git rev-parse HEAD^1)" = "$EXPECTED_MAIN_SHA"
+          test -z "$(git diff-tree --no-commit-id --name-only -r HEAD -- '.github/workflows/**')"
           git -c http.extraheader="AUTHORIZATION: basic $auth" push --force-with-lease="refs/heads/$TEMP_BRANCH:" origin "HEAD:refs/heads/$TEMP_BRANCH"
           unset auth GOANIME_WRITE_TOKEN
           echo "Candidate SHA: $(git rev-parse HEAD)"
