@@ -1,7 +1,7 @@
 {
   "project": "goanime",
-  "ref": "50a4dc0b97718c3edf7443580647a038e1570f75",
+  "ref": "ab8bb8cee96f80a09d8b4f4d81116de506d20275",
   "requested_by": "chatgpt",
-  "requested_at": "2026-08-26T13:27:00Z",
-  "purpose": "megaplay-shorebird-release-guard-parity"
+  "requested_at": "2026-08-26T14:00:00Z",
+  "purpose": "megaplay-shorebird-full-ci-regression-fix"
 }
