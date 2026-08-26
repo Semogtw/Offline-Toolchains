@@ -1,0 +1,51 @@
+name: Export Flutter SDK 3.44.1
+
+on:
+  push:
+    branches:
+      - toolchain/export-flutter-sdk-3.44.1-20260826
+    paths:
+      - .github/workflows/export-flutter-sdk-3.44.1.yml
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    name: Package pinned Flutter SDK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Install pinned Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Verify and package SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter --version
+          sdk_root="${FLUTTER_ROOT:-}"
+          if [[ -z "$sdk_root" ]]; then
+            sdk_root="$(dirname "$(dirname "$(readlink -f "$(command -v flutter)")")")"
+          fi
+          test -x "$sdk_root/bin/flutter"
+          test -x "$sdk_root/bin/cache/dart-sdk/bin/dart"
+          mkdir -p "$RUNNER_TEMP/flutter-sdk-transfer"
+          tar -C "$(dirname "$sdk_root")" -I 'zstd -T0 -3' -cf "$RUNNER_TEMP/flutter-sdk.tar.zst" "$(basename "$sdk_root")"
+          split --bytes=400M --numeric-suffixes=0 --suffix-length=3 \
+            "$RUNNER_TEMP/flutter-sdk.tar.zst" \
+            "$RUNNER_TEMP/flutter-sdk-transfer/flutter-sdk.tar.zst.part-"
+          (cd "$RUNNER_TEMP/flutter-sdk-transfer" && sha256sum flutter-sdk.tar.zst.part-* > SHA256SUMS.parts)
+
+      - name: Upload SDK transfer
+        uses: actions/upload-artifact@v7
+        with:
+          name: flutter-sdk-3.44.1-linux-x64
+          path: ${{ runner.temp }}/flutter-sdk-transfer
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
