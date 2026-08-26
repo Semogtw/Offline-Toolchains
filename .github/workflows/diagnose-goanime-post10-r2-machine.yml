@@ -7,14 +7,17 @@ on:
       - 'triggers/diagnose-goanime-post10-r2-machine/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: diagnose-goanime-post10-r2-machine
   cancel-in-progress: true
 
 jobs:
   diagnose:
+    env:
+      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
+      GIT_CONFIG_VALUE_0: 'AUTHORIZATION: bearer ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}'
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -52,7 +55,7 @@ jobs:
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: source
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
           show-progress: false
 
       - name: Reproduce exact R2 hardening snapshot
@@ -124,7 +127,7 @@ jobs:
       - name: Run full machine suite and extract first failure
         working-directory: source
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           REPO: ${{ github.repository }}
         shell: bash
         run: |

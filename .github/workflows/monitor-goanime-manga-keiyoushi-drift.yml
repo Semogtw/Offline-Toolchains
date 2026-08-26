@@ -6,14 +6,17 @@ on:
     - cron: '23 */6 * * *'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-manga-keiyoushi-drift
   cancel-in-progress: false
 
 jobs:
   drift:
+    env:
+      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
+      GIT_CONFIG_VALUE_0: 'AUTHORIZATION: bearer ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}'
     if: github.actor == github.repository_owner || github.event_name == 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -28,7 +31,7 @@ jobs:
         with:
           path: control
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
           show-progress: false
 
       - name: Resolve current manga parity head

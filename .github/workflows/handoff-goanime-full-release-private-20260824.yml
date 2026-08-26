@@ -8,7 +8,7 @@ on:
       - 'triggers/goanime-full-main-private-release/*.request'
 
 permissions:
-  contents: write
+  contents: read
   actions: read
 
 concurrency:

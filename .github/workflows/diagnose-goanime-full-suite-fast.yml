@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-full-suite-fast/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 env:
   FLUTTER_VERSION: '3.44.1'
 
@@ -77,7 +76,7 @@ jobs:
       - name: Persist diagnostic
         if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           TARGET_SHA: ${{ steps.request.outputs.sha }}
           STATE: ${{ job.status }}
         shell: bash

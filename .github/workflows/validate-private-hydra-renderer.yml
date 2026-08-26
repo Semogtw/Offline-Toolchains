@@ -8,8 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: validate-private-hydra-renderer
   cancel-in-progress: true
@@ -156,7 +155,7 @@ jobs:
         if: ${{ always() && steps.request.outputs.expected_sha != '' }}
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           TARGET_SHA: ${{ steps.request.outputs.expected_sha }}
           TARGET_BRANCH: ${{ steps.request.outputs.branch }}
           REQUEST_PATH: ${{ steps.request.outputs.request_path }}

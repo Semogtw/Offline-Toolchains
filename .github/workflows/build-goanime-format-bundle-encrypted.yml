@@ -8,8 +8,7 @@ on:
       - 'triggers/goanime-format-bundle/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-format-bundle-encrypted
   cancel-in-progress: false
@@ -129,7 +128,7 @@ jobs:
       - name: Publish ciphertext receipt
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           CONTROL_SHA: ${{ github.sha }}
           BASE_SHA: ${{ steps.request.outputs.sha }}
           RUN_ID: ${{ github.run_id }}

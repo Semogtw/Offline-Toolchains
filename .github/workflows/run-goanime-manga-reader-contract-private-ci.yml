@@ -8,7 +8,7 @@ on:
       - 'triggers/goanime-manga-reader-contract/*.request'
 
 permissions:
-  contents: write
+  contents: read
   statuses: write
 
 concurrency:
@@ -198,7 +198,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           CONTROL_SHA: ${{ github.sha }}
           REVIEWED_SHA: ${{ steps.request.outputs.sha }}
           JOB_STATUS: ${{ job.status }}

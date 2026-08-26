@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-exact-head/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-exact-head
   cancel-in-progress: true
@@ -138,7 +137,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           GATE_STATUS: ${{ job.status }}
           TARGET_SHA: ${{ steps.request.outputs.sha }}
         run: |

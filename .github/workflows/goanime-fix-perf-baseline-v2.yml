@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-fix-perf-baseline-v2/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-fix-perf-baseline-v2
   cancel-in-progress: false

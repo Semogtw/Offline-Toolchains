@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-manga-committed-apk/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-manga-committed-apk
   cancel-in-progress: false
@@ -193,7 +192,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           CONTROL_SHA: ${{ github.sha }}
           SOURCE_SHA: ${{ steps.request.outputs.sha }}
           JOB_STATUS: ${{ job.status }}

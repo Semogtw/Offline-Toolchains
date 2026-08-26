@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-mangalivre-exact-test/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-manga-control-results
   cancel-in-progress: false
@@ -68,7 +67,7 @@ jobs:
       - name: Publish diagnostic receipt
         if: always() && steps.request.outputs.sha != ''
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           SHA: ${{ steps.request.outputs.sha }}
           CODE: ${{ steps.check.outputs.code }}
         shell: bash

@@ -7,10 +7,13 @@ on:
       - 'triggers/goanime-manga-product-format/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 jobs:
   format:
+    env:
+      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
+      GIT_CONFIG_VALUE_0: 'AUTHORIZATION: bearer ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -37,7 +40,7 @@ jobs:
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -84,7 +87,7 @@ jobs:
       - name: Publish result
         if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           REVIEWED_SHA: ${{ steps.request.outputs.sha }}
           NEW_SHA: ${{ steps.fix.outputs.new_sha }}
           CHANGED: ${{ steps.fix.outputs.changed }}

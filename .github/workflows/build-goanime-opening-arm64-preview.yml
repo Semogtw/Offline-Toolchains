@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-opening-arm64/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-opening-arm64-preview
   cancel-in-progress: true
@@ -117,23 +116,11 @@ jobs:
           printf '%s  %s\n' "$sha" 'GoAnime-Opening-Preview.apk' > build/GoAnime-Opening-Preview.apk.sha256
           printf 'sha256=%s\nsize=%s\n' "$sha" "$size" >> "$GITHUB_OUTPUT"
 
-      - name: Upload compact preview APK
-        if: success()
-        uses: actions/upload-artifact@v7
-        with:
-          name: goanime-opening-preview-${{ steps.request.outputs.sha }}
-          path: |
-            private-source/build/GoAnime-Opening-Preview.apk
-            private-source/build/GoAnime-Opening-Preview.apk.sha256
-          retention-days: 7
-          compression-level: 9
-          if-no-files-found: error
-
       - name: Publish sanitized receipt
         if: always()
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           TARGET_SHA: ${{ steps.request.outputs.sha }}
           STATE: ${{ job.status }}
           APK_SHA: ${{ steps.apk.outputs.sha256 }}

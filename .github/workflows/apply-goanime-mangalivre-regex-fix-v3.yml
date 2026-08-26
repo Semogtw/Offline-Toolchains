@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-mangalivre-regex-fix-v3/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-mangalivre-regex-fix-v3
   cancel-in-progress: false
@@ -57,7 +56,7 @@ jobs:
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
           fetch-depth: 2
-          persist-credentials: true
+          persist-credentials: false
           lfs: false
           submodules: false
           show-progress: false
@@ -150,7 +149,7 @@ jobs:
 
       - name: Publish receipt
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           OLD_SHA: ${{ steps.publish.outputs.old_sha }}
           NEW_SHA: ${{ steps.publish.outputs.new_sha }}
           CONTROL_SHA: ${{ github.sha }}

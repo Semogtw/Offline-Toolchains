@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-final-release-exact/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-final-release-exact
   cancel-in-progress: false
@@ -164,7 +163,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           RESULT: ${{ job.status }}
           TARGET_SHA: ${{ steps.request.outputs.sha }}
           APK_BYTES: ${{ steps.release.outputs.bytes }}

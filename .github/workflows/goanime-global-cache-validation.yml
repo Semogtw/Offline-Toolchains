@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-global-cache-validation/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-global-cache-validation
   cancel-in-progress: true
@@ -216,7 +215,7 @@ jobs:
       - name: Persist public validation report
         if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           SOURCE_SHA: ${{ steps.request.outputs.source_hint }}
           RESULT: ${{ job.status }}
         run: |

@@ -110,12 +110,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Publish sanitized result
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           VALIDATE_RESULT: ${{ needs.validate.result }}
           RUN_ID: ${{ github.run_id }}
           TOOLCHAINS_TRIGGER_SHA: ${{ github.sha }}

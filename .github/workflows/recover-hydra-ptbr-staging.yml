@@ -25,6 +25,9 @@ jobs:
       EXPECTED_XZ_SHA256: 961765f8626b79e7ed07a33c30e5d51e616546ff80a5be81a22182ce4a4ba6eb
       EXPECTED_PATCH_SHA256: 5acac42cb06037776d5583850420aceca903146a52e6c2cfc2bf4a0e32977c8f
 
+      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
+      GIT_CONFIG_VALUE_0: 'AUTHORIZATION: bearer ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}'
     steps:
       - name: Require private repository token
         shell: bash

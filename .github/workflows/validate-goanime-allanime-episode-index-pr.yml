@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-allanime-episode-index-pr/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-allanime-episode-index-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -100,7 +99,7 @@ jobs:
       - name: Publish validated outputs
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           TARGET_SHA: ${{ steps.request.outputs.sha }}
           OUTPUT_BRANCH: ${{ github.head_ref }}
         run: |

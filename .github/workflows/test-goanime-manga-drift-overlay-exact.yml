@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-manga-drift-overlay-exact/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 jobs:
   test:
     if: github.actor == github.repository_owner
@@ -51,7 +50,7 @@ jobs:
       - name: Publish receipt
         if: always() && steps.request.outputs.sha != ''
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           SHA: ${{ steps.request.outputs.sha }}
           CODE: ${{ steps.check.outputs.code }}
         shell: bash

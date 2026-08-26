@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-manga-manifest-policy/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 jobs:
   diagnose:
     if: github.actor == github.repository_owner
@@ -153,7 +152,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           CONTROL_SHA: ${{ github.sha }}
           SOURCE_SHA: ${{ steps.request.outputs.sha }}
           SOURCE_ID: ${{ matrix.source }}

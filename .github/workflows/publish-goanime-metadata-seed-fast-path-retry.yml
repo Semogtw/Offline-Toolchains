@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-metadata-seed-fast-path-retry/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 jobs:
   publish:
     runs-on: ubuntu-24.04
@@ -64,7 +63,7 @@ jobs:
       - name: Publish missing builder with retry
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           TARGET_SHA: ${{ steps.request.outputs.sha }}
         run: |
           set -euo pipefail

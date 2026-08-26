@@ -15,6 +15,10 @@ concurrency:
 
 jobs:
   apply:
+    env:
+      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
+      GIT_CONFIG_VALUE_0: 'AUTHORIZATION: bearer ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -50,7 +54,7 @@ jobs:
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: source
           fetch-depth: 2
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Verify request is still main HEAD
         working-directory: source

@@ -7,14 +7,17 @@ on:
       - 'triggers/goanime-parity-format-mirror/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-parity-format-mirror
   cancel-in-progress: false
 
 jobs:
   mirror:
+    env:
+      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
+      GIT_CONFIG_VALUE_0: 'AUTHORIZATION: bearer ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}'
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -24,7 +27,7 @@ jobs:
         with:
           path: control
           fetch-depth: 2
-          persist-credentials: true
+          persist-credentials: false
       - id: target
         shell: bash
         run: |

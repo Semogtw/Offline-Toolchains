@@ -410,7 +410,7 @@ jobs:
         with:
           name: goanime-provider-scrape-${{ github.run_id }}
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 1
           path: |
             private-source/assets/data/anime_provider_catalogs.json
             private-source/assets/data/anime_provider_catalog_manifest.json

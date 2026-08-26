@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-final-search-scripts-pr/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 jobs:
   validate:
     runs-on: ubuntu-24.04
@@ -118,7 +117,7 @@ jobs:
       - name: Publish validated outputs to PR branch
         id: publish
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           TARGET_SHA: ${{ steps.request.outputs.sha }}
           OUTPUT_BRANCH: ${{ github.head_ref }}
         shell: bash
@@ -145,7 +144,7 @@ jobs:
       - name: Record status
         if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           GATE_STATUS: ${{ job.status }}
           TARGET_SHA: ${{ steps.request.outputs.sha }}
           OUTPUT_PREFIX: ${{ steps.publish.outputs.prefix }}

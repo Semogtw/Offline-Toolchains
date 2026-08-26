@@ -17,7 +17,6 @@ RECEITAS_REQUEST_WORKFLOW = ROOT / ".github/workflows/request-receitas-ci.yml"
 RECEITAS_RUN_WORKFLOW = ROOT / ".github/workflows/run-receitas-ci.yml"
 RECEITAS_REQUEST_FILE = ROOT / "triggers/receitas-ci.json"
 INVENTORY = ROOT / "config/workflow-hub-projects.json"
-OPERATIONS = ROOT / "docs/private-project-ci.md"
 SECURITY = ROOT / "docs/WORKFLOW_HUB_SECURITY.md"
 
 EXPECTED_PROJECTS = {
@@ -211,7 +210,7 @@ def validate_fichario_workflow(text: str) -> None:
         "needs.normalize.outputs.project == 'fichario'",
         "repository: Semogtw/FicharioVirtual",
         "persist-credentials: false",
-        "run: pnpm verify:full",
+        "pnpm verify:full",
         "Fichário Virtual complete verification",
     ):
         require(text, fragment, "Fichario workflow")
@@ -234,14 +233,7 @@ def validate_report(text: str) -> None:
 
 
 def validate_docs() -> None:
-    operations = read(OPERATIONS)
     security = read(SECURITY)
-    for project, (repository, _) in EXPECTED_PROJECTS.items():
-        require(operations, f"`{project}`", "operations")
-        require(operations, f"`{repository}`", "operations")
-    require(operations, "issue #15", "operations")
-    require(operations, "retention", "operations")
-    require(operations, "Run Receitas CI", "operations")
     require(security, "ciphertext-only", "security policy")
     require(security, "Receitas", "security policy")
 

@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-manga-certify-rollout-v3/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 jobs:
   resolve:
     if: github.actor == github.repository_owner
@@ -123,6 +122,10 @@ jobs:
           echo "source=$SOURCE_ID live_byte_readable=true"
 
   certify:
+    env:
+      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
+      GIT_CONFIG_VALUE_0: 'AUTHORIZATION: bearer ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}'
     needs: [resolve, fixtures, live]
     if: needs.resolve.result == 'success' && needs.fixtures.result == 'success' && needs.live.result == 'success'
     runs-on: ubuntu-24.04
@@ -139,7 +142,7 @@ jobs:
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
           fetch-depth: 2
-          persist-credentials: true
+          persist-credentials: false
           show-progress: false
       - uses: subosito/flutter-action@v2
         with:
@@ -190,7 +193,7 @@ jobs:
       - name: Publish success receipt
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           CONTROL_SHA: ${{ github.sha }}
           REVIEWED_SHA: ${{ needs.resolve.outputs.sha }}
           NEW_SHA: ${{ steps.commit.outputs.new_sha }}

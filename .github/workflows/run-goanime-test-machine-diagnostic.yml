@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-test-machine-diagnostic/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-test-machine-diagnostic
   cancel-in-progress: false
@@ -119,7 +118,7 @@ jobs:
       - name: Publish diagnostic receipt
         if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           SHA: ${{ steps.target.outputs.sha }}
           TEST_PATH: ${{ steps.target.outputs.test_path }}
           EXIT_CODE: ${{ steps.test.outputs.exit_code }}

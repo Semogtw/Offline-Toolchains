@@ -16,6 +16,9 @@ jobs:
     timeout-minutes: 60
     env:
       GOANIME_SHA: b4d8ab2af33ffb486a65bcc2b6a7aa57bd39ab23
+      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
+      GIT_CONFIG_VALUE_0: 'AUTHORIZATION: bearer ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}'
     steps:
       - name: Require private repository token
         shell: bash

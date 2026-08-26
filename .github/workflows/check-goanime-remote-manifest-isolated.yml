@@ -7,8 +7,7 @@ on:
       - 'triggers/check-goanime-remote-manifest-isolated/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 jobs:
   check:
     runs-on: ubuntu-24.04
@@ -43,7 +42,7 @@ jobs:
         working-directory: source
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
           flutter pub get >/dev/null

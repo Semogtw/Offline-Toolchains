@@ -8,7 +8,7 @@ on:
       - 'triggers/goanime-manga-current-live-matrix/*.request'
 
 permissions:
-  contents: write
+  contents: read
   statuses: write
 
 concurrency:
@@ -114,7 +114,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           CONTROL_SHA: ${{ github.sha }}
           JOB_STATUS: ${{ job.status }}
           FORMAT_OUTCOME: ${{ steps.format.outcome }}
@@ -244,7 +244,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           CONTROL_SHA: ${{ github.sha }}
           JOB_STATUS: ${{ job.status }}
           SOURCE_ID: ${{ matrix.source }}

@@ -7,8 +7,7 @@ on:
       - 'triggers/diagnose-goanime-post10-focused/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 jobs:
   diagnose:
     runs-on: ubuntu-24.04
@@ -69,7 +68,7 @@ jobs:
       - name: Run changed hardening tests
         working-directory: source
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           REPO: ${{ github.repository }}
         shell: bash
         run: |

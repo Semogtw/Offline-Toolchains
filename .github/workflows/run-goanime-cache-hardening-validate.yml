@@ -93,4 +93,4 @@ jobs:
             goanime/test/tools/provider_catalog_cache_test.dart
             goanime/test/tools/build_mal_provider_availability_cache_test.dart
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 1

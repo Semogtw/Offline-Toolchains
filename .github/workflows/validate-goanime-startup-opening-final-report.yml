@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-startup-opening-final/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-startup-opening-final
   cancel-in-progress: false
@@ -111,7 +110,7 @@ jobs:
       - name: Publish machine-readable result
         if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           REPO: ${{ github.repository }}
           TARGET_SHA: ${{ steps.request.outputs.sha }}
           JOB_STATUS: ${{ job.status }}

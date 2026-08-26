@@ -8,14 +8,17 @@ on:
       - 'triggers/goanime-branch-head/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-private-branch-head
   cancel-in-progress: false
 
 jobs:
   probe:
+    env:
+      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
+      GIT_CONFIG_VALUE_0: 'AUTHORIZATION: bearer ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}'
     if: "${{ github.actor == github.repository_owner && !contains(github.event.head_commit.message, 'manga inventory') }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -76,6 +79,10 @@ jobs:
           git push
 
   manga_inventory:
+    env:
+      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
+      GIT_CONFIG_VALUE_0: 'AUTHORIZATION: bearer ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}'
     if: "${{ github.actor == github.repository_owner && contains(github.event.head_commit.message, 'manga inventory') }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 120

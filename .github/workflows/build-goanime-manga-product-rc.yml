@@ -7,13 +7,21 @@ on:
       - 'triggers/goanime-manga-product-rc/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
+      - name: Checkout public transfer key
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: keys/source-bundles-public.asc
+          sparse-checkout-cone-mode: false
+
       - uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
@@ -242,20 +250,43 @@ jobs:
             test -s assets/data/manga_availability.db
           fi
           sha256sum build/app/outputs/flutter-apk/app-debug.apk > build/app-debug.apk.sha256
+
+      - name: Encrypt debug APK artifact
+        id: package
+        working-directory: private-source
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+          SOURCE_SHA: ${{ steps.revision.outputs.sha }}
+          WORK: ${{ runner.temp }}/goanime-manga-product-rc
+        run: |
+          set -euo pipefail
+          transfer="$WORK/transfer"; gpg_home="$WORK/gpg"
+          rm -rf "$WORK"; mkdir -p "$transfer" "$gpg_home"; chmod 700 "$gpg_home"
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import "$GITHUB_WORKSPACE/control/keys/source-bundles-public.asc" >/dev/null 2>&1
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          apk=build/app/outputs/flutter-apk/app-debug.apk
+          test -s "$apk"
+          encrypted="$transfer/GoAnime-Manga-Product-RC-${SOURCE_SHA:0:12}-debug.apk.gpg"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" --output "$encrypted" --encrypt "$apk"
+          cp build/app-debug.apk.sha256 "$transfer/"
+          cp build/manga-product-rc-proof.json "$transfer/"
+          (cd "$transfer" && sha256sum *.gpg > SHA256SUMS)
+          echo "transfer=$transfer" >> "$GITHUB_OUTPUT"
+
       - uses: actions/upload-artifact@v7
         with:
-          name: goanime-manga-product-rc
-          path: |
-            private-source/build/app/outputs/flutter-apk/app-debug.apk
-            private-source/build/app-debug.apk.sha256
-            private-source/build/manga-product-rc-proof.json
-          retention-days: 7
+          name: goanime-manga-product-rc-encrypted
+          path: ${{ steps.package.outputs.transfer }}
+          retention-days: 1
           compression-level: 0
           if-no-files-found: error
       - name: Publish sanitized receipt
         if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           SHA: ${{ steps.revision.outputs.sha }}
           STATE: ${{ job.status }}
         shell: bash
@@ -269,3 +300,7 @@ jobs:
           encoded="$(printf '%s\n' "$result" | base64 -w0)"
           path="results/goanime-manga-product-rc/$GITHUB_RUN_ID.json"
           gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): record manga product rc $GITHUB_RUN_ID" -f content="$encoded"
+
+      - name: Cleanup private build
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control" "$RUNNER_TEMP/goanime-manga-product-rc"

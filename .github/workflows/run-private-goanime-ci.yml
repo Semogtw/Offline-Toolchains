@@ -247,6 +247,10 @@ jobs:
         run: rm -rf private-source
 
   publish-result:
+    env:
+      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
+      GIT_CONFIG_VALUE_0: 'AUTHORIZATION: bearer ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}'
     name: Publish sanitized full-CI result
     if: always()
     needs:
@@ -255,15 +259,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
-      contents: write
-
+      contents: read
     steps:
       - name: Checkout trusted report target
         uses: actions/checkout@v6
         with:
           ref: main
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Write sanitized result
         shell: bash

@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-premium-startup/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 env:
   FLUTTER_VERSION: '3.44.1'
 
@@ -159,18 +158,10 @@ jobs:
           ! grep -qi 'google_fonts' <<<"$listing"
           sha256sum "$apk"
 
-      - name: Upload validated premium startup APK
-        uses: actions/upload-artifact@v7
-        with:
-          name: goanime-premium-startup-${{ steps.request.outputs.sha }}
-          path: private-source/build/app/outputs/flutter-apk/app-debug.apk
-          if-no-files-found: error
-          retention-days: 7
-
       - name: Publish sanitized receipt
         if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           TARGET_SHA: ${{ steps.request.outputs.sha }}
           STATE: ${{ job.status }}
         shell: bash

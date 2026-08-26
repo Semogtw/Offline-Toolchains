@@ -7,14 +7,17 @@ on:
       - 'triggers/goanime-manga-drift-audit/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-manga-drift-audit
   cancel-in-progress: false
 
 jobs:
   audit:
+    env:
+      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
+      GIT_CONFIG_VALUE_0: 'AUTHORIZATION: bearer ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}'
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -29,7 +32,7 @@ jobs:
         with:
           path: control
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
           show-progress: false
 
       - name: Resolve current GoAnime manga head

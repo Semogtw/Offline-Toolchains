@@ -9,6 +9,15 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
+      - name: Checkout public transfer key
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: keys/source-bundles-public.asc
+          sparse-checkout-cone-mode: false
+
       - uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
@@ -49,8 +58,37 @@ jobs:
           grep -q 'assets/data/manga_availability.db' pubspec.yaml || sed -i '/  assets:/a\    - assets/data/manga_availability.db' pubspec.yaml
           flutter pub get
           flutter build apk --debug --no-pub
+
+      - name: Encrypt debug APK artifact
+        id: package
+        shell: bash
+        env:
+          EXPECTED_FINGERPRINT: 2DE29DC31427CF0A911AB96175679291435059B0
+          SOURCE_SHA: 5dd346f02abf553e758068940b64200de83b9f41
+          WORK: ${{ runner.temp }}/goanime-manga-apk8
+        run: |
+          set -euo pipefail
+          transfer="$WORK/transfer"; gpg_home="$WORK/gpg"
+          rm -rf "$WORK"; mkdir -p "$transfer" "$gpg_home"; chmod 700 "$gpg_home"
+          export GNUPGHOME="$gpg_home"
+          gpg --batch --import "$GITHUB_WORKSPACE/control/keys/source-bundles-public.asc" >/dev/null 2>&1
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          apk=private-source/build/app/outputs/flutter-apk/app-debug.apk
+          test -s "$apk"
+          encrypted="$transfer/GoAnime-Manga-APK8-${SOURCE_SHA:0:12}-debug.apk.gpg"
+          gpg --batch --yes --trust-model always --recipient "$EXPECTED_FINGERPRINT" --output "$encrypted" --encrypt "$apk"
+          (cd "$transfer" && sha256sum *.gpg > SHA256SUMS)
+          echo "transfer=$transfer" >> "$GITHUB_OUTPUT"
+
       - uses: actions/upload-artifact@v7
         with:
-          name: goanime-manga-apk8
-          path: build/app/outputs/flutter-apk/app-debug.apk
-          retention-days: 7
+          name: goanime-manga-apk8-encrypted
+          path: ${{ steps.package.outputs.transfer }}
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Cleanup private build
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control" "$RUNNER_TEMP/goanime-manga-apk8"

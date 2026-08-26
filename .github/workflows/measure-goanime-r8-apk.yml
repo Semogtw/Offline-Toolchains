@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-r8-measure/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-r8-measure
   cancel-in-progress: false
@@ -121,7 +120,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           TARGET_SHA: ${{ steps.request.outputs.sha }}
           BASELINE_SIZE: ${{ steps.baseline.outputs.size }}
           SHRUNK_SIZE: ${{ steps.shrunk.outputs.size }}

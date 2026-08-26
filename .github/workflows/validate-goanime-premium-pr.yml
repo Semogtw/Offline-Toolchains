@@ -149,23 +149,6 @@ jobs:
           ! grep -qi 'google_fonts' <<<"$listing"
           sha256sum "$apk" | tee "$RUNNER_TEMP/goanime-premium-pr-apk.sha256"
 
-      - name: Upload validated APK
-        uses: actions/upload-artifact@v7
-        with:
-          name: goanime-premium-pr-${{ steps.request.outputs.sha }}
-          path: private-source/build/app/outputs/flutter-apk/app-debug.apk
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Upload complete-suite diagnostic
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: goanime-premium-pr-test-log-${{ steps.request.outputs.sha }}
-          path: ${{ runner.temp }}/goanime-premium-pr-full-test.log
-          if-no-files-found: ignore
-          retention-days: 7
-
       - name: Cleanup private source
         if: always()
         run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"

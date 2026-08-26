@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-manga-upstream-exact/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-manga-upstream-exact
   cancel-in-progress: false
@@ -170,7 +169,7 @@ jobs:
       - name: Publish sanitized per-source receipt
         if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           CONTROL_SHA: ${{ github.sha }}
           REVIEWED_SHA: ${{ needs.resolve.outputs.sha }}
           SOURCE_ID: ${{ matrix.source }}
@@ -220,7 +219,7 @@ jobs:
     steps:
       - name: Publish exact-SHA receipt
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           SHA: ${{ needs.resolve.outputs.sha }}
           STATIC: ${{ needs.static.result }}
           MATRIX_LIVE: ${{ needs.live.result }}

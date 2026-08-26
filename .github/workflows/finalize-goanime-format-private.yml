@@ -253,14 +253,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
-      contents: write
-
+      contents: read
     steps:
       - name: Publish sanitized GoAnime formatter result
         continue-on-error: true
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           FORMAT_RESULT: ${{ needs.format.result }}
           TOOLCHAINS_TRIGGER_SHA: ${{ github.sha }}
           RUN_ID: ${{ github.run_id }}
