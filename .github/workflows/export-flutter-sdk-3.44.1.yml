@@ -1,4 +1,4 @@
-name: Export GoAnime pub cache
+name: Export pinned PDFium test asset
 
 on:
   push:
@@ -10,81 +10,29 @@ on:
 permissions:
   contents: read
 
-env:
-  GOANIME_REF: 681f6145ee60e5b07e4e3204f3d88a6bc2007feb
-  FLUTTER_VERSION: 3.44.1
-
 jobs:
   export:
-    name: Resolve and package GoAnime pub cache
+    name: Download pinned PDFium Linux x64 asset
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
-      - name: Require private repository token
-        shell: bash
-        env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
-
-      - name: Checkout exact GoAnime source read-only
-        uses: actions/checkout@v6
-        with:
-          repository: Semogtw/goanime-mobile
-          ref: ${{ env.GOANIME_REF }}
-          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-          path: private-source
-          fetch-depth: 1
-          persist-credentials: false
-          lfs: false
-          submodules: false
-          show-progress: false
-
-      - name: Install pinned Flutter
-        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
-        with:
-          channel: stable
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
-
-      - name: Resolve exact dependencies
-        working-directory: private-source
+      - name: Download exact PDFium release used by pdfium_dart 0.2.5
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$GOANIME_REF"
-          flutter config --no-analytics
-          flutter pub get
-          (cd packages/goanime_core && dart pub get)
+          curl --fail --location --retry 3 \
+            --output "$RUNNER_TEMP/pdfium-linux-x64.tgz" \
+            'https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F7811/pdfium-linux-x64.tgz'
+          tar -tzf "$RUNNER_TEMP/pdfium-linux-x64.tgz" | grep -Fx 'lib/libpdfium.so'
+          sha256sum "$RUNNER_TEMP/pdfium-linux-x64.tgz" > "$RUNNER_TEMP/SHA256SUMS"
 
-      - name: Package pub cache in connector-sized chunks
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -d "$HOME/.pub-cache"
-          mkdir -p "$RUNNER_TEMP/pub-cache-transfer"
-          tar -C "$HOME" -I 'zstd -T0 -3' -cf "$RUNNER_TEMP/pub-cache.tar.zst" .pub-cache
-          split --bytes=350M --numeric-suffixes=0 --suffix-length=3 \
-            "$RUNNER_TEMP/pub-cache.tar.zst" \
-            "$RUNNER_TEMP/pub-cache-transfer/pub-cache.tar.zst.part-"
-          (cd "$RUNNER_TEMP/pub-cache-transfer" && sha256sum pub-cache.tar.zst.part-* > SHA256SUMS.parts)
-          count="$(find "$RUNNER_TEMP/pub-cache-transfer" -maxdepth 1 -name 'pub-cache.tar.zst.part-*' | wc -l)"
-          test "$count" -ge 1
-          test "$count" -le 8
-          echo "PUB_CACHE_PARTS=$count"
-          du -sh "$HOME/.pub-cache" "$RUNNER_TEMP/pub-cache.tar.zst"
-
-      - name: Upload pub cache chunks
+      - name: Upload PDFium test asset
         uses: actions/upload-artifact@v7
         with:
-          name: goanime-pub-cache-3.44.1
+          name: pdfium-chromium-7811-linux-x64
           path: |
-            ${{ runner.temp }}/pub-cache-transfer/pub-cache.tar.zst.part-*
-            ${{ runner.temp }}/pub-cache-transfer/SHA256SUMS.parts
+            ${{ runner.temp }}/pdfium-linux-x64.tgz
+            ${{ runner.temp }}/SHA256SUMS
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
-
-      - name: Remove private checkout
-        if: always()
-        shell: bash
-        run: rm -rf private-source
