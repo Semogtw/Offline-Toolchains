@@ -2,11 +2,6 @@ name: Build encrypted private source bundle
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - triggers/private-source-bundle.json
     inputs:
       project:
         description: Private repository to export
