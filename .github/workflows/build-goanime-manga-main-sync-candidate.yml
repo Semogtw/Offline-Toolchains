@@ -619,6 +619,7 @@ jobs:
         env:
           GOANIME_WRITE_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           EXPECTED_BRANCH_SHA: ${{ steps.request.outputs.branch_sha }}
+          EXPECTED_MAIN_SHA: ${{ steps.request.outputs.main_sha }}
           TARGET_BRANCH: ${{ steps.request.outputs.branch }}
           TEMP_BRANCH: ${{ steps.request.outputs.temp_branch }}
         run: |
