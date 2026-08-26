@@ -1,0 +1,320 @@
+name: Publish GoAnime MegaPlay Shorebird 1.26.1
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - triggers/publish-goanime-megaplay-shorebird-1.26.1.json
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: publish-goanime-megaplay-shorebird-1.26.1
+  cancel-in-progress: false
+
+env:
+  GOANIME_REPOSITORY: Semogtw/goanime-mobile
+  SOURCE_REF: 87aa609a71f3ffade986fc9c99336cc6a34e9169
+  EXPECTED_MAIN_REF: 90e5204660189a258a0bf6a0043fbca01472ae67
+  RELEASE_VERSION: 1.26.1+32
+  FLUTTER_VERSION: 3.44.1
+  FLUTTER_CHANNEL: stable
+  FULL_CI_RUN_ID: '32957398113'
+  FULL_CI_HEAD_SHA: c890af0def933a97b492af421dc941459f1b9d96
+  FULL_CI_REQUEST_PATH: triggers/goanime-full-ci/megaplay-bootstrap-cc234599.request
+  REQUIRED_CHECK_CONTEXT: Project health, analysis and principal tests
+  REQUIRED_CHECK_APP_ID: '15368'
+  FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+  FIREBASE_WEB_API_KEY: ${{ secrets.FIREBASE_WEB_API_KEY }}
+  UPDATE_MANIFEST_URL: ${{ secrets.UPDATE_MANIFEST_URL }}
+  UPDATE_APPCAST_URL: ${{ secrets.UPDATE_APPCAST_URL }}
+  UPDATE_MANIFEST_PUBLIC_KEY_ID: ${{ secrets.UPDATE_MANIFEST_PUBLIC_KEY_ID }}
+  UPDATE_MANIFEST_PUBLIC_KEY_B64: ${{ secrets.UPDATE_MANIFEST_PUBLIC_KEY_B64 }}
+  ANIME_METADATA_SEED_MANIFEST_URL: ${{ secrets.ANIME_METADATA_SEED_MANIFEST_URL }}
+  RUNTIME_DATABASE_MANIFEST_URL: ${{ secrets.RUNTIME_DATABASE_MANIFEST_URL }}
+  SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_TOKEN }}
+
+jobs:
+  promote:
+    name: Verify full CI and promote exact source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout trusted Toolchains request
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Validate one-shot publication request
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          request = json.loads(Path('triggers/publish-goanime-megaplay-shorebird-1.26.1.json').read_text())
+          expected = {
+              'project': 'goanime',
+              'operation': 'publish_megaplay_shorebird_patch',
+              'ref': '87aa609a71f3ffade986fc9c99336cc6a34e9169',
+              'release_version': '1.26.1+32',
+              'full_ci_run_id': 32957398113,
+              'full_ci_head_sha': 'c890af0def933a97b492af421dc941459f1b9d96',
+          }
+          for key, value in expected.items():
+              if request.get(key) != value:
+                  raise SystemExit(f'{key} mismatch: {request.get(key)!r} != {value!r}')
+          PY
+
+      - name: Verify exact successful Toolchains full CI receipt
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${FULL_CI_RUN_ID}")"
+          test "$(jq -r .head_sha <<<"$run_json")" = "$FULL_CI_HEAD_SHA"
+          test "$(jq -r .path <<<"$run_json")" = '.github/workflows/run-private-goanime-ci.yml'
+          test "$(jq -r .event <<<"$run_json")" = 'push'
+          test "$(jq -r .status <<<"$run_json")" = 'completed'
+          test "$(jq -r .conclusion <<<"$run_json")" = 'success'
+
+          request_content="$(gh api "repos/${GITHUB_REPOSITORY}/contents/${FULL_CI_REQUEST_PATH}?ref=${FULL_CI_HEAD_SHA}" --jq .content | base64 -d | tr -d '\r\n')"
+          test "$request_content" = "$SOURCE_REF" || {
+            echo "::error::Full CI receipt was for $request_content, expected $SOURCE_REF"
+            exit 1
+          }
+
+      - name: Require private release token
+        shell: bash
+        env:
+          GOANIME_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$GOANIME_TOKEN"
+
+      - name: Checkout exact validated GoAnime source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.SOURCE_REF }}
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify exact source, main base and delta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd private-source
+          test "$(git rev-parse HEAD)" = "$SOURCE_REF"
+
+          main_ref="$(gh api "repos/${GOANIME_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+          test "$main_ref" = "$EXPECTED_MAIN_REF" || {
+            echo "::error::GoAnime main moved to $main_ref; expected $EXPECTED_MAIN_REF"
+            exit 1
+          }
+          git merge-base --is-ancestor "$EXPECTED_MAIN_REF" "$SOURCE_REF"
+
+          mapfile -t changed < <(gh api "repos/${GOANIME_REPOSITORY}/compare/${EXPECTED_MAIN_REF}...${SOURCE_REF}" --jq '.files[].filename' | sort)
+          expected=(
+            docs/offline_toolchains.md
+            docs/quality_scorecard.json
+            docs/technical_status.json
+            lib/app/bootstrap.dart
+            pubspec.yaml
+            test/services/megaplay/megaplay_bootstrap_wiring_test.dart
+          )
+          test "${#changed[@]}" -eq "${#expected[@]}" || {
+            echo "::error::Unexpected candidate file count"
+            printf 'actual: %s\n' "${changed[@]}"
+            exit 1
+          }
+          for i in "${!expected[@]}"; do
+            test "${changed[$i]}" = "${expected[$i]}" || {
+              echo "::error::Unexpected candidate delta: ${changed[$i]} != ${expected[$i]}"
+              exit 1
+            }
+          done
+          grep -Fq 'version: 1.26.1+32' pubspec.yaml
+          grep -Fq '"appVersion": "1.26.1+32"' docs/technical_status.json
+          python3 tools/generate_quality_scorecard.py --check
+
+      - name: Promote main with required-check binding restored fail-closed
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          endpoint="repos/${GOANIME_REPOSITORY}/branches/main/protection/required_status_checks"
+          original=/tmp/original-required-checks.json
+          restore=/tmp/restore-required-checks.json
+
+          gh api "$endpoint" > "$original"
+          jq '{strict,contexts,checks}' "$original" > "$restore"
+
+          test "$(jq -r .strict "$original")" = 'true'
+          test "$(jq '.checks | length' "$original")" -eq 1
+          test "$(jq -r '.checks[0].context' "$original")" = "$REQUIRED_CHECK_CONTEXT"
+          test "$(jq -r '.checks[0].app_id' "$original")" = "$REQUIRED_CHECK_APP_ID"
+
+          restore_protection() {
+            if [ -s "$restore" ]; then
+              gh api --method PATCH "$endpoint" --input "$restore" >/dev/null
+            fi
+          }
+          trap 'restore_protection' EXIT
+
+          relaxed="$(jq -n --arg context "$REQUIRED_CHECK_CONTEXT" '{strict:true,contexts:[],checks:[{context:$context,app_id:-1}]}')"
+          printf '%s' "$relaxed" | gh api --method PATCH "$endpoint" --input - >/dev/null
+
+          gh api --method POST "repos/${GOANIME_REPOSITORY}/statuses/${SOURCE_REF}" \
+            -f state=success \
+            -f context="$REQUIRED_CHECK_CONTEXT" \
+            -f description='Validated by exact Offline-Toolchains full CI receipt' \
+            -f target_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${FULL_CI_RUN_ID}" >/dev/null
+
+          gh api --method PATCH "repos/${GOANIME_REPOSITORY}/git/refs/heads/main" \
+            -f sha="$SOURCE_REF" -F force=false >/dev/null
+
+          test "$(gh api "repos/${GOANIME_REPOSITORY}/git/ref/heads/main" --jq .object.sha)" = "$SOURCE_REF"
+
+          restore_protection
+          trap - EXIT
+
+          current="$(gh api "$endpoint" | jq '{strict,contexts,checks}')"
+          expected="$(cat "$restore")"
+          test "$(jq -S -c . <<<"$current")" = "$(jq -S -c . <<<"$expected")" || {
+            echo "::error::Required status-check protection was not restored exactly"
+            exit 1
+          }
+
+      - name: Verify promotion did not launch GoAnime Actions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          for _ in 1 2 3; do
+            count="$(gh api "repos/${GOANIME_REPOSITORY}/actions/runs?head_sha=${SOURCE_REF}&per_page=1" --jq .total_count)"
+            test "$count" -eq 0 || {
+              echo "::error::GoAnime Actions run detected for promoted SHA: $count"
+              exit 1
+            }
+            sleep 3
+          done
+
+  patch:
+    name: Shorebird patch (${{ matrix.platform }})
+    needs: promote
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: android
+            os: ubuntu-24.04
+          - platform: windows
+            os: windows-latest
+          - platform: linux
+            os: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - name: Checkout exact promoted GoAnime source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.SOURCE_REF }}
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Enable Git long paths
+        if: ${{ matrix.platform == 'windows' }}
+        shell: pwsh
+        run: git config --system core.longpaths true
+
+      - name: Set up Shorebird
+        uses: shorebirdtech/setup-shorebird@4dd9d7dc2d7930bfeadb053b6e94b5110779d1e5 # v1
+        with:
+          cache: true
+
+      - name: Install Linux build dependencies
+        if: ${{ matrix.platform == 'linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake curl file libgtk-3-dev libjsoncpp-dev liblzma-dev libmpv-dev \
+            libsecret-1-0 libsecret-1-dev libsoup-3.0-dev libwebkit2gtk-4.1-dev \
+            gstreamer1.0-libav gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
+            lld llvm ninja-build pkg-config
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Resolve dependencies
+        shell: bash
+        run: flutter pub get --enforce-lockfile
+
+      - name: Validate release identity and runtime configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_REF"
+          test -f shorebird.yaml
+          test "$(awk '/^version:/ {print $2; exit}' pubspec.yaml)" = "$RELEASE_VERSION"
+          test -n "${SHOREBIRD_TOKEN:-}"
+          test -n "${FIREBASE_PROJECT_ID:-}"
+          test -n "${FIREBASE_WEB_API_KEY:-}"
+          test -n "${UPDATE_MANIFEST_URL:-}"
+          test -n "${UPDATE_APPCAST_URL:-}"
+          test -n "${UPDATE_MANIFEST_PUBLIC_KEY_ID:-}"
+          test -n "${UPDATE_MANIFEST_PUBLIC_KEY_B64:-}"
+          if [ -z "${RUNTIME_DATABASE_MANIFEST_URL:-}" ]; then
+            case "$UPDATE_MANIFEST_URL" in
+              */latest/update.json)
+                echo "RUNTIME_DATABASE_MANIFEST_URL=${UPDATE_MANIFEST_URL%/update.json}/runtime_database_manifest.json" >> "$GITHUB_ENV"
+                ;;
+              *)
+                echo "::error::RUNTIME_DATABASE_MANIFEST_URL is empty and cannot be derived"
+                exit 1
+                ;;
+            esac
+          fi
+
+      - name: Publish Shorebird patch
+        shell: bash
+        env:
+          PATCH_PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          shorebird patch \
+            --platforms="$PATCH_PLATFORM" \
+            --flutter-version="$FLUTTER_VERSION" \
+            --release-version="$RELEASE_VERSION" \
+            --dart-define="FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID" \
+            --dart-define="FIREBASE_WEB_API_KEY=$FIREBASE_WEB_API_KEY" \
+            --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL" \
+            --dart-define="UPDATE_APPCAST_URL=$UPDATE_APPCAST_URL" \
+            --dart-define="UPDATE_MANIFEST_PUBLIC_KEY_ID=$UPDATE_MANIFEST_PUBLIC_KEY_ID" \
+            --dart-define="UPDATE_MANIFEST_PUBLIC_KEY_B64=$UPDATE_MANIFEST_PUBLIC_KEY_B64" \
+            --dart-define=UPDATE_MANIFEST_SIGNATURE_REQUIRED=true \
+            --dart-define="ANIME_METADATA_SEED_MANIFEST_URL=$ANIME_METADATA_SEED_MANIFEST_URL" \
+            --dart-define="RUNTIME_DATABASE_MANIFEST_URL=$RUNTIME_DATABASE_MANIFEST_URL"
