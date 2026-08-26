@@ -1,0 +1,148 @@
+name: Direct GoAnime Shorebird patch
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - triggers/goanime-shorebird-direct/*.request
+
+permissions:
+  contents: read
+
+concurrency:
+  group: direct-goanime-shorebird-1-26-1
+  cancel-in-progress: false
+
+env:
+  GOANIME_REPOSITORY: Semogtw/goanime-mobile
+  GOANIME_REF: 0cc0871deaa5daa58d2c2a16434bd3ba699ad5b1
+  RELEASE_VERSION: 1.26.1+32
+  FLUTTER_CHANNEL: stable
+  FLUTTER_VERSION: 3.44.1
+  FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+  FIREBASE_WEB_API_KEY: ${{ secrets.FIREBASE_WEB_API_KEY }}
+  UPDATE_MANIFEST_URL: ${{ secrets.UPDATE_MANIFEST_URL }}
+  UPDATE_APPCAST_URL: ${{ secrets.UPDATE_APPCAST_URL }}
+  UPDATE_MANIFEST_PUBLIC_KEY_ID: ${{ secrets.UPDATE_MANIFEST_PUBLIC_KEY_ID }}
+  UPDATE_MANIFEST_PUBLIC_KEY_B64: ${{ secrets.UPDATE_MANIFEST_PUBLIC_KEY_B64 }}
+  ANIME_METADATA_SEED_MANIFEST_URL: ${{ secrets.ANIME_METADATA_SEED_MANIFEST_URL }}
+  RUNTIME_DATABASE_MANIFEST_URL: ${{ secrets.RUNTIME_DATABASE_MANIFEST_URL }}
+  SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_TOKEN }}
+
+jobs:
+  patch:
+    name: Shorebird patch (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: android
+            os: ubuntu-24.04
+          - platform: windows
+            os: windows-latest
+          - platform: linux
+            os: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+
+    steps:
+      - name: Require release credentials
+        shell: bash
+        env:
+          GOANIME_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$GOANIME_TOKEN"
+          test -n "$SHOREBIRD_TOKEN"
+
+      - name: Checkout exact GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.GOANIME_REPOSITORY }}
+          ref: ${{ env.GOANIME_REF }}
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Set up Shorebird
+        uses: shorebirdtech/setup-shorebird@v1
+        with:
+          cache: true
+
+      - name: Enable Git long paths
+        if: ${{ matrix.platform == 'windows' }}
+        shell: pwsh
+        run: git config --system core.longpaths true
+
+      - name: Install Linux build dependencies
+        if: ${{ matrix.platform == 'linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake curl file libgtk-3-dev libjsoncpp-dev liblzma-dev libmpv-dev \
+            libsecret-1-0 libsecret-1-dev \
+            libsoup-3.0-dev libwebkit2gtk-4.1-dev \
+            gstreamer1.0-libav gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
+            lld llvm ninja-build pkg-config
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Resolve dependencies
+        shell: bash
+        run: flutter pub get --enforce-lockfile
+
+      - name: Validate patch configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f shorebird.yaml
+          test -n "$FIREBASE_PROJECT_ID"
+          test -n "$FIREBASE_WEB_API_KEY"
+          test -n "$UPDATE_MANIFEST_URL"
+          test -n "$UPDATE_APPCAST_URL"
+          test -n "$UPDATE_MANIFEST_PUBLIC_KEY_ID"
+          test -n "$UPDATE_MANIFEST_PUBLIC_KEY_B64"
+          if [ -z "${RUNTIME_DATABASE_MANIFEST_URL:-}" ]; then
+            case "$UPDATE_MANIFEST_URL" in
+              */latest/update.json)
+                echo "RUNTIME_DATABASE_MANIFEST_URL=${UPDATE_MANIFEST_URL%/update.json}/runtime_database_manifest.json" >> "$GITHUB_ENV"
+                ;;
+              *)
+                echo "::error::RUNTIME_DATABASE_MANIFEST_URL is empty and cannot be derived."
+                exit 1
+                ;;
+            esac
+          fi
+
+      - name: Publish Shorebird patch
+        shell: bash
+        env:
+          PATCH_PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          shorebird patch \
+            --platforms="$PATCH_PLATFORM" \
+            --flutter-version="$FLUTTER_VERSION" \
+            --release-version="$RELEASE_VERSION" \
+            --dart-define="FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID" \
+            --dart-define="FIREBASE_WEB_API_KEY=$FIREBASE_WEB_API_KEY" \
+            --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL" \
+            --dart-define="UPDATE_APPCAST_URL=$UPDATE_APPCAST_URL" \
+            --dart-define="UPDATE_MANIFEST_PUBLIC_KEY_ID=$UPDATE_MANIFEST_PUBLIC_KEY_ID" \
+            --dart-define="UPDATE_MANIFEST_PUBLIC_KEY_B64=$UPDATE_MANIFEST_PUBLIC_KEY_B64" \
+            --dart-define=UPDATE_MANIFEST_SIGNATURE_REQUIRED=true \
+            --dart-define="ANIME_METADATA_SEED_MANIFEST_URL=$ANIME_METADATA_SEED_MANIFEST_URL" \
+            --dart-define="RUNTIME_DATABASE_MANIFEST_URL=$RUNTIME_DATABASE_MANIFEST_URL"
