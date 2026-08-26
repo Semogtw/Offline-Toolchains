@@ -36,16 +36,62 @@ jobs:
           test -x "$sdk_root/bin/cache/dart-sdk/bin/dart"
           mkdir -p "$RUNNER_TEMP/flutter-sdk-transfer"
           tar -C "$(dirname "$sdk_root")" -I 'zstd -T0 -3' -cf "$RUNNER_TEMP/flutter-sdk.tar.zst" "$(basename "$sdk_root")"
-          split --bytes=400M --numeric-suffixes=0 --suffix-length=3 \
+          split --bytes=350M --numeric-suffixes=0 --suffix-length=3 \
             "$RUNNER_TEMP/flutter-sdk.tar.zst" \
             "$RUNNER_TEMP/flutter-sdk-transfer/flutter-sdk.tar.zst.part-"
           (cd "$RUNNER_TEMP/flutter-sdk-transfer" && sha256sum flutter-sdk.tar.zst.part-* > SHA256SUMS.parts)
+          test "$(find "$RUNNER_TEMP/flutter-sdk-transfer" -maxdepth 1 -name 'flutter-sdk.tar.zst.part-*' | wc -l)" -eq 5
 
-      - name: Upload SDK transfer
+      - name: Upload SDK chunk 000
         uses: actions/upload-artifact@v7
         with:
-          name: flutter-sdk-3.44.1-linux-x64
-          path: ${{ runner.temp }}/flutter-sdk-transfer
+          name: flutter-sdk-3.44.1-part-000
+          path: ${{ runner.temp }}/flutter-sdk-transfer/flutter-sdk.tar.zst.part-000
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload SDK chunk 001
+        uses: actions/upload-artifact@v7
+        with:
+          name: flutter-sdk-3.44.1-part-001
+          path: ${{ runner.temp }}/flutter-sdk-transfer/flutter-sdk.tar.zst.part-001
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload SDK chunk 002
+        uses: actions/upload-artifact@v7
+        with:
+          name: flutter-sdk-3.44.1-part-002
+          path: ${{ runner.temp }}/flutter-sdk-transfer/flutter-sdk.tar.zst.part-002
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload SDK chunk 003
+        uses: actions/upload-artifact@v7
+        with:
+          name: flutter-sdk-3.44.1-part-003
+          path: ${{ runner.temp }}/flutter-sdk-transfer/flutter-sdk.tar.zst.part-003
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload SDK chunk 004
+        uses: actions/upload-artifact@v7
+        with:
+          name: flutter-sdk-3.44.1-part-004
+          path: ${{ runner.temp }}/flutter-sdk-transfer/flutter-sdk.tar.zst.part-004
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload SDK checksums
+        uses: actions/upload-artifact@v7
+        with:
+          name: flutter-sdk-3.44.1-checksums
+          path: ${{ runner.temp }}/flutter-sdk-transfer/SHA256SUMS.parts
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
