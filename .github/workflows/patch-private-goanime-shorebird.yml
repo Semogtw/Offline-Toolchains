@@ -74,7 +74,7 @@ jobs:
           print('should_patch=true')
           print(f'source_ref={source_ref}')
           print(f'release_version={release_version}')
-          print(f'platforms={','.join(requested)}')
+          print('platforms=' + ','.join(requested))
           PY
 
   promote:
@@ -102,7 +102,7 @@ jobs:
           ref: ${{ needs.request.outputs.source_ref }}
           token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Verify exact source and safe delta
         shell: bash
@@ -116,7 +116,10 @@ jobs:
             exit 1
           }
 
-          git fetch origin main
+          git rev-parse --verify origin/main >/dev/null || {
+            echo "::error::origin/main was not fetched with the validated source."
+            exit 1
+          }
           git merge-base --is-ancestor origin/main HEAD || {
             echo "::error::Validated source is not a fast-forward of current GoAnime main."
             exit 1
@@ -137,11 +140,18 @@ jobs:
             esac
           done
 
-      - name: Promote without starting GoAnime CI
+      - name: Promote without persisting Git credentials
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          SOURCE_REF: ${{ needs.request.outputs.source_ref }}
         run: |
           set -euo pipefail
-          git push origin HEAD:refs/heads/main
+          gh api \
+            --method PATCH \
+            "repos/${GOANIME_REPOSITORY}/git/refs/heads/main" \
+            -f sha="$SOURCE_REF" \
+            -F force=false >/dev/null
 
   patch:
     name: Shorebird patch (${{ matrix.platform }})
