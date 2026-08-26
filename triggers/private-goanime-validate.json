@@ -1,7 +1,7 @@
 {
   "project": "goanime",
-  "ref": "ab8bb8cee96f80a09d8b4f4d81116de506d20275",
+  "ref": "1f70911dd50c0002634b7f6512cbeae0aa58d279",
   "requested_by": "chatgpt",
-  "requested_at": "2026-08-26T14:00:00Z",
-  "purpose": "megaplay-shorebird-full-ci-regression-fix"
+  "requested_at": "2026-08-26T14:05:00Z",
+  "purpose": "megaplay-shorebird-scheduler-syntax-fix"
 }
