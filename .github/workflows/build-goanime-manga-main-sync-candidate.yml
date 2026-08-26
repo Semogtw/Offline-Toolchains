@@ -359,6 +359,161 @@ jobs:
               raise SystemExit('anime provider search: union anchors missing')
           search.write_text(search_text, encoding='utf-8')
 
+          # Repair the small analyzer drift introduced when the branch and
+          # current main were merged. Keep the surrounding branch/main
+          # behavior intact and make every transformation fail closed when
+          # its expected source shape changes.
+          history = Path('lib/screens/history_screen.dart')
+          replace_once(
+              str(history),
+              '    unawaited(_loadHistory());',
+              '''    _historyController = HistorySnapshotController<HistoryAnime>(
+                dataSource: AnimeHistorySnapshotAdapter(_historyService),
+              )..addListener(_onHistoryChanged);
+              unawaited(_historyController.loadInitial());''',
+              'history snapshot controller initialization',
+          )
+
+          weekly = Path('lib/services/weekly_schedule_service.dart')
+          replace_once(
+              str(weekly),
+              "import 'jikan_http_client_registry.dart';\nimport 'broadcast_schedule_cache.dart';\nimport 'jikan_http_client_registry.dart';",
+              "import 'jikan_http_client_registry.dart';\nimport 'broadcast_schedule_cache.dart';",
+              'weekly schedule duplicate import',
+          )
+
+          sidebar = Path('lib/widgets/navigation/goanime_desktop_sidebar.dart')
+          sidebar_text = sidebar.read_text(encoding='utf-8')
+          if '    final mediaAction = mediaSwitchAction;\n\n' not in sidebar_text:
+              raise SystemExit('desktop sidebar: stale media local missing')
+          sidebar_text = sidebar_text.replace(
+              '    final mediaAction = mediaSwitchAction;\n\n',
+              '',
+              1,
+          )
+          destination_start = sidebar_text.find(
+              '    Widget destinationItem(GoAnimeNavigationDestination destination) {'
+          )
+          destination_end = sidebar_text.find('    return AnimatedContainer(', destination_start)
+          if destination_start < 0 or destination_end < 0:
+              raise SystemExit('desktop sidebar: stale destination helper missing')
+          sidebar_text = sidebar_text[:destination_start] + sidebar_text[destination_end:]
+          old_destination_loop = (
+              'for (var index = 0; index < destinations.length; index++)'
+          )
+          if old_destination_loop not in sidebar_text:
+              raise SystemExit('desktop sidebar: destination loop anchor missing')
+          sidebar_text = sidebar_text.replace(
+              old_destination_loop,
+              'for (var index = 0; index < destinations.length - 1; index++)',
+              1,
+          )
+          sidebar_insert = (
+              '                if (mediaSwitchAction != null)\n'
+              '                  Padding(\n'
+              '                    padding: const EdgeInsets.only(bottom: 6),\n'
+              '                    child: _DesktopSidebarItem(\n'
+              '                      icon: mediaSwitchAction!.icon,\n'
+              '                      label: mediaSwitchAction!.label,\n'
+              '                      compact: compact,\n'
+              '                      traversalOrder: NumericFocusOrder(\n'
+              '                        (destinations.length - 1).toDouble(),\n'
+              '                      ),\n'
+              '                      onPressed: mediaSwitchAction!.onPressed,\n'
+              '                    ),\n'
+              '                  ),\n'
+              '                Padding(\n'
+              '                  padding: const EdgeInsets.only(bottom: 6),\n'
+              '                  child: _DesktopSidebarItem(\n'
+              '                    icon: currentIndex == destinations[destinations.length - 1].index\n'
+              '                        ? destinations[destinations.length - 1].selectedIcon\n'
+              '                        : destinations[destinations.length - 1].icon,\n'
+              '                    label: destinations[destinations.length - 1].label,\n'
+              '                    selected: currentIndex == destinations[destinations.length - 1].index,\n'
+              '                    compact: compact,\n'
+              '                    traversalOrder: NumericFocusOrder(\n'
+              '                      destinations.length.toDouble(),\n'
+              '                    ),\n'
+              '                    onPressed: () =>\n'
+              '                        onSelected(destinations[destinations.length - 1].index),\n'
+              '                  ),\n'
+              '                ),\n'
+              '                const SizedBox(height: GoAnimeSpacing.sm),\n'
+          )
+          sidebar_anchor = '                const SizedBox(height: GoAnimeSpacing.sm),\n'
+          if sidebar_anchor not in sidebar_text:
+              raise SystemExit('desktop sidebar: media insertion anchor missing')
+          sidebar_text = sidebar_text.replace(sidebar_anchor, sidebar_insert, 1)
+          sidebar_text = sidebar_text.replace(
+              '(destinations.length + index).toDouble(),',
+              '(destinations.length + 1 + index).toDouble(),',
+              1,
+          )
+          sidebar_text = sidebar_text.replace(
+              '(destinations.length + secondaryActions.length).toDouble(),',
+              '(destinations.length + 1 + secondaryActions.length).toDouble(),',
+              1,
+          )
+          if 'mediaSwitchAction!.onPressed' not in sidebar_text:
+              raise SystemExit('desktop sidebar: media action repair missing')
+          sidebar.write_text(sidebar_text, encoding='utf-8')
+
+          health_guard = Path('test/architecture/provider_health_summary_guard_test.dart')
+          health_guard_old = (
+              "    final coreHealth = File(\n"
+              "      'packages/goanime_core/lib/src/media/media_provider_health.dart',\n"
+              "    ).readAsStringSync();\n\n"
+          )
+          replace_once(
+              str(health_guard),
+              health_guard_old,
+              '',
+              'provider health unused compatibility read',
+          )
+
+          home_contract = Path('test/screens/home_bootstrap_single_flight_contract_test.dart')
+          home_contract_old = (
+              "      final adapter = File(\n"
+              "        'lib/services/media/anime_home_snapshot_adapter.dart',\n"
+              "      ).readAsStringSync();\n\n"
+          )
+          replace_once(
+              str(home_contract),
+              home_contract_old,
+              '',
+              'home contract unused adapter read',
+          )
+
+          episode_health = Path('test/services/source/episode_aggregator_health_routing_test.dart')
+          episode_health_text = episode_health.read_text(encoding='utf-8')
+          ranker_import = (
+              "import 'package:goanime/services/providers/provider_health_ranker.dart';\n"
+          )
+          if episode_health_text.count(ranker_import) > 1:
+              episode_health_text = episode_health_text.replace(ranker_import, '', 1)
+          if episode_health_text.count(ranker_import) != 1:
+              raise SystemExit('episode health: provider ranker import contract missing')
+          episode_health.write_text(episode_health_text, encoding='utf-8')
+
+          replace_once(
+              'lib/services/playback_provider_enrichment_service.dart',
+              'onError: (Object _, StackTrace __) => finish(),',
+              'onError: (Object _, StackTrace _) => finish(),',
+              'playback enrichment analyzer cleanup',
+          )
+          replace_once(
+              'lib/services/video_playback_resolver.dart',
+              'onError: (Object _, StackTrace __) => providers,',
+              'onError: (Object _, StackTrace _) => providers,',
+              'video resolver analyzer cleanup',
+          )
+          replace_once(
+              'test/services/video_playback_resolver_late_provider_test.dart',
+              'streamExtractor: (_, __) async => VideoStreamResult(',
+              'streamExtractor: (_, _) async => VideoStreamResult(',
+              'late provider analyzer cleanup',
+          )
+
           # MangaLivre's private fixture and runtime policy require an Origin
           # header; the source commit is checked here so this never drifts into
           # a silent test-only workaround.
