@@ -1,0 +1,179 @@
+name: One-shot normal GoAnime release retry
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - triggers/goanime-normal-release-retry/megaplay-1.26.2.request
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-normal-release-1.26.2
+  cancel-in-progress: false
+
+env:
+  GOANIME_REPOSITORY: Semogtw/goanime-mobile
+  SOURCE_REF: 99a823a79a83a46412181798a1326eb04f4ad581
+  RELEASE_TAG: release-v1.26.2
+  VERSION_NAME: 1.26.2
+  BUILD_NUMBER: "33"
+  FLUTTER_CHANNEL: stable
+  FLUTTER_VERSION: 3.44.1
+  FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+  FIREBASE_WEB_API_KEY: ${{ secrets.FIREBASE_WEB_API_KEY }}
+  UPDATE_MANIFEST_URL: ${{ secrets.UPDATE_MANIFEST_URL }}
+  UPDATE_APPCAST_URL: ${{ secrets.UPDATE_APPCAST_URL }}
+  UPDATE_MANIFEST_PUBLIC_KEY_ID: ${{ secrets.UPDATE_MANIFEST_PUBLIC_KEY_ID }}
+  UPDATE_MANIFEST_PUBLIC_KEY_B64: ${{ secrets.UPDATE_MANIFEST_PUBLIC_KEY_B64 }}
+  ANIME_METADATA_SEED_MANIFEST_URL: ${{ secrets.ANIME_METADATA_SEED_MANIFEST_URL }}
+  RUNTIME_DATABASE_MANIFEST_URL: ${{ secrets.RUNTIME_DATABASE_MANIFEST_URL }}
+
+jobs:
+  windows:
+    name: Windows x64 normal release retry
+    runs-on: windows-latest
+    timeout-minutes: 120
+    outputs:
+      dsa_signature: ${{ steps.build.outputs.dsa_signature }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: 99a823a79a83a46412181798a1326eb04f4ad581
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - name: Install Windows packaging tools
+        run: choco install innosetup openssl -y
+      - name: Build and upload Windows normally
+        id: build
+        working-directory: private-source
+        env:
+          GH_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          AUTO_UPDATER_DSA_PUBLIC_KEY: ${{ secrets.AUTO_UPDATER_DSA_PUBLIC_KEY }}
+          AUTO_UPDATER_DSA_PRIVATE_KEY: ${{ secrets.AUTO_UPDATER_DSA_PRIVATE_KEY }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          git config --system core.longpaths true
+          $env:AUTO_UPDATER_DSA_PUBLIC_KEY | Set-Content -LiteralPath windows\runner\dsa_pub.pem -Encoding ascii
+          $env:AUTO_UPDATER_DSA_PRIVATE_KEY | Set-Content -LiteralPath dsa_priv.pem -Encoding ascii
+          try {
+            flutter pub get --enforce-lockfile
+            if (-not $env:RUNTIME_DATABASE_MANIFEST_URL) {
+              $env:RUNTIME_DATABASE_MANIFEST_URL = $env:UPDATE_MANIFEST_URL -replace "/update\.json$", "/runtime_database_manifest.json"
+            }
+            $flutterArgs = @(
+              "build", "windows", "--release", "--no-pub",
+              "--dart-define=FIREBASE_PROJECT_ID=$env:FIREBASE_PROJECT_ID",
+              "--dart-define=FIREBASE_WEB_API_KEY=$env:FIREBASE_WEB_API_KEY",
+              "--dart-define=UPDATE_MANIFEST_URL=$env:UPDATE_MANIFEST_URL",
+              "--dart-define=UPDATE_APPCAST_URL=$env:UPDATE_APPCAST_URL",
+              "--dart-define=UPDATE_MANIFEST_PUBLIC_KEY_ID=$env:UPDATE_MANIFEST_PUBLIC_KEY_ID",
+              "--dart-define=UPDATE_MANIFEST_PUBLIC_KEY_B64=$env:UPDATE_MANIFEST_PUBLIC_KEY_B64",
+              "--dart-define=UPDATE_MANIFEST_SIGNATURE_REQUIRED=true",
+              "--dart-define=ANIME_METADATA_SEED_MANIFEST_URL=$env:ANIME_METADATA_SEED_MANIFEST_URL",
+              "--dart-define=RUNTIME_DATABASE_MANIFEST_URL=$env:RUNTIME_DATABASE_MANIFEST_URL"
+            )
+            $built = $false
+            for ($attempt = 1; $attempt -le 2; $attempt++) {
+              & flutter @flutterArgs
+              if ($LASTEXITCODE -eq 0) { $built = $true; break }
+              if ($attempt -lt 2) {
+                Get-ChildItem -Path build\windows\x64 -Filter "mpv-dev-*.7z" -ErrorAction SilentlyContinue | Remove-Item -Force
+                Remove-Item -LiteralPath build\windows\x64\CMakeCache.txt -Force -ErrorAction SilentlyContinue
+                Remove-Item -LiteralPath build\windows\x64\CMakeFiles -Recurse -Force -ErrorAction SilentlyContinue
+              }
+            }
+            if (-not $built) { throw "Flutter Windows release failed after retry." }
+
+            $shaderTarget = "build\windows\x64\runner\Release\data\flutter_assets\assets\shaders"
+            New-Item -ItemType Directory -Force -Path $shaderTarget | Out-Null
+            Copy-Item -Path "assets\shaders\*.glsl" -Destination $shaderTarget -Force
+            New-Item -ItemType Directory -Force -Path dist\windows-release | Out-Null
+
+            $programFilesX86 = (Get-Item 'Env:ProgramFiles(x86)').Value
+            $inno = Join-Path $programFilesX86 "Inno Setup 6\ISCC.exe"
+            if (-not (Test-Path -LiteralPath $inno -PathType Leaf)) { throw "Inno Setup compiler was not found at $inno." }
+            $innoArgs = @(
+              "/DAppVersion=$env:VERSION_NAME",
+              "/DBuildDir=$PWD\build\windows\x64\runner\Release",
+              "/DOutputDir=$PWD\dist\windows-release",
+              "packaging\windows\GoAnime.iss"
+            )
+            & $inno @innoArgs
+            if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE." }
+
+            $installer = Join-Path $PWD "dist\windows-release\GoAnime-windows-x64-setup-$env:VERSION_NAME.exe"
+            if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "Windows installer was not produced." }
+            if ((Get-Item -LiteralPath $installer).Length -le 0) { throw "Windows installer is empty." }
+
+            $dartExe = Join-Path $env:FLUTTER_ROOT 'bin\cache\dart-sdk\bin\dart.exe'
+            $dartAppData = Join-Path $env:RUNNER_TEMP 'dart-appdata'
+            New-Item -ItemType Directory -Force -Path $dartAppData | Out-Null
+            $env:APPDATA = $dartAppData
+            $output = & $dartExe run auto_updater:sign_update $installer
+            if ($LASTEXITCODE -ne 0) { throw "auto_updater signing failed with exit code $LASTEXITCODE." }
+            $match = [regex]::Match(($output -join [Environment]::NewLine), 'sparkle:dsaSignature="([^"]+)"')
+            if (-not $match.Success) { throw "Unable to extract Windows DSA signature." }
+            "dsa_signature=$($match.Groups[1].Value)" >> $env:GITHUB_OUTPUT
+            gh release upload $env:RELEASE_TAG dist\windows-release\* --repo $env:GOANIME_REPOSITORY --clobber
+            if ($LASTEXITCODE -ne 0) { throw "GitHub release upload failed." }
+          } finally {
+            Remove-Item -LiteralPath dsa_priv.pem -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath windows\runner\dsa_pub.pem -Force -ErrorAction SilentlyContinue
+          }
+
+  publish:
+    name: Publish normal release and update channels
+    needs: windows
+    if: ${{ needs.windows.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: 99a823a79a83a46412181798a1326eb04f4ad581
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - name: Publish signed metadata and update channels
+        working-directory: private-source
+        env:
+          GH_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          UPDATE_ASSET_URL_TEMPLATE: ${{ secrets.UPDATE_ASSET_URL_TEMPLATE }}
+          UPDATE_RELEASE_PAGE_URL: ${{ secrets.UPDATE_RELEASE_PAGE_URL }}
+          UPDATE_MANIFEST_SIGNING_PRIVATE_KEY: ${{ secrets.UPDATE_MANIFEST_SIGNING_PRIVATE_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          WINDOWS_DSA_SIGNATURE: ${{ needs.windows.outputs.dsa_signature }}
+        shell: bash
+        run: bash scripts/goanime-release/publish.sh private-source
