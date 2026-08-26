@@ -306,6 +306,7 @@ jobs:
           fi
           git commit -m "ci(goanime): report full CI run $GITHUB_RUN_ID"
           test -n "$REPORT_PUSH_TOKEN"
-          git -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer $REPORT_PUSH_TOKEN" fetch origin main
+          git remote set-url origin "https://x-access-token:${REPORT_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch origin main
           git rebase origin/main
-          git -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer $REPORT_PUSH_TOKEN" push origin HEAD:main
+          git push origin HEAD:main
