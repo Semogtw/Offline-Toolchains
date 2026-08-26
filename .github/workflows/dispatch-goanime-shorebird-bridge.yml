@@ -19,7 +19,7 @@ jobs:
       - name: Dispatch exact Shorebird workflow
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          GH_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
           APP_REPOSITORY: Semogtw/goanime-mobile
           APP_REF: fix/megaplay-bootstrap-shorebird-20260826
           RELEASE_VERSION: 1.26.1+32
