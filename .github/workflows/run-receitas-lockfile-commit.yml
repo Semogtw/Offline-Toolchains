@@ -16,6 +16,10 @@ concurrency:
 
 jobs:
   commit-lockfile:
+    env:
+      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
+      GIT_CONFIG_VALUE_0: 'AUTHORIZATION: bearer ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}'
     name: Generate and commit only Receitas pnpm lockfile
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
@@ -72,7 +76,7 @@ jobs:
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
           fetch-depth: 1
-          persist-credentials: true
+          persist-credentials: false
           lfs: false
           submodules: false
           show-progress: false

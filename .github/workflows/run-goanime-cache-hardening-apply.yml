@@ -11,6 +11,10 @@ permissions:
 
 jobs:
   apply:
+    env:
+      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
+      GIT_CONFIG_VALUE_0: 'AUTHORIZATION: bearer ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -22,7 +26,7 @@ jobs:
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: goanime
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Restore verified source blobs
         env:

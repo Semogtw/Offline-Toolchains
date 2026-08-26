@@ -81,38 +81,45 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
+          def block(lines):
+              return '\n'.join(lines) + '\n'
+
           path = Path('lib/widgets/manga/manga_browse_categories_view.dart')
           text = path.read_text()
-          old = """    final genres = <String>{
-      for (final item in widget.items)
-        for (final genre in item.metadata.genres)
-          if (genre.trim().isNotEmpty) genre.trim(),
-    }.toList(growable: false)
-      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
-"""
-          new = """    final genreByKey = <String, String>{};
-    for (final item in widget.items) {
-      for (final genre in item.metadata.genres) {
-        final normalized = genre.trim();
-        if (normalized.isEmpty) continue;
-        genreByKey.putIfAbsent(normalized.toLowerCase(), () => normalized);
-      }
-    }
-    final genres = genreByKey.values.toList(growable: false)
-      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
-"""
+          old = block([
+              '    final genres = <String>{',
+              '      for (final item in widget.items)',
+              '        for (final genre in item.metadata.genres)',
+              '          if (genre.trim().isNotEmpty) genre.trim(),',
+              '    }.toList(growable: false)',
+              '      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));',
+          ])
+          new = block([
+              '    final genreByKey = <String, String>{};',
+              '    for (final item in widget.items) {',
+              '      for (final genre in item.metadata.genres) {',
+              '        final normalized = genre.trim();',
+              '        if (normalized.isEmpty) continue;',
+              '        genreByKey.putIfAbsent(normalized.toLowerCase(), () => normalized);',
+              '      }',
+              '    }',
+              '    final genres = genreByKey.values.toList(growable: false)',
+              '      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));',
+          ])
           if text.count(old) != 1:
               raise SystemExit('category genre-list anchor drifted')
           text = text.replace(old, new, 1)
-          old = """      if (_genre != null && !item.metadata.genres.contains(_genre)) return false;
-"""
-          new = """      if (_genre != null &&
-          !item.metadata.genres.any(
-            (genre) => genre.trim().toLowerCase() == _genre!.toLowerCase(),
-          )) {
-        return false;
-      }
-"""
+          old = block([
+              '      if (_genre != null && !item.metadata.genres.contains(_genre)) return false;',
+          ])
+          new = block([
+              '      if (_genre != null &&',
+              '          !item.metadata.genres.any(',
+              '            (genre) => genre.trim().toLowerCase() == _genre!.toLowerCase(),',
+              '          )) {',
+              '        return false;',
+              '      }',
+          ])
           if text.count(old) != 1:
               raise SystemExit('category genre-filter anchor drifted')
           path.write_text(text.replace(old, new, 1))
@@ -120,73 +127,74 @@ jobs:
           test = Path('test/widgets/manga/manga_browse_categories_view_test.dart')
           if test.exists():
               raise SystemExit('unexpected pre-existing category normalization test')
-          test.write_text(r'''import 'package:flutter/material.dart';
-import 'package:flutter_test/flutter_test.dart';
-import 'package:goanime/services/manga/manga_availability_models.dart';
-import 'package:goanime/services/manga/manga_browse_data_source.dart';
-import 'package:goanime/widgets/manga/manga_browse_categories_view.dart';
-import 'package:goanime_core/goanime_core.dart';
-
-void main() {
-  testWidgets('trimmed genre chip keeps its matching item visible', (tester) async {
-    final item = _item('work-1', 'Trimmed Work', const [' Action ']);
-    await tester.pumpWidget(_app([item]));
-
-    expect(find.text('Action'), findsOneWidget);
-    expect(find.text('Trimmed Work'), findsOneWidget);
-
-    await tester.tap(find.text('Action'));
-    await tester.pump();
-
-    expect(find.text('Trimmed Work'), findsOneWidget);
-  });
-
-  testWidgets('genre chips collapse case and whitespace variants', (tester) async {
-    await tester.pumpWidget(
-      _app([
-        _item('work-1', 'First Work', const ['Action']),
-        _item('work-2', 'Second Work', const [' action ']),
-      ]),
-    );
-
-    expect(find.byType(FilterChip), findsOneWidget);
-    await tester.tap(find.byType(FilterChip));
-    await tester.pump();
-
-    expect(find.text('First Work'), findsOneWidget);
-    expect(find.text('Second Work'), findsOneWidget);
-  });
-}
-
-MangaBrowseItem _item(String id, String title, List<String> genres) {
-  return MangaBrowseItem(
-    availability: MangaAvailabilityRecord(
-      work: MangaWork(workId: id, canonicalTitle: title),
-      sourceLinks: const <MangaSourceLink>[],
-      evidence: const <MangaReadabilityEvidence>[],
-    ),
-    metadata: MangaBrowseMetadata(genres: genres),
-  );
-}
-
-Widget _app(List<MangaBrowseItem> items) {
-  return MaterialApp(
-    home: Scaffold(
-      body: MangaBrowseCategoriesView(
-        items: items,
-        labels: MangaBrowseCategoryLabels(
-          empty: 'Empty',
-          unread: 'Unread',
-          offline: 'Offline',
-          formatLabel: (format) => format.name,
-          statusLabel: (status) => status.name,
-        ),
-        onOpenWork: (_) {},
-      ),
-    ),
-  );
-}
-''')
+          test.write_text(block([
+              "import 'package:flutter/material.dart';",
+              "import 'package:flutter_test/flutter_test.dart';",
+              "import 'package:goanime/services/manga/manga_availability_models.dart';",
+              "import 'package:goanime/services/manga/manga_browse_data_source.dart';",
+              "import 'package:goanime/widgets/manga/manga_browse_categories_view.dart';",
+              "import 'package:goanime_core/goanime_core.dart';",
+              '',
+              'void main() {',
+              "  testWidgets('trimmed genre chip keeps its matching item visible', (tester) async {",
+              "    final item = _item('work-1', 'Trimmed Work', const [' Action ']);",
+              '    await tester.pumpWidget(_app([item]));',
+              '',
+              "    expect(find.text('Action'), findsOneWidget);",
+              "    expect(find.text('Trimmed Work'), findsOneWidget);",
+              '',
+              "    await tester.tap(find.text('Action'));",
+              '    await tester.pump();',
+              '',
+              "    expect(find.text('Trimmed Work'), findsOneWidget);",
+              '  });',
+              '',
+              "  testWidgets('genre chips collapse case and whitespace variants', (tester) async {",
+              '    await tester.pumpWidget(',
+              '      _app([',
+              "        _item('work-1', 'First Work', const ['Action']),",
+              "        _item('work-2', 'Second Work', const [' action ']),",
+              '      ]),',
+              '    );',
+              '',
+              '    expect(find.byType(FilterChip), findsOneWidget);',
+              '    await tester.tap(find.byType(FilterChip));',
+              '    await tester.pump();',
+              '',
+              "    expect(find.text('First Work'), findsOneWidget);",
+              "    expect(find.text('Second Work'), findsOneWidget);",
+              '  });',
+              '}',
+              '',
+              'MangaBrowseItem _item(String id, String title, List<String> genres) {',
+              '  return MangaBrowseItem(',
+              '    availability: MangaAvailabilityRecord(',
+              '      work: MangaWork(workId: id, canonicalTitle: title),',
+              '      sourceLinks: const <MangaSourceLink>[],',
+              '      evidence: const <MangaReadabilityEvidence>[],',
+              '    ),',
+              '    metadata: MangaBrowseMetadata(genres: genres),',
+              '  );',
+              '}',
+              '',
+              'Widget _app(List<MangaBrowseItem> items) {',
+              '  return MaterialApp(',
+              '    home: Scaffold(',
+              '      body: MangaBrowseCategoriesView(',
+              '        items: items,',
+              '        labels: MangaBrowseCategoryLabels(',
+              "          empty: 'Empty',",
+              "          unread: 'Unread',",
+              "          offline: 'Offline',",
+              '          formatLabel: (format) => format.name,',
+              '          statusLabel: (status) => status.name,',
+              '        ),',
+              '        onOpenWork: (_) {},',
+              '      ),',
+              '    ),',
+              '  );',
+              '}',
+          ]))
           PY
           git diff --check
 

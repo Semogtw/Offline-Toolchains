@@ -108,51 +108,51 @@ jobs:
           test = 'test/widgets/manga/manga_details_library_test.dart'
           test_case = r'''
 
-  testWidgets('initial load failure is retryable', (tester) async {
-    var calls = 0;
-    final snapshot = MangaDetailsSnapshot(
-      availability: availability,
-      chapters: const [
-        CanonicalChapter(
-          canonicalChapterId: 'mc_library_1',
-          workId: 'mw_library',
-          title: 'Chapter 1',
-          number: 1,
-        ),
-      ],
-      variantsByChapter: const {},
-      progressByChapter: const {},
-      sourcePreference: const MangaSourcePreference(
-        mode: MangaSourceMode.automatic,
-      ),
-    );
-    final source = _HandlerDetailsDataSource((_) async {
-      calls += 1;
-      if (calls == 1) throw StateError('temporary details failure');
-      return snapshot;
-    });
+            testWidgets('initial load failure is retryable', (tester) async {
+              var calls = 0;
+              final snapshot = MangaDetailsSnapshot(
+                availability: availability,
+                chapters: const [
+                  CanonicalChapter(
+                    canonicalChapterId: 'mc_library_1',
+                    workId: 'mw_library',
+                    title: 'Chapter 1',
+                    number: 1,
+                  ),
+                ],
+                variantsByChapter: const {},
+                progressByChapter: const {},
+                sourcePreference: const MangaSourcePreference(
+                  mode: MangaSourceMode.automatic,
+                ),
+              );
+              final source = _HandlerDetailsDataSource((_) async {
+                calls += 1;
+                if (calls == 1) throw StateError('temporary details failure');
+                return snapshot;
+              });
 
-    await _pump(
-      tester,
-      MangaDetailsScreen(
-        availability: availability,
-        dataSource: source,
-        libraryRepository: library,
-      ),
-    );
-    await tester.pumpAndSettle();
+              await _pump(
+                tester,
+                MangaDetailsScreen(
+                  availability: availability,
+                  dataSource: source,
+                  libraryRepository: library,
+                ),
+              );
+              await tester.pumpAndSettle();
 
-    expect(find.text('Manga content could not be loaded.'), findsOneWidget);
-    expect(find.text('Try again'), findsOneWidget);
+              expect(find.text('Manga content could not be loaded.'), findsOneWidget);
+              expect(find.text('Try again'), findsOneWidget);
 
-    await tester.tap(find.text('Try again'));
-    await tester.pumpAndSettle();
+              await tester.tap(find.text('Try again'));
+              await tester.pumpAndSettle();
 
-    expect(calls, 2);
-    expect(find.text('Manga content could not be loaded.'), findsNothing);
-    expect(find.text('Chapter 1'), findsOneWidget);
-  });
-'''
+              expect(calls, 2);
+              expect(find.text('Manga content could not be loaded.'), findsNothing);
+              expect(find.text('Chapter 1'), findsOneWidget);
+            });
+          '''
           replace_once(
               test,
               "    expect(find.text('Add to library'), findsOneWidget);\n  });\n}\n\nfinal class _FakeDetailsDataSource",
@@ -160,22 +160,22 @@ jobs:
           )
           helper = r'''
 
-final class _HandlerDetailsDataSource implements MangaDetailsDataSource {
-  const _HandlerDetailsDataSource(this.handler);
+          final class _HandlerDetailsDataSource implements MangaDetailsDataSource {
+            const _HandlerDetailsDataSource(this.handler);
 
-  final Future<MangaDetailsSnapshot> Function(MangaAvailabilityRecord) handler;
+            final Future<MangaDetailsSnapshot> Function(MangaAvailabilityRecord) handler;
 
-  @override
-  Future<MangaDetailsSnapshot> load(MangaAvailabilityRecord availability) =>
-      handler(availability);
+            @override
+            Future<MangaDetailsSnapshot> load(MangaAvailabilityRecord availability) =>
+                handler(availability);
 
-  @override
-  Future<void> saveSourcePreference(
-    String workId,
-    MangaSourcePreference preference,
-  ) async {}
-}
-'''
+            @override
+            Future<void> saveSourcePreference(
+              String workId,
+              MangaSourcePreference preference,
+            ) async {}
+          }
+          '''
           replace_once(
               test,
               "\nFuture<void> _pump(WidgetTester tester, Widget child) async {",

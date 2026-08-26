@@ -7,8 +7,7 @@ on:
       - '.github/workflows/dispatch-goanime-full-release-v3-20260824.yml'
 
 permissions:
-  contents: write
-
+  contents: read
 env:
   SOURCE_SHA: 7bd636136b7dac88bd679f1b98f9bec2d605efde
 

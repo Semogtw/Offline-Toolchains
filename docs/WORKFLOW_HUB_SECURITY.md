@@ -2,6 +2,10 @@
 
 This repository is public. Workflows, logs, committed metadata, artifacts, and documentation should therefore be designed with public visibility in mind.
 
+The same boundary applies to every connected project, including Receitas: private-source
+checkouts use read-only access, and privileged release or deployment credentials stay outside
+the shared public runner.
+
 ## Core rules
 
 1. **Use least privilege.** Workflows should request only the permissions required for their task.
@@ -34,6 +38,9 @@ When publishing or restoring a generated toolchain:
 When a workflow gains new permissions, credentials, write access, external publication, or a new artifact class, review that change as a security boundary change rather than a routine refactor.
 
 Prefer narrowly scoped credentials and isolated publish steps over broad repository-wide permissions.
+
+Private-source transfers are ciphertext-only: encrypted payloads may be retained briefly, while
+raw APKs, databases, dependency metadata, and diagnostic logs remain on the ephemeral runner.
 
 ## Validation
 

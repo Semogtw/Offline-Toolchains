@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-manga-audit-diagnostic/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 jobs:
   diagnose:
     if: github.actor == github.repository_owner
@@ -88,7 +87,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           CONTROL_SHA: ${{ github.sha }}
           REVIEWED_SHA: ${{ steps.request.outputs.sha }}
           DIAGNOSTICS: ${{ steps.analyze.outputs.diagnostics }}

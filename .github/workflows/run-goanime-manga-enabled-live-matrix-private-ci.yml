@@ -7,10 +7,13 @@ on:
       - 'triggers/goanime-manga-enabled-live-matrix/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 jobs:
   inventory:
+    env:
+      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
+      GIT_CONFIG_VALUE_0: 'AUTHORIZATION: bearer ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:

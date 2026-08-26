@@ -16,6 +16,10 @@ concurrency:
 
 jobs:
   format:
+    env:
+      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
+      GIT_CONFIG_VALUE_0: 'AUTHORIZATION: bearer ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}'
     name: GoAnime manga staging formatter
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04

@@ -9,8 +9,7 @@ on:
     - cron: '17 10 * * 0'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: validate-private-hydra-branch
   cancel-in-progress: false
@@ -143,7 +142,7 @@ jobs:
         if: ${{ always() && steps.request.outputs.expected_sha != '' }}
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           TARGET_SHA: ${{ steps.request.outputs.expected_sha }}
           TARGET_BRANCH: ${{ steps.request.outputs.branch }}
           REQUEST_PATH: ${{ steps.request.outputs.request_path }}

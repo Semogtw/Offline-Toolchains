@@ -75,15 +75,6 @@ jobs:
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit "$code"
 
-      - name: Upload diagnostic test log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: goanime-flutter-test-diagnostic
-          path: ${{ runner.temp }}/goanime-flutter-test.log
-          if-no-files-found: error
-          retention-days: 1
-
       - name: Remove private checkout
         if: always()
         shell: bash
@@ -96,13 +87,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
-      contents: write
-
+      contents: read
     steps:
       - name: Publish run id and sanitized result
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RESULT: ${{ needs.diagnose.result }}

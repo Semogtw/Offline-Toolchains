@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-opening-format-render/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-opening-format-render
   cancel-in-progress: false
@@ -69,7 +68,7 @@ jobs:
 
       - name: Publish formatted source snapshots
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           TARGET_SHA: ${{ steps.request.outputs.sha }}
         shell: bash
         run: |

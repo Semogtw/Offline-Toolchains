@@ -184,11 +184,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Publish sanitized result
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           JOB_RESULT: ${{ needs.validate.result }}
           ANALYZE_RESULT: ${{ needs.validate.outputs.analyze_result }}
           TESTS_RESULT: ${{ needs.validate.outputs.tests_result }}

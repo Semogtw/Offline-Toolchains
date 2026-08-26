@@ -8,7 +8,7 @@ on:
       - 'triggers/goanime-history-undo-diagnostic/*.request'
 
 permissions:
-  contents: write
+  contents: read
   actions: write
 
 concurrency:
@@ -17,6 +17,10 @@ concurrency:
 
 jobs:
   diagnose:
+    env:
+      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
+      GIT_CONFIG_VALUE_0: 'AUTHORIZATION: bearer ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}'
     name: Export encrypted prepared-tree history diagnostics
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -145,7 +149,7 @@ jobs:
       - name: Publish artifact receipt
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           REVISION: ${{ steps.request.outputs.revision }}
         run: |
           set -euo pipefail

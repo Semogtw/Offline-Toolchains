@@ -7,8 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-hot-cache-publish
   cancel-in-progress: true
@@ -173,7 +172,7 @@ jobs:
       - name: Publish stable public mirror
         working-directory: private-source
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           TAG: ${{ env.HOT_CACHE_TAG }}
         run: |
           set -euo pipefail
@@ -234,7 +233,7 @@ jobs:
         with:
           name: goanime-hot-cache-${{ github.run_id }}
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 1
           path: |
             private-source/dist/hot-cache/runtime_database_manifest.json
             private-source/dist/hot-cache/anime_provider_catalog_manifest.json

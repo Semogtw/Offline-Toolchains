@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-manga-format-capture/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 jobs:
   capture:
     if: github.actor == github.repository_owner
@@ -62,7 +61,7 @@ jobs:
           git diff --check
       - name: Publish formatted contents
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           SHA: ${{ steps.target.outputs.sha }}
         working-directory: source
         shell: bash

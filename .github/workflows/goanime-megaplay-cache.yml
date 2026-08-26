@@ -311,16 +311,3 @@ jobs:
           aws s3 cp dist/megaplay-cache/manifest-r2.json \
             "s3://${R2_BUCKET}/latest/megaplay/manifest.json" \
             --endpoint-url "$endpoint"
-
-      - name: Upload audit artifact
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: goanime-megaplay-cache-${{ github.run_id }}
-          if-no-files-found: warn
-          retention-days: 14
-          path: |
-            dist/megaplay-cache/manifest.json
-            dist/megaplay-cache/manifest-r2.json
-            dist/megaplay-cache/collection_stats.json
-            dist/megaplay-cache/megaplay_catalog_*.db

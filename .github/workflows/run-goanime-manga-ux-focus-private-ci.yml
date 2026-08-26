@@ -4,7 +4,7 @@ on:
     branches: [main]
     paths: ['triggers/goanime-manga-ux-focus/*.request']
 permissions:
-  contents: write
+  contents: read
 jobs:
   gate:
     runs-on: ubuntu-24.04
@@ -93,7 +93,7 @@ jobs:
       - name: Publish sanitized result
         if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           SHA: ${{ steps.request.outputs.sha }}
           ANALYZE: ${{ steps.analyze.outcome }}
           TESTS: ${{ steps.tests.outcome }}

@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-manga-upstream-refresh/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-manga-upstream-refresh
   cancel-in-progress: false
@@ -222,7 +221,7 @@ jobs:
     steps:
       - name: Publish machine-readable receipt
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           GOANIME_SHA: ${{ needs.resolve.outputs.sha }}
           MODE: ${{ needs.resolve.outputs.mode }}
           CHECKS_RESULT: ${{ needs.checks.result }}

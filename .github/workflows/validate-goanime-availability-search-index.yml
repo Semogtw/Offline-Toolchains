@@ -7,7 +7,7 @@ on:
       - 'triggers/goanime-availability-search-index/*.request'
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: goanime-availability-search-index
@@ -108,88 +108,88 @@ jobs:
           )
 
           old_matches = '''  static bool _matchesConfirmed(
-    String title, {
-    required AnimeAvailabilityMode mode,
-  }) {
-    final keys = TitleNormalizer.keysForTitle(title);
-    if (mode == AnimeAvailabilityMode.any) {
-      return keys.any(_availableKeys.contains) ||
-          keys.any((key) => _availableKeys.contains('$key classico')) ||
-          keys.any((key) => _availableKeys.contains('$key classic'));
-    }
+              String title, {
+              required AnimeAvailabilityMode mode,
+            }) {
+              final keys = TitleNormalizer.keysForTitle(title);
+              if (mode == AnimeAvailabilityMode.any) {
+                return keys.any(_availableKeys.contains) ||
+                    keys.any((key) => _availableKeys.contains('$key classico')) ||
+                    keys.any((key) => _availableKeys.contains('$key classic'));
+              }
 
-    final hasModeMatch = keys.any(
-      (key) => _modeKeys[key]?.matches(mode) ?? false,
-    );
-    if (hasModeMatch) return true;
+              final hasModeMatch = keys.any(
+                (key) => _modeKeys[key]?.matches(mode) ?? false,
+              );
+              if (hasModeMatch) return true;
 
-    final hasModeMetadata = keys.any(_modeKeys.containsKey);
-    if (mode == AnimeAvailabilityMode.sub && !hasModeMetadata) {
-      return keys.any(_availableKeys.contains);
-    }
-    return false;
-  }
-'''
+              final hasModeMetadata = keys.any(_modeKeys.containsKey);
+              if (mode == AnimeAvailabilityMode.sub && !hasModeMetadata) {
+                return keys.any(_availableKeys.contains);
+              }
+              return false;
+            }
+          '''
           new_matches = '''  static bool _matchesConfirmed(
-    String title, {
-    required AnimeAvailabilityMode mode,
-  }) {
-    return _matchesConfirmedKeys(
-      TitleNormalizer.keysForTitle(title),
-      mode: mode,
-    );
-  }
+              String title, {
+              required AnimeAvailabilityMode mode,
+            }) {
+              return _matchesConfirmedKeys(
+                TitleNormalizer.keysForTitle(title),
+                mode: mode,
+              );
+            }
 
-  static bool _matchesConfirmedKeys(
-    Iterable<String> keys, {
-    required AnimeAvailabilityMode mode,
-  }) {
-    if (mode == AnimeAvailabilityMode.any) {
-      return keys.any(_availableKeys.contains) ||
-          keys.any((key) => _availableKeys.contains('$key classico')) ||
-          keys.any((key) => _availableKeys.contains('$key classic'));
-    }
+            static bool _matchesConfirmedKeys(
+              Iterable<String> keys, {
+              required AnimeAvailabilityMode mode,
+            }) {
+              if (mode == AnimeAvailabilityMode.any) {
+                return keys.any(_availableKeys.contains) ||
+                    keys.any((key) => _availableKeys.contains('$key classico')) ||
+                    keys.any((key) => _availableKeys.contains('$key classic'));
+              }
 
-    final hasModeMatch = keys.any(
-      (key) => _modeKeys[key]?.matches(mode) ?? false,
-    );
-    if (hasModeMatch) return true;
+              final hasModeMatch = keys.any(
+                (key) => _modeKeys[key]?.matches(mode) ?? false,
+              );
+              if (hasModeMatch) return true;
 
-    final hasModeMetadata = keys.any(_modeKeys.containsKey);
-    if (mode == AnimeAvailabilityMode.sub && !hasModeMetadata) {
-      return keys.any(_availableKeys.contains);
-    }
-    return false;
-  }
-'''
+              final hasModeMetadata = keys.any(_modeKeys.containsKey);
+              if (mode == AnimeAvailabilityMode.sub && !hasModeMetadata) {
+                return keys.any(_availableKeys.contains);
+              }
+              return false;
+            }
+          '''
           replace_once(old_matches, new_matches)
 
           old_replace = '''  static void _replaceCache(Iterable<String> titles) {
-    _availableTitles
-      ..clear()
-      ..addAll(
-        titles
-            .map(TitleNormalizer.normalize)
-            .where((title) => title.isNotEmpty),
-      );
-    _availableKeys
-      ..clear()
-      ..addAll(_availableTitles.expand(TitleNormalizer.keysForTitle));
-  }
-'''
+              _availableTitles
+                ..clear()
+                ..addAll(
+                  titles
+                      .map(TitleNormalizer.normalize)
+                      .where((title) => title.isNotEmpty),
+                );
+              _availableKeys
+                ..clear()
+                ..addAll(_availableTitles.expand(TitleNormalizer.keysForTitle));
+            }
+          '''
           new_replace = '''  static void _replaceCache(Iterable<String> titles) {
-    _availableTitles.clear();
-    _availableKeys.clear();
-    _titleKeysByTitle.clear();
-    for (final rawTitle in titles) {
-      final title = TitleNormalizer.normalize(rawTitle);
-      if (title.isEmpty || !_availableTitles.add(title)) continue;
-      final keys = TitleNormalizer.keysForTitle(title);
-      _titleKeysByTitle[title] = keys;
-      _availableKeys.addAll(keys);
-    }
-  }
-'''
+              _availableTitles.clear();
+              _availableKeys.clear();
+              _titleKeysByTitle.clear();
+              for (final rawTitle in titles) {
+                final title = TitleNormalizer.normalize(rawTitle);
+                if (title.isEmpty || !_availableTitles.add(title)) continue;
+                final keys = TitleNormalizer.keysForTitle(title);
+                _titleKeysByTitle[title] = keys;
+                _availableKeys.addAll(keys);
+              }
+            }
+          '''
           replace_once(old_replace, new_replace)
 
           replace_once(
@@ -229,7 +229,7 @@ jobs:
         id: publish
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           TARGET_SHA: ${{ steps.request.outputs.sha }}
         run: |
           set -euo pipefail
@@ -246,7 +246,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           GATE_STATUS: ${{ job.status }}
           TARGET_SHA: ${{ steps.request.outputs.sha }}
           OUTPUT_PREFIX: ${{ steps.publish.outputs.prefix }}

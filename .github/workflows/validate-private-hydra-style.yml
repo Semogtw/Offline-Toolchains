@@ -8,8 +8,7 @@ on:
       - "triggers/hydra-style/*.request"
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: hydra-private-style
   cancel-in-progress: false
@@ -103,7 +102,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           TARGET_SHA: ${{ steps.request.outputs.expected_sha }}
           TARGET_BRANCH: ${{ steps.request.outputs.branch }}
           DEPS_OUTCOME: ${{ steps.deps.outcome }}

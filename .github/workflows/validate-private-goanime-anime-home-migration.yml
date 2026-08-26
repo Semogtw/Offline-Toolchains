@@ -8,8 +8,7 @@ on:
       - 'triggers/goanime-anime-home-migration/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-anime-home-migration
   cancel-in-progress: false
@@ -126,7 +125,7 @@ jobs:
       - name: Publish validated transformed source safely
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -146,7 +145,7 @@ jobs:
       - name: Publish success receipt
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           RUN_ID: ${{ github.run_id }}
           SOURCE_SHA: ${{ steps.request.outputs.sha }}
         run: |

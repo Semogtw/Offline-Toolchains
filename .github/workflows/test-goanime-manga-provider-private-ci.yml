@@ -121,6 +121,10 @@ jobs:
         run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
 
   apply_metadata:
+    env:
+      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
+      GIT_CONFIG_VALUE_0: 'AUTHORIZATION: bearer ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}'
     name: Apply validated manga metadata routing
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
@@ -165,7 +169,7 @@ jobs:
           token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
           path: private-source
           fetch-depth: 1
-          persist-credentials: true
+          persist-credentials: false
           lfs: false
           submodules: false
           show-progress: false

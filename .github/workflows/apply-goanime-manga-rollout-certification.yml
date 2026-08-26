@@ -7,10 +7,13 @@ on:
       - 'triggers/goanime-manga-apply-certification/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 jobs:
   apply:
+    env:
+      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
+      GIT_CONFIG_VALUE_0: 'AUTHORIZATION: bearer ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}'
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -75,7 +78,7 @@ jobs:
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
           fetch-depth: 2
-          persist-credentials: true
+          persist-credentials: false
           show-progress: false
       - name: Apply certification to unchanged reviewed branch
         id: commit
@@ -112,7 +115,7 @@ jobs:
       - name: Publish receipt
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           CONTROL_SHA: ${{ github.sha }}
           REVIEWED_SHA: ${{ steps.request.outputs.sha }}
           NEW_SHA: ${{ steps.commit.outputs.new_sha }}

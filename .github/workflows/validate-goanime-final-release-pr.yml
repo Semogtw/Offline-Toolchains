@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-final-release-pr/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-final-release-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -169,7 +168,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           GATE_STATUS: ${{ job.status }}
           TARGET_SHA: ${{ steps.request.outputs.sha }}
           APK_BYTES: ${{ steps.release.outputs.bytes }}

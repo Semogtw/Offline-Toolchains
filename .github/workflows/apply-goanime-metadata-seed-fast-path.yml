@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-apply-metadata-seed-fast-path/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-apply-metadata-seed-fast-path
   cancel-in-progress: false
@@ -136,7 +135,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           GATE_STATUS: ${{ job.status }}
           TARGET_SHA: ${{ steps.request.outputs.sha }}
           PUSHED_SHA: ${{ steps.push.outputs.sha }}

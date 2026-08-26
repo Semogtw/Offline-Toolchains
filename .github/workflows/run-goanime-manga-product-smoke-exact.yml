@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-manga-product-smoke-exact/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-manga-product-smoke-exact
   cancel-in-progress: false
@@ -97,7 +96,7 @@ jobs:
       - name: Publish sanitized smoke receipt
         if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           SHA: ${{ steps.target.outputs.sha }}
           INTEGRATION: ${{ steps.integration.outputs.exit_code }}
           WIDGETS: ${{ steps.widgets.outputs.exit_code }}

@@ -7,14 +7,17 @@ on:
       - 'triggers/goanime-opening-format/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-premium-opening-format
   cancel-in-progress: false
 
 jobs:
   format:
+    env:
+      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
+      GIT_CONFIG_VALUE_0: 'AUTHORIZATION: bearer ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -50,7 +53,7 @@ jobs:
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: source
           fetch-depth: 2
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Verify request is still main HEAD
         working-directory: source
@@ -103,7 +106,7 @@ jobs:
       - name: Publish sanitized receipt
         if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           TARGET_SHA: ${{ steps.request.outputs.sha }}
           PUSHED_SHA: ${{ steps.push.outputs.pushed_sha }}
           STATE: ${{ job.status }}

@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-opening-cache-fix-v2/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-opening-logo-cache-fix-v2
   cancel-in-progress: false
@@ -121,7 +120,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           SOURCE_SHA: ${{ steps.request.outputs.sha }}
           NEW_SHA: ${{ steps.commit.outputs.sha }}
           PUBLISHED: ${{ steps.publish.outputs.published }}

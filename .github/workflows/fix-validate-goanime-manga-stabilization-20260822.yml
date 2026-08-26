@@ -105,15 +105,15 @@ jobs:
           replace_once(
               reader_test,
               """  const manifest = LocalPackageContentManifest(
-    sourceId: 'local.test',
-    mangaId: 'work-source-1',
-    chapterId: 'chapter-source-1',
-    packageId: 'package-1',
-    sourceContentKind: MangaContentKind.imageSequence,
-    pageCount: 1,
-  );
+              sourceId: 'local.test',
+              mangaId: 'work-source-1',
+              chapterId: 'chapter-source-1',
+              packageId: 'package-1',
+              sourceContentKind: MangaContentKind.imageSequence,
+              pageCount: 1,
+            );
 
-""",
+          """,
               '',
           )
           PY

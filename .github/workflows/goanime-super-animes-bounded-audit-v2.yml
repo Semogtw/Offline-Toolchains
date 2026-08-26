@@ -191,8 +191,7 @@ jobs:
           name: ${{ steps.meta.outputs.artifact_name }}
           path: private-source/goanime-super-animes-state
           if-no-files-found: error
-          retention-days: 7
-
+          retention-days: 1
       - name: Cleanup private checkout
         if: always()
         run: rm -rf "$GITHUB_WORKSPACE/private-source"
@@ -203,12 +202,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Publish sanitized result
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           RESOLVE_RESULT: ${{ needs.resolve.result }}
           AUDIT_RESULT: ${{ needs.audit.result }}
           AUDIT_STATUS: ${{ needs.audit.outputs.audit_status }}

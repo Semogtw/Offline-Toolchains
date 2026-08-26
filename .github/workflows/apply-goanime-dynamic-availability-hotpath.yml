@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-dynamic-availability-hotpath/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
   group: goanime-dynamic-availability-hotpath
   cancel-in-progress: false
@@ -103,7 +102,7 @@ jobs:
         id: publish
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           TARGET_SHA: ${{ steps.request.outputs.sha }}
         run: |
           set -euo pipefail
@@ -121,7 +120,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           GATE_STATUS: ${{ job.status }}
           TARGET_SHA: ${{ steps.request.outputs.sha }}
           OUTPUT_PREFIX: ${{ steps.publish.outputs.prefix }}

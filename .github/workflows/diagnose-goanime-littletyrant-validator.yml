@@ -7,8 +7,7 @@ on:
       - 'triggers/goanime-littletyrant-validator/*.request'
 
 permissions:
-  contents: write
-
+  contents: read
 jobs:
   diagnose:
     if: github.actor == github.repository_owner
@@ -97,7 +96,7 @@ jobs:
           rm -f tools/manga/_littletyrant_diag.dart "$raw"
       - name: Publish sanitized diagnostic
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           SHA: ${{ steps.target.outputs.sha }}
           HOSTS: ${{ steps.probe.outputs.hosts }}
           REASON: ${{ steps.probe.outputs.reason }}
