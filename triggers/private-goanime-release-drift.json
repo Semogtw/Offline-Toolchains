@@ -1,0 +1,10 @@
+{
+  "project": "goanime",
+  "operation": "repair_release_drift",
+  "branch": "fix/megaplay-bootstrap-shorebird-20260826",
+  "expected_ref": "10c4b1dd5a97274d32fd001cd215e4cb1787adb7",
+  "release_version": "1.26.1+32",
+  "requested_by": "chatgpt",
+  "requested_at": "2026-08-26T06:00:00-03:00",
+  "purpose": "align-release-metadata-before-shorebird-patch"
+}
