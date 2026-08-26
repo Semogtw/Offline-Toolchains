@@ -1,0 +1,109 @@
+name: Format private GoAnime MegaPlay test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - triggers/private-goanime-megaplay-format.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-goanime-megaplay-format
+  cancel-in-progress: false
+
+env:
+  GOANIME_REPOSITORY: Semogtw/goanime-mobile
+  FLUTTER_VERSION: 3.44.1
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted Toolchains request
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Parse exact request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          data = json.loads(Path('triggers/private-goanime-megaplay-format.json').read_text())
+          required = {
+              'project': 'goanime',
+              'operation': 'format_megaplay_test',
+              'branch': 'fix/megaplay-bootstrap-shorebird-20260826',
+              'expected_ref': '1a9c6ae7d58e788c97ae5cc2add00634d7e98a18',
+          }
+          for key, value in required.items():
+              if data.get(key) != value:
+                  raise SystemExit(f'{key} mismatch')
+          print(f"branch={data['branch']}")
+          print(f"expected_ref={data['expected_ref']}")
+          PY
+
+      - name: Require private repository token
+        env:
+          GOANIME_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$GOANIME_TOKEN"
+
+      - name: Checkout exact private candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.expected_ref }}
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up exact Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Format exact test and commit exact delta
+        id: commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          SOURCE_REF: ${{ steps.request.outputs.expected_ref }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          cd private-source
+          test "$(git rev-parse HEAD)" = "$SOURCE_REF"
+          encoded_branch="${TARGET_BRANCH//\//%2F}"
+          test "$(gh api "repos/${GOANIME_REPOSITORY}/git/ref/heads/${encoded_branch}" --jq .object.sha)" = "$SOURCE_REF"
+
+          target='test/services/megaplay/megaplay_bootstrap_wiring_test.dart'
+          dart format "$target"
+          dart format --output=none --set-exit-if-changed "$target"
+          test "$(git diff --name-only)" = "$target"
+          test -n "$(git diff -- "$target")"
+
+          base_tree="$(gh api "repos/${GOANIME_REPOSITORY}/git/commits/${SOURCE_REF}" --jq .tree.sha)"
+          blob="$(jq -Rs '{content: ., encoding: "utf-8"}' "$target" | gh api --method POST "repos/${GOANIME_REPOSITORY}/git/blobs" --input - --jq .sha)"
+          tree_payload="$(jq -n --arg base_tree "$base_tree" --arg path "$target" --arg sha "$blob" '{base_tree:$base_tree,tree:[{path:$path,mode:"100644",type:"blob",sha:$sha}]}')"
+          new_tree="$(printf '%s' "$tree_payload" | gh api --method POST "repos/${GOANIME_REPOSITORY}/git/trees" --input - --jq .sha)"
+          commit_payload="$(jq -n --arg message 'style(megaplay): format bootstrap regression test [skip ci]' --arg tree "$new_tree" --arg parent "$SOURCE_REF" '{message:$message,tree:$tree,parents:[$parent]}')"
+          new_sha="$(printf '%s' "$commit_payload" | gh api --method POST "repos/${GOANIME_REPOSITORY}/git/commits" --input - --jq .sha)"
+          gh api --method PATCH "repos/${GOANIME_REPOSITORY}/git/refs/heads/${encoded_branch}" -f sha="$new_sha" -F force=false >/dev/null
+          test "$(gh api "repos/${GOANIME_REPOSITORY}/git/ref/heads/${encoded_branch}" --jq .object.sha)" = "$new_sha"
+          mapfile -t remote_changed < <(gh api "repos/${GOANIME_REPOSITORY}/compare/${SOURCE_REF}...${new_sha}" --jq '.files[].filename')
+          test "${#remote_changed[@]}" -eq 1
+          test "${remote_changed[0]}" = "$target"
+          echo "new_sha=$new_sha" >> "$GITHUB_OUTPUT"
+          echo "Formatted candidate: $new_sha" >> "$GITHUB_STEP_SUMMARY"
