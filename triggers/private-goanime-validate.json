@@ -1,1 +1,7 @@
-{"project":"goanime","ref":"0fd85e16292257c4be76a70b3717ff2b8c94525c","requested_by":"chatgpt","requested_at":"2026-08-26T10:30:00-03:00","purpose":"megaplay-shorebird-authenticated-patch-validation"}
+{
+  "project": "goanime",
+  "ref": "50a4dc0b97718c3edf7443580647a038e1570f75",
+  "requested_by": "chatgpt",
+  "requested_at": "2026-08-26T13:27:00Z",
+  "purpose": "megaplay-shorebird-release-guard-parity"
+}
