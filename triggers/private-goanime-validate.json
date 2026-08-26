@@ -1,1 +1,1 @@
-{"project":"goanime","operation":"shorebird_patch","ref":"cc234599806891e9e293b9e24113dd2e77f7b264","release_version":"1.26.1+32","platforms":"android,windows,linux","requested_by":"chatgpt","requested_at":"2026-08-26T06:51:00-03:00","purpose":"restore-megaplay-bootstrap-wiring"}
+{"project":"goanime","ref":"10c4b1dd5a97274d32fd001cd215e4cb1787adb7","requested_by":"chatgpt","requested_at":"2026-08-26T06:56:00-03:00","purpose":"megaplay-bootstrap-plus-project-health-cleanup"}
