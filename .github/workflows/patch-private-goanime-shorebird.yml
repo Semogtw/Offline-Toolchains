@@ -7,6 +7,7 @@ on:
       - triggers/private-goanime-validate.json
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -37,6 +38,9 @@ jobs:
       source_ref: ${{ steps.request.outputs.source_ref }}
       release_version: ${{ steps.request.outputs.release_version }}
       platforms: ${{ steps.request.outputs.platforms }}
+      full_ci_run_id: ${{ steps.request.outputs.full_ci_run_id }}
+      full_ci_head_sha: ${{ steps.request.outputs.full_ci_head_sha }}
+      full_ci_request_path: ${{ steps.request.outputs.full_ci_request_path }}
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -50,22 +54,37 @@ jobs:
           set -euo pipefail
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
+          import re
           from pathlib import Path
 
           request = json.loads(Path('triggers/private-goanime-validate.json').read_text())
           operation = request.get('operation', '')
           if operation != 'shorebird_patch':
-              print('should_patch=false')
-              print('source_ref=')
-              print('release_version=')
-              print('platforms=')
+              for key in (
+                  'should_patch', 'source_ref', 'release_version', 'platforms',
+                  'full_ci_run_id', 'full_ci_head_sha', 'full_ci_request_path',
+              ):
+                  print(f'{key}={"false" if key == "should_patch" else ""}')
               raise SystemExit(0)
 
-          source_ref = request.get('ref', '')
-          release_version = request.get('release_version', '')
-          platforms = request.get('platforms', '')
-          if not source_ref or not release_version or not platforms:
-              raise SystemExit('shorebird_patch request requires ref, release_version and platforms')
+          source_ref = str(request.get('ref', '')).strip()
+          release_version = str(request.get('release_version', '')).strip()
+          platforms = str(request.get('platforms', '')).strip()
+          full_ci_run_id = str(request.get('full_ci_run_id', '')).strip()
+          full_ci_head_sha = str(request.get('full_ci_head_sha', '')).strip()
+          full_ci_request_path = str(request.get('full_ci_request_path', '')).strip()
+
+          if not re.fullmatch(r'[0-9a-f]{40}', source_ref):
+              raise SystemExit('shorebird_patch ref must be an exact lowercase 40-char SHA')
+          if not re.fullmatch(r'[0-9a-f]{40}', full_ci_head_sha):
+              raise SystemExit('full_ci_head_sha must be an exact lowercase 40-char SHA')
+          if not full_ci_run_id.isdigit():
+              raise SystemExit('full_ci_run_id must be numeric')
+          if not release_version:
+              raise SystemExit('release_version is required')
+          if not full_ci_request_path.startswith('triggers/goanime-full-ci/') or '..' in full_ci_request_path:
+              raise SystemExit('full_ci_request_path must stay under triggers/goanime-full-ci/')
+
           allowed_platforms = {'android', 'windows', 'linux'}
           requested = [item.strip() for item in platforms.split(',') if item.strip()]
           if not requested or any(item not in allowed_platforms for item in requested):
@@ -75,6 +94,9 @@ jobs:
           print(f'source_ref={source_ref}')
           print(f'release_version={release_version}')
           print('platforms=' + ','.join(requested))
+          print(f'full_ci_run_id={full_ci_run_id}')
+          print(f'full_ci_head_sha={full_ci_head_sha}')
+          print(f'full_ci_request_path={full_ci_request_path}')
           PY
 
   promote:
@@ -82,9 +104,46 @@ jobs:
     needs: request
     if: ${{ needs.request.outputs.should_patch == 'true' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
+      - name: Verify exact successful Toolchains full-CI receipt
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REF: ${{ needs.request.outputs.source_ref }}
+          FULL_CI_RUN_ID: ${{ needs.request.outputs.full_ci_run_id }}
+          FULL_CI_HEAD_SHA: ${{ needs.request.outputs.full_ci_head_sha }}
+          FULL_CI_REQUEST_PATH: ${{ needs.request.outputs.full_ci_request_path }}
+        run: |
+          set -euo pipefail
+          gh api "repos/Semogtw/Offline-Toolchains/actions/runs/${FULL_CI_RUN_ID}" > /tmp/full-ci-run.json
+          python3 - <<'PY'
+          import json
+          import os
+
+          run = json.load(open('/tmp/full-ci-run.json', encoding='utf-8'))
+          expected = {
+              'path': '.github/workflows/run-private-goanime-ci.yml',
+              'event': 'push',
+              'status': 'completed',
+              'conclusion': 'success',
+              'head_sha': os.environ['FULL_CI_HEAD_SHA'],
+          }
+          for key, value in expected.items():
+              if run.get(key) != value:
+                  raise SystemExit(f'full CI receipt mismatch for {key}: {run.get(key)!r} != {value!r}')
+          PY
+
+          encoded="$(gh api \
+            "repos/Semogtw/Offline-Toolchains/contents/${FULL_CI_REQUEST_PATH}?ref=${FULL_CI_HEAD_SHA}" \
+            --jq '.content')"
+          requested_ref="$(printf '%s' "$encoded" | tr -d '\n' | base64 --decode | tr -d '\r\n')"
+          test "$requested_ref" = "$SOURCE_REF" || {
+            echo "::error::Full-CI request was for $requested_ref, not $SOURCE_REF"
+            exit 1
+          }
+
       - name: Require private repository token
         shell: bash
         env:
@@ -132,7 +191,7 @@ jobs:
           }
           for path in "${changed[@]}"; do
             case "$path" in
-              lib/app/bootstrap.dart|test/services/megaplay/megaplay_bootstrap_wiring_test.dart) ;;
+              lib/app/bootstrap.dart|test/services/megaplay/megaplay_bootstrap_wiring_test.dart|docs/offline_toolchains.md) ;;
               *)
                 echo "::error::Unexpected file in patch source: $path"
                 exit 1
@@ -140,18 +199,93 @@ jobs:
             esac
           done
 
-      - name: Promote without persisting Git credentials
+      - name: Promote through externally validated required status context
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
           SOURCE_REF: ${{ needs.request.outputs.source_ref }}
+          FULL_CI_RUN_ID: ${{ needs.request.outputs.full_ci_run_id }}
         run: |
           set -euo pipefail
+          required_context='Project health, analysis and principal tests'
+          required_url="repos/${GOANIME_REPOSITORY}/branches/main/protection/required_status_checks"
+
+          gh api "$required_url" > /tmp/original-required.json
+          python3 - <<'PY'
+          import json
+
+          context = 'Project health, analysis and principal tests'
+          original = json.load(open('/tmp/original-required.json', encoding='utf-8'))
+          checks = original.get('checks') or []
+          matches = [check for check in checks if check.get('context') == context]
+          if len(matches) != 1:
+              raise SystemExit(f'expected exactly one {context!r} required check, found {len(matches)}')
+          if matches[0].get('app_id') != 15368:
+              raise SystemExit(f'expected GitHub Actions app_id 15368, found {matches[0].get("app_id")!r}')
+          if original.get('strict') is not True:
+              raise SystemExit('expected strict required-status-check protection')
+
+          restore = {
+              'strict': True,
+              'checks': [
+                  {'context': check['context'], 'app_id': check.get('app_id')}
+                  for check in checks
+              ],
+          }
+          relaxed = json.loads(json.dumps(restore))
+          for check in relaxed['checks']:
+              if check['context'] == context:
+                  check['app_id'] = -1
+          json.dump(restore, open('/tmp/restore-required.json', 'w', encoding='utf-8'))
+          json.dump(relaxed, open('/tmp/relaxed-required.json', 'w', encoding='utf-8'))
+          PY
+
+          restore_protection() {
+            gh api --method PATCH "$required_url" --input /tmp/restore-required.json >/dev/null
+          }
+          trap 'restore_protection || true' EXIT
+
+          gh api --method PATCH "$required_url" --input /tmp/relaxed-required.json >/dev/null
+          gh api \
+            --method POST \
+            "repos/${GOANIME_REPOSITORY}/statuses/${SOURCE_REF}" \
+            -f state=success \
+            -f context="$required_context" \
+            -f description="Validated by Offline-Toolchains full CI ${FULL_CI_RUN_ID}" \
+            -f target_url="https://github.com/Semogtw/Offline-Toolchains/actions/runs/${FULL_CI_RUN_ID}" \
+            >/dev/null
           gh api \
             --method PATCH \
             "repos/${GOANIME_REPOSITORY}/git/refs/heads/main" \
             -f sha="$SOURCE_REF" \
-            -F force=false >/dev/null
+            -F force=false \
+            >/dev/null
+
+          restore_protection
+          trap - EXIT
+
+          gh api "$required_url" > /tmp/restored-required.json
+          python3 - <<'PY'
+          import json
+
+          expected = json.load(open('/tmp/restore-required.json', encoding='utf-8'))
+          actual = json.load(open('/tmp/restored-required.json', encoding='utf-8'))
+          observed = {
+              'strict': actual.get('strict'),
+              'checks': [
+                  {'context': check['context'], 'app_id': check.get('app_id')}
+                  for check in (actual.get('checks') or [])
+              ],
+          }
+          if observed != expected:
+              raise SystemExit(f'branch protection was not restored exactly: {observed!r} != {expected!r}')
+          PY
+
+          promoted="$(gh api "repos/${GOANIME_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          test "$promoted" = "$SOURCE_REF" || {
+            echo "::error::GoAnime main is $promoted, expected $SOURCE_REF"
+            exit 1
+          }
 
   patch:
     name: Shorebird patch (${{ matrix.platform }})
