@@ -1,0 +1,148 @@
+name: Run SemogSite public build boundary
+
+on:
+  workflow_run:
+    workflows:
+      - Request private project CI
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: semogsite-public-build-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  normalize:
+    name: Normalize SemogSite public build request
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'build/private-ci' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.actor.login == github.repository_owner &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      enabled: ${{ steps.request.outputs.enabled }}
+      repository: ${{ steps.request.outputs.repository }}
+      ref: ${{ steps.request.outputs.ref }}
+
+    steps:
+      - name: Checkout trusted request implementation
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: trusted-source
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/private_ci_request.py
+            config/workflow-hub-projects.json
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout connector request revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          path: request-source
+          persist-credentials: false
+          sparse-checkout: triggers/private-ci.json
+          sparse-checkout-cone-mode: false
+
+      - name: Normalize trusted request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          normalized="$(python3 trusted-source/scripts/private_ci_request.py request-source/triggers/private-ci.json)"
+          python3 - "$normalized" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          request = json.loads(sys.argv[1])
+          enabled = "true" if request["project"] == "semogsite" else "false"
+          with open(sys.argv[2], "a", encoding="utf-8") as stream:
+              stream.write(f"enabled={enabled}\n")
+              if enabled == "true":
+                  for key in ("repository", "ref"):
+                      value = request[key]
+                      if "\n" in value or "\r" in value:
+                          raise SystemExit(f"unsafe newline in normalized {key}")
+                      stream.write(f"{key}={value}\n")
+          PY
+
+  public-build:
+    name: SemogSite public production bundle boundary
+    needs: normalize
+    if: needs.normalize.outputs.enabled == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout private SemogSite source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ needs.normalize.outputs.repository }}
+          ref: ${{ needs.normalize.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          check-latest: false
+
+      - name: Activate repository-pinned pnpm
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_manager="$(node -p "JSON.parse(require('node:fs').readFileSync('package.json','utf8')).packageManager")"
+          case "$package_manager" in
+            pnpm@*) ;;
+            *) echo "package.json must pin pnpm via packageManager" >&2; exit 1 ;;
+          esac
+          corepack enable
+          corepack prepare "$package_manager" --activate
+          pnpm --version
+
+      - name: Install exact dependencies without private native runtime allowlist
+        working-directory: private-source
+        run: pnpm install --frozen-lockfile
+
+      - name: Build isolated public web artifact
+        working-directory: private-source
+        run: pnpm --filter @semogtw/web build:public
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
+
+      - name: Summarize sanitized result
+        if: always()
+        shell: bash
+        env:
+          RESULT: ${{ job.status }}
+        run: |
+          {
+            echo "## SemogSite public build boundary"
+            echo
+            echo "- Result: \`$RESULT\`"
+            echo "- Private source/ref and build output are intentionally omitted."
+            echo "- The private checkout was discarded after the gate."
+          } >> "$GITHUB_STEP_SUMMARY"
