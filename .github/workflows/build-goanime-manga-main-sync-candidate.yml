@@ -628,6 +628,16 @@ jobs:
           git -c http.extraheader="AUTHORIZATION: basic $auth" fetch --no-tags origin "$TARGET_BRANCH"
           test "$(git rev-parse origin/$TARGET_BRANCH)" = "$EXPECTED_BRANCH_SHA"
           candidate_sha="$(git rev-parse HEAD)"
+          # Flutter pub get rewrites platform plugin registrants in the
+          # validation checkout. They are generated artifacts, not part of
+          # the candidate delta, and must not prevent the exact-main switch.
+          git restore --worktree -- \
+            linux/flutter/generated_plugin_registrant.cc \
+            linux/flutter/generated_plugins.cmake \
+            macos/Flutter/GeneratedPluginRegistrant.swift \
+            windows/flutter/generated_plugin_registrant.cc \
+            windows/flutter/generated_plugins.cmake
+          test -z "$(git status --porcelain)"
           git switch --detach "$EXPECTED_MAIN_SHA"
           git diff --binary "$EXPECTED_MAIN_SHA..$candidate_sha" -- \
             ':(exclude).github/workflows/**' \
