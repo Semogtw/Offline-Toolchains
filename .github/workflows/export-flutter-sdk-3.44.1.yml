@@ -1,4 +1,4 @@
-name: Export Flutter SDK 3.44.1
+name: Export GoAnime pub cache
 
 on:
   push:
@@ -10,88 +10,81 @@ on:
 permissions:
   contents: read
 
+env:
+  GOANIME_REF: 681f6145ee60e5b07e4e3204f3d88a6bc2007feb
+  FLUTTER_VERSION: 3.44.1
+
 jobs:
   export:
-    name: Package pinned Flutter SDK
+    name: Resolve and package GoAnime pub cache
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout exact GoAnime source read-only
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.GOANIME_REF }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
       - name: Install pinned Flutter
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
           channel: stable
-          flutter-version: 3.44.1
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
 
-      - name: Verify and package SDK
+      - name: Resolve exact dependencies
+        working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
-          flutter --version
-          sdk_root="${FLUTTER_ROOT:-}"
-          if [[ -z "$sdk_root" ]]; then
-            sdk_root="$(dirname "$(dirname "$(readlink -f "$(command -v flutter)")")")"
-          fi
-          test -x "$sdk_root/bin/flutter"
-          test -x "$sdk_root/bin/cache/dart-sdk/bin/dart"
-          mkdir -p "$RUNNER_TEMP/flutter-sdk-transfer"
-          tar -C "$(dirname "$sdk_root")" -I 'zstd -T0 -3' -cf "$RUNNER_TEMP/flutter-sdk.tar.zst" "$(basename "$sdk_root")"
+          test "$(git rev-parse HEAD)" = "$GOANIME_REF"
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Package pub cache in connector-sized chunks
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d "$HOME/.pub-cache"
+          mkdir -p "$RUNNER_TEMP/pub-cache-transfer"
+          tar -C "$HOME" -I 'zstd -T0 -3' -cf "$RUNNER_TEMP/pub-cache.tar.zst" .pub-cache
           split --bytes=350M --numeric-suffixes=0 --suffix-length=3 \
-            "$RUNNER_TEMP/flutter-sdk.tar.zst" \
-            "$RUNNER_TEMP/flutter-sdk-transfer/flutter-sdk.tar.zst.part-"
-          (cd "$RUNNER_TEMP/flutter-sdk-transfer" && sha256sum flutter-sdk.tar.zst.part-* > SHA256SUMS.parts)
-          test "$(find "$RUNNER_TEMP/flutter-sdk-transfer" -maxdepth 1 -name 'flutter-sdk.tar.zst.part-*' | wc -l)" -eq 5
+            "$RUNNER_TEMP/pub-cache.tar.zst" \
+            "$RUNNER_TEMP/pub-cache-transfer/pub-cache.tar.zst.part-"
+          (cd "$RUNNER_TEMP/pub-cache-transfer" && sha256sum pub-cache.tar.zst.part-* > SHA256SUMS.parts)
+          count="$(find "$RUNNER_TEMP/pub-cache-transfer" -maxdepth 1 -name 'pub-cache.tar.zst.part-*' | wc -l)"
+          test "$count" -ge 1
+          test "$count" -le 8
+          echo "PUB_CACHE_PARTS=$count"
+          du -sh "$HOME/.pub-cache" "$RUNNER_TEMP/pub-cache.tar.zst"
 
-      - name: Upload SDK chunk 000
+      - name: Upload pub cache chunks
         uses: actions/upload-artifact@v7
         with:
-          name: flutter-sdk-3.44.1-part-000
-          path: ${{ runner.temp }}/flutter-sdk-transfer/flutter-sdk.tar.zst.part-000
+          name: goanime-pub-cache-3.44.1
+          path: |
+            ${{ runner.temp }}/pub-cache-transfer/pub-cache.tar.zst.part-*
+            ${{ runner.temp }}/pub-cache-transfer/SHA256SUMS.parts
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
 
-      - name: Upload SDK chunk 001
-        uses: actions/upload-artifact@v7
-        with:
-          name: flutter-sdk-3.44.1-part-001
-          path: ${{ runner.temp }}/flutter-sdk-transfer/flutter-sdk.tar.zst.part-001
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload SDK chunk 002
-        uses: actions/upload-artifact@v7
-        with:
-          name: flutter-sdk-3.44.1-part-002
-          path: ${{ runner.temp }}/flutter-sdk-transfer/flutter-sdk.tar.zst.part-002
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload SDK chunk 003
-        uses: actions/upload-artifact@v7
-        with:
-          name: flutter-sdk-3.44.1-part-003
-          path: ${{ runner.temp }}/flutter-sdk-transfer/flutter-sdk.tar.zst.part-003
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload SDK chunk 004
-        uses: actions/upload-artifact@v7
-        with:
-          name: flutter-sdk-3.44.1-part-004
-          path: ${{ runner.temp }}/flutter-sdk-transfer/flutter-sdk.tar.zst.part-004
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-      - name: Upload SDK checksums
-        uses: actions/upload-artifact@v7
-        with:
-          name: flutter-sdk-3.44.1-checksums
-          path: ${{ runner.temp }}/flutter-sdk-transfer/SHA256SUMS.parts
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf private-source
