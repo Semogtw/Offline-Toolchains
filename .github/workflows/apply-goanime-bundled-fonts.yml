@@ -7,7 +7,7 @@ on:
       - 'triggers/goanime-bundled-fonts/*.request'
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: goanime-bundled-fonts
@@ -50,18 +50,21 @@ jobs:
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: source
           fetch-depth: 2
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Verify request is still main HEAD
         working-directory: source
         env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           EXPECTED_SHA: ${{ steps.request.outputs.sha }}
         shell: bash
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-          remote_main="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_main="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git refs/heads/main | awk '{print $1}')"
           test "$remote_main" = "$EXPECTED_SHA"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
 
       - name: Checkout pinned Epilogue
         uses: actions/checkout@v6
@@ -218,11 +221,13 @@ jobs:
         id: push
         working-directory: source
         env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           EXPECTED_SHA: ${{ steps.request.outputs.sha }}
         shell: bash
         run: |
           set -euo pipefail
-          remote_main="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_main="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git refs/heads/main | awk '{print $1}')"
           test "$remote_main" = "$EXPECTED_SHA"
           git config user.name "goanime-toolchains[bot]"
           git config user.email "goanime-toolchains[bot]@users.noreply.github.com"
@@ -234,13 +239,14 @@ jobs:
             pubspec.lock
           git commit -m "perf(ui): bundle deterministic production fonts"
           pushed_sha="$(git rev-parse HEAD)"
-          git push origin HEAD:refs/heads/main
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/goanime-mobile.git HEAD:refs/heads/main
+          unset auth PRIVATE_REPOSITORIES_TOKEN
           printf 'pushed_sha=%s\n' "$pushed_sha" >> "$GITHUB_OUTPUT"
 
       - name: Publish sanitized receipt
         if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           TARGET_SHA: ${{ steps.request.outputs.sha }}
           PUSHED_SHA: ${{ steps.push.outputs.pushed_sha }}
           STATE: ${{ job.status }}
