@@ -1,0 +1,14 @@
+{
+  "schema_version": 2,
+  "source_sha": "7bd636136b7dac88bd679f1b98f9bec2d605efde",
+  "goanime_workflow_run_id": null,
+  "goanime_workflow_run_url": null,
+  "goanime_build_conclusion": null,
+  "source_artifact_id": null,
+  "apk_sha256": null,
+  "apk_size_bytes": null,
+  "toolchains_run_id": 32928714061,
+  "toolchains_run_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/32928714061",
+  "distribution": "private artifacts only; no GitHub Release, Play Store, Shorebird, update-manifest publication, or rollout",
+  "stage": "failed"
+}
