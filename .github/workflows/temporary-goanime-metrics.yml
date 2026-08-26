@@ -1,0 +1,107 @@
+name: Temporary GoAnime-Mobile metrics
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/temporary-goanime-metrics.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  metrics:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout GoAnime-Mobile main
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: main
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Measure repository
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cloc >/dev/null
+
+          python3 - <<'PY'
+          import json
+          import subprocess
+          from pathlib import PurePosixPath
+
+          tracked = subprocess.check_output(['git', 'ls-files', '-z']).split(b'\0')
+          paths = [p.decode('utf-8', errors='surrogateescape') for p in tracked if p]
+
+          doc_exts = {'.md', '.mdx', '.rst', '.adoc', '.asciidoc', '.pdf'}
+          doc_names = {
+              'license', 'license.txt', 'copying', 'copying.txt',
+              'changelog', 'changelog.txt', 'contributing', 'contributing.txt',
+              'code_of_conduct', 'code_of_conduct.txt', 'security', 'security.txt',
+          }
+
+          def is_doc(path: str) -> bool:
+              p = PurePosixPath(path)
+              parts_lower = [x.lower() for x in p.parts]
+              name = p.name.lower()
+              if 'docs' in parts_lower or 'doc' in parts_lower:
+                  return True
+              if p.suffix.lower() in doc_exts:
+                  return True
+              if name in doc_names:
+                  return True
+              if name.startswith(('readme.', 'changelog.', 'contributing.', 'code_of_conduct.', 'security.')):
+                  return True
+              return False
+
+          docs = [p for p in paths if is_doc(p)]
+          non_docs = [p for p in paths if not is_doc(p)]
+          print('METRIC_TRACKED_FILES=' + str(len(paths)))
+          print('METRIC_DOCUMENT_FILES=' + str(len(docs)))
+          print('METRIC_NON_DOCUMENT_FILES=' + str(len(non_docs)))
+          print('METRIC_DOC_EXTENSIONS=' + json.dumps(sorted(doc_exts)))
+          PY
+
+          cloc . \
+            --exclude-dir=.git,docs,doc \
+            --exclude-ext=md,mdx,rst,adoc,asciidoc,pdf \
+            --json \
+            --out="$RUNNER_TEMP/cloc.json" >/dev/null
+
+          python3 - "$RUNNER_TEMP/cloc.json" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding='utf-8'))
+          s = data['SUM']
+          print(f"METRIC_CLOC_FILES={s['nFiles']}")
+          print(f"METRIC_CODE_LINES={s['code']}")
+          print(f"METRIC_COMMENT_LINES={s['comment']}")
+          print(f"METRIC_BLANK_LINES={s['blank']}")
+          langs = sorted(
+              ((k, v['nFiles'], v['code']) for k, v in data.items() if k not in {'header', 'SUM'}),
+              key=lambda x: x[2], reverse=True
+          )
+          print('METRIC_TOP_LANGUAGES=' + ';'.join(f'{name}:{files}:{code}' for name, files, code in langs[:15]))
+          PY
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/source"
