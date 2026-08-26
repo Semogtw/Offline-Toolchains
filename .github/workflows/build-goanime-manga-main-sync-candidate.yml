@@ -117,7 +117,8 @@ jobs:
             lib/services/metadata_bearer_policy.dart \
             lib/services/metadata_endpoint_policy.dart \
             lib/services/metadata_public_egress_guard.dart \
-            lib/services/metadata_stream_limits.dart
+            lib/services/metadata_stream_limits.dart \
+            lib/services/unified_source_service.dart
 
           # The Manga branch has the coherent shared-media generation. Keep
           # these files together; selecting individual hunks creates hybrids
