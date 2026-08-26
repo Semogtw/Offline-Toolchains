@@ -143,4 +143,62 @@ jobs:
             print(resolvedE);
           }
           DART
-          dart format --output=show probe.dart
+          cat > probe_exact.dart <<'DART'
+          class UnifiedEpisode {}
+
+          class Provider {
+            final String providerKey = 'provider';
+          }
+
+          class EpisodeAggregator {
+            EpisodeAggregator({
+              required Duration episodeSourceTimeout,
+              required int maxConcurrentEpisodeLoads,
+            });
+
+            Future<List<UnifiedEpisode>> aggregate({
+              required List<Object> providerMatches,
+              required List<UnifiedEpisode> preliminary,
+              required Object cancellation,
+              required void Function(List<UnifiedEpisode> snapshot) onPartialResult,
+            }) async => <UnifiedEpisode>[];
+          }
+
+          Future<void> exact() async {
+            final episodePhaseScheduler = Provider();
+            final provider = Provider();
+            final match = Object();
+            final cancellation = Object();
+            final index = 0;
+            final episodeSourceTimeout = Duration.zero;
+
+            void publishProviderSnapshot(
+              int index,
+              List<UnifiedEpisode> snapshot,
+            ) {}
+
+            final resolved = await episodePhaseScheduler
+                .schedule<List<UnifiedEpisode>>(
+                  providerKey: provider.providerKey,
+                  priority: 0,
+                  priorityRank: 0,
+                  operation: () async {
+                    cancellation.throwIfCancelled();
+                    final providerAggregator = EpisodeAggregator(
+                      episodeSourceTimeout: episodeSourceTimeout,
+                      maxConcurrentEpisodeLoads: 1,
+                    );
+                    return providerAggregator.aggregate(
+                      providerMatches: [match],
+                      preliminary: const [],
+                      cancellation: cancellation,
+                      onPartialResult: (snapshot) {
+                        publishProviderSnapshot(index, snapshot);
+                      },
+                    );
+                  },
+                );
+            print(resolved);
+          }
+          DART
+          dart format --output=show probe_exact.dart
