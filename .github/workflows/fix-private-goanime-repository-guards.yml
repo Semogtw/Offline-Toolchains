@@ -1,0 +1,200 @@
+name: Fix private GoAnime repository guards
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - triggers/private-goanime-repository-guards.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-goanime-repository-guards
+  cancel-in-progress: false
+
+env:
+  GOANIME_REPOSITORY: Semogtw/goanime-mobile
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout trusted Toolchains request
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Parse exact guard-repair request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path('triggers/private-goanime-repository-guards.json').read_text())
+          required = {
+              'project': 'goanime',
+              'operation': 'repair_repository_guards',
+              'branch': 'fix/megaplay-bootstrap-shorebird-20260826',
+              'expected_ref': '87aa609a71f3ffade986fc9c99336cc6a34e9169',
+          }
+          for key, expected in required.items():
+              if data.get(key) != expected:
+                  raise SystemExit(f'{key} must be {expected!r}, got {data.get(key)!r}')
+          print(f"branch={data['branch']}")
+          print(f"expected_ref={data['expected_ref']}")
+          PY
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          GOANIME_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$GOANIME_TOKEN"
+
+      - name: Checkout exact private GoAnime candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.expected_ref }}
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Repair stale future guard and SQLite test forwarders
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd private-source
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path('.')
+          validator = root / 'tools/validate_external_future_ownership.py'
+          text = validator.read_text()
+          stale = '        r"unawaited\\(\\s*ImageCacheDiagnosticsService\\.instance\\s*\\.observePrecache\\(",\n'
+          if text.count(stale) != 1:
+              raise SystemExit(f'expected one stale ImageCacheDiagnosticsService rule, found {text.count(stale)}')
+          text = text.replace(stale, '', 1)
+          validator.write_text(text)
+
+          expected_missing = {
+              'test/controllers/media',
+              'test/helpers',
+              'test/integration',
+              'test/navigation',
+              'test/services/manga',
+              'test/services/manga/archive',
+              'test/services/manga/download',
+              'test/services/manga/metadata',
+              'test/services/manga/offline',
+              'test/services/manga/providers',
+              'test/services/manga/storage',
+              'test/services/manga/sync',
+              'test/services/media',
+              'test/tools/manga',
+              'test/widgets/manga',
+          }
+
+          test_root = root / 'test'
+          missing = set()
+          for test_file in test_root.rglob('*_test.dart'):
+              directory = test_file.parent
+              if not (directory / 'flutter_test_config.dart').is_file():
+                  missing.add(directory.as_posix())
+          if missing != expected_missing:
+              raise SystemExit(f'unexpected missing config set: {sorted(missing)}')
+
+          for rel in sorted(expected_missing):
+              directory = Path(rel)
+              depth = len(directory.relative_to(test_root).parts)
+              target = '/'.join(['..'] * depth + ['flutter_test_config.dart'])
+              (directory / 'flutter_test_config.dart').write_text(f"export '{target}';\n")
+          PY
+
+          python3 tools/validate_repository_guards.py
+          python3 tools/generate_quality_scorecard.py --write
+          python3 tools/generate_quality_scorecard.py --check
+          python3 tools/validate_repository_guards.py
+
+      - name: Verify exact delta and commit without persisted credentials
+        id: commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          SOURCE_REF: ${{ steps.request.outputs.expected_ref }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          cd private-source
+          test "$(git rev-parse HEAD)" = "$SOURCE_REF"
+          encoded_branch="${TARGET_BRANCH//\//%2F}"
+          branch_tip="$(gh api "repos/${GOANIME_REPOSITORY}/git/ref/heads/${encoded_branch}" --jq .object.sha)"
+          test "$branch_tip" = "$SOURCE_REF" || {
+            echo "::error::Candidate branch moved from $SOURCE_REF to $branch_tip"
+            exit 1
+          }
+
+          mapfile -t changed < <(git status --short | sed -E 's/^.. //' | sort)
+          expected=(
+            docs/quality_scorecard.json
+            test/controllers/media/flutter_test_config.dart
+            test/helpers/flutter_test_config.dart
+            test/integration/flutter_test_config.dart
+            test/navigation/flutter_test_config.dart
+            test/services/manga/archive/flutter_test_config.dart
+            test/services/manga/download/flutter_test_config.dart
+            test/services/manga/flutter_test_config.dart
+            test/services/manga/metadata/flutter_test_config.dart
+            test/services/manga/offline/flutter_test_config.dart
+            test/services/manga/providers/flutter_test_config.dart
+            test/services/manga/storage/flutter_test_config.dart
+            test/services/manga/sync/flutter_test_config.dart
+            test/services/media/flutter_test_config.dart
+            test/tools/manga/flutter_test_config.dart
+            test/widgets/manga/flutter_test_config.dart
+            tools/validate_external_future_ownership.py
+          )
+          test "${#changed[@]}" -eq "${#expected[@]}" || {
+            echo "::error::Unexpected changed file count"
+            printf 'actual: %s\n' "${changed[@]}"
+            exit 1
+          }
+          for i in "${!expected[@]}"; do
+            test "${changed[$i]}" = "${expected[$i]}" || {
+              echo "::error::Unexpected delta: ${changed[$i]} != ${expected[$i]}"
+              exit 1
+            }
+          done
+
+          base_tree="$(gh api "repos/${GOANIME_REPOSITORY}/git/commits/${SOURCE_REF}" --jq .tree.sha)"
+          tree_file=/tmp/tree.json
+          printf '{"base_tree":"%s","tree":[' "$base_tree" > "$tree_file"
+          first=1
+          for path in "${changed[@]}"; do
+            blob="$(jq -Rs '{content: ., encoding: "utf-8"}' "$path" | gh api --method POST "repos/${GOANIME_REPOSITORY}/git/blobs" --input - --jq .sha)"
+            if [ "$first" -eq 0 ]; then printf ',' >> "$tree_file"; fi
+            first=0
+            jq -nc --arg path "$path" --arg sha "$blob" '{path:$path,mode:"100644",type:"blob",sha:$sha}' >> "$tree_file"
+          done
+          printf ']}' >> "$tree_file"
+
+          new_tree="$(gh api --method POST "repos/${GOANIME_REPOSITORY}/git/trees" --input "$tree_file" --jq .sha)"
+          commit_payload="$(jq -n --arg message 'test(guards): restore repository guard contracts [skip ci]' --arg tree "$new_tree" --arg parent "$SOURCE_REF" '{message:$message,tree:$tree,parents:[$parent]}')"
+          new_sha="$(printf '%s' "$commit_payload" | gh api --method POST "repos/${GOANIME_REPOSITORY}/git/commits" --input - --jq .sha)"
+          gh api --method PATCH "repos/${GOANIME_REPOSITORY}/git/refs/heads/${encoded_branch}" -f sha="$new_sha" -F force=false >/dev/null
+          test "$(gh api "repos/${GOANIME_REPOSITORY}/git/ref/heads/${encoded_branch}" --jq .object.sha)" = "$new_sha"
+
+          mapfile -t remote_changed < <(gh api "repos/${GOANIME_REPOSITORY}/compare/${SOURCE_REF}...${new_sha}" --jq '.files[].filename' | sort)
+          test "${#remote_changed[@]}" -eq "${#expected[@]}"
+          for i in "${!expected[@]}"; do test "${remote_changed[$i]}" = "${expected[$i]}"; done
+
+          echo "new_sha=$new_sha" >> "$GITHUB_OUTPUT"
+          echo "Repository guards repaired at $new_sha" >> "$GITHUB_STEP_SUMMARY"
