@@ -220,16 +220,6 @@ jobs:
         working-directory: private-source
         run: dart format --output=none --set-exit-if-changed lib test packages tools
 
-      - name: Report GoAnime format delta ranges
-        if: failure()
-        working-directory: private-source
-        shell: bash
-        run: |
-          set +e
-          dart format lib/services/unified_source_service.dart >/dev/null 2>&1
-          git diff --unified=0 -- lib/services/unified_source_service.dart | sed -n '/^@@/p'
-          exit 0
-
       - name: Analyze Flutter project
         working-directory: private-source
         run: flutter analyze --no-pub
