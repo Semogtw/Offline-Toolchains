@@ -294,9 +294,7 @@ jobs:
 
       - name: Commit sanitized result
         env:
-          GIT_CONFIG_COUNT: 1
-          GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
-          GIT_CONFIG_VALUE_0: 'AUTHORIZATION: bearer ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}'
+          REPORT_PUSH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
@@ -307,6 +305,7 @@ jobs:
             exit 0
           fi
           git commit -m "ci(goanime): report full CI run $GITHUB_RUN_ID"
-          git fetch origin main
+          test -n "$REPORT_PUSH_TOKEN"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer $REPORT_PUSH_TOKEN" fetch origin main
           git rebase origin/main
-          git push origin HEAD:main
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer $REPORT_PUSH_TOKEN" push origin HEAD:main
