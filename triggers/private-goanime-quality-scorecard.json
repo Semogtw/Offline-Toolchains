@@ -4,5 +4,6 @@
   "branch": "fix/megaplay-bootstrap-shorebird-20260826",
   "expected_ref": "8aaec2194ac47d01a0c5b69c5c5c6062725983e0",
   "requested_by": "chatgpt",
-  "purpose": "eliminate-quality-scorecard-drift-before-shorebird-patch"
+  "purpose": "eliminate-quality-scorecard-drift-before-shorebird-patch",
+  "attempt": 2
 }
