@@ -118,19 +118,36 @@ jobs:
         working-directory: private-source
         shell: bash
         env:
+          EXPECTED_BRANCH_SHA: ${{ steps.request.outputs.branch_sha }}
           EXPECTED_MAIN_SHA: ${{ steps.request.outputs.main_sha }}
         run: |
           set -euo pipefail
-          # Current main owns anime/provider infrastructure. Long-lived branch
-          # history can otherwise splice or resurrect pre-refactor versions.
+          # Current main owns anime/provider and metadata transport infrastructure.
+          # Long-lived branch history can otherwise splice, delete, or resurrect
+          # pre-refactor versions even when both tips contain the right files.
           git checkout "$EXPECTED_MAIN_SHA" -- \
             lib/screens/home_screen_data.dart \
             lib/services/source/episode_aggregator.dart \
-            lib/services/availability_service.dart
+            lib/services/availability_service.dart \
+            lib/services/jikan_http_client_registry.dart \
+            lib/services/metadata_api_config.dart \
+            lib/services/metadata_transport_bootstrap.dart \
+            lib/services/metadata_routing_http_client.dart \
+            lib/services/metadata_bearer_policy.dart \
+            lib/services/metadata_endpoint_policy.dart \
+            lib/services/metadata_public_egress_guard.dart \
+            lib/services/metadata_stream_limits.dart
+
+          # Manga-only UI belongs to the manga branch. Git rename history can
+          # otherwise synthesize an obsolete volumes implementation during merge.
+          git checkout "$EXPECTED_BRANCH_SHA" -- \
+            lib/screens/manga/manga_details_screen.dart
+
           git rm -f --ignore-unmatch -- \
             lib/services/image_source_resolver_service.dart \
             test/services/availability_service_feature_flag_test.dart \
-            test/services/image_source_resolver_service_test.dart
+            test/services/image_source_resolver_service_test.dart \
+            lib/screens/manga/widgets/manga_volumes_list.dart
 
           python3 - <<'PY'
           from pathlib import Path
@@ -177,8 +194,11 @@ jobs:
           test -d lib/services/manga
           test -d lib/screens/manga
           test -d lib/widgets/manga
+          test -f lib/services/jikan_http_client_registry.dart
           test -f lib/services/manga/metadata/manga_jikan_metadata_service.dart
           test -f test/services/manga/metadata/manga_jikan_metadata_routing_test.dart
+          grep -q "JikanHttpClientRegistry.client" lib/services/manga/metadata/manga_jikan_metadata_service.dart
+          grep -q "configureMetadataTransport" lib/main.dart
           grep -R -qi "manga" lib/screens/main_navigation_screen.dart lib/widgets/navigation/goanime_desktop_sidebar.dart
           grep -R -qi "manga" lib/app lib/screens/home_screen.dart lib/screens/search_screen.dart lib/screens/history_screen.dart lib/screens/watchlist_screen.dart
           grep -q "assets/data/manga_availability_seed.json" pubspec.yaml
