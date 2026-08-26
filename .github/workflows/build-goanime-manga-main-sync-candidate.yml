@@ -617,7 +617,7 @@ jobs:
         working-directory: private-source
         shell: bash
         env:
-          GOANIME_WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          GOANIME_WRITE_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           EXPECTED_BRANCH_SHA: ${{ steps.request.outputs.branch_sha }}
           TARGET_BRANCH: ${{ steps.request.outputs.branch }}
           TEMP_BRANCH: ${{ steps.request.outputs.temp_branch }}
