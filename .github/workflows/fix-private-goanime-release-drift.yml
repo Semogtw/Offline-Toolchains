@@ -1,0 +1,178 @@
+name: Fix private GoAnime release drift
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - triggers/private-goanime-release-drift.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-goanime-release-drift
+  cancel-in-progress: false
+
+env:
+  GOANIME_REPOSITORY: Semogtw/goanime-mobile
+
+jobs:
+  repair:
+    name: Repair exact GoAnime candidate metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted Toolchains request
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Parse exact repair request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path('triggers/private-goanime-release-drift.json').read_text())
+          required = {
+              'project': 'goanime',
+              'operation': 'repair_release_drift',
+              'branch': 'fix/megaplay-bootstrap-shorebird-20260826',
+              'expected_ref': '10c4b1dd5a97274d32fd001cd215e4cb1787adb7',
+              'release_version': '1.26.1+32',
+          }
+          for key, expected in required.items():
+              actual = data.get(key)
+              if actual != expected:
+                  raise SystemExit(f'{key} must be {expected!r}, got {actual!r}')
+          print(f"branch={data['branch']}")
+          print(f"expected_ref={data['expected_ref']}")
+          print(f"release_version={data['release_version']}")
+          PY
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          GOANIME_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          test -n "$GOANIME_TOKEN" || {
+            echo "::error::Private repository token is required."
+            exit 1
+          }
+
+      - name: Checkout exact private GoAnime candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.expected_ref }}
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify branch tip and apply narrow repair
+        id: repair
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          SOURCE_REF: ${{ steps.request.outputs.expected_ref }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          RELEASE_VERSION: ${{ steps.request.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          cd private-source
+
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$SOURCE_REF" || {
+            echo "::error::Expected checkout $SOURCE_REF, got $actual"
+            exit 1
+          }
+
+          encoded_branch="${TARGET_BRANCH//\//%2F}"
+          branch_tip="$(gh api "repos/${GOANIME_REPOSITORY}/git/ref/heads/${encoded_branch}" --jq .object.sha)"
+          test "$branch_tip" = "$SOURCE_REF" || {
+            echo "::error::Candidate branch moved from $SOURCE_REF to $branch_tip"
+            exit 1
+          }
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          status = Path('docs/technical_status.json')
+          status_text = status.read_text()
+          old = '"appVersion": "1.26.0+31"'
+          new = '"appVersion": "1.26.1+32"'
+          if status_text.count(old) != 1:
+              raise SystemExit(f'expected exactly one stale appVersion marker, found {status_text.count(old)}')
+          status.write_text(status_text.replace(old, new, 1))
+
+          pubspec = Path('pubspec.yaml')
+          pubspec_text = pubspec.read_text()
+          asset = '    - shorebird.yaml\n'
+          if pubspec_text.count(asset) != 1:
+              raise SystemExit(f'expected exactly one Shorebird asset entry, found {pubspec_text.count(asset)}')
+          pubspec.write_text(pubspec_text.replace(asset, '', 1))
+          PY
+
+          test "$(git diff --name-only | sort)" = $'docs/technical_status.json\npubspec.yaml' || {
+            echo "::error::Repair changed unexpected paths"
+            git diff --name-only
+            exit 1
+          }
+          grep -Fq '"appVersion": "1.26.1+32"' docs/technical_status.json
+          ! grep -Fq -- '- shorebird.yaml' pubspec.yaml
+          grep -Fq 'version: 1.26.1+32' pubspec.yaml
+
+          base_tree="$(gh api "repos/${GOANIME_REPOSITORY}/git/commits/${SOURCE_REF}" --jq .tree.sha)"
+          status_blob="$(jq -Rs '{content: ., encoding: "utf-8"}' docs/technical_status.json | gh api --method POST "repos/${GOANIME_REPOSITORY}/git/blobs" --input - --jq .sha)"
+          pubspec_blob="$(jq -Rs '{content: ., encoding: "utf-8"}' pubspec.yaml | gh api --method POST "repos/${GOANIME_REPOSITORY}/git/blobs" --input - --jq .sha)"
+
+          tree_payload="$(jq -n \
+            --arg base_tree "$base_tree" \
+            --arg status_blob "$status_blob" \
+            --arg pubspec_blob "$pubspec_blob" \
+            '{base_tree: $base_tree, tree: [
+              {path: "docs/technical_status.json", mode: "100644", type: "blob", sha: $status_blob},
+              {path: "pubspec.yaml", mode: "100644", type: "blob", sha: $pubspec_blob}
+            ]}')"
+          new_tree="$(printf '%s' "$tree_payload" | gh api --method POST "repos/${GOANIME_REPOSITORY}/git/trees" --input - --jq .sha)"
+
+          commit_payload="$(jq -n \
+            --arg message 'chore(release): align 1.26.1 Shorebird metadata [skip ci]' \
+            --arg tree "$new_tree" \
+            --arg parent "$SOURCE_REF" \
+            '{message: $message, tree: $tree, parents: [$parent]}')"
+          new_sha="$(printf '%s' "$commit_payload" | gh api --method POST "repos/${GOANIME_REPOSITORY}/git/commits" --input - --jq .sha)"
+
+          gh api --method PATCH \
+            "repos/${GOANIME_REPOSITORY}/git/refs/heads/${encoded_branch}" \
+            -f sha="$new_sha" \
+            -F force=false >/dev/null
+
+          final_tip="$(gh api "repos/${GOANIME_REPOSITORY}/git/ref/heads/${encoded_branch}" --jq .object.sha)"
+          test "$final_tip" = "$new_sha" || {
+            echo "::error::Branch tip is $final_tip after repair, expected $new_sha"
+            exit 1
+          }
+
+          echo "new_sha=$new_sha" >> "$GITHUB_OUTPUT"
+          echo "Repaired GoAnime candidate: $new_sha" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify resulting commit delta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          NEW_SHA: ${{ steps.repair.outputs.new_sha }}
+          SOURCE_REF: ${{ steps.request.outputs.expected_ref }}
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(gh api "repos/${GOANIME_REPOSITORY}/compare/${SOURCE_REF}...${NEW_SHA}" --jq '.files[].filename' | sort)
+          test "${#changed[@]}" -eq 2
+          test "${changed[0]}" = 'docs/technical_status.json'
+          test "${changed[1]}" = 'pubspec.yaml'
