@@ -287,6 +287,7 @@ jobs:
             args=()
             while IFS= read -r id; do [ -n "$id" ] && args+=("--mal-id=$id"); done < "$WORK/new_mal_ids.txt"
             dart run tools/build_franchise_availability_cache.dart "${args[@]}"
+            dart run tools/postprocess_franchise_availability_cache.dart --write
           else
             echo 'No new MAL IDs; preserving franchise graph cache.'
           fi

@@ -146,7 +146,22 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           test -f tools/apply_catalog_discovery_consensus.py
           test -f tools/build_title_availability_database.dart
+          test -f tools/build_mal_availability_cache_checkpointed.dart
+          test -f tools/build_franchise_availability_cache.dart
+          test -f tools/postprocess_franchise_availability_cache.dart
+          test -f tools/build_franchise_runtime_artifacts.dart
           test -f tools/build_runtime_database_manifest.dart
+
+      - name: Capture anime availability baseline
+        id: anime_baseline
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline="$RUNNER_TEMP/goanime-global-catalog-baseline"
+          mkdir -p "$baseline"
+          cp assets/data/mal_availability_map.json "$baseline/mal_availability_map.json"
+          echo "path=$baseline/mal_availability_map.json" >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -211,6 +226,68 @@ jobs:
         working-directory: private-source
         run: flutter test --no-pub test/services/catalog_discovery_reporting_service_test.dart
 
+      - name: Map promoted anime titles to MAL incrementally
+        working-directory: private-source
+        run: dart run tools/build_mal_availability_cache_checkpointed.dart --incremental
+
+      - name: Capture MAL IDs requiring franchise refresh
+        id: franchise_refresh
+        working-directory: private-source
+        env:
+          BASELINE_MAL_MAP: ${{ steps.anime_baseline.outputs.path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/goanime-global-catalog-baseline/franchise_mal_ids.txt"
+          python3 - "$BASELINE_MAL_MAP" "$output" <<'PY'
+          import json, sys
+          from pathlib import Path
+
+          baseline = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+          current = json.loads(Path('assets/data/mal_availability_map.json').read_text(encoding='utf-8'))
+          franchise = json.loads(Path('assets/data/franchise_availability_map.json').read_text(encoding='utf-8'))
+
+          def ids(document):
+              return {
+                  int(entry['malId'])
+                  for entry in document.get('entries') or []
+                  if isinstance(entry, dict) and isinstance(entry.get('malId'), int) and entry['malId'] > 0
+              }
+
+          current_ids = ids(current)
+          baseline_ids = ids(baseline)
+          indexed_ids = {
+              int(entry['malId'])
+              for entry in franchise.get('index') or []
+              if isinstance(entry, dict) and isinstance(entry.get('malId'), int) and entry['malId'] > 0
+          }
+          affected = sorted((current_ids - baseline_ids) | (current_ids - indexed_ids))
+          Path(sys.argv[2]).write_text('\n'.join(map(str, affected)), encoding='utf-8')
+          print(f'MAL IDs requiring franchise refresh: {len(affected)}')
+          if affected:
+              print('affected MAL IDs:', ','.join(map(str, affected)))
+          PY
+          echo "path=$output" >> "$GITHUB_OUTPUT"
+
+      - name: Rebuild franchise runtime artifacts for promoted anime
+        working-directory: private-source
+        env:
+          MAL_IDS_FILE: ${{ steps.franchise_refresh.outputs.path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -s "$MAL_IDS_FILE" ]; then
+            args=()
+            while IFS= read -r id; do
+              [ -n "$id" ] && args+=("--mal-id=$id")
+            done < "$MAL_IDS_FILE"
+            dart run tools/build_franchise_availability_cache.dart "${args[@]}"
+            dart run tools/postprocess_franchise_availability_cache.dart --write
+          else
+            echo 'No new or unindexed MAL IDs; preserving franchise graph cache.'
+          fi
+          dart run tools/build_franchise_runtime_artifacts.dart
+
       - name: Build title availability SQLite
         working-directory: private-source
         run: dart run tools/build_title_availability_database.dart
@@ -238,6 +315,14 @@ jobs:
           expected="$(tr -d '[:space:]' < assets/data/title_availability.db.sha256)"
           actual="$(sha256sum assets/data/title_availability.db | awk '{print $1}')"
           test "$expected" = "$actual"
+
+          franchise_expected="$(tr -d '[:space:]' < assets/data/franchise_availability.db.sha256)"
+          franchise_actual="$(sha256sum assets/data/franchise_availability.db | awk '{print $1}')"
+          test "$franchise_expected" = "$franchise_actual"
+          test "$(jq -r '.assets[] | select(.databaseId == "franchise_availability") | .sha256' "$manifest")" = "$franchise_actual"
+          test "$(sha256sum dist/runtime_database_cache/franchise_availability.db | awk '{print $1}')" = "$franchise_actual"
+          test "$(jq -r '.assets[] | select(.databaseId == "title_availability") | .sha256' "$manifest")" = "$actual"
+          test "$(sha256sum dist/runtime_database_cache/title_availability.db | awk '{print $1}')" = "$actual"
 
           # Backward-compatible rollout: main currently emits the two anime
           # databases. Once GoAnime main contains manga runtime support, the
@@ -269,7 +354,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          allowed='^(assets/data/(available_animes\.json|available_anime_modes\.json|mal_provider_availability_map\.json|title_availability\.db|title_availability\.db\.sha256|franchise_availability\.db\.sha256|manga_availability\.db\.sha256))$'
+          allowed='^(assets/data/(available_animes\.json|available_anime_modes\.json|mal_provider_availability_map\.json|mal_availability_map\.json|mal_availability_unmatched\.json|franchise_availability_map\.json|franchise_index\.json|franchise_availability\.db|franchise_availability\.db\.sha256|title_availability\.db|title_availability\.db\.sha256|manga_availability\.db\.sha256))$'
           changed="$(git status --porcelain=v1 | sed -E 's/^.. //' | grep -Ev '^(build|dist)/' || true)"
           unexpected="$(printf '%s\n' "$changed" | sed '/^$/d' | grep -Ev "$allowed" || true)"
           if [ -n "$unexpected" ]; then

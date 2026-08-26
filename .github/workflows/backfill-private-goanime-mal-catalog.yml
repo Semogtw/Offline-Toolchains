@@ -211,6 +211,7 @@ jobs:
               [ -n "$id" ] && args+=("--mal-id=$id")
             done < "$WORK/missing_franchise_ids.txt"
             dart run tools/build_franchise_availability_cache.dart "${args[@]}"
+            dart run tools/postprocess_franchise_availability_cache.dart --write
           else
             echo 'No MAL IDs missing from the franchise cache.'
           fi
