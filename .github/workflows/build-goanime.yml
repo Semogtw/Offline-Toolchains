@@ -1,3 +1,4 @@
+# local toolchain export refresh 2026-08-26
 name: Build GoAnime offline cache
 
 on:
