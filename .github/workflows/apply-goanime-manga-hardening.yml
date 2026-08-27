@@ -83,3 +83,5 @@ jobs:
           git fetch origin "$TARGET_BRANCH"
           git rebase "origin/$TARGET_BRANCH"
           git push origin "HEAD:$TARGET_BRANCH"
+
+# retry: corrected text-base64 transport
