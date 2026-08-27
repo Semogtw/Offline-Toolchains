@@ -71,7 +71,7 @@ jobs:
           remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
           test "$remote" = "$EXPECTED_SHA"
 
-      - name: Apply progressive snapshot callback
+      - name: Normalize progressive snapshot callback
         working-directory: private-source
         shell: bash
         run: |
@@ -86,17 +86,23 @@ jobs:
           start = text.index(method_marker)
           end = text.index(next_marker, start)
           section = text[start:end]
-          needle = '        initial: initial,\n      );'
-          replacement = '''        initial: initial,
-                onSnapshot: (snapshot) {
-                  if (!_isCurrentLoad(source, generation, snapshot)) return;
-                  setState(() => _snapshot = snapshot);
-                  unawaited(_refreshDownloadStatuses(snapshot, generation));
-                },
-              );'''
-          if section.count(needle) != 1:
-              raise SystemExit(f'expected exactly one hydrate anchor, found {section.count(needle)}')
-          section = section.replace(needle, replacement, 1)
+          malformed = '''        initial: initial,
+      onSnapshot: (snapshot) {
+        if (!_isCurrentLoad(source, generation, snapshot)) return;
+        setState(() => _snapshot = snapshot);
+        unawaited(_refreshDownloadStatuses(snapshot, generation));
+      },
+    );'''
+          formatted = '''        initial: initial,
+        onSnapshot: (snapshot) {
+          if (!_isCurrentLoad(source, generation, snapshot)) return;
+          setState(() => _snapshot = snapshot);
+          unawaited(_refreshDownloadStatuses(snapshot, generation));
+        },
+      );'''
+          if section.count(malformed) != 1:
+              raise SystemExit(f'expected malformed callback once, found {section.count(malformed)}')
+          section = section.replace(malformed, formatted, 1)
           path.write_text(text[:start] + section + text[end:])
           PY
           git -c core.whitespace=cr-at-eol diff --check
@@ -114,7 +120,7 @@ jobs:
           git config user.name 'GoAnime Toolchains'
           git config user.email 'actions@users.noreply.github.com'
           git add lib/screens/manga/manga_details_screen.dart
-          git commit -m 'wip(manga): surface progressive chapter snapshots'
+          git commit -m 'fix(manga): normalize progressive snapshot callback'
           auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
           remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
           test "$remote" = "$EXPECTED_SHA"
