@@ -1,0 +1,140 @@
+diff --git a/docs/manga_catalog_ux.md b/docs/manga_catalog_ux.md
+--- a/docs/manga_catalog_ux.md
++++ b/docs/manga_catalog_ux.md
+@@ -52,6 +52,8 @@
+ 
+ Cards de obra são acionáveis e abrem Detalhes. Depois de voltar de Detalhes, a Home recarrega seu snapshot para refletir mudanças de biblioteca/status.
+ 
++A montagem do browse não faz uma consulta de metadata por card no catálogo SQLite de produção. Catálogo/disponibilidade e estado local começam em paralelo; obras, IDs externos, vínculos de fonte e metadata são lidos em lotes limitados, preservando a ordem canônica e o contrato readability-first. Resolvers alternativos continuam podendo usar a API unitária quando não implementam batch.
++
+ Falha de load sem snapshot útil deve mostrar estado recuperável/retry, não spinner infinito nem catálogo vazio falso.
+ 
+ ## Categorias
+@@ -88,6 +90,8 @@
+ - download;
+ - biblioteca e status;
+ - remoção da biblioteca.
++
++Quando capa e grafo de capítulos precisam de hidratação, essas duas buscas independentes podem começar juntas. O `MangaRequestScheduler` continua sendo o owner dos limites globais/por source, prioridades e spacing; a otimização não cria `Future.wait` irrestrito sobre providers.
+ 
+ Status suportados:
+ 
+diff --git a/docs/performance.md b/docs/performance.md
+--- a/docs/performance.md
++++ b/docs/performance.md
+@@ -116,6 +116,33 @@
+ opcionais e só entram quando passam por allowlist/validação de formato. A
+ captura e a cópia são locais, não iniciam rede e não alteram carregamento,
+ playback, prewarm ou fallback.
++
++## Paralelismo de latência perceptível
++
++A rodada de 2026-08-27 reduziu esperas seriais em fluxos foreground sem aumentar
++a concorrência irrestrita de rede:
++
++- no bootstrap, a inicialização de `UserSyncService` e a descoberta do banco
++  runtime de Mangá começam juntas; `MangaAccountSyncService.initialize()` é
++  disparado somente depois de `runApp`, porque restauração da fila local e o
++  kickoff remoto best-effort não precisam bloquear o primeiro frame;
++- o browse de Mangá inicia catálogo/disponibilidade e estado local em paralelo.
++  Para o catálogo SQLite de produção, obras, IDs externos, vínculos de fonte e
++  metadata são lidos em lotes limitados (chunks de até 400 `workId`s), em vez
++  de uma sequência N+1 de consultas por card; resolvers customizados continuam
++  compatíveis com a API unitária e podem optar pela interface de batch;
++- em Detalhes de Mangá, quando capa e grafo de capítulos estão ausentes, as duas
++  hidratações independentes começam juntas. A pressão externa continua sob
++  `MangaRequestScheduler`, portanto limites globais/por provider, prioridades e
++  spacing não são contornados;
++- a Home resolve em paralelo somente o conjunto já limitado a cinco artes de
++  banner em cache e isola falha por item antes de atualizar a UI.
++
++Isso não autoriza transformar coleções grandes em `Future.wait` irrestrito. Em
++particular, o fluxo interno de um provider de Mangá continua respeitando sua
++ordem/scheduler, e o scanner de novos animes não foi tornado agressivamente
++paralelo nesta rodada. O objetivo é reduzir o caminho crítico percebido, não
++aumentar carga sobre sources.
+ 
+ ## Cache de metadados de anime
+ 
+diff --git a/lib/app/bootstrap.dart b/lib/app/bootstrap.dart
+--- a/lib/app/bootstrap.dart
++++ b/lib/app/bootstrap.dart
+@@ -45,13 +45,15 @@
+     client: createProductionUpdateHttpClient(),
+   );
+   final userSyncService = UserSyncService.instance;
+-  await userSyncService.initialize(deferAnonymousSignIn: true);
+-  await MangaAccountSyncService.instance.initialize();
+-  MangaRuntimeDatabaseState.setActivePath(
+-    await RuntimeDatabaseUpdateService.activeDatabasePathFor(
+-      MangaRuntimeDatabaseContract.databaseId,
+-    ),
++  final userSyncInitialization = userSyncService.initialize(
++    deferAnonymousSignIn: true,
+   );
++  final activeMangaDatabasePath =
++      RuntimeDatabaseUpdateService.activeDatabasePathFor(
++        MangaRuntimeDatabaseContract.databaseId,
++      );
++  await userSyncInitialization;
++  MangaRuntimeDatabaseState.setActivePath(await activeMangaDatabasePath);
+   final settingsSyncWriter = userSyncService.recordSettings;
+ 
+   runApp(
+@@ -77,6 +79,10 @@
+     ),
+   );
+ 
++  // Manga sync is lazy-safe: writes and resume synchronization initialize it
++  // on demand. Do not hold the first frame behind SharedPreferences queue
++  // restoration or a best-effort remote synchronization kickoff.
++  unawaited(MangaAccountSyncService.instance.initialize());
+   startDeferredStartupServices(initializeDownloads: downloadService.initialize);
+   unawaited(_updateRuntimeDatabasesAndReloadAvailability());
+   updateService.startBackgroundCheck();
+diff --git a/lib/screens/home_screen_data.dart b/lib/screens/home_screen_data.dart
+--- a/lib/screens/home_screen_data.dart
++++ b/lib/screens/home_screen_data.dart
+@@ -322,17 +322,29 @@
+     if (bannerAnimes.isEmpty) return;
+ 
+     final imageService = AnimeImageCacheService.instance;
+-    final resolved = <int, String>{};
+-    for (final anime in bannerAnimes) {
+-      final bannerImage = await imageService.bestBannerUrlForAnime(
+-        malId: anime.malId,
+-        fallbackImageUrl: anime.bannerImageUrl,
+-        allowPosterFallback: false,
+-      );
+-      if (bannerImage != null && bannerImage.isNotEmpty) {
+-        resolved[anime.malId] = bannerImage;
+-      }
+-    }
++    // At most five hero cards are considered, so these independent local
++    // cache lookups are safe to overlap without introducing unbounded work.
++    final cachedEntries = await Future.wait<MapEntry<int, String?>>([
++      for (final anime in bannerAnimes)
++        () async {
++          try {
++            final bannerImage = await imageService.bestBannerUrlForAnime(
++              malId: anime.malId,
++              fallbackImageUrl: anime.bannerImageUrl,
++              allowPosterFallback: false,
++            );
++            return MapEntry(anime.malId, bannerImage);
++          } catch (error) {
++            debugPrint('[Home] Cached banner artwork lookup failed: $error');
++            return MapEntry(anime.malId, null);
++          }
++        }(),
++    ]);
++    final resolved = <int, String>{
++      for (final entry in cachedEntries)
++        if (entry.value case final String imageUrl when imageUrl.isNotEmpty)
++          entry.key: imageUrl,
++    };
+     if (!mounted || resolved.isEmpty) return;
+ 
+     setState(() {
+diff --git a/lib/services/manga/manga_browse_data_source.dart b/lib/services/manga/manga_browse_data_source.dart
+--- a/lib
