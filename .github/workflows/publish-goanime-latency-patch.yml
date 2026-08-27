@@ -101,3 +101,12 @@ jobs:
           git commit -m 'perf: parallelize perceptible foreground work'
           git push origin HEAD:fix/catalog-search-manga-regressions-20260826
           echo "Published $(git rev-parse HEAD)"
+
+      - name: Upload transport diagnostic on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-latency-transport-diagnostic
+          path: goanime/lib/services/manga/manga_bundled_catalog_source.dart
+          if-no-files-found: error
+          retention-days: 1
