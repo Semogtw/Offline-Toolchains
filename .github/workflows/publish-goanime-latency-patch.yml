@@ -1,0 +1,76 @@
+name: Publish GoAnime perceived latency patch
+
+on:
+  push:
+    branches:
+      - toolchain/goanime-local-sdk-20260827
+    paths:
+      - .github/workflows/publish-goanime-latency-patch.yml
+      - transfers/goanime/perceived-latency-parallelism-20260827.part*
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout transport repo
+        uses: actions/checkout@v6
+        with:
+          path: toolchains
+
+      - name: Reassemble and verify validated patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat toolchains/transfers/goanime/perceived-latency-parallelism-20260827.part{00..05} > "$RUNNER_TEMP/goanime.patch"
+          echo '72a5b9d295eb738bb5f4dbbddc1c699b0da6d50a5bba0fe478eed8127ecaf8bf  '"$RUNNER_TEMP/goanime.patch" | sha256sum -c -
+
+      - name: Checkout exact GoAnime branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: fix/catalog-search-manga-regressions-20260826
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: goanime
+          fetch-depth: 1
+
+      - name: Apply locally validated patch and publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd goanime
+          expected='84c951349079b07f0ec534fa4417d30336439710'
+          actual="$(git rev-parse HEAD)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "Refusing to publish: expected $expected, found $actual" >&2
+            exit 1
+          fi
+
+          git apply --check "$RUNNER_TEMP/goanime.patch"
+          git apply "$RUNNER_TEMP/goanime.patch"
+          git diff --check
+
+          git config user.name 'goanime-toolchains-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add \
+            docs/manga_catalog_ux.md \
+            docs/performance.md \
+            lib/app/bootstrap.dart \
+            lib/screens/home_screen_data.dart \
+            lib/services/manga/manga_browse_data_source.dart \
+            lib/services/manga/manga_bundled_catalog_source.dart \
+            lib/services/manga/manga_hydrating_details_data_source.dart \
+            lib/services/manga/manga_repository_browse_data_source.dart \
+            lib/services/manga/manga_runtime_database_catalog_source.dart \
+            test/architecture/manga_bootstrap_runtime_wiring_test.dart \
+            test/screens/home_banner_artwork_retry_contract_test.dart \
+            test/services/manga/manga_bundled_metadata_resolver_test.dart \
+            test/services/manga/manga_hydrating_details_data_source_test.dart \
+            test/services/manga/manga_repository_browse_data_source_test.dart
+          git diff --cached --check
+          git commit -m 'perf: parallelize perceptible foreground work'
+          git push origin HEAD:fix/catalog-search-manga-regressions-20260826
+          echo "Published $(git rev-parse HEAD)"
