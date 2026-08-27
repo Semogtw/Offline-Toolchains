@@ -1,5 +1,5 @@
 {
   "project": "goanime",
-  "mode": "snapshot",
-  "ref": "84c951349079b07f0ec534fa4417d30336439710"
+  "mode": "ref",
+  "ref": "fix/catalog-search-manga-regressions-20260826"
 }
