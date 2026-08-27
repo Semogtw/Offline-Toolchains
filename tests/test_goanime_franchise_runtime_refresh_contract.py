@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import unittest
 
 
@@ -41,6 +42,18 @@ class GoAnimeFranchiseRuntimeRefreshContractTest(unittest.TestCase):
         payload = publish.index("latest/franchise_availability.db")
         manifest = publish.index("latest/runtime_database_manifest.json")
         self.assertLess(payload, manifest)
+
+    def test_global_finalizer_allows_rate_limited_mal_mapping_to_finish(self) -> None:
+        workflow = (
+            ROOT / ".github/workflows/goanime-global-catalog-finalize.yml"
+        ).read_text(encoding="utf-8")
+        match = re.search(
+            r"jobs:\s+finalize:\s+.*?timeout-minutes:\s*(\d+)",
+            workflow,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(match)
+        self.assertGreaterEqual(int(match.group(1)), 180)
 
     def test_other_anime_refreshes_postprocess_incremental_graph(self) -> None:
         workflow = (

@@ -34,7 +34,10 @@ jobs:
   finalize:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # Incremental Jikan mapping is deliberately rate-limited. The current
+    # catalog can contain thousands of unprocessed titles, so the job must
+    # outlive a single 45-minute runner window before publishing anything.
+    timeout-minutes: 360
     env:
       FLUTTER_CHANNEL: stable
       FLUTTER_VERSION: 3.44.1
