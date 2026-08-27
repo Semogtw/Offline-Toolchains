@@ -1,0 +1,177 @@
+      'works',
++        where: 'workId IN ($placeholders)',
++        whereArgs: chunk,
++      );
++      final worksById = <String, Map<String, Object?>>{
++        for (final row in workRows)
++          if (row['workId'] case final String workId when workId.isNotEmpty)
++            workId: row,
++      };
++      if (worksById.isEmpty) continue;
++
++      final externalRows = await database.query(
++        'external_ids',
++        where: 'workId IN ($placeholders)',
++        whereArgs: chunk,
++        orderBy: 'workId ASC, namespace ASC, externalId ASC',
++      );
++      final externalByWorkId = <String, List<Map<String, Object?>>>{};
++      for (final row in externalRows) {
++        final workId = row['workId'] as String?;
++        if (workId == null || workId.isEmpty) continue;
++        externalByWorkId
++            .putIfAbsent(workId, () => <Map<String, Object?>>[])
++            .add(row);
++      }
++
++      final linkWhere = legacy || !readableOnly
++          ? 'workId IN ($placeholders)'
++          : 'workId IN ($placeholders) AND availabilityState = ?';
++      final linkArgs = <Object?>[
++        ...chunk,
++        if (!legacy && readableOnly) 'readable',
++      ];
++      final linkRows = await database.query(
++        'source_links',
++        where: linkWhere,
++        whereArgs: linkArgs,
++        orderBy: 'workId ASC, sourceId ASC, mangaId ASC',
++      );
++      final linksByWorkId = <String, List<Map<String, Object?>>>{};
++      for (final row in linkRows) {
++        final workId = row['workId'] as String?;
++        if (workId == null || workId.isEmpty) continue;
++        linksByWorkId
++            .putIfAbsent(workId, () => <Map<String, Object?>>[])
++            .add(row);
++      }
++
++      for (final workId in chunk) {
++        final row = worksById[workId];
++        final workLinkRows = linksByWorkId[workId];
++        if (row == null || workLinkRows == null || workLinkRows.isEmpty) {
++          continue;
++        }
++        final record = _recordFromRows(
++          workId: workId,
++          row: row,
++          externalRows: externalByWorkId[workId] ?? const [],
++          linkRows: workLinkRows,
++          readableOnly: readableOnly,
++          legacy: legacy,
++        );
++        if (record != null) recordsByWorkId[workId] = record;
++      }
++    }
++
++    return [
++      for (final workId in workIds)
++        if (recordsByWorkId[workId] case final MangaAvailabilityRecord record)
++          record,
++    ];
++  }
++
++  MangaAvailabilityRecord? _recordFromRows({
++    required String workId,
++    required Map<String, Object?> row,
++    required List<Map<String, Object?>> externalRows,
++    required List<Map<String, Object?>> linkRows,
++    required bool readableOnly,
++    required bool legacy,
++  }) {
+     final work = MangaWork(
+       workId: workId,
+       canonicalTitle: row['canonicalTitle']! as String,
+@@ -595,7 +659,35 @@
+       work: work,
+       sourceLinks: links,
+       evidence: evidence,
+-    );
++      metadata: _metadataFromWorkRow(row),
++    );
++  }
++
++  static MangaBrowseMetadata _metadataFromWorkRow(Map<String, Object?> row) {
++    return MangaBrowseMetadata(
++      artists: _decodeStringList(row['artistsJson']),
++      genres: _decodeStringList(row['genresJson']),
++      format: _enumByName(
++        MangaFormat.values,
++        row['format'],
++        MangaFormat.unknown,
++      ),
++      status: _enumByName(
++        MangaPublicationStatus.values,
++        row['status'],
++        MangaPublicationStatus.unknown,
++      ),
++      countryOfOrigin: _requiredString(row['countryOfOrigin']),
++    );
++  }
++
++  static String _placeholders(int count) => List.filled(count, '?').join(',');
++
++  static Iterable<List<T>> _chunks<T>(List<T> values, {int size = 400}) sync* {
++    for (var start = 0; start < values.length; start += size) {
++      final end = (start + size).clamp(0, values.length);
++      yield values.sublist(start, end);
++    }
+   }
+ 
+   static Future<void> _requireColumns(
+diff --git a/lib/services/manga/manga_hydrating_details_data_source.dart b/lib/services/manga/manga_hydrating_details_data_source.dart
+--- a/lib/services/manga/manga_hydrating_details_data_source.dart
++++ b/lib/services/manga/manga_hydrating_details_data_source.dart
+@@ -28,11 +28,11 @@
+     required MangaDetailsSnapshot initial,
+   }) async {
+     final ownerToken = Object();
+-    final effectiveAvailability = await _hydrator.hydrateMissingCover(
+-      availability,
+-      ownerToken: ownerToken,
+-    );
+     if (initial.chapters.isNotEmpty) {
++      final effectiveAvailability = await _hydrator.hydrateMissingCover(
++        availability,
++        ownerToken: ownerToken,
++      );
+       if (effectiveAvailability.work.coverUrl ==
+           initial.availability.work.coverUrl) {
+         return initial;
+@@ -40,10 +40,16 @@
+       return _delegate.load(effectiveAvailability);
+     }
+ 
+-    final result = await _hydrator.hydrateMissingGraph(
+-      effectiveAvailability,
+-      ownerToken: ownerToken,
+-    );
++    // Cover discovery and chapter hydration use independent provider data.
++    // Starting both now prevents a slow optional cover lookup from delaying
++    // the first usable chapter graph. MangaRequestScheduler still owns all
++    // provider/global concurrency and spacing limits.
++    final hydration = await Future.wait<Object>([
++      _hydrator.hydrateMissingCover(availability, ownerToken: ownerToken),
++      _hydrator.hydrateMissingGraph(availability, ownerToken: ownerToken),
++    ]);
++    final effectiveAvailability = hydration[0] as MangaAvailabilityRecord;
++    final result = hydration[1] as MangaChapterHydrationResult;
+     if (result.persisted) {
+       final hydrated = await _delegate.load(effectiveAvailability);
+       if (result.failedSourceIds.isEmpty) return hydrated;
+diff --git a/lib/services/manga/manga_repository_browse_data_source.dart b/lib/services/manga/manga_repository_browse_data_source.dart
+--- a/lib/services/manga/manga_repository_browse_data_source.dart
++++ b/lib/services/manga/manga_repository_browse_data_source.dart
+@@ -121,21 +121,17 @@
+ 
+   @override
+   Future<List<MangaBrowseItem>> loadCategories() async {
+-    final records = _availability.catalogReady
+-        ? await _safeAllReadable()
+-        : const <MangaAvailabilityRecord>[];
+-    final database = await _database.database;
+-    final localState = await _localStateLoader.load(database);
+-    final items = <MangaBrowseItem>[];
+-    for (final record in records) {
+-      items.add(
+-    
