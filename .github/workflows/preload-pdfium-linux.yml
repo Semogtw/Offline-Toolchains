@@ -1,0 +1,41 @@
+name: Preload PDFium Linux native asset
+
+on:
+  push:
+    branches:
+      - toolchain/goanime-local-sdk-20260827
+    paths:
+      - .github/workflows/preload-pdfium-linux.yml
+
+permissions:
+  contents: read
+
+jobs:
+  preload:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Download pinned PDFium release asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          release='chromium%2F7811'
+          asset='pdfium-linux-x64.tgz'
+          url="https://github.com/bblanchon/pdfium-binaries/releases/download/${release}/${asset}"
+          curl --fail --location --retry 4 --retry-all-errors --output "$RUNNER_TEMP/$asset" "$url"
+          mkdir -p "$RUNNER_TEMP/pdfium-linux-x64"
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/pdfium-linux-x64" lib/libpdfium.so
+          sha256sum "$RUNNER_TEMP/$asset" > "$RUNNER_TEMP/pdfium-linux-x64.tgz.sha256"
+          sha256sum "$RUNNER_TEMP/pdfium-linux-x64/lib/libpdfium.so" > "$RUNNER_TEMP/pdfium-linux-x64/libpdfium.so.sha256"
+
+      - name: Upload pinned PDFium asset
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-pdfium-chromium-7811-linux-x64
+          path: |
+            ${{ runner.temp }}/pdfium-linux-x64/lib/libpdfium.so
+            ${{ runner.temp }}/pdfium-linux-x64/libpdfium.so.sha256
+            ${{ runner.temp }}/pdfium-linux-x64.tgz.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
