@@ -1,6 +1,11 @@
 name: GoAnime Manga Global Cache
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/goanime-manga-global-cache.yml
   schedule:
     - cron: '45 6 * * *'
   workflow_dispatch:
@@ -8,7 +13,7 @@ on:
       target_ref:
         description: Allowlisted GoAnime-Mobile branch to refresh
         required: true
-        default: codex/manga-parity-20260823
+        default: main
 
 permissions:
   contents: write
@@ -20,9 +25,7 @@ concurrency:
 env:
   FLUTTER_CHANNEL: stable
   FLUTTER_VERSION: 3.44.1
-  # Development activation. Change this single value to `main` only after the
-  # manga cache-parity implementation is merged and validated there.
-  SCHEDULED_TARGET_REF: codex/manga-parity-20260823
+  SCHEDULED_TARGET_REF: main
 
 jobs:
   refresh:
