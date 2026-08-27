@@ -12,12 +12,13 @@ permissions:
 
 jobs:
   apply:
-    name: Apply private GoAnime documentation patch
+    name: Apply private GoAnime documentation hardening
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
       TARGET_BRANCH: fix/catalog-search-manga-regressions-20260826
       PATCH_FILE: .agent-patches/manga-final-docs.patch.gz.b64
+      REQUIRED_CODE_CHECKPOINT: be1a8a59556bf8587324249144adc95ca6c7d65c
     steps:
       - name: Require private repository token
         shell: bash
@@ -38,15 +39,165 @@ jobs:
           submodules: false
           show-progress: false
 
-      - name: Validate and apply staged docs patch
+      - name: Apply documentation updates
         shell: bash
         run: |
           set -euo pipefail
           cd goanime
+          git merge-base --is-ancestor "$REQUIRED_CODE_CHECKPOINT" HEAD
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def load(path: str) -> str:
+              return Path(path).read_text(encoding='utf-8')
+
+          def save(path: str, text: str) -> None:
+              Path(path).write_text(text.rstrip() + '\n', encoding='utf-8')
+
+          def append_once(text: str, marker: str, block: str) -> str:
+              if marker in text:
+                  return text
+              return text.rstrip() + '\n\n' + block.strip() + '\n'
+
+          # 1) Owner policy: make freshness and fail-closed behavior normative.
+          path = 'docs/manga_availability_policy.md'
+          text = load(path)
+          text = text.replace('**Última atualização:** 2026-08-24', '**Última atualização:** 2026-08-27')
+          text = append_once(text, '## Hardening de legibilidade — 2026-08-27', '''
+          ## Hardening de legibilidade — 2026-08-27
+
+          Para superfícies remotas normais, `readable` agora significa uma garantia fresca e concreta, não apenas um estado histórico do banco.
+
+          - Home, Categorias, Busca normal, interseções de ranking e entrada normal de Detalhes exigem ao menos um source link habilitado com evidence correspondente ao mesmo `(sourceId, mangaId)`;
+          - a evidence remota tem janela padrão de **30 dias**; ao atingir a fronteira ela expira fail-closed até que a mesma ocorrência seja revalidada com sucesso;
+          - falha, resultado inconclusivo, provider degradado ou item não sondado por limite de budget não renova evidence antiga;
+          - carry-forward de provider parcial/falho preserva o **listing** conhecido, mas não renova nem ressuscita proof de leitura vencida;
+          - ocorrência fresca que voltou apenas como `listed` não herda `readable` do link anterior;
+          - `MangaAvailabilityService` aplica novamente o TTL de 30 dias no runtime, protegendo o produto mesmo contra um DB antigo;
+          - Biblioteca/Histórico pertencem ao estado do usuário e podem continuar visíveis sem rota remota atual, sem afirmar que a obra continua legível online.
+
+          O verificador progressivo usa defaults de **1024 probes globais**, **128 por provider** e até **8 providers concorrentes**, mantendo execução sequencial dentro de cada provider. O cursor persistido permite convergência entre refreshes sem fanout irrestrito.
+
+          A identidade global segue: ocorrência histórica exata → alias histórico único (título canônico/alternativos) → fallback conservador por título normalizado. Ambiguidade e colisão do mesmo provider falham fechado. IDs externos confiáveis já existentes continuam preservados/guardados, mas o inventário não faz um fanout remoto por título apenas para obter MAL/AniList/MangaDex IDs.
+
+          Testes de regressão relevantes incluem `manga_progressive_readability_verifier_test.dart`, `build_global_manga_availability_test.dart`, `manga_availability_service_test.dart`, `manga_repository_browse_data_source_test.dart` e `manga_readable_search_adapter_test.dart`.
+          ''')
+          save(path, text)
+
+          # 2) Product parity: distinguish historical receipts from current product guarantee.
+          path = 'docs/manga_product_parity.md'
+          text = load(path)
+          text = text.replace('**Atualizado em:** 2026-08-24  ', '**Atualizado em:** 2026-08-27')
+          text = append_once(text, '## Hardening do catálogo legível — 2026-08-27', '''
+          ## Hardening do catálogo legível — 2026-08-27
+
+          Branch de hardening: `fix/catalog-search-manga-regressions-20260826`.
+
+          O catálogo passou a distinguir explicitamente três conceitos:
+
+          1. **listed**: ocorrência conhecida no inventário de um provider;
+          2. **fresh-readable**: ocorrência com evidence concreta e não expirada (janela padrão de 30 dias);
+          3. **estado histórico do usuário**: Biblioteca/Histórico, que não é apagado quando uma rota remota deixa de estar comprovada.
+
+          Home, Categorias, Busca normal e rankings de Mangá consomem o universo fresh-readable. `listed` sozinho continua útil para inventário, diagnóstico e revalidação, mas não fabrica card legível.
+
+          O materializador expira proof stale inclusive em partições carregadas de providers parciais/falhos; o runtime reaplica o mesmo TTL como defesa adicional. A revalidação é bounded em 1024 probes globais, 128/provider e 8 filas de providers concorrentes, com requests sequenciais dentro de cada provider.
+
+          A canonicalização global também passou a reutilizar identidade histórica conservadora: ocorrência exata → alias histórico único → título normalizado. Ambiguidades continuam separadas. Não foi introduzido fanout remoto em ~10k obras apenas para enriquecer IDs externos.
+
+          Contagens e receipts anteriores permanecem evidência **histórica do checkpoint em que foram produzidos**; não devem ser interpretados como garantia atual de que todos os links listados possuem proof fresca.
+          ''')
+          save(path, text)
+
+          # 3) Operational handoff: record the implemented checkpoint and what remains before main.
+          path = 'docs/codex_handoff_catalog_search_manga_regressions_2026-08-26.md'
+          text = load(path)
+          text = append_once(text, '## Checkpoint 2026-08-27 — hardening de disponibilidade/readability de Mangá', '''
+          ## Checkpoint 2026-08-27 — hardening de disponibilidade/readability de Mangá
+
+          Checkpoint funcional de código: `be1a8a59556bf8587324249144adc95ca6c7d65c` (`fix(manga): expire carried readability proof`).
+
+          A aceitação do relato “todo mangá anunciado precisa realmente estar disponível para leitura” ficou mais estrita:
+
+          - evidence remota vale por 30 dias por padrão;
+          - proof stale expira fail-closed e só volta com revalidação bem-sucedida da mesma ocorrência;
+          - failed/inconclusive/degraded/budget-skip não estendem proof antiga;
+          - provider parcial/falho pode carregar seu catálogo `listed`, mas não carregar indefinidamente `readable` vencido;
+          - ocorrência fresca `listed` não ressuscita proof anterior;
+          - o runtime filtra novamente por freshness antes de `search`, `allReadable` e `readablePreview`;
+          - Home continua limitada a preview legível de 24 itens e Categorias usa o universo legível completo;
+          - a canonicalização reaproveita ocorrência histórica e aliases únicos antes do fallback por título, falhando fechado em ambiguidades.
+
+          Capacidade do refresh: 1024 probes globais, 128/provider, até 8 providers concorrentes e serialização por provider. O sistema não adiciona um fanout remoto de metadata/IDs por ocorrência apenas para deduplicar.
+
+          Testes de regressão foram adicionados/ajustados para expiração, concorrência, carry-forward, aliases históricos e TTL runtime. Nesta sessão os gates Flutter 3.44.1/analyzer não foram executados por ausência do SDK no runtime do agente; eles permanecem obrigatórios no gate pré-`main` e não devem ser descritos como verdes sem execução real.
+          ''')
+          save(path, text)
+
+          # 4) Historical receipt: preserve numbers but remove obsolete product interpretation.
+          path = 'docs/manga_global_availability_receipt_2026-08-25.md'
+          text = load(path)
+          warning = '> **Snapshot histórico.** As contagens abaixo descrevem o materializado em 2026-08-25 e são preservadas sem reinterpretação. Desde o hardening de 2026-08-27, `listed` sozinho não autoriza visibilidade nas superfícies remotas normais; proof de leitura também precisa estar fresca.'
+          if warning not in text:
+              text = text.replace('# Global manga availability receipt — 2026-08-25\n\n', '# Global manga availability receipt — 2026-08-25\n\n' + warning + '\n\n', 1)
+          obsolete = 'Listed availability and readability proof remain separate guarantees. A work may appear in browse/ranking surfaces from a confirmed provider listing while the Reader still requires readable evidence or a live source resolution.'
+          replacement = '''Listed availability and readability proof remain separate guarantees. Neste receipt histórico, `listed` registra alcance conhecido do provider e `readable-proven` registra proof existente naquele checkpoint.
+
+          No contrato atual do produto (hardening de 2026-08-27), Home, Categorias, Busca normal e rankings remotos não usam `listed` sozinho: é necessário source link habilitado com evidence correspondente e não expirada (30 dias por padrão). Biblioteca/Histórico podem preservar estado local do usuário mesmo quando a proof remota expira.'''
+          if obsolete in text:
+              text = text.replace(obsolete, replacement)
+          save(path, text)
+
+          # 5) Design spec: implementation is done; verification remains a promotion gate.
+          path = 'docs/superpowers/specs/2026-08-27-manga-readable-catalog-hardening-design.md'
+          text = load(path)
+          text = text.replace('Status: approved for implementation', 'Status: implemented; pre-main verification pending')
+          text = text.replace('- Focused tests, analyzer and formatting gates pass locally on the official GoAnime analysis toolchain.', '- Focused tests, analyzer and formatting gates must pass on the official GoAnime analysis toolchain before promotion to `main`.')
+          text = append_once(text, '## Implementation checkpoint', '''
+          ## Implementation checkpoint
+
+          Functional code checkpoint: `be1a8a59556bf8587324249144adc95ca6c7d65c`.
+
+          Além da expiração no verificador, o composer global agora evita dois caminhos de ressurreição de proof: uma ocorrência fresca que veio `listed` não herda `readable` anterior, e links carregados de partições não exaustivas perdem proof quando `verifiedAt + 30 days <= generatedAt`. O receipt contabiliza essas expirações de carry-forward separadamente. `MangaAvailabilityService` mantém o TTL runtime como segunda barreira.
+
+          Os testes foram escritos/ajustados antes da promoção para `main`; execução Flutter/analyzer continua sendo gate explícito e não é inferida a partir da aplicação limpa do patch.
+          ''')
+          save(path, text)
+
+          # 6) Plan: record implementation truth without falsely marking unexecuted test gates green.
+          path = 'docs/superpowers/plans/2026-08-27-manga-readable-catalog-hardening.md'
+          text = load(path)
+          text = text.replace('- [ ] **Step 1: Write the failing stale-proof test**', '- [x] **Step 1: Write the failing stale-proof test**')
+          text = text.replace('- [ ] **Step 3: Implement minimal proof expiration**', '- [x] **Step 3: Implement minimal proof expiration**')
+          text = text.replace('- [ ] **Step 5: Commit checkpoint**\n\nCommit message: `fix(manga): expire stale readability proof`.', '- [x] **Step 5: Commit checkpoint**\n\nCommit message: `fix(manga): expire stale readability proof`.')
+          text = text.replace('- [ ] **Step 1: Write failing concurrency tests**', '- [x] **Step 1: Write failing concurrency tests**')
+          text = text.replace('- [ ] **Step 3: Implement deterministic scheduling then provider batches**', '- [x] **Step 3: Implement deterministic scheduling then provider batches**')
+          text = text.replace('- [ ] **Step 1: Write/adjust tests for `expired` receipt propagation and CLI validation**', '- [x] **Step 1: Write/adjust tests for `expired` receipt propagation and CLI validation**')
+          text = text.replace('- [ ] **Step 3: Wire defaults, CLI option and receipt field**', '- [x] **Step 3: Wire defaults, CLI option and receipt field**')
+          text = text.replace('- [ ] **Step 4: Update materialization script to `1024/128/30/8` and require non-negative `expired`**', '- [x] **Step 4: Update materialization script to `1024/128/30/8` and require non-negative `expired`**')
+          text = text.replace('- [ ] **Step 1: Write failing unique-alias test**', '- [x] **Step 1: Write failing unique-alias test**')
+          text = text.replace('- [ ] **Step 2: Write failing ambiguous-alias test**', '- [x] **Step 2: Write failing ambiguous-alias test**')
+          text = text.replace('- [ ] **Step 4: Implement normalized previous alias index with fail-closed ambiguity**', '- [x] **Step 4: Implement normalized previous alias index with fail-closed ambiguity**')
+          text = text.replace('- [ ] **Step 5: Preserve trusted external IDs as conflict guards when evaluating historical candidates**', '- [x] **Step 5: Keep existing trusted external-ID conflict guards in presentation dedupe; fail closed on ambiguous historical aliases without adding a remote-ID fanout**')
+          text = text.replace('- [ ] **Step 6: Update receipt `dedupePolicy` to describe occurrence -> unique historical alias -> exact title fallback**', '- [x] **Step 6: Update receipt `dedupePolicy` to describe occurrence -> unique historical alias -> exact title fallback**')
+          text = text.replace('- [ ] **Step 1: Verify existing test proves listed-only records never enter Home/Categories**', '- [x] **Step 1: Verify existing test proves listed-only records never enter Home/Categories**')
+          text = text.replace('- [ ] **Step 2: Add only missing surface regression tests discovered by code review**', '- [x] **Step 2: Add only missing surface regression tests discovered by code review**')
+          text = text.replace('- [ ] **Step 1: Document 30-day freshness, fail-closed expiration and bounded verifier capacity**', '- [x] **Step 1: Document 30-day freshness, fail-closed expiration and bounded verifier capacity**')
+          text = text.replace('- [ ] **Step 2: Document alias-first historical identity reuse and remaining external-ID enrichment limitation**', '- [x] **Step 2: Document alias-first historical identity reuse and remaining external-ID enrichment limitation**')
+          text = text.replace('- [ ] **Step 3: Mark the 2026-08-25 receipt as historical evidence, not the current guarantee**', '- [x] **Step 3: Mark the 2026-08-25 receipt as historical evidence, not the current guarantee**')
+          text = text.replace('- [ ] **Step 4: Commit checkpoint**\n\nCommit message: `docs(manga): define fresh readability guarantee`.', '- [x] **Step 4: Commit checkpoint**\n\nCommit message: `docs(manga): define fresh readability guarantee`.')
+          text = append_once(text, '## Execution status — 2026-08-27', '''
+          ## Execution status — 2026-08-27
+
+          Production implementation and documentation tasks are complete on the regression branch. Test-authoring steps are complete, but RED/GREEN execution, Dart formatting and Flutter analyzer/test commands intentionally remain unchecked where they were not actually executed in the current agent runtime. Those checks are the pre-`main` promotion gate, not an implementation blocker.
+
+          Additional hardening implemented after the original plan review: stale proof is also removed while composing carried provider partitions, and a fresh `listed` occurrence cannot inherit `readable` from the previous DB. Functional code checkpoint: `be1a8a59556bf8587324249144adc95ca6c7d65c`.
+          ''')
+          save(path, text)
+          PY
+
           test -f "$PATCH_FILE"
-          base64 -d "$PATCH_FILE" | gzip -d > "$RUNNER_TEMP/manga-final-docs.patch"
-          patch --dry-run -p1 < "$RUNNER_TEMP/manga-final-docs.patch"
-          patch -p1 < "$RUNNER_TEMP/manga-final-docs.patch"
           rm "$PATCH_FILE"
 
           git add \
