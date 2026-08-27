@@ -231,24 +231,24 @@ jobs:
               exit 1
             }
             GOANIME_JIKAN_BASE_URL="$GOANIME_JIKAN_BASE_URL" python - <<'PY'
-            import os
-            from urllib.parse import urlsplit
+          import os
+          from urllib.parse import urlsplit
 
-            value = os.environ["GOANIME_JIKAN_BASE_URL"].strip()
-            parsed = urlsplit(value)
-            segments = [segment for segment in parsed.path.split("/") if segment]
-            if (
-                parsed.scheme != "https"
-                or not parsed.hostname
-                or not segments
-                or segments[-1] != "v4"
-                or parsed.query
-                or parsed.fragment
-            ):
-                raise SystemExit(
-                    "GOANIME_JIKAN_BASE_URL must be an HTTPS URL ending at the /v4 root."
-                )
-            PY
+          value = os.environ["GOANIME_JIKAN_BASE_URL"].strip()
+          parsed = urlsplit(value)
+          segments = [segment for segment in parsed.path.split("/") if segment]
+          if (
+              parsed.scheme != "https"
+              or not parsed.hostname
+              or not segments
+              or segments[-1] != "v4"
+              or parsed.query
+              or parsed.fragment
+          ):
+              raise SystemExit(
+                  "GOANIME_JIKAN_BASE_URL must be an HTTPS URL ending at the /v4 root."
+              )
+          PY
             echo 'Private Jikan origin override: configured.'
           else
             echo 'Private Jikan origin override: not configured; using the default private gateway.'
