@@ -64,3 +64,5 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
+
+# Refresh marker: 2026-08-27 progressive chapter verification.
