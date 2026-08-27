@@ -78,32 +78,31 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-
           path = Path('lib/screens/manga/manga_details_screen.dart')
-          text = path.read_text()
-          method_marker = '  Future<void> _hydrateProgressively('
-          next_marker = '  Future<void> _refreshLibraryEntry()'
-          start = text.index(method_marker)
-          end = text.index(next_marker, start)
-          section = text[start:end]
-          malformed = '''        initial: initial,
-      onSnapshot: (snapshot) {
-        if (!_isCurrentLoad(source, generation, snapshot)) return;
-        setState(() => _snapshot = snapshot);
-        unawaited(_refreshDownloadStatuses(snapshot, generation));
-      },
-    );'''
-          formatted = '''        initial: initial,
-        onSnapshot: (snapshot) {
-          if (!_isCurrentLoad(source, generation, snapshot)) return;
-          setState(() => _snapshot = snapshot);
-          unawaited(_refreshDownloadStatuses(snapshot, generation));
-        },
-      );'''
-          if section.count(malformed) != 1:
-              raise SystemExit(f'expected malformed callback once, found {section.count(malformed)}')
-          section = section.replace(malformed, formatted, 1)
-          path.write_text(text[:start] + section + text[end:])
+          lines = path.read_text().splitlines(keepends=True)
+          matches = [i for i, line in enumerate(lines) if line == '      onSnapshot: (snapshot) {\n']
+          if len(matches) != 1:
+              raise SystemExit(f'expected one malformed callback, found {len(matches)}')
+          i = matches[0]
+          expected = [
+              '      onSnapshot: (snapshot) {\n',
+              '        if (!_isCurrentLoad(source, generation, snapshot)) return;\n',
+              '        setState(() => _snapshot = snapshot);\n',
+              '        unawaited(_refreshDownloadStatuses(snapshot, generation));\n',
+              '      },\n',
+              '    );\n',
+          ]
+          if lines[i:i + 6] != expected:
+              raise SystemExit('malformed callback shape changed')
+          lines[i:i + 6] = [
+              '        onSnapshot: (snapshot) {\n',
+              '          if (!_isCurrentLoad(source, generation, snapshot)) return;\n',
+              '          setState(() => _snapshot = snapshot);\n',
+              '          unawaited(_refreshDownloadStatuses(snapshot, generation));\n',
+              '        },\n',
+              '      );\n',
+          ]
+          path.write_text(''.join(lines))
           PY
           git -c core.whitespace=cr-at-eol diff --check
           test "$(git diff --name-only)" = 'lib/screens/manga/manga_details_screen.dart'
