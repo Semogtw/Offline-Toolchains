@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/publish-goanime-latency-patch.yml
       - transfers/goanime/perceived-latency-parallelism-20260827.part*
+      - transfers/goanime/perceived-latency-parallelism-20260827.transport-fix.patch
 
 permissions:
   contents: read
@@ -51,6 +52,8 @@ jobs:
 
           git apply --check "$RUNNER_TEMP/goanime.patch"
           git apply "$RUNNER_TEMP/goanime.patch"
+          git apply --check ../toolchains/transfers/goanime/perceived-latency-parallelism-20260827.transport-fix.patch
+          git apply ../toolchains/transfers/goanime/perceived-latency-parallelism-20260827.transport-fix.patch
           git diff --check
 
           cat > "$RUNNER_TEMP/validated-files.sha256" <<'HASHES'
