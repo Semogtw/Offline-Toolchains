@@ -1,0 +1,89 @@
+name: Apply GoAnime manga hardening patch
+
+on:
+  push:
+    branches:
+      - agent/apply-goanime-manga-hardening-20260827
+    paths:
+      - .github/workflows/apply-goanime-manga-hardening.yml
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    name: Apply private GoAnime patch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      TARGET_BRANCH: fix/catalog-search-manga-regressions-20260826
+      PATCH_FILE: .agent-patches/manga-hardening-20260827.patch.gz.b64
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout GoAnime branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.TARGET_BRANCH }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: goanime
+          fetch-depth: 0
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Validate and apply staged patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd goanime
+          test -f "$PATCH_FILE"
+          base64 -d "$PATCH_FILE" | gzip -d > "$RUNNER_TEMP/manga-hardening.patch"
+          patch --dry-run -p1 < "$RUNNER_TEMP/manga-hardening.patch"
+          patch -p1 < "$RUNNER_TEMP/manga-hardening.patch"
+          rm "$PATCH_FILE"
+
+          git add \
+            docs/superpowers/plans/2026-08-27-manga-readable-catalog-hardening.md \
+            docs/superpowers/specs/2026-08-27-manga-readable-catalog-hardening-design.md \
+            test/tools/build_global_manga_availability_test.dart \
+            tools/manga/build_global_manga_availability.dart \
+            tools/manga/inventory_manga_catalog.dart \
+            tools/manga/materialize_global_manga_availability_ci.sh \
+            "$PATCH_FILE"
+
+          git diff --cached --check
+
+          expected="$RUNNER_TEMP/expected-paths.txt"
+          actual="$RUNNER_TEMP/actual-paths.txt"
+          cat > "$expected" <<'EOF'
+          .agent-patches/manga-hardening-20260827.patch.gz.b64
+          docs/superpowers/plans/2026-08-27-manga-readable-catalog-hardening.md
+          docs/superpowers/specs/2026-08-27-manga-readable-catalog-hardening-design.md
+          test/tools/build_global_manga_availability_test.dart
+          tools/manga/build_global_manga_availability.dart
+          tools/manga/inventory_manga_catalog.dart
+          tools/manga/materialize_global_manga_availability_ci.sh
+          EOF
+          git diff --cached --name-only | sort > "$actual"
+          sort -o "$expected" "$expected"
+          diff -u "$expected" "$actual"
+
+      - name: Commit and push without force
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd goanime
+          git config user.name 'goanime-toolchains-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git commit -m 'feat(manga): harden readable catalog materialization'
+
+          git fetch origin "$TARGET_BRANCH"
+          git rebase "origin/$TARGET_BRANCH"
+          git push origin "HEAD:$TARGET_BRANCH"
