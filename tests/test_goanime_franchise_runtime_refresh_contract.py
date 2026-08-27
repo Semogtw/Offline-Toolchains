@@ -74,6 +74,9 @@ class GoAnimeFranchiseRuntimeRefreshContractTest(unittest.TestCase):
         )
         self.assertIn("GOANIME_JIKAN_BASE_URL is required", workflow)
         self.assertIn("GOANIME_METADATA_API_TOKEN is required", workflow)
+        self.assertIn('from urllib.parse import urlsplit', workflow)
+        self.assertIn('segments[-1] != "v4"', workflow)
+        self.assertIn('parsed.scheme != "https"', workflow)
 
     def test_other_anime_refreshes_postprocess_incremental_graph(self) -> None:
         workflow = (
