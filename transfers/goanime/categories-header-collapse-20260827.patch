@@ -1,0 +1,104 @@
+diff --git a/lib/screens/categories_screen.dart b/lib/screens/categories_screen.dart
+index 8a178697..6da7ad9d 100644
+--- a/lib/screens/categories_screen.dart
++++ b/lib/screens/categories_screen.dart
+@@ -165,13 +165,16 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
+       backgroundColor: AppColors.isModern
+           ? Colors.transparent
+           : AppColors.background,
+-      appBar: AppBar(
+-        title: Text(l10n.categories),
+-        backgroundColor: AppColors.isModern
+-            ? Colors.transparent
+-            : AppColors.surface,
+-        elevation: 0,
+-      ),
++      appBar: _filtersVisible
++          ? AppBar(
++              key: const Key('anime-category-header'),
++              title: Text(l10n.categories),
++              backgroundColor: AppColors.isModern
++                  ? Colors.transparent
++                  : AppColors.surface,
++              elevation: 0,
++            )
++          : null,
+       body: ModernBackground(
+         child: Column(
+           children: [
+diff --git a/lib/screens/manga/manga_categories_screen.dart b/lib/screens/manga/manga_categories_screen.dart
+index 42c4fe6b..2a51f569 100644
+--- a/lib/screens/manga/manga_categories_screen.dart
++++ b/lib/screens/manga/manga_categories_screen.dart
+@@ -286,13 +286,16 @@ class _MangaCategoriesScreenState extends State<MangaCategoriesScreen> {
+       backgroundColor: AppColors.isModern
+           ? Colors.transparent
+           : AppColors.background,
+-      appBar: AppBar(
+-        title: Text(widget.initialTitle ?? l10n.categoriesTitle),
+-        backgroundColor: AppColors.isModern
+-            ? Colors.transparent
+-            : AppColors.surface,
+-        elevation: 0,
+-      ),
++      appBar: _filtersVisible
++          ? AppBar(
++              key: const Key('manga-category-header'),
++              title: Text(widget.initialTitle ?? l10n.categoriesTitle),
++              backgroundColor: AppColors.isModern
++                  ? Colors.transparent
++                  : AppColors.surface,
++              elevation: 0,
++            )
++          : null,
+       body: ModernBackground(
+         child: SafeArea(
+           bottom: false,
+diff --git a/test/widgets/catalog_filter_staging_test.dart b/test/widgets/catalog_filter_staging_test.dart
+index 8159a15c..452c37ef 100644
+--- a/test/widgets/catalog_filter_staging_test.dart
++++ b/test/widgets/catalog_filter_staging_test.dart
+@@ -216,16 +216,19 @@ void main() {
+     );
+     await tester.pumpAndSettle();
+ 
++    expect(find.byKey(const Key('anime-category-header')), findsOneWidget);
+     expect(find.byKey(const Key('anime-category-filters')), findsOneWidget);
+ 
+     await tester.drag(find.byType(GridView), const Offset(0, -700));
+     await tester.pump(const Duration(milliseconds: 220));
+ 
++    expect(find.byKey(const Key('anime-category-header')), findsNothing);
+     expect(find.byKey(const Key('anime-category-filters')), findsNothing);
+ 
+     await tester.drag(find.byType(GridView), const Offset(0, 700));
+     await tester.pump(const Duration(milliseconds: 220));
+ 
++    expect(find.byKey(const Key('anime-category-header')), findsOneWidget);
+     expect(find.byKey(const Key('anime-category-filters')), findsOneWidget);
+   });
+ }
+diff --git a/test/widgets/manga/manga_categories_screen_test.dart b/test/widgets/manga/manga_categories_screen_test.dart
+index 512d8971..cb88bb5d 100644
+--- a/test/widgets/manga/manga_categories_screen_test.dart
++++ b/test/widgets/manga/manga_categories_screen_test.dart
+@@ -211,16 +211,19 @@ void main() {
+     await _pump(tester, MangaCategoriesScreen(dataSource: source));
+     await tester.pumpAndSettle();
+ 
++    expect(find.byKey(const Key('manga-category-header')), findsOneWidget);
+     expect(find.byKey(const Key('manga-category-filters')), findsOneWidget);
+ 
+     await tester.drag(find.byType(GridView), const Offset(0, -700));
+     await tester.pump(const Duration(milliseconds: 220));
+ 
++    expect(find.byKey(const Key('manga-category-header')), findsNothing);
+     expect(find.byKey(const Key('manga-category-filters')), findsNothing);
+ 
+     await tester.drag(find.byType(GridView), const Offset(0, 700));
+     await tester.pump(const Duration(milliseconds: 220));
+ 
++    expect(find.byKey(const Key('manga-category-header')), findsOneWidget);
+     expect(find.byKey(const Key('manga-category-filters')), findsOneWidget);
+   });
+ }
