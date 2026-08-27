@@ -17,7 +17,7 @@ jobs:
     timeout-minutes: 15
     env:
       TARGET_BRANCH: fix/catalog-search-manga-regressions-20260826
-      PATCH_FILE: .agent-patches/manga-hardening-20260827.patch.gz.b64
+      PATCH_FILE: .agent-patches/manga-final-code.patch.gz.b64
     steps:
       - name: Require private repository token
         shell: bash
@@ -44,18 +44,16 @@ jobs:
           set -euo pipefail
           cd goanime
           test -f "$PATCH_FILE"
-          base64 -d "$PATCH_FILE" | gzip -d > "$RUNNER_TEMP/manga-hardening.patch"
-          patch --dry-run -p1 < "$RUNNER_TEMP/manga-hardening.patch"
-          patch -p1 < "$RUNNER_TEMP/manga-hardening.patch"
+          base64 -d "$PATCH_FILE" | gzip -d > "$RUNNER_TEMP/manga-final-code.patch"
+          patch --dry-run -p1 < "$RUNNER_TEMP/manga-final-code.patch"
+          patch -p1 < "$RUNNER_TEMP/manga-final-code.patch"
           rm "$PATCH_FILE"
 
           git add \
-            docs/superpowers/plans/2026-08-27-manga-readable-catalog-hardening.md \
-            docs/superpowers/specs/2026-08-27-manga-readable-catalog-hardening-design.md \
+            lib/services/manga/manga_availability_service.dart \
             test/tools/build_global_manga_availability_test.dart \
             tools/manga/build_global_manga_availability.dart \
-            tools/manga/inventory_manga_catalog.dart \
-            tools/manga/materialize_global_manga_availability_ci.sh \
+            tools/manga/manga_progressive_readability_verifier.dart \
             "$PATCH_FILE"
 
           git diff --cached --check
@@ -63,13 +61,11 @@ jobs:
           expected="$RUNNER_TEMP/expected-paths.txt"
           actual="$RUNNER_TEMP/actual-paths.txt"
           cat > "$expected" <<'EOF'
-          .agent-patches/manga-hardening-20260827.patch.gz.b64
-          docs/superpowers/plans/2026-08-27-manga-readable-catalog-hardening.md
-          docs/superpowers/specs/2026-08-27-manga-readable-catalog-hardening-design.md
+          .agent-patches/manga-final-code.patch.gz.b64
+          lib/services/manga/manga_availability_service.dart
           test/tools/build_global_manga_availability_test.dart
           tools/manga/build_global_manga_availability.dart
-          tools/manga/inventory_manga_catalog.dart
-          tools/manga/materialize_global_manga_availability_ci.sh
+          tools/manga/manga_progressive_readability_verifier.dart
           EOF
           git diff --cached --name-only | sort > "$actual"
           sort -o "$expected" "$expected"
@@ -82,7 +78,7 @@ jobs:
           cd goanime
           git config user.name 'goanime-toolchains-bot'
           git config user.email 'actions@users.noreply.github.com'
-          git commit -m 'feat(manga): harden readable catalog materialization'
+          git commit -m 'fix(manga): expire carried readability proof'
 
           git fetch origin "$TARGET_BRANCH"
           git rebase "origin/$TARGET_BRANCH"
