@@ -21,12 +21,12 @@ jobs:
         with:
           path: toolchains
 
-      - name: Reassemble and verify validated patch
+      - name: Reassemble validated patch transport
         shell: bash
         run: |
           set -euo pipefail
           cat toolchains/transfers/goanime/perceived-latency-parallelism-20260827.part{00..05} > "$RUNNER_TEMP/goanime.patch"
-          echo '72a5b9d295eb738bb5f4dbbddc1c699b0da6d50a5bba0fe478eed8127ecaf8bf  '"$RUNNER_TEMP/goanime.patch" | sha256sum -c -
+          test -s "$RUNNER_TEMP/goanime.patch"
 
       - name: Checkout exact GoAnime branch
         uses: actions/checkout@v6
@@ -52,6 +52,33 @@ jobs:
           git apply --check "$RUNNER_TEMP/goanime.patch"
           git apply "$RUNNER_TEMP/goanime.patch"
           git diff --check
+
+          cat > "$RUNNER_TEMP/validated-files.sha256" <<'HASHES'
+          681e98991e7c727b205a60121a944ee0d59a2af7b24d363f578aa23b8555b3a9  docs/manga_catalog_ux.md
+          d3d3822edaaceaa88433f677c168a692d191045a6b24403682710fa184eda2ff  docs/performance.md
+          fd2d3811cc440de66e0c5abea292f0320823f37f6d74d22adfa117cbc989e041  lib/app/bootstrap.dart
+          c8fdfe7919ef6af6505d8ba56616a28256ab9e400297a4735f155e35dcc1ac21  lib/screens/home_screen_data.dart
+          eae1165800a25c5feafa85b66f14576a79cda0694a5d2350919d5871a72a92e6  lib/services/manga/manga_browse_data_source.dart
+          5304de0099bc025253aa3fbccfd38b197ee89db434d79f5951f6be7bd0f37318  lib/services/manga/manga_bundled_catalog_source.dart
+          f8d77f10bbec8515f606f36347eccd159712422683b22b5d90eec50067d89846  lib/services/manga/manga_hydrating_details_data_source.dart
+          d1188478ca9c244324d5ff3f968616c04c6e90a7482debe63ccd9489e799eaff  lib/services/manga/manga_repository_browse_data_source.dart
+          e882eb031c32996d1d3fca85c22712cae391c31bfb023ca19273b0a6768bb132  lib/services/manga/manga_runtime_database_catalog_source.dart
+          ddfeedf09fe866a2d35aa4cec972129921b71e96b733659ea62e80a3060e5c21  test/architecture/manga_bootstrap_runtime_wiring_test.dart
+          4af5104aa586fd9be32e2003bb313002874fc4665e8c99559ed989d2b654938f  test/screens/home_banner_artwork_retry_contract_test.dart
+          aedb96d94b41daefbf289f50c3ecbfb23a9250fda235ed2c72afcf71ad835120  test/services/manga/manga_bundled_metadata_resolver_test.dart
+          f100751cda81cd1d5c541e6ba032da2ecf02d80f5841942becc6535bdb03646d  test/services/manga/manga_hydrating_details_data_source_test.dart
+          1d19e0f929c34ac2e5904fe25e08bac5ed9ad4d89461067685f5aff71a3a32fa  test/services/manga/manga_repository_browse_data_source_test.dart
+          HASHES
+          sed -i 's/^          //' "$RUNNER_TEMP/validated-files.sha256"
+          sha256sum -c "$RUNNER_TEMP/validated-files.sha256"
+
+          changed="$(git diff --name-only | sort)"
+          expected_changed="$(awk '{print $2}' "$RUNNER_TEMP/validated-files.sha256" | sort)"
+          if [[ "$changed" != "$expected_changed" ]]; then
+            echo 'Refusing to publish: changed-file set differs from validated set.' >&2
+            diff -u <(printf '%s\n' "$expected_changed") <(printf '%s\n' "$changed") || true
+            exit 1
+          fi
 
           git config user.name 'goanime-toolchains-bot'
           git config user.email 'actions@users.noreply.github.com'
