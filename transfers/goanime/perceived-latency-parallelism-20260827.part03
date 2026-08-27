@@ -1,0 +1,190 @@
+    await _itemForRecord(
+-          record,
+-          libraryStatus: null,
+-          localState: localState,
+-        ),
+-      );
+-    }
++    final recordsFuture = _availability.catalogReady
++        ? _safeAllReadable()
++        : Future<List<MangaAvailabilityRecord>>.value(const []);
++    final localStateFuture = _loadLocalState();
++    final records = await recordsFuture;
++    final localState = await localStateFuture;
++    final items = await _itemsForRecords(
++      records,
++      localState: localState,
++      libraryStatusFor: (_) => null,
++    );
+     items.sort(_compareTitle);
+     return items;
+   }
+@@ -152,17 +148,18 @@
+   }
+ 
+   Future<_BrowseState> _loadState({int? readableLimit}) async {
+-    final available = _availability.catalogReady
++    final availableFuture = _availability.catalogReady
+         ? readableLimit == null
+-              ? await _safeAllReadable()
+-              : await _safeReadablePreview(readableLimit)
+-        : const <MangaAvailabilityRecord>[];
++              ? _safeAllReadable()
++              : _safeReadablePreview(readableLimit)
++        : Future<List<MangaAvailabilityRecord>>.value(const []);
++    final localStateFuture = _loadLocalState();
++    final available = await availableFuture;
+     final byWorkId = <String, MangaAvailabilityRecord>{
+       for (final record in available) record.work.workId: record,
+     };
+ 
+-    final database = await _database.database;
+-    final localState = await _localStateLoader.load(database);
++    final localState = await localStateFuture;
+ 
+     for (final workId in localState.libraryStatusByWorkId.keys) {
+       if (byWorkId.containsKey(workId)) continue;
+@@ -175,17 +172,17 @@
+       );
+     }
+ 
+-    final items = <MangaBrowseItem>[];
+-    for (final record in byWorkId.values) {
+-      items.add(
+-        await _itemForRecord(
+-          record,
+-          libraryStatus: localState.libraryStatusByWorkId[record.work.workId],
+-          localState: localState,
+-        ),
+-      );
+-    }
++    final items = await _itemsForRecords(
++      byWorkId.values,
++      localState: localState,
++      libraryStatusFor: (workId) => localState.libraryStatusByWorkId[workId],
++    );
+     return _BrowseState(items);
++  }
++
++  Future<MangaBrowseLocalState> _loadLocalState() async {
++    final database = await _database.database;
++    return _localStateLoader.load(database);
+   }
+ 
+   Future<List<MangaAvailabilityRecord>> _safeAllReadable() async {
+@@ -228,11 +225,34 @@
+     }
+   }
+ 
+-  Future<MangaBrowseItem> _itemForRecord(
++  Future<List<MangaBrowseItem>> _itemsForRecords(
++    Iterable<MangaAvailabilityRecord> records, {
++    required MangaBrowseLocalState localState,
++    required MangaLibraryStatus? Function(String workId) libraryStatusFor,
++  }) async {
++    final snapshot = records.toList(growable: false);
++    final metadataByWorkId = await _resolveMetadataForRecords(
++      snapshot,
++      localState,
++    );
++    return [
++      for (final record in snapshot)
++        _itemForRecord(
++          record,
++          libraryStatus: libraryStatusFor(record.work.workId),
++          localState: localState,
++          metadata:
++              metadataByWorkId[record.work.workId] ?? const MangaWorkMetadata(),
++        ),
++    ];
++  }
++
++  MangaBrowseItem _itemForRecord(
+     MangaAvailabilityRecord record, {
+     required MangaLibraryStatus? libraryStatus,
+     required MangaBrowseLocalState localState,
+-  }) async {
++    required MangaWorkMetadata metadata,
++  }) {
+     final workId = record.work.workId;
+     final chapters =
+         localState.chaptersByWorkId[workId] ??
+@@ -243,12 +263,6 @@
+       latestProgress: latestProgress,
+       libraryStatus: libraryStatus,
+     );
+-    final storedMetadata =
+-        localState.metadataByWorkId[workId] ?? const MangaWorkMetadata();
+-    final metadata = await _resolveMetadata(
+-      workId,
+-      record.metadata.merge(storedMetadata),
+-    );
+ 
+     return MangaBrowseItem(
+       availability: record,
+@@ -259,6 +273,42 @@
+       // Offline ownership belongs to the later offline/archive child plan.
+       offline: false,
+     );
++  }
++
++  Future<Map<String, MangaWorkMetadata>> _resolveMetadataForRecords(
++    List<MangaAvailabilityRecord> records,
++    MangaBrowseLocalState localState,
++  ) async {
++    final resolved = <String, MangaWorkMetadata>{
++      for (final record in records)
++        record.work.workId: record.metadata.merge(
++          localState.metadataByWorkId[record.work.workId] ??
++              const MangaWorkMetadata(),
++        ),
++    };
++    final resolver = _metadataResolver;
++    if (resolver == null || resolved.isEmpty) return resolved;
++
++    if (resolver is MangaBrowseMetadataBatchResolver) {
++      final batchResolver = resolver as MangaBrowseMetadataBatchResolver;
++      try {
++        final batch = await batchResolver.metadataForWorks(resolved.keys);
++        for (final entry in batch.entries) {
++          final current = resolved[entry.key];
++          if (current != null) resolved[entry.key] = current.merge(entry.value);
++        }
++        return resolved;
++      } catch (_) {
++        // Preserve the existing best-effort behavior. Falling back to the
++        // compatibility API also supports custom resolvers that expose a
++        // batch facade but cannot satisfy a particular request.
++      }
++    }
++
++    for (final workId in resolved.keys.toList(growable: false)) {
++      resolved[workId] = await _resolveMetadata(workId, resolved[workId]!);
++    }
++    return resolved;
+   }
+ 
+   Future<MangaWorkMetadata> _resolveMetadata(
+diff --git a/lib/services/manga/manga_runtime_database_catalog_source.dart b/lib/services/manga/manga_runtime_database_catalog_source.dart
+--- a/lib/services/manga/manga_runtime_database_catalog_source.dart
++++ b/lib/services/manga/manga_runtime_database_catalog_source.dart
+@@ -68,7 +68,8 @@
+     implements
+         MangaListedAvailabilityCatalogSource,
+         MangaReadablePreviewSource,
+-        MangaBrowseMetadataResolver {
++        MangaBrowseMetadataResolver,
++        MangaBrowseMetadataBatchResolver {
+   MangaRuntimeDatabaseCatalogSource._({
+     required MangaBundledCatalogSource primary,
+     MangaBundledCatalogSource? fallback,
+@@ -178,6 +179,14 @@
+     return source?.metadataForWork(workId) ?? const MangaBrowseMetadata();
+   }
+ 
++  @override
++  Future<Map<String, MangaBrowseMetadata>> metadataForWorks(
++    Iterable<String> workIds,
++  ) async {
++    final source = await _readySource();
++    ret
