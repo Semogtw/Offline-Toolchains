@@ -2,13 +2,13 @@
 
 This marker keeps rebuild requests explicit and auditable without changing the dependency fixture.
 
-Requested for validation of the current non-Jikan `Semogtw/goanime-mobile` development line, based on the exact functional snapshot:
+Requested for validation of the current reconciled MegaPlay merge candidate, based on the exact private GoAnime-Mobile snapshot:
 
 ```text
-10d6b6fed2a9b83e008d82f59a193e879de9604e
+39a48fcb542fb92b7e93e530e9a1e34fea741c38
 ```
 
-A fresh build was requested on 2026-08-04 UTC because the previous one-day artifact had expired before this validation session began.
+A fresh build was requested on 2026-08-27 UTC because the previous one-day artifact expired before this validation session could consume it.
 
 Required bundle contents and validation:
 
