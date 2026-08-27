@@ -1,0 +1,123 @@
+name: Publish GoAnime progressive manga details WIP
+
+on:
+  push:
+    branches:
+      - toolchain/goanime-local-sdk-20260827
+    paths:
+      - 'requests/goanime-progressive-manga-details-wip/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-progressive-manga-details-wip
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout Toolchains
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'requests/goanime-progressive-manga-details-wip/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "trusted-source/$request"
+          test "$project" = goanime
+          test "$branch" = 'fix/catalog-search-manga-regressions-20260826'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify exact branch head
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+
+      - name: Apply progressive snapshot callback
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('lib/screens/manga/manga_details_screen.dart')
+          text = path.read_text()
+          old = '''      final hydrated = await source.hydrate(
+                widget.availability,
+                initial: initial,
+              );'''
+          new = '''      final hydrated = await source.hydrate(
+                widget.availability,
+                initial: initial,
+                onSnapshot: (snapshot) {
+                  if (!_isCurrentLoad(source, generation, snapshot)) return;
+                  setState(() => _snapshot = snapshot);
+                  unawaited(_refreshDownloadStatuses(snapshot, generation));
+                },
+              );'''
+          if old not in text:
+              raise SystemExit('target hydrate block not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          git -c core.whitespace=cr-at-eol diff --check
+          test "$(git diff --name-only)" = 'lib/screens/manga/manga_details_screen.dart'
+
+      - name: Commit and push WIP
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git config user.name 'GoAnime Toolchains'
+          git config user.email 'actions@users.noreply.github.com'
+          git add lib/screens/manga/manga_details_screen.dart
+          git commit -m 'wip(manga): surface progressive chapter snapshots'
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/goanime-mobile.git "HEAD:refs/heads/$TARGET_BRANCH"
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/trusted-source"
