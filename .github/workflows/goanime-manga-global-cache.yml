@@ -1,11 +1,6 @@
 name: GoAnime Manga Global Cache
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/goanime-manga-global-cache.yml
   schedule:
     - cron: '45 6 * * *'
   workflow_dispatch:
