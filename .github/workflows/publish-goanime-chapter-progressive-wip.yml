@@ -42,11 +42,18 @@ jobs:
             exit 1
           fi
 
-          cat \
-            "$GITHUB_WORKSPACE/toolchains/transfers/goanime/chapter-progressive-wip-20260827.b64.00" \
-            "$GITHUB_WORKSPACE/toolchains/transfers/goanime/chapter-progressive-wip-20260827.b64.01" \
-            "$GITHUB_WORKSPACE/toolchains/transfers/goanime/chapter-progressive-wip-20260827.b64.02" \
-            | base64 --decode > /tmp/chapter-progressive.patch
+          chunks=(
+            "$GITHUB_WORKSPACE/toolchains/transfers/goanime/chapter-progressive-wip-20260827.b64.00"
+            "$GITHUB_WORKSPACE/toolchains/transfers/goanime/chapter-progressive-wip-20260827.b64.01"
+            "$GITHUB_WORKSPACE/toolchains/transfers/goanime/chapter-progressive-wip-20260827.b64.02"
+          )
+          echo 'Transfer chunk sizes/hashes:'
+          wc -c "${chunks[@]}"
+          sha256sum "${chunks[@]}"
+          cat "${chunks[@]}" | base64 --decode > /tmp/chapter-progressive.patch
+          echo 'Reconstructed patch size/hash:'
+          wc -c /tmp/chapter-progressive.patch
+          sha256sum /tmp/chapter-progressive.patch
           echo 'e9cbfa6a5c44687be8856e9cdee50a3e81789f73abc8c575c006cb85e2a72b40  /tmp/chapter-progressive.patch' | sha256sum -c -
           git apply --check /tmp/chapter-progressive.patch
           git apply /tmp/chapter-progressive.patch
