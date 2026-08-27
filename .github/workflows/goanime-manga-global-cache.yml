@@ -1,6 +1,11 @@
 name: GoAnime Manga Global Cache
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/goanime-manga-global-cache.yml
   schedule:
     - cron: '45 6 * * *'
   workflow_dispatch:
@@ -120,6 +125,17 @@ jobs:
               count=1,
               flags=re.MULTILINE,
           )
+
+          old_guard = "elif len(structured_matches) == 2:\n    pass\n"
+          new_guard = (
+              "elif len(inline_matches) == 0 and len(structured_matches) >= 2:\n"
+              "    pass\n"
+          )
+          if old_guard in text:
+              text = text.replace(old_guard, new_guard, 1)
+          elif new_guard not in text:
+              raise SystemExit('unexpected openDatabase compatibility guard shape')
+
           path.write_text(text, encoding='utf-8')
           PY
           git diff --check
