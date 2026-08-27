@@ -214,6 +214,27 @@ jobs:
           python -m json.tool build/catalog_discovery_consensus.json >/dev/null
           python -m json.tool build/catalog_discovery_promotion_summary.json >/dev/null
 
+      - name: Validate optional private Jikan origin override
+        env:
+          GOANIME_JIKAN_BASE_URL: ${{ secrets.GOANIME_JIKAN_BASE_URL }}
+          GOANIME_METADATA_API_TOKEN: ${{ secrets.GOANIME_METADATA_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "$GOANIME_JIKAN_BASE_URL" ] || [ -n "$GOANIME_METADATA_API_TOKEN" ]; then
+            test -n "$GOANIME_JIKAN_BASE_URL" || {
+              echo '::error::GOANIME_JIKAN_BASE_URL is required when the private Jikan token is configured.'
+              exit 1
+            }
+            test -n "$GOANIME_METADATA_API_TOKEN" || {
+              echo '::error::GOANIME_METADATA_API_TOKEN is required when a private Jikan URL is configured.'
+              exit 1
+            }
+            echo 'Private Jikan origin override: configured.'
+          else
+            echo 'Private Jikan origin override: not configured; using the default private gateway.'
+          fi
+
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -231,6 +252,10 @@ jobs:
 
       - name: Map promoted anime titles to MAL incrementally
         working-directory: private-source
+        env:
+          GOANIME_JIKAN_BASE_URL: ${{ secrets.GOANIME_JIKAN_BASE_URL }}
+          GOANIME_METADATA_API_TOKEN: ${{ secrets.GOANIME_METADATA_API_TOKEN }}
+          GOANIME_REQUIRE_PRIVATE_METADATA: 'true'
         run: dart run tools/build_mal_availability_cache_checkpointed.dart --incremental
 
       - name: Capture MAL IDs requiring franchise refresh
@@ -276,6 +301,9 @@ jobs:
         working-directory: private-source
         env:
           MAL_IDS_FILE: ${{ steps.franchise_refresh.outputs.path }}
+          GOANIME_JIKAN_BASE_URL: ${{ secrets.GOANIME_JIKAN_BASE_URL }}
+          GOANIME_METADATA_API_TOKEN: ${{ secrets.GOANIME_METADATA_API_TOKEN }}
+          GOANIME_REQUIRE_PRIVATE_METADATA: 'true'
         shell: bash
         run: |
           set -euo pipefail

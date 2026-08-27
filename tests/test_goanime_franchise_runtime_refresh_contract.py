@@ -55,6 +55,26 @@ class GoAnimeFranchiseRuntimeRefreshContractTest(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertGreaterEqual(int(match.group(1)), 180)
 
+    def test_global_finalizer_wires_optional_private_jikan_origin(self) -> None:
+        workflow = (
+            ROOT / ".github/workflows/goanime-global-catalog-finalize.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("Validate optional private Jikan origin override", workflow)
+        self.assertIn(
+            "GOANIME_JIKAN_BASE_URL: ${{ secrets.GOANIME_JIKAN_BASE_URL }}",
+            workflow,
+        )
+        self.assertIn(
+            "GOANIME_METADATA_API_TOKEN: ${{ secrets.GOANIME_METADATA_API_TOKEN }}",
+            workflow,
+        )
+        self.assertGreaterEqual(
+            workflow.count("GOANIME_REQUIRE_PRIVATE_METADATA: 'true'"),
+            2,
+        )
+        self.assertIn("GOANIME_JIKAN_BASE_URL is required", workflow)
+        self.assertIn("GOANIME_METADATA_API_TOKEN is required", workflow)
+
     def test_other_anime_refreshes_postprocess_incremental_graph(self) -> None:
         workflow = (
             ROOT / ".github/workflows/refresh-private-goanime-catalog.yml"
