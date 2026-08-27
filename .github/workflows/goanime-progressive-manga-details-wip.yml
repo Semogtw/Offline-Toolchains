@@ -78,24 +78,26 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+
           path = Path('lib/screens/manga/manga_details_screen.dart')
           text = path.read_text()
-          old = '''      final hydrated = await source.hydrate(
-                widget.availability,
-                initial: initial,
-              );'''
-          new = '''      final hydrated = await source.hydrate(
-                widget.availability,
-                initial: initial,
+          method_marker = '  Future<void> _hydrateProgressively('
+          next_marker = '  Future<void> _refreshLibraryEntry()'
+          start = text.index(method_marker)
+          end = text.index(next_marker, start)
+          section = text[start:end]
+          needle = '        initial: initial,\n      );'
+          replacement = '''        initial: initial,
                 onSnapshot: (snapshot) {
                   if (!_isCurrentLoad(source, generation, snapshot)) return;
                   setState(() => _snapshot = snapshot);
                   unawaited(_refreshDownloadStatuses(snapshot, generation));
                 },
               );'''
-          if old not in text:
-              raise SystemExit('target hydrate block not found')
-          path.write_text(text.replace(old, new, 1))
+          if section.count(needle) != 1:
+              raise SystemExit(f'expected exactly one hydrate anchor, found {section.count(needle)}')
+          section = section.replace(needle, replacement, 1)
+          path.write_text(text[:start] + section + text[end:])
           PY
           git -c core.whitespace=cr-at-eol diff --check
           test "$(git diff --name-only)" = 'lib/screens/manga/manga_details_screen.dart'
