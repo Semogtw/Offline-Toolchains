@@ -1,0 +1,73 @@
+name: Publish GoAnime categories header WIP
+
+on:
+  push:
+    branches:
+      - toolchain/goanime-local-sdk-20260827
+    paths:
+      - .github/workflows/publish-goanime-categories-header-wip.yml
+      - transfers/goanime/categories-header-collapse-20260827.patch
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout toolchains patch
+        uses: actions/checkout@v6
+        with:
+          path: toolchains
+          persist-credentials: false
+
+      - name: Checkout exact GoAnime branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: fix/catalog-search-manga-regressions-20260826
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: goanime
+          fetch-depth: 1
+
+      - name: Apply and publish WIP checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd goanime
+          expected='63f8ad53669830a99e1e807ea37f7e67a6db83bd'
+          actual="$(git rev-parse HEAD)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "Refusing to publish: expected $expected, found $actual" >&2
+            exit 1
+          fi
+
+          patch="$GITHUB_WORKSPACE/toolchains/transfers/goanime/categories-header-collapse-20260827.patch"
+          git apply --check "$patch"
+          git apply "$patch"
+          git diff --check
+
+          changed="$(git diff --name-only | sort)"
+          expected_changed="$(printf '%s\n' \
+            lib/screens/categories_screen.dart \
+            lib/screens/manga/manga_categories_screen.dart \
+            test/widgets/catalog_filter_staging_test.dart \
+            test/widgets/manga/manga_categories_screen_test.dart | sort)"
+          if [[ "$changed" != "$expected_changed" ]]; then
+            echo 'Refusing to publish: changed-file set differs from WIP checkpoint.' >&2
+            diff -u <(printf '%s\n' "$expected_changed") <(printf '%s\n' "$changed") || true
+            exit 1
+          fi
+
+          git config user.name 'goanime-toolchains-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add \
+            lib/screens/categories_screen.dart \
+            lib/screens/manga/manga_categories_screen.dart \
+            test/widgets/catalog_filter_staging_test.dart \
+            test/widgets/manga/manga_categories_screen_test.dart
+          git diff --cached --check
+          git commit -m 'wip: collapse category headers on scroll'
+          git push origin HEAD:fix/catalog-search-manga-regressions-20260826
+          echo "Published $(git rev-parse HEAD)"
