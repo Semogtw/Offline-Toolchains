@@ -19,27 +19,28 @@ jobs:
         uses: actions/checkout@v6
         with:
           path: toolchains
+          persist-credentials: false
 
-      - name: Checkout GoAnime target branch
+      - name: Checkout exact GoAnime branch
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           ref: fix/catalog-search-manga-regressions-20260826
-          fetch-depth: 0
+          fetch-depth: 1
           path: goanime
 
-      - name: Verify target and reconstruct tested patch
+      - name: Apply and publish tested checkpoint
         shell: bash
         run: |
           set -euo pipefail
-          cd "$GITHUB_WORKSPACE/goanime"
+          cd goanime
           expected='acf8d7f9623b690c0d6ab46c2454d2f1cfc0a00d'
           actual="$(git rev-parse HEAD)"
-          test "$actual" = "$expected" || {
-            echo "GoAnime branch moved: expected $expected, found $actual" >&2
+          if [[ "$actual" != "$expected" ]]; then
+            echo "Refusing to publish: expected $expected, found $actual" >&2
             exit 1
-          }
+          fi
 
           cat \
             "$GITHUB_WORKSPACE/toolchains/transfers/goanime/chapter-progressive-wip-20260827.b64.00" \
@@ -51,27 +52,20 @@ jobs:
           git apply /tmp/chapter-progressive.patch
           git diff --check
 
-          expected_files="$(cat <<'EOF'
-lib/screens/manga/manga_details_screen.dart
-lib/services/manga/manga_chapter_hydrator.dart
-lib/services/manga/manga_details_data_source.dart
-lib/services/manga/manga_hydrating_details_data_source.dart
-test/services/manga/manga_hydrating_details_data_source_test.dart
-test/widgets/manga/manga_details_screen_test.dart
-EOF
-)"
-          actual_files="$(git diff --name-only | sort)"
-          test "$actual_files" = "$expected_files" || {
-            echo 'Unexpected changed files:' >&2
-            printf '%s\n' "$actual_files" >&2
+          changed="$(git diff --name-only | sort)"
+          expected_changed="$(printf '%s\n' \
+            lib/screens/manga/manga_details_screen.dart \
+            lib/services/manga/manga_chapter_hydrator.dart \
+            lib/services/manga/manga_details_data_source.dart \
+            lib/services/manga/manga_hydrating_details_data_source.dart \
+            test/services/manga/manga_hydrating_details_data_source_test.dart \
+            test/widgets/manga/manga_details_screen_test.dart | sort)"
+          if [[ "$changed" != "$expected_changed" ]]; then
+            echo 'Refusing to publish: changed-file set differs from tested checkpoint.' >&2
+            diff -u <(printf '%s\n' "$expected_changed") <(printf '%s\n' "$changed") || true
             exit 1
-          }
+          fi
 
-      - name: Commit and push checkpoint
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$GITHUB_WORKSPACE/goanime"
           git config user.name 'goanime-toolchains-bot'
           git config user.email 'actions@users.noreply.github.com'
           git add \
@@ -84,3 +78,4 @@ EOF
           git diff --cached --check
           git commit -m 'perf(manga): stream chapter hydration progressively'
           git push origin HEAD:fix/catalog-search-manga-regressions-20260826
+          echo "Published $(git rev-parse HEAD)"
