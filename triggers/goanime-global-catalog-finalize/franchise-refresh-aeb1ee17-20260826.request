@@ -1,0 +1,3 @@
+target_branch=fix/catalog-search-manga-regressions-20260826
+source_hint=aeb1ee178d44fad02aee2d84df1d1997f4ba960e
+reason=verify-franchise-runtime-refresh-after-regression-fix
