@@ -1,0 +1,86 @@
+name: Publish GoAnime progressive chapter hydration
+
+on:
+  push:
+    branches:
+      - toolchain/goanime-local-sdk-20260827
+    paths:
+      - .github/workflows/publish-goanime-chapter-progressive-wip.yml
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout toolchains transfer
+        uses: actions/checkout@v6
+        with:
+          path: toolchains
+
+      - name: Checkout GoAnime target branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          ref: fix/catalog-search-manga-regressions-20260826
+          fetch-depth: 0
+          path: goanime
+
+      - name: Verify target and reconstruct tested patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/goanime"
+          expected='acf8d7f9623b690c0d6ab46c2454d2f1cfc0a00d'
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$expected" || {
+            echo "GoAnime branch moved: expected $expected, found $actual" >&2
+            exit 1
+          }
+
+          cat \
+            "$GITHUB_WORKSPACE/toolchains/transfers/goanime/chapter-progressive-wip-20260827.b64.00" \
+            "$GITHUB_WORKSPACE/toolchains/transfers/goanime/chapter-progressive-wip-20260827.b64.01" \
+            "$GITHUB_WORKSPACE/toolchains/transfers/goanime/chapter-progressive-wip-20260827.b64.02" \
+            | base64 --decode > /tmp/chapter-progressive.patch
+          echo 'e9cbfa6a5c44687be8856e9cdee50a3e81789f73abc8c575c006cb85e2a72b40  /tmp/chapter-progressive.patch' | sha256sum -c -
+          git apply --check /tmp/chapter-progressive.patch
+          git apply /tmp/chapter-progressive.patch
+          git diff --check
+
+          expected_files="$(cat <<'EOF'
+lib/screens/manga/manga_details_screen.dart
+lib/services/manga/manga_chapter_hydrator.dart
+lib/services/manga/manga_details_data_source.dart
+lib/services/manga/manga_hydrating_details_data_source.dart
+test/services/manga/manga_hydrating_details_data_source_test.dart
+test/widgets/manga/manga_details_screen_test.dart
+EOF
+)"
+          actual_files="$(git diff --name-only | sort)"
+          test "$actual_files" = "$expected_files" || {
+            echo 'Unexpected changed files:' >&2
+            printf '%s\n' "$actual_files" >&2
+            exit 1
+          }
+
+      - name: Commit and push checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/goanime"
+          git config user.name 'goanime-toolchains-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add \
+            lib/screens/manga/manga_details_screen.dart \
+            lib/services/manga/manga_chapter_hydrator.dart \
+            lib/services/manga/manga_details_data_source.dart \
+            lib/services/manga/manga_hydrating_details_data_source.dart \
+            test/services/manga/manga_hydrating_details_data_source_test.dart \
+            test/widgets/manga/manga_details_screen_test.dart
+          git diff --cached --check
+          git commit -m 'perf(manga): stream chapter hydration progressively'
+          git push origin HEAD:fix/catalog-search-manga-regressions-20260826
