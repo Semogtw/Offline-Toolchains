@@ -55,6 +55,19 @@ jobs:
           tar -C "$RUNNER_TEMP" -I 'zstd -T0 -8' -cf "$RUNNER_TEMP/goanime-pub-delta.tar.zst" goanime-pub-delta
           sha256sum "$RUNNER_TEMP/goanime-pub-delta.tar.zst" > "$RUNNER_TEMP/goanime-pub-delta.tar.zst.sha256"
 
+      - name: Hydrate PDFium native asset used by pdfrx
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/pdfium-linux-x64.tgz"
+          native="$RUNNER_TEMP/goanime-pdfium/chromium_7811/linux-x64"
+          mkdir -p "$native"
+          curl --fail --location --retry 3 --output "$archive" \
+            'https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F7811/pdfium-linux-x64.tgz'
+          tar -xzf "$archive" -C "$RUNNER_TEMP" lib/libpdfium.so
+          mv "$RUNNER_TEMP/lib/libpdfium.so" "$native/libpdfium.so"
+          sha256sum "$native/libpdfium.so" > "$RUNNER_TEMP/goanime-pdfium/libpdfium.so.sha256"
+
       - name: Upload Pub delta
         uses: actions/upload-artifact@v7
         with:
@@ -62,6 +75,17 @@ jobs:
           path: |
             ${{ runner.temp }}/goanime-pub-delta.tar.zst
             ${{ runner.temp }}/goanime-pub-delta.tar.zst.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload PDFium native asset
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-pdfium-linux-x64
+          path: |
+            ${{ runner.temp }}/goanime-pdfium/chromium_7811/linux-x64/libpdfium.so
+            ${{ runner.temp }}/goanime-pdfium/libpdfium.so.sha256
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
