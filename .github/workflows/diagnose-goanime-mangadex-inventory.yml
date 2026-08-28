@@ -1,0 +1,94 @@
+name: Diagnose GoAnime MangaDex inventory
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-mangadex-inventory-diagnostic/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Diagnose MangaDex enumeration
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-mangadex-inventory-diagnostic/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = goanime
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get --enforce-lockfile >/dev/null
+
+      - name: Enumerate MangaDex and expose sanitized terminal state
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/mangadex-diagnostic"
+          rm -rf "$out"
+          mkdir -p "$out"
+          dart run tools/manga/inventory_manga_catalog.dart \
+            --only-sources ptbr.mangadex \
+            --output-dir "$out" \
+            --max-pages 5000 \
+            --timeout-minutes 10 \
+            --max-readability-probes 1 \
+            --max-readability-probes-per-provider 1 \
+            --readability-concurrent-providers 1 \
+            --readability-stale-days 30 \
+            --readability-probe-timeout-seconds 10
+          python3 - "$out/manga_catalog_inventory.json" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding='utf-8'))
+          row = next(p for p in data['providers'] if p['sourceId'] == 'ptbr.mangadex')
+          safe = {k: row.get(k) for k in ('sourceId','status','stopReason','pagesScanned','rawItems','uniqueOccurrences','duplicateOccurrences','failure')}
+          print(json.dumps(safe, ensure_ascii=False, sort_keys=True))
+          PY
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
