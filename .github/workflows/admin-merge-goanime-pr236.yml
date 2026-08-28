@@ -45,3 +45,5 @@ jobs:
           merged="$(gh pr view 236 --repo Semogtw/goanime-mobile --json mergedAt --jq '.mergedAt // empty')"
           test -n "$merged"
           gh api repos/Semogtw/goanime-mobile/branches/main --jq '.commit.sha'
+
+# Trigger commit: PR 236 admin merge.
