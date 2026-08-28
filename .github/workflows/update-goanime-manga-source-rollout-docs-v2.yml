@@ -1,0 +1,178 @@
+name: Update GoAnime manga source rollout docs v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-source-docs-v2/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-source-docs
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: Update manga rollout documentation v2
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-source-docs-v2/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = goanime
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify branch still points to reviewed SHA
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Reapply reviewed docs mutation without trailing whitespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          workflow = Path('control/.github/workflows/update-goanime-manga-source-rollout-docs.yml').read_text()
+          start_marker = '      - name: Update current-state documentation\n'
+          end_marker = '      - name: Verify docs diff sanity\n'
+          start = workflow.index(start_marker)
+          end = workflow.index(end_marker, start)
+          section = workflow[start:end]
+          run_marker = '        run: |\n'
+          run_start = section.index(run_marker) + len(run_marker)
+          lines = []
+          for line in section[run_start:].splitlines():
+              if line.startswith('          '):
+                  lines.append(line[10:])
+              elif line.strip() == '':
+                  lines.append('')
+              else:
+                  raise SystemExit(f'unexpected indentation: {line!r}')
+          Path('/tmp/update-docs.sh').write_text('\n'.join(lines) + '\n')
+          PY
+          chmod +x /tmp/update-docs.sh
+          (cd private-source && bash /tmp/update-docs.sh)
+          python3 - <<'PY'
+          from pathlib import Path
+          for name in (
+              'README_AI.md',
+              'docs/manga_provider_rollout_status.md',
+              'docs/manga_ptbr_provider_audit.md',
+              'docs/manga_source_aggregation.md',
+          ):
+              p = Path('private-source') / name
+              lines = p.read_text().splitlines()
+              p.write_text('\n'.join(line.rstrip() for line in lines) + '\n')
+          PY
+
+      - name: Verify docs diff sanity
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          grep -q 'autoriza atualmente \*\*18\*\* fontes' docs/manga_provider_rollout_status.md
+          grep -q 'runtime padrão autoriza \*\*18\*\* providers' docs/manga_ptbr_provider_audit.md
+          grep -q 'existem \*\*18 sources habilitadas\*\*' docs/manga_source_aggregation.md
+          grep -q 'autoriza \*\*18 providers de Mangá\*\*' README_AI.md
+          grep -q 'enabledProviders=18' docs/manga_provider_rollout_status.md
+          grep -q 'behaviorPins=19' docs/manga_ptbr_provider_audit.md
+          grep -q 'Taimu permanece `planned`' README_AI.md
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Run documentation and manifest guards
+        working-directory: private-source
+        run: |
+          flutter test --no-pub \
+            test/architecture/documentation_drift_test.dart \
+            test/architecture/manga_provider_manifest_validator_test.dart \
+            test/architecture/manga_provider_registry_manifest_test.dart \
+            test/architecture/manga_planned_provider_definitions_test.dart
+
+      - name: Commit documentation checkpoint
+        id: commit
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add README_AI.md docs/manga_provider_rollout_status.md docs/manga_ptbr_provider_audit.md docs/manga_source_aggregation.md
+          git diff --cached --check
+          git commit -m 'docs(manga): record 18-provider rollout state'
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Reverify branch and push fast-forward
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push origin "HEAD:refs/heads/$TARGET_BRANCH"
+          echo "docs_sha=${{ steps.commit.outputs.sha }}"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control" /tmp/update-docs.sh
