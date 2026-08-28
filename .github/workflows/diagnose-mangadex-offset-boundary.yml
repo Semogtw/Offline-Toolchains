@@ -1,0 +1,48 @@
+name: Diagnose MangaDex offset boundary
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/mangadex-offset-boundary/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+      - name: Probe public MangaDex search offsets
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='https://api.mangadex.org/manga'
+          probe() {
+            local offset="$1"
+            local tmp
+            tmp="$(mktemp)"
+            code="$(curl --silent --show-error --location --max-time 30 \
+              --get "$base" \
+              --data-urlencode 'limit=24' \
+              --data-urlencode "offset=$offset" \
+              --data-urlencode 'availableTranslatedLanguage[]=pt-br' \
+              --data-urlencode 'contentRating[]=safe' \
+              --data-urlencode 'contentRating[]=suggestive' \
+              --data-urlencode 'includes[]=cover_art' \
+              --output "$tmp" \
+              --write-out '%{http_code}')"
+            echo "offset=$offset code=$code"
+            jq -c '{result,total,limit,offset,errors}' "$tmp" 2>/dev/null || head -c 800 "$tmp"
+            echo
+            rm -f "$tmp"
+          }
+          for offset in 0 1368 1392 1416 1440 1464 1488 1512 1536 1560; do
+            probe "$offset"
+          done
