@@ -1,0 +1,12 @@
+{
+  "artifactId": "9685864652",
+  "artifactName": "goanime-format-bundle-33171611737",
+  "changedCount": 1,
+  "finishedAt": "2026-08-28T12:35:39.157660Z",
+  "normalizeResult": "success",
+  "prepareResult": "success",
+  "runAttempt": 1,
+  "runId": 33171611737,
+  "schemaVersion": 1,
+  "toolchainsTriggerSha": "0c34a5b210ed8764ac9fabaa8277cf5a262575f1"
+}
