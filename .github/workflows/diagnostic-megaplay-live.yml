@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Verify native MegaPlay stream contract without media URLs
+      - name: Verify MegaPlay HLS descendants and subtitle metadata safely
         shell: bash
         run: |
           set -euo pipefail
@@ -26,32 +26,25 @@ jobs:
 
           UA = 'Mozilla/5.0 (Linux; Android 16; SM-S711B Build/BP2A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/140.0.0.0 Mobile Safari/537.36'
 
-          def request(url, *, referer=None, origin=None, accept='*/*', range_header=None):
+          def request(url, *, referer=None, origin=None, accept='*/*', range_header=None, max_bytes=512000):
               headers = {'User-Agent': UA, 'Accept': accept}
-              if referer is not None:
-                  headers['Referer'] = referer
-              if origin:
-                  headers['Origin'] = origin
-              if range_header:
-                  headers['Range'] = range_header
+              if referer is not None: headers['Referer'] = referer
+              if origin: headers['Origin'] = origin
+              if range_header: headers['Range'] = range_header
               req = urllib.request.Request(url, headers=headers)
               try:
                   response = urllib.request.urlopen(req, timeout=20)
-                  return response.status, response.geturl(), response.headers, response.read(512_000)
+                  return response.status, response.geturl(), response.headers, response.read(max_bytes)
               except urllib.error.HTTPError as exc:
-                  return exc.code, exc.geturl(), exc.headers, exc.read(128_000)
+                  return exc.code, exc.geturl(), exc.headers, exc.read(min(max_bytes, 128000))
 
           status, _, _, body = request('https://anikotoapi.site/recent-anime?page=1&per_page=2', accept='application/json')
-          if status != 200:
-              raise SystemExit(f'Anikoto recent failed: {status}')
+          if status != 200: raise SystemExit(f'Anikoto recent failed: {status}')
           rows = json.loads(body).get('data', [])
-          series_id = next((str(r.get('id') or r.get('series_id') or r.get('anime_id')).strip()
-                            for r in rows if isinstance(r, dict) and (r.get('id') or r.get('series_id') or r.get('anime_id'))), None)
-          if not series_id:
-              raise SystemExit('No current series id')
+          series_id = next((str(r.get('id') or r.get('series_id') or r.get('anime_id')).strip() for r in rows if isinstance(r, dict) and (r.get('id') or r.get('series_id') or r.get('anime_id'))), None)
+          if not series_id: raise SystemExit('No current series id')
           status, _, _, body = request(f'https://anikotoapi.site/series/{urllib.parse.quote(series_id, safe="")}', accept='application/json')
-          if status != 200:
-              raise SystemExit(f'Anikoto series failed: {status}')
+          if status != 200: raise SystemExit(f'Anikoto series failed: {status}')
           payload = json.loads(body)
           data = payload.get('data') if isinstance(payload.get('data'), dict) else payload
           episodes = data.get('episodes', []) if isinstance(data, dict) else []
@@ -63,64 +56,48 @@ jobs:
                   if isinstance(candidate, str) and candidate.startswith('https://megaplay.buzz/stream/'):
                       embed_url = candidate
                       break
-          if not embed_url:
-              raise SystemExit('No current MegaPlay embed')
+          if not embed_url: raise SystemExit('No current MegaPlay embed')
 
           status, _, _, body = request(embed_url, referer='https://goanime.local/', accept='text/html')
-          if status != 200:
-              raise SystemExit(f'Embed failed: {status}')
-          match = re.search(rb'\bdata-id=["\'](\d+)["\']', body, re.I)
-          if not match:
-              raise SystemExit('Embed has no data-id')
-          data_id = match.group(1).decode('ascii')
-
-          status, _, _, body = request(
-              'https://megaplay.buzz/stream/getSources?id=' + data_id,
-              referer=embed_url,
-              origin='https://megaplay.buzz',
-              accept='application/json',
-          )
-          if status != 200:
-              raise SystemExit(f'getSources failed: {status}')
+          match = re.search(rb'\bdata-id=["\'](\d+)["\']', body, re.I) if status == 200 else None
+          if not match: raise SystemExit('Embed has no data-id')
+          status, _, _, body = request('https://megaplay.buzz/stream/getSources?id=' + match.group(1).decode('ascii'), referer=embed_url, origin='https://megaplay.buzz', accept='application/json')
+          if status != 200: raise SystemExit(f'getSources failed: {status}')
           source_payload = json.loads(body)
-          sources = source_payload.get('sources') if isinstance(source_payload, dict) else None
-          media_url = sources.get('file') if isinstance(sources, dict) else None
-          if not isinstance(media_url, str) or not media_url.startswith('https://'):
-              raise SystemExit('getSources returned no HTTPS media file')
+          media_url = (source_payload.get('sources') or {}).get('file') if isinstance(source_payload, dict) and isinstance(source_payload.get('sources'), dict) else None
+          if not isinstance(media_url, str) or not media_url.startswith('https://'): raise SystemExit('No HTTPS media file')
 
-          parsed = urllib.parse.urlparse(media_url)
-          print('media_host=', parsed.hostname)
-          print('media_path_has_m3u8=', '.m3u8' in parsed.path.lower())
-          print('media_query_present=', bool(parsed.query))
+          tracks = source_payload.get('tracks', []) if isinstance(source_payload, dict) else []
+          safe_tracks = []
+          for track in tracks if isinstance(tracks, list) else []:
+              if not isinstance(track, dict): continue
+              safe_tracks.append({k: track.get(k) for k in ('kind','label','default','srclang') if k in track})
+          print('track_metadata=', json.dumps(safe_tracks, ensure_ascii=True, sort_keys=True))
 
-          header_sets = [
-              ('megaplay_origin', 'https://megaplay.buzz/', 'https://megaplay.buzz'),
-              ('embed_referer', embed_url, 'https://megaplay.buzz'),
-              ('referer_only', 'https://megaplay.buzz/', None),
-              ('no_headers', None, None),
-          ]
-          successful_body = None
-          for label, referer, origin in header_sets:
-              media_status, final_url, headers, media_body = request(
-                  media_url,
-                  referer=referer,
-                  origin=origin,
-                  accept='application/vnd.apple.mpegurl,application/x-mpegURL,*/*',
-                  range_header='bytes=0-65535',
-              )
-              text_start = media_body[:256].decode('utf-8', errors='ignore').lstrip()
-              print(f'{label}_status=', media_status)
-              print(f'{label}_final_host=', urllib.parse.urlparse(final_url).hostname)
-              print(f'{label}_content_type=', headers.get('content-type'))
-              print(f'{label}_looks_hls=', text_start.startswith('#EXTM3U'))
-              if media_status in (200, 206) and text_start.startswith('#EXTM3U') and successful_body is None:
-                  successful_body = media_body
-
-          if successful_body is None:
-              raise SystemExit('No tested header set could fetch the current HLS playlist')
-          playlist = successful_body.decode('utf-8', errors='replace')
-          non_comment = [line.strip() for line in playlist.splitlines() if line.strip() and not line.lstrip().startswith('#')]
-          print('playlist_resource_lines=', len(non_comment))
-          print('playlist_has_uri_attributes=', 'URI="' in playlist)
-          print('native_stream_probe=healthy')
+          good_headers = {'referer': 'https://megaplay.buzz/', 'origin': 'https://megaplay.buzz'}
+          status, _, headers, body = request(media_url, referer=good_headers['referer'], origin=good_headers['origin'], accept='application/vnd.apple.mpegurl,application/x-mpegURL,*/*')
+          if status not in (200, 206) or not body.decode('utf-8', errors='ignore').lstrip().startswith('#EXTM3U'):
+              raise SystemExit('Master playlist failed')
+          master = body.decode('utf-8', errors='replace')
+          resources = [line.strip() for line in master.splitlines() if line.strip() and not line.lstrip().startswith('#')]
+          if not resources: raise SystemExit('Master playlist has no child resources')
+          variant_url = urllib.parse.urljoin(media_url, resources[0])
+          status, _, headers, body = request(variant_url, referer=good_headers['referer'], origin=good_headers['origin'], accept='application/vnd.apple.mpegurl,application/x-mpegURL,*/*')
+          print('variant_status=', status)
+          print('variant_host=', urllib.parse.urlparse(variant_url).hostname)
+          variant_text = body.decode('utf-8', errors='replace')
+          print('variant_looks_hls=', variant_text.lstrip().startswith('#EXTM3U'))
+          if status not in (200, 206) or not variant_text.lstrip().startswith('#EXTM3U'):
+              raise SystemExit('Variant playlist failed')
+          segments = [line.strip() for line in variant_text.splitlines() if line.strip() and not line.lstrip().startswith('#')]
+          if not segments: raise SystemExit('Variant has no media segment')
+          segment_url = urllib.parse.urljoin(variant_url, segments[0])
+          status, _, headers, body = request(segment_url, referer=good_headers['referer'], origin=good_headers['origin'], range_header='bytes=0-4095', max_bytes=4096)
+          print('segment_status=', status)
+          print('segment_host=', urllib.parse.urlparse(segment_url).hostname)
+          print('segment_content_type=', headers.get('content-type'))
+          print('segment_nonempty=', bool(body))
+          if status not in (200, 206) or not body:
+              raise SystemExit('Media segment failed')
+          print('native_hls_chain_probe=healthy')
           PY
