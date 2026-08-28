@@ -138,6 +138,7 @@ jobs:
             find test/services/megaplay -maxdepth 1 -type f -name '*_test.dart' -print | sort
           )
           for extra in \
+            test/screens/mobile_megaplay_native_playback_contract_test.dart \
             test/widgets/settings_megaplay_mode_test.dart \
             test/widgets/megaplay_episode_list_test.dart; do
             [[ -f "$extra" ]] && tests+=("$extra")
