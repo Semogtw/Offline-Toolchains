@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Compare browser and Android WebView MegaPlay contexts
+      - name: Inspect current MegaPlay player contract without media URLs
         shell: bash
         run: |
           set -euo pipefail
@@ -24,12 +24,10 @@ jobs:
           import urllib.parse
           import urllib.request
 
-          DESKTOP_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140 Safari/537.36'
-          MOBILE_CHROME_UA = 'Mozilla/5.0 (Linux; Android 16; SM-S711B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36'
-          ANDROID_WEBVIEW_UA = 'Mozilla/5.0 (Linux; Android 16; SM-S711B Build/BP2A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/140.0.0.0 Mobile Safari/537.36'
+          UA = 'Mozilla/5.0 (Linux; Android 16; SM-S711B Build/BP2A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/140.0.0.0 Mobile Safari/537.36'
 
-          def request(url, *, ua=DESKTOP_UA, referer=None, origin=None, accept='application/json,text/plain,*/*'):
-              headers = {'User-Agent': ua, 'Accept': accept}
+          def request(url, *, referer=None, origin=None, accept='application/json,text/plain,*/*'):
+              headers = {'User-Agent': UA, 'Accept': accept}
               if referer is not None:
                   headers['Referer'] = referer
               if origin:
@@ -40,12 +38,6 @@ jobs:
                   return response.status, response.geturl(), response.headers, response.read(2_000_000)
               except urllib.error.HTTPError as exc:
                   return exc.code, exc.geturl(), exc.headers, exc.read(256_000)
-
-          def signature(body):
-              text = body.decode('utf-8', errors='replace')
-              data_id = re.search(r'\bdata-id=[\"\'](\d+)[\"\']', text, re.I)
-              error_code = re.search(r'Error Code:\s*(\d+)', text, re.I)
-              return data_id.group(1) if data_id else None, error_code.group(1) if error_code else None
 
           status, _, _, body = request('https://anikotoapi.site/recent-anime?page=1&per_page=2')
           if status != 200:
@@ -73,24 +65,64 @@ jobs:
           if not embed_url:
               raise SystemExit('No current MegaPlay embed candidate')
 
-          contexts = [
-              ('desktop', DESKTOP_UA),
-              ('mobile_chrome', MOBILE_CHROME_UA),
-              ('android_webview', ANDROID_WEBVIEW_UA),
-          ]
-          for label, ua in contexts:
-              status, final_url, headers, body = request(
-                  embed_url,
-                  ua=ua,
-                  referer='https://goanime.local/',
-                  accept='text/html,application/json,text/plain,*/*',
-              )
-              data_id, error_code = signature(body)
-              print(f'{label}_status=', status)
-              print(f'{label}_content_type=', headers.get('content-type'))
-              print(f'{label}_final_host=', urllib.parse.urlparse(final_url).hostname)
-              print(f'{label}_has_data_id=', bool(data_id))
-              print(f'{label}_error_code=', error_code)
+          status, final_url, embed_headers, body = request(
+              embed_url,
+              referer='https://goanime.local/',
+              accept='text/html,application/json,text/plain,*/*',
+          )
+          if status != 200:
+              raise SystemExit(f'MegaPlay embed failed: {status}')
+          text = body.decode('utf-8', errors='replace')
+          data_id_match = re.search(r'\bdata-id=[\"\'](\d+)[\"\']', text, re.I)
+          if not data_id_match:
+              raise SystemExit('Current MegaPlay embed has no player data-id')
+          data_id = data_id_match.group(1)
+          print('embed_set_cookie=', bool(embed_headers.get_all('Set-Cookie') or []))
+          print('embed_x_frame_options=', embed_headers.get('x-frame-options'))
+          print('embed_csp_present=', bool(embed_headers.get('content-security-policy')))
 
-          print('megaplay_webview_ua_probe=complete')
+          script_urls = []
+          for raw in re.findall(r'<script[^>]+src=[\"\']([^\"\']+)', text, re.I):
+              resolved = urllib.parse.urljoin(final_url, raw)
+              parsed = urllib.parse.urlparse(resolved)
+              if parsed.scheme in {'http', 'https'}:
+                  script_urls.append(resolved)
+          print('external_script_count=', len(script_urls))
+          print('external_script_hosts=', sorted(set(urllib.parse.urlparse(u).hostname for u in script_urls if urllib.parse.urlparse(u).hostname)))
+
+          combined = text
+          fetched_scripts = 0
+          for script_url in script_urls[:12]:
+              script_status, _, _, script_body = request(
+                  script_url,
+                  referer=embed_url,
+                  accept='*/*',
+              )
+              if script_status == 200:
+                  combined += '\n' + script_body.decode('utf-8', errors='replace')
+                  fetched_scripts += 1
+          print('external_scripts_fetched=', fetched_scripts)
+          for token in ('postMessage', 'watching-log', 'getSources', 'currentTime', 'duration', 'complete', 'error'):
+              print(f'player_contract_{token.replace("-", "_")}=', token in combined)
+
+          source_url = 'https://megaplay.buzz/stream/getSources?id=' + data_id
+          status, _, source_headers, body = request(
+              source_url,
+              referer=embed_url,
+              origin='https://megaplay.buzz',
+          )
+          print('sources_status=', status)
+          print('sources_set_cookie=', bool(source_headers.get_all('Set-Cookie') or []))
+          if status != 200:
+              raise SystemExit('getSources failed')
+          source_payload = json.loads(body)
+          print('sources_top_keys=', sorted(source_payload.keys()) if isinstance(source_payload, dict) else [])
+          sources = source_payload.get('sources') if isinstance(source_payload, dict) else None
+          if isinstance(sources, dict):
+              print('sources_dict_keys=', sorted(sources.keys()))
+          elif isinstance(sources, list):
+              print('sources_list_count=', len(sources))
+              print('sources_first_keys=', sorted(sources[0].keys()) if sources and isinstance(sources[0], dict) else [])
+          print('tracks_count=', len(source_payload.get('tracks', [])) if isinstance(source_payload, dict) and isinstance(source_payload.get('tracks'), list) else 0)
+          print('player_contract_probe=complete')
           PY
