@@ -2,6 +2,7 @@ name: goanime_offline_fixture
 description: Public dependency fixture for hydrating the GoAnime Mobile offline cache.
 publish_to: none
 version: 0.0.0
+# Refreshed for local GoAnime regression verification on 2026-08-28.
 
 environment:
   sdk: ">=3.10.0 <4.0.0"
