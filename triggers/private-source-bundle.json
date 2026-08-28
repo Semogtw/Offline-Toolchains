@@ -1,6 +1,5 @@
 {
   "project": "goanime",
-  "mode": "ref",
+  "mode": "snapshot",
   "ref": "main"
 }
-
