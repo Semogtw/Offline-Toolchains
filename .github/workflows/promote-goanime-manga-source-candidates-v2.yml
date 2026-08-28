@@ -1,0 +1,248 @@
+name: Promote GoAnime manga source candidates v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-source-promotion-v2/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-source-promotion
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Promote validated manga sources v2
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-source-promotion-v2/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = goanime
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]
+          [[ "$branch" != /* ]]
+          [[ "$branch" != */ ]]
+          [[ "$branch" != *..* ]]
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify branch still points to reviewed SHA
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Extract and fix reviewed rollout mutation
+        env:
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          workflow = Path('control/.github/workflows/promote-goanime-manga-source-candidates.yml').read_text()
+          start_marker = '      - name: Apply reviewed rollout state\n'
+          end_marker = '      - name: Set up Flutter 3.44.1\n'
+          start = workflow.index(start_marker)
+          end = workflow.index(end_marker, start)
+          section = workflow[start:end]
+          run_marker = '        run: |\n'
+          run_start = section.index(run_marker) + len(run_marker)
+          raw_lines = section[run_start:].splitlines()
+          script_lines = []
+          for line in raw_lines:
+              if line.startswith('          '):
+                  script_lines.append(line[10:])
+              elif line.strip() == '':
+                  script_lines.append('')
+              else:
+                  raise SystemExit(f'unexpected indentation in extracted rollout script: {line!r}')
+          script = '\n'.join(script_lines) + '\n'
+          needle = """if old not in text:\n    raise SystemExit('validator provider baseline block changed')\nvalidator.write_text(text)\n"""
+          replacement = """if old not in text:\n    raise SystemExit('validator provider baseline block changed')\ntext = text.replace(old, new, 1)\nvalidator.write_text(text)\n"""
+          if needle not in script:
+              raise SystemExit('missing validator replacement bug signature')
+          script = script.replace(needle, replacement, 1)
+          Path('/tmp/apply-reviewed-rollout.sh').write_text(script)
+          PY
+          chmod +x /tmp/apply-reviewed-rollout.sh
+          (cd private-source && REVIEWED_SHA="$REVIEWED_SHA" bash /tmp/apply-reviewed-rollout.sh)
+
+      - name: Assert corrected validator materialized
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -n "externalProviderNames" tools/manga/validate_manga_provider_manifest.dart
+          grep -n "external provider allowlist" tools/manga/validate_manga_provider_manifest.dart
+          if grep -Fq "provider sourceName is not in allowed baseline: \$sourceName" tools/manga/validate_manga_provider_manifest.dart; then
+            echo 'stale provider baseline rejection survived mutation' >&2
+            exit 1
+          fi
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Format changed Dart
+        working-directory: private-source
+        run: |
+          dart format \
+            tools/manga/validate_manga_provider_manifest.dart \
+            lib/services/manga/default_manga_source_providers.dart \
+            test/architecture/manga_provider_manifest_validator_test.dart
+
+      - name: Verify manifest accounting and registry authorization
+        working-directory: private-source
+        run: |
+          flutter test --no-pub \
+            test/architecture/manga_provider_manifest_validator_test.dart \
+            test/architecture/manga_provider_registry_manifest_test.dart \
+            test/architecture/manga_planned_provider_definitions_test.dart
+
+      - name: Verify provider adapters
+        working-directory: private-source
+        run: |
+          flutter test --no-pub \
+            test/services/manga/providers/mangadex_manga_provider_test.dart \
+            test/services/manga/providers/taimu_manga_provider_test.dart \
+            test/services/manga/providers/manhastro_manga_provider_test.dart
+
+      - name: Analyze rollout scope
+        working-directory: private-source
+        run: |
+          flutter analyze --no-pub \
+            tools/manga/validate_manga_provider_manifest.dart \
+            lib/services/manga/default_manga_source_providers.dart \
+            lib/services/manga/manga_provider_policy.dart \
+            lib/services/manga/manga_http_client.dart \
+            lib/services/manga/manga_remote_manifest_validator.dart \
+            lib/services/manga/manga_provider_definitions.dart \
+            lib/services/manga/manga_provider_definitions_wave5.dart \
+            lib/services/manga/providers/mangadex_manga_provider.dart \
+            lib/services/manga/providers/taimu_manga_provider.dart \
+            lib/services/manga/providers/manhastro_manga_provider.dart \
+            test/architecture/manga_provider_manifest_validator_test.dart
+
+      - name: Checkout current Keiyoushi source history
+        uses: actions/checkout@v6
+        with:
+          repository: keiyoushi/extensions-source
+          ref: 16df97717c304c3f1e309c81acdceaeab5b51314
+          path: extensions-source
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+
+      - name: Audit enabled provider behavior drift
+        working-directory: private-source
+        run: |
+          python3 tools/manga/audit_keiyoushi_provider_drift.py \
+            --manifest docs/manga_sources_ptbr.json \
+            --source-repo ../extensions-source \
+            --head 16df97717c304c3f1e309c81acdceaeab5b51314 \
+            --json-output /tmp/manga-provider-drift.json
+          cat /tmp/manga-provider-drift.json
+
+      - name: Re-probe newly enabled sources through real bytes
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          for source in ptbr.mangadex ptbr.manhastro; do
+            log="/tmp/${source//./_}.promotion.log"
+            timeout 240s dart run tools/manga/audit_planned_provider_stage.dart "$source" >"$log" 2>&1
+            grep -E '^(search_[0-9]+_results|details|chapters|chapter_count|content_[0-9]+|content_[0-9]+_kind|transport_[0-9]+|verifier|terminal)=' "$log" || true
+            grep -q '^terminal=readable$' "$log"
+          done
+
+      - name: Commit validated promotion
+        id: commit
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            tools/manga/validate_manga_provider_manifest.dart \
+            lib/services/manga/default_manga_source_providers.dart \
+            docs/manga_sources_ptbr.json \
+            docs/manga_provider_behavior_pins.json \
+            test/architecture/manga_provider_manifest_validator_test.dart
+          git diff --cached --check
+          git diff --cached --quiet && { echo 'no promotion diff'; exit 1; }
+          git commit -m 'feat(manga): promote MangaDex and Manhastro providers'
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Reverify branch and push fast-forward
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push origin "HEAD:refs/heads/$TARGET_BRANCH"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+          echo "promoted_sha=${{ steps.commit.outputs.sha }}"
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/extensions-source" "$GITHUB_WORKSPACE/control" /tmp/*promotion.log /tmp/manga-provider-drift.json /tmp/apply-reviewed-rollout.sh
