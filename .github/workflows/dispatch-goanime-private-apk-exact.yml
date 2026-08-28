@@ -69,8 +69,9 @@ jobs:
           PY
           normalized="$(python3 scripts/private_ci_request.py "$normalized_request")"
           ref="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["ref"])' "$normalized")"
+          encoded_ref="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$ref")"
 
-          actual_sha="$(gh api "repos/Semogtw/goanime-mobile/commits/$ref" --jq .sha)"
+          actual_sha="$(gh api "repos/Semogtw/goanime-mobile/commits/$encoded_ref" --jq .sha)"
           test "$actual_sha" = "$expected_sha" || {
             echo "Requested ref moved before dispatch: expected $expected_sha, found $actual_sha" >&2
             exit 1
@@ -83,18 +84,24 @@ jobs:
             --input - <<<"$payload"
 
           run_id=''
+          runs_file="$RUNNER_TEMP/goanime-private-apk-runs.json"
           for attempt in $(seq 1 40); do
-            runs="$(gh api 'repos/Semogtw/goanime-mobile/actions/workflows/build_full_credentialed_apk.yml/runs?event=workflow_dispatch&per_page=50')"
-            run_id="$(python3 - "$expected_sha" "$before" <<<"$runs" <<'PY'
+            gh api \
+              'repos/Semogtw/goanime-mobile/actions/workflows/build_full_credentialed_apk.yml/runs?event=workflow_dispatch&per_page=50' \
+              > "$runs_file"
+            run_id="$(python3 - "$runs_file" "$expected_sha" "$before" <<'PY'
           import datetime, json, sys
-          expected = sys.argv[1]
-          before = int(sys.argv[2])
-          data = json.load(sys.stdin)
+          path, expected, before_raw = sys.argv[1:]
+          before = int(before_raw)
+          with open(path, encoding='utf-8') as stream:
+              data = json.load(stream)
           rows = []
           for run in data.get('workflow_runs', []):
               if run.get('head_sha') != expected:
                   continue
-              created = datetime.datetime.fromisoformat(run['created_at'].replace('Z', '+00:00')).timestamp()
+              created = datetime.datetime.fromisoformat(
+                  run['created_at'].replace('Z', '+00:00')
+              ).timestamp()
               if created >= before - 5:
                   rows.append(run)
           rows.sort(key=lambda row: row['created_at'], reverse=True)
