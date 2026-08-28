@@ -112,7 +112,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat > tool/_provider_diag.dart <<'DART'
+          mkdir -p tools/.diagnostics
+          cat > tools/.diagnostics/provider_diag.dart <<'DART'
           import 'package:goanime_core/goanime_core.dart';
           import 'package:http/http.dart' as http;
           import 'package:goanime/services/manga/default_manga_source_providers.dart';
@@ -161,8 +162,8 @@ jobs:
             }
           }
           DART
-          dart run tool/_provider_diag.dart
-          rm -f tool/_provider_diag.dart
+          dart run tools/.diagnostics/provider_diag.dart
+          rm -rf tools/.diagnostics
 
       - name: Remove private checkout
         if: always()
