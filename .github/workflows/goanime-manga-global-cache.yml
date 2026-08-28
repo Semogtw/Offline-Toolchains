@@ -20,7 +20,7 @@ concurrency:
 env:
   FLUTTER_CHANNEL: stable
   FLUTTER_VERSION: 3.44.1
-  SCHEDULED_TARGET_REF: cache/manga-global-refresh-20260828
+  SCHEDULED_TARGET_REF: main
 
 jobs:
   refresh:
@@ -36,7 +36,7 @@ jobs:
           set -euo pipefail
           target="${DISPATCH_TARGET:-$SCHEDULED_TARGET_REF}"
           case "$target" in
-            codex/manga-parity-20260823|main|cache/manga-global-refresh-20260828) ;;
+            codex/manga-parity-20260823|main) ;;
             *)
               echo "::error::Ref is not allowlisted for manga global-cache maintenance."
               exit 1
