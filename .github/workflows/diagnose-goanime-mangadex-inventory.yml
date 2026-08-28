@@ -67,7 +67,6 @@ jobs:
               raise SystemExit('MangaHttpClient response block changed')
           path.write_text(text.replace(old, new, 1))
           PY
-          dart format lib/services/manga/manga_http_client.dart
           git diff --check
 
       - name: Set up Flutter 3.44.1
@@ -79,7 +78,9 @@ jobs:
 
       - name: Resolve dependencies
         working-directory: private-source
-        run: flutter pub get --enforce-lockfile >/dev/null
+        run: |
+          dart format lib/services/manga/manga_http_client.dart >/dev/null
+          flutter pub get --enforce-lockfile >/dev/null
 
       - name: Enumerate MangaDex and expose sanitized terminal state
         working-directory: private-source
