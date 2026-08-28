@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Probe Anikoto and MegaPlay without exposing media URLs
+      - name: Probe Anikoto and MegaPlay request contexts safely
         shell: bash
         run: |
           set -euo pipefail
@@ -28,7 +28,7 @@ jobs:
 
           def request(url, *, referer=None, origin=None, accept='application/json,text/plain,*/*'):
               headers = {'User-Agent': UA, 'Accept': accept}
-              if referer:
+              if referer is not None:
                   headers['Referer'] = referer
               if origin:
                   headers['Origin'] = origin
@@ -38,42 +38,33 @@ jobs:
                   body = response.read(2_000_000)
                   return response.status, response.geturl(), response.headers, body
               except urllib.error.HTTPError as exc:
-                  body = exc.read(256_000)
-                  return exc.code, exc.geturl(), exc.headers, body
+                  return exc.code, exc.geturl(), exc.headers, exc.read(256_000)
 
-          recent_url = 'https://anikotoapi.site/recent-anime?page=1&per_page=2'
-          status, final_url, headers, body = request(recent_url)
+          def player_signature(body):
+              text = body.decode('utf-8', errors='replace')
+              data_id = re.search(r'\bdata-id=[\"\'](\d+)[\"\']', text, re.I)
+              error_code = re.search(r'Error Code:\s*(\d+)', text, re.I)
+              return data_id.group(1) if data_id else None, error_code.group(1) if error_code else None
+
+          status, _, headers, body = request('https://anikotoapi.site/recent-anime?page=1&per_page=2')
           print('anikoto_recent_status=', status)
-          print('anikoto_recent_content_type=', headers.get('content-type'))
           print('anikoto_recent_rate_limit_remaining=', headers.get('x-ratelimit-remaining'))
-          print('anikoto_recent_final_host=', urllib.parse.urlparse(final_url).hostname)
           if status != 200:
-              raise SystemExit('Anikoto recent endpoint is not healthy from GitHub Actions')
-
+              raise SystemExit('Anikoto recent endpoint is not healthy')
           payload = json.loads(body)
           rows = payload.get('data') if isinstance(payload, dict) else None
           if not isinstance(rows, list) or not rows:
               raise SystemExit('Anikoto recent endpoint returned no rows')
-          series_id = None
-          for row in rows:
-              if isinstance(row, dict):
-                  candidate = row.get('id') or row.get('series_id') or row.get('anime_id')
-                  if candidate is not None:
-                      series_id = str(candidate).strip()
-                      if series_id:
-                          break
+          series_id = next((str(row.get('id') or row.get('series_id') or row.get('anime_id')).strip()
+                            for row in rows if isinstance(row, dict) and (row.get('id') or row.get('series_id') or row.get('anime_id'))), None)
           if not series_id:
               raise SystemExit('No series id in recent rows')
-          print('anikoto_recent_rows=', len(rows))
 
           series_url = f'https://anikotoapi.site/series/{urllib.parse.quote(series_id, safe="")}'
           status, _, headers, body = request(series_url)
           print('anikoto_series_status=', status)
-          print('anikoto_series_content_type=', headers.get('content-type'))
-          print('anikoto_series_rate_limit_remaining=', headers.get('x-ratelimit-remaining'))
           if status != 200:
-              raise SystemExit('Anikoto series endpoint is not healthy from GitHub Actions')
-
+              raise SystemExit('Anikoto series endpoint is not healthy')
           payload = json.loads(body)
           data = payload.get('data') if isinstance(payload, dict) else None
           if not isinstance(data, dict):
@@ -99,30 +90,36 @@ jobs:
           if not embed_url:
               raise SystemExit('Series endpoint returned no MegaPlay embed candidate')
 
-          status, final_url, headers, body = request(
-              embed_url,
-              referer='https://megaplay.buzz/',
-              accept='text/html,application/json,text/plain,*/*',
-          )
-          text = body.decode('utf-8', errors='replace')
-          data_id = re.search(r'\bdata-id=[\"\'](\d+)[\"\']', text, re.I)
-          error_code = re.search(r'Error Code:\s*(\d+)', text, re.I)
-          print('megaplay_embed_status=', status)
-          print('megaplay_embed_content_type=', headers.get('content-type'))
-          print('megaplay_embed_final_host=', urllib.parse.urlparse(final_url).hostname)
-          print('megaplay_embed_has_data_id=', bool(data_id))
-          print('megaplay_embed_error_code=', error_code.group(1) if error_code else None)
-          if status != 200 or not data_id:
-              raise SystemExit('MegaPlay embed did not expose a playable player id')
+          contexts = [
+              ('provider', 'https://megaplay.buzz/'),
+              ('goanime_wrapper', 'https://goanime.local/'),
+              ('no_referrer', None),
+          ]
+          provider_data_id = None
+          for label, referer in contexts:
+              status, final_url, headers, body = request(
+                  embed_url,
+                  referer=referer,
+                  accept='text/html,application/json,text/plain,*/*',
+              )
+              data_id, error_code = player_signature(body)
+              print(f'{label}_embed_status=', status)
+              print(f'{label}_embed_final_host=', urllib.parse.urlparse(final_url).hostname)
+              print(f'{label}_embed_has_data_id=', bool(data_id))
+              print(f'{label}_embed_error_code=', error_code)
+              if label == 'provider':
+                  provider_data_id = data_id
 
-          source_url = 'https://megaplay.buzz/stream/getSources?id=' + data_id.group(1)
+          if not provider_data_id:
+              raise SystemExit('Provider-context MegaPlay embed did not expose a playable player id')
+
+          source_url = 'https://megaplay.buzz/stream/getSources?id=' + provider_data_id
           status, _, headers, body = request(
               source_url,
               referer=embed_url,
               origin='https://megaplay.buzz',
           )
           print('megaplay_sources_status=', status)
-          print('megaplay_sources_content_type=', headers.get('content-type'))
           if status != 200:
               raise SystemExit('MegaPlay source metadata endpoint failed')
           source_payload = json.loads(body)
@@ -130,5 +127,5 @@ jobs:
           tracks = source_payload.get('tracks') if isinstance(source_payload, dict) else None
           print('megaplay_sources_shape=', type(sources).__name__)
           print('megaplay_track_count=', len(tracks) if isinstance(tracks, list) else 0)
-          print('megaplay_live_probe=healthy')
+          print('megaplay_context_probe=complete')
           PY
