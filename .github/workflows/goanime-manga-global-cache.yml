@@ -26,6 +26,7 @@ env:
   FLUTTER_CHANNEL: stable
   FLUTTER_VERSION: 3.44.1
   SCHEDULED_TARGET_REF: fix/manga-catalog-surface-regressions-20260828
+  READABILITY_REFRESH_GENERATION: '2'
 
 jobs:
   refresh:
