@@ -1,0 +1,169 @@
+name: Diagnose GoAnime manga providers
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-provider-diagnostics/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-provider-diagnostics
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout Toolchains control files
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-provider-diagnostics/*.request' | head -n 1)"
+          test -n "$request"
+          branch="$(sed -n '1p' "$request")"
+          sha="$(sed -n '2p' "$request")"
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ ]]
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify exact branch head
+        working-directory: private-source
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/GoAnime-Mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get --enforce-lockfile >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+
+      - name: Probe raw endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          probe() {
+            label="$1"; shift
+            code="$(curl --retry 1 --retry-delay 1 --connect-timeout 10 --max-time 20 -sS -o /dev/null -w '%{http_code}' "$@" || true)"
+            echo "[raw] $label status=${code:-transport_error}"
+          }
+          ua='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/138 Safari/537.36'
+          probe mangalivre_no_origin -A "$ua" -H 'Accept: application/json' -H 'Accept-Language: pt-BR,pt;q=0.9,en;q=0.8' 'https://api.mangalivre.org/api/v1/mangas/list?page=1&order=updates'
+          probe mangalivre_with_origin -A "$ua" -H 'Accept: application/json' -H 'Accept-Language: pt-BR,pt;q=0.9,en;q=0.8' -H 'Origin: https://mangalivre.org' 'https://api.mangalivre.org/api/v1/mangas/list?page=1&order=updates'
+          probe mangadash_api -A "$ua" -H 'Accept: application/json, text/plain, */*' -H 'Referer: https://mangadash.net/' 'https://mangadash.net/api/mangas/list?page=1&q=&sort=recentes&categoria=&status=&ano=&plus18='
+          probe mangadash_html -A "$ua" 'https://mangadash.net/mangas'
+          probe mangalivre_blog_page1 -A "$ua" -H 'Referer: https://mangalivre.blog/' -H 'X-Requested-With: XMLHttpRequest' 'https://mangalivre.blog/pesquisa/?s='
+          probe mangalivre_blog_page2 -A "$ua" -H 'Referer: https://mangalivre.blog/' -H 'X-Requested-With: XMLHttpRequest' 'https://mangalivre.blog/pesquisa/?s=&paged=2'
+          probe mangalivre_blog_latest2 -A "$ua" -H 'Referer: https://mangalivre.blog/' -H 'X-Requested-With: XMLHttpRequest' 'https://mangalivre.blog/page/2/'
+          probe arthurscan -A "$ua" 'https://arthurscan.xyz/'
+          probe ninjacomics -A "$ua" 'https://ninjacomics.xyz/'
+
+      - name: Probe provider contracts
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > tool/_provider_diag.dart <<'DART'
+          import 'package:goanime_core/goanime_core.dart';
+          import 'package:http/http.dart' as http;
+          import 'package:goanime/services/manga/default_manga_source_providers.dart';
+          import 'package:goanime/services/manga/manga_http_client.dart';
+          import 'package:goanime/services/manga/manga_provider_failures.dart';
+
+          Future<void> main() async {
+            final clients = <http.Client>[];
+            final registry = buildDefaultMangaSourceRegistry(
+              httpClientFactory: (policy) {
+                final client = http.Client();
+                clients.add(client);
+                return MangaHttpClient(policy: policy, client: client, maxBodyBytes: 8 * 1024 * 1024);
+              },
+            );
+            const ids = <String>[
+              'ptbr.arthurscan',
+              'ptbr.mangadash',
+              'ptbr.mangalivreblog',
+              'ptbr.mangalivreorg',
+              'ptbr.ninjascan',
+            ];
+            try {
+              for (final id in ids) {
+                final provider = registry.providers.firstWhere((p) => p.sourceId == id);
+                String? token;
+                for (var page = 1; page <= 2; page++) {
+                  try {
+                    final result = await provider.search(MangaSearchRequest(query: '', pageToken: token)).timeout(const Duration(seconds: 30));
+                    print('[provider] $id page=$page items=${result.items.length} next=${result.nextPageToken ?? '-'}');
+                    token = result.nextPageToken;
+                    if (token == null) break;
+                  } on MangaProviderFailure catch (e) {
+                    print('[provider] $id page=$page failure=${e.kind.name} status=${e.statusCode ?? '-'} class=${e.failureClass ?? '-'}');
+                    break;
+                  } catch (e) {
+                    print('[provider] $id page=$page exception=${e.runtimeType}');
+                    break;
+                  }
+                }
+              }
+            } finally {
+              for (final client in clients) {
+                client.close();
+              }
+            }
+          }
+          DART
+          dart run tool/_provider_diag.dart
+          rm -f tool/_provider_diag.dart
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
