@@ -1,0 +1,60 @@
+name: Fix GoAnime release metadata 1.26.3
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fix-goanime-release-metadata-1.26.3-20260827.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout GoAnime release branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: chore/release-1.26.3-20260827
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 21
+          persist-credentials: true
+
+      - name: Align generated release metadata
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path('docs/technical_status.json')
+          data = json.loads(path.read_text(encoding='utf-8'))
+          data['appVersion'] = '1.26.3+34'
+          path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+          PY
+          python3 tools/generate_quality_scorecard.py --write
+          python3 tools/generate_quality_scorecard.py --check
+          test "$(sed -nE 's/^version:[[:space:]]*(.*)$/\1/p' pubspec.yaml | head -n1)" = '1.26.3+34'
+          test "$(python3 -c 'import json; print(json.load(open("docs/technical_status.json"))["appVersion"])')" = '1.26.3+34'
+          changed="$(git diff --name-only)"
+          printf '%s\n' "$changed"
+          test -n "$changed"
+          unexpected="$(printf '%s\n' "$changed" | grep -Ev '^(docs/technical_status\.json|docs/quality_scorecard\.json)$' || true)"
+          test -z "$unexpected"
+
+      - name: Commit and push metadata alignment
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/technical_status.json docs/quality_scorecard.json
+          git commit -m 'docs(release): align 1.26.3 generated metadata'
+          git push origin HEAD:chore/release-1.26.3-20260827
