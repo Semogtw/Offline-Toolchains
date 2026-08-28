@@ -1,0 +1,97 @@
+name: Build GoAnime locked Pub cache
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-goanime-locked-pub-cache.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-locked-pub-cache-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: 3.44.1
+  FLUTTER_CHANNEL: stable
+
+jobs:
+  build:
+    name: Hydrate exact GoAnime pubspec.lock
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout GoAnime main
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: main
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Hydrate exact locked packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PUB_CACHE="$RUNNER_TEMP/goanime-locked-pub-cache"
+          mkdir -p "$PUB_CACHE"
+          flutter config --no-analytics
+
+          cd "$GITHUB_WORKSPACE/private-source"
+          before="$(sha256sum pubspec.lock | awk '{print $1}')"
+          flutter pub get --enforce-lockfile
+          after="$(sha256sum pubspec.lock | awk '{print $1}')"
+          test "$before" = "$after"
+
+          archive="$RUNNER_TEMP/goanime-locked-pub-cache-linux-x64.tar.zst"
+          tar -C "$RUNNER_TEMP" -I 'zstd -T0 -8' -cf "$archive" goanime-locked-pub-cache
+          sha256sum "$archive" > "$archive.sha256"
+
+          manifest="$RUNNER_TEMP/LOCKED-PUB-CACHE-MANIFEST.txt"
+          {
+            echo "repository=Semogtw/goanime-mobile"
+            echo "commit=$(git rev-parse HEAD)"
+            echo "flutter=$FLUTTER_VERSION"
+            echo "pubspec_lock_sha256=$before"
+            echo "archive=$(basename "$archive")"
+            echo "archive_sha256=$(cut -d' ' -f1 "$archive.sha256")"
+            echo "created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > "$manifest"
+
+          ls -lh "$archive" "$archive.sha256" "$manifest"
+
+      - name: Upload exact locked Pub cache
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-locked-pub-cache-linux-x64
+          path: |
+            ${{ runner.temp }}/goanime-locked-pub-cache-linux-x64.tar.zst
+            ${{ runner.temp }}/goanime-locked-pub-cache-linux-x64.tar.zst.sha256
+            ${{ runner.temp }}/LOCKED-PUB-CACHE-MANIFEST.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
