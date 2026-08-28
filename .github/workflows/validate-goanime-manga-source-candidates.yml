@@ -106,6 +106,29 @@ jobs:
             test/services/manga/providers/taimu_manga_provider_test.dart \
             test/services/manga/providers/manhastro_manga_provider_test.dart
 
+      - name: Add ephemeral manifest diagnostics
+        working-directory: private-source
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          validator = Path('lib/services/manga/manga_remote_manifest_validator.dart')
+          text = validator.read_text()
+          text = text.replace(
+              "throw StateError('Provider returned content from an unapproved host.');",
+              "throw StateError('Provider returned content from an unapproved host: ${uri.host}.');",
+          )
+          validator.write_text(text)
+
+          audit = Path('tools/manga/audit_planned_provider_stage.dart')
+          text = audit.read_text()
+          needle = "  stdout.writeln('${stage}_type=${error.runtimeType}');\n"
+          replacement = needle + "  if (error is StateError) stdout.writeln('${stage}_detail=${error.toString()}');\n"
+          if needle not in text:
+              raise SystemExit('audit diagnostic insertion point not found')
+          audit.write_text(text.replace(needle, replacement, 1))
+          PY
+
       - name: Probe live candidates including page bytes
         working-directory: private-source
         shell: bash
@@ -119,7 +142,7 @@ jobs:
             status=$?
             set -e
             echo "source=$source"
-            grep -E '^(search_[0-9]+|search_[0-9]+_results|details|chapters|chapter_count|content_[0-9]+|content_[0-9]+_kind|transport_[0-9]+|verifier|terminal|[a-z0-9_]+_(type|kind|status|host))=' "$log" || true
+            grep -E '^(search_[0-9]+|search_[0-9]+_results|details|chapters|chapter_count|content_[0-9]+|content_[0-9]+_kind|transport_[0-9]+|verifier|terminal|[a-z0-9_]+_(type|kind|status|host|detail))=' "$log" || true
             if [ "$status" -ne 0 ] || ! grep -q '^terminal=readable$' "$log"; then
               failed=1
               echo "candidate_result=not_readable"
