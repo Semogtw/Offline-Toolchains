@@ -1,0 +1,246 @@
+name: Implement GoAnime MangaDex inventory retry
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-mangadex-inventory-retry/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-mangadex-inventory-retry
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    name: Add bounded MangaDex inventory 400 retry
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-mangadex-inventory-retry/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = goanime
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify branch still points to requested SHA
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+          test "$(git -C private-source rev-parse HEAD)" = "$EXPECTED_SHA"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: |
+          flutter pub get --enforce-lockfile >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+
+      - name: RED - retry helper contract must fail before implementation
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          flutter test --no-pub test/tools/manga_inventory_search_retry_test.dart > /tmp/mangadex-retry-red.log 2>&1
+          status=$?
+          set -e
+          test "$status" -ne 0
+          grep -Eq "manga_inventory_search_retry.dart|runMangaInventorySearchWithRetry" /tmp/mangadex-retry-red.log
+          echo '[tdd] RED observed: retry helper does not exist yet'
+
+      - name: Implement bounded inventory-only MangaDex HTTP 400 retry
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > tools/manga/manga_inventory_search_retry.dart <<'DART'
+          import 'package:goanime/services/manga/manga_provider_failures.dart';
+
+          typedef MangaInventoryRetryDelay = Future<void> Function(Duration duration);
+
+          const String _mangaDexSourceId = 'ptbr.mangadex';
+          const int _maxMangaDexBadRequestAttempts = 3;
+
+          Future<T> runMangaInventorySearchWithRetry<T>({
+            required String sourceId,
+            required Future<T> Function() search,
+            MangaInventoryRetryDelay? delay,
+          }) async {
+            final wait = delay ?? _defaultDelay;
+            for (var attempt = 1; attempt <= _maxMangaDexBadRequestAttempts; attempt++) {
+              try {
+                return await search();
+              } on MangaProviderFailure catch (failure) {
+                final retryable =
+                    sourceId == _mangaDexSourceId &&
+                    failure.sourceId == _mangaDexSourceId &&
+                    failure.kind == MangaProviderFailureKind.httpStatus &&
+                    failure.statusCode == 400;
+                if (!retryable || attempt >= _maxMangaDexBadRequestAttempts) {
+                  rethrow;
+                }
+                await wait(Duration(seconds: attempt));
+              }
+            }
+            throw StateError('Unreachable MangaDex inventory retry state.');
+          }
+
+          Future<void> _defaultDelay(Duration duration) => Future<void>.delayed(duration);
+          DART
+
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tools/manga/inventory_manga_catalog.dart')
+          text = path.read_text(encoding='utf-8')
+          import_anchor = "import 'manga_progressive_readability_verifier.dart';\n"
+          if import_anchor not in text:
+              raise SystemExit('inventory import anchor changed')
+          text = text.replace(
+              import_anchor,
+              "import 'manga_inventory_search_retry.dart';\n" + import_anchor,
+              1,
+          )
+          old = """      page = await provider.search(\n        MangaSearchRequest(query: '', pageToken: pageToken),\n      );\n"""
+          new = """      page = await runMangaInventorySearchWithRetry<MangaSearchPage>(\n        sourceId: provider.sourceId,\n        search: () => provider.search(\n          MangaSearchRequest(query: '', pageToken: pageToken),\n        ),\n      );\n"""
+          if old not in text:
+              raise SystemExit('inventory search block changed')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
+          dart format \
+            tools/manga/manga_inventory_search_retry.dart \
+            tools/manga/inventory_manga_catalog.dart \
+            test/tools/manga_inventory_search_retry_test.dart
+          dart format --output=none --set-exit-if-changed \
+            tools/manga/manga_inventory_search_retry.dart \
+            tools/manga/inventory_manga_catalog.dart \
+            test/tools/manga_inventory_search_retry_test.dart
+          git diff --check
+
+      - name: GREEN - deterministic retry and inventory regression gates
+        working-directory: private-source
+        run: |
+          flutter test --no-pub --concurrency=1 \
+            test/tools/manga_inventory_search_retry_test.dart \
+            test/tools/inventory_manga_catalog_selection_test.dart \
+            test/tools/build_global_manga_availability_test.dart \
+            test/services/manga/providers/mangadex_manga_provider_test.dart \
+            test/services/manga/manga_bundled_catalog_v3_source_test.dart
+          flutter analyze --no-pub \
+            tools/manga/manga_inventory_search_retry.dart \
+            tools/manga/inventory_manga_catalog.dart \
+            test/tools/manga_inventory_search_retry_test.dart
+
+      - name: Live prove MangaDex inventory reaches exhaustive state
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/mangadex-exhaustive"
+          rm -rf "$out"
+          mkdir -p "$out"
+          timeout 900s dart run tools/manga/inventory_manga_catalog.dart \
+            --only-sources ptbr.mangadex \
+            --output-dir "$out" \
+            --max-pages 600 \
+            --timeout-minutes 14 \
+            --max-readability-probes 1 \
+            --max-readability-probes-per-provider 1 \
+            --readability-concurrent-providers 1 \
+            --readability-stale-days 30 \
+            --readability-probe-timeout-seconds 10
+          python3 - "$out/manga_catalog_inventory.json" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding='utf-8'))
+          row = next(p for p in data['providers'] if p['sourceId'] == 'ptbr.mangadex')
+          print(json.dumps({k: row.get(k) for k in ('status','stopReason','pagesScanned','rawItems','uniqueOccurrences','duplicateOccurrences','failure')}, sort_keys=True))
+          assert row['status'] == 'exhausted', row
+          assert row['stopReason'] == 'next_page_token_null', row
+          assert row['uniqueOccurrences'] > 10000, row
+          PY
+
+      - name: Commit MangaDex inventory retry
+        id: commit
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            tools/manga/manga_inventory_search_retry.dart \
+            tools/manga/inventory_manga_catalog.dart \
+            test/tools/manga_inventory_search_retry_test.dart
+          git diff --cached --check
+          git commit -m 'fix(manga): retry transient MangaDex inventory 400s'
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Reverify branch and push fast-forward
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push origin "HEAD:refs/heads/$TARGET_BRANCH"
+          echo "published=${{ steps.commit.outputs.sha }}"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control" /tmp/mangadex-retry-red.log
