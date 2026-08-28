@@ -103,6 +103,7 @@ jobs:
             test/services/manga/providers/manhastro_manga_provider_test.dart \
             test/services/manga/manga_bundled_catalog_source_test.dart \
             test/services/manga/manga_bundled_catalog_v3_source_test.dart \
+            test/tools/inventory_manga_catalog_selection_test.dart \
             test/tools/build_global_manga_availability_test.dart
 
       - name: Analyze final rollout scope
@@ -110,7 +111,7 @@ jobs:
         run: |
           flutter analyze --no-pub \
             tools/manga/validate_manga_provider_manifest.dart \
-            tools/manga/materialize_global_manga_availability_ci.sh \
+            tools/manga/inventory_manga_catalog.dart \
             lib/services/manga/default_manga_source_providers.dart \
             lib/services/manga/manga_provider_policy.dart \
             lib/services/manga/manga_http_client.dart \
@@ -122,7 +123,9 @@ jobs:
             lib/services/manga/providers/manhastro_manga_provider.dart \
             test/services/manga/providers/mangadex_manga_provider_test.dart \
             test/services/manga/providers/taimu_manga_provider_test.dart \
-            test/services/manga/providers/manhastro_manga_provider_test.dart
+            test/services/manga/providers/manhastro_manga_provider_test.dart \
+            test/tools/inventory_manga_catalog_selection_test.dart
+          bash -n tools/manga/materialize_global_manga_availability_ci.sh
 
       - name: Verify current bundled receipt and runtime cohort
         working-directory: private-source
@@ -153,15 +156,14 @@ jobs:
           receipt = Path('docs/manga_global_availability_receipt_2026-08-28.md')
           text = receipt.read_text()
           assert 'Enabled providers: **18**' in text, text[:500]
-          assert '`ptbr.mangadex`' in text, 'MangaDex missing from receipt'
-          assert '`ptbr.manhastro`' in text, 'Manhastro missing from receipt'
+          assert '| `ptbr.mangadex` | exhausted |' in text, 'MangaDex partition is not exhaustive'
+          assert '| `ptbr.manhastro` | exhausted |' in text, 'Manhastro partition is not exhaustive'
           print('enabled_runtime=18')
           print('taimu_state=planned')
           for line in text.splitlines():
-              if line.startswith(('- Canonical works bundled:', '- Source occurrences bundled:', '- Readable-proven links:', '- Listed-only links:')):
+              if line.startswith(('- Providers refreshed exhaustively:', '- Providers carried forward:', '- Canonical works bundled:', '- Source occurrences bundled:', '- Readable-proven links:', '- Listed-only links:')):
                   print(line)
           PY
-          bash -n tools/manga/materialize_global_manga_availability_ci.sh
           ! grep -Fq "enabledProviders'] == 16" tools/manga/materialize_global_manga_availability_ci.sh
 
       - name: Checkout current Keiyoushi source history
