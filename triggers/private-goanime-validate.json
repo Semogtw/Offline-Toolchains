@@ -1,7 +1,7 @@
 {
   "project": "goanime",
-  "ref": "96050dddddbe5d25e72c255a7cf26c425515ce17",
+  "ref": "275c38a4081568fe80c736a1dbbd5ca421262a1c",
   "requested_by": "chatgpt",
-  "requested_at": "2026-08-28T11:12:00Z",
-  "purpose": "megaplay-native-cdn-header-red"
+  "requested_at": "2026-08-28T11:20:00Z",
+  "purpose": "megaplay-native-resolver-green"
 }
