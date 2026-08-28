@@ -13,34 +13,22 @@ jobs:
   merge:
     runs-on: ubuntu-24.04
     steps:
-      - name: Require GoAnime release credential
+      - name: Require private repositories credential
         env:
-          GH_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN" || {
-            echo '::error::A GoAnime release/private repository token is required.'
+            echo '::error::PRIVATE_REPOSITORIES_TOKEN is unavailable.'
             exit 1
           }
 
-      - name: Admin merge externally validated cache PR
+      - name: Probe PR and branch administration permissions
         env:
-          GH_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          gh pr merge 236 \
-            --repo Semogtw/goanime-mobile \
-            --merge \
-            --admin \
-            --match-head-commit baaafa88d1927df9fcaa42bf9c691c5326d296e9
-
-      - name: Verify merge reached main
-        env:
-          GH_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh pr view 236 --repo Semogtw/goanime-mobile --json mergedAt,mergeCommit --jq '{mergedAt,mergeCommit}'
-          gh api repos/Semogtw/goanime-mobile/branches/main --jq '.commit.sha'
+          gh api repos/Semogtw/goanime-mobile/pulls/236 --jq '{number,state,head:.head.sha,base:.base.ref}'
+          gh api repos/Semogtw/goanime-mobile/branches/main/protection --jq '{required_status_checks,enforce_admins}'
