@@ -1,0 +1,12 @@
+{
+  "project": "hydra",
+  "ref": "unknown",
+  "request_id": "unknown",
+  "run_id": null,
+  "conclusion": "reporter-failed",
+  "run_url": "",
+  "created_at": "",
+  "updated_at": "",
+  "jobs": [],
+  "annotations": []
+}
