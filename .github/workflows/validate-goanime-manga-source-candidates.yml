@@ -106,6 +106,103 @@ jobs:
             test/services/manga/providers/taimu_manga_provider_test.dart \
             test/services/manga/providers/manhastro_manga_provider_test.dart
 
+      - name: Inspect candidate rollout metadata
+        working-directory: private-source
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          ids = {'ptbr.mangadex', 'ptbr.taimumangas', 'ptbr.manhastro'}
+          manifest = json.loads(Path('docs/manga_sources_ptbr.json').read_text())
+          records = {
+              row.get('goanimeSourceId'): row
+              for row in manifest.get('providerRecords', [])
+              if isinstance(row, dict) and row.get('goanimeSourceId') in ids
+          }
+          print('manifest_candidate_records=' + json.dumps(records, ensure_ascii=False, sort_keys=True))
+
+          pins_path = Path('docs/manga_provider_behavior_pins.json')
+          if pins_path.exists():
+              pins = json.loads(pins_path.read_text())
+              matches = []
+              def visit(value, path='$'):
+                  if isinstance(value, dict):
+                      serialized = json.dumps(value, ensure_ascii=False)
+                      if any(source_id in serialized for source_id in ids):
+                          matches.append({'path': path, 'value': value})
+                      for key, child in value.items():
+                          if isinstance(child, (dict, list)):
+                              visit(child, f'{path}.{key}')
+                  elif isinstance(value, list):
+                      for index, child in enumerate(value):
+                          if isinstance(child, (dict, list)):
+                              visit(child, f'{path}[{index}]')
+              visit(pins)
+              leaves = []
+              seen = set()
+              for match in reversed(matches):
+                  raw = json.dumps(match['value'], ensure_ascii=False, sort_keys=True)
+                  if raw in seen:
+                      continue
+                  seen.add(raw)
+                  leaves.append(match)
+                  if len(leaves) >= 12:
+                      break
+              print('behavior_pin_candidate_matches=' + json.dumps(list(reversed(leaves)), ensure_ascii=False, sort_keys=True))
+          PY
+
+      - name: Audit Manhastro catalog safety
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          timeout 240s dart run tools/manga/audit_planned_provider_catalog_safety.dart ptbr.manhastro | tee /tmp/manhastro_safety_sample.log
+          sample_status=${PIPESTATUS[0]}
+          set -e
+          echo "manhastro_sample_audit_status=$sample_status"
+
+          curl --fail --silent --show-error --location --max-time 60 \
+            https://api2.manhastro.net/dados -o /tmp/manhastro_catalog.json
+          python3 - <<'PY'
+          import json
+          from collections import Counter
+          from pathlib import Path
+
+          text = Path('/tmp/manhastro_catalog.json').read_text(errors='replace').strip()
+          if text.startswith('\ufeff'):
+              text = text[1:].lstrip()
+          if text.startswith(")]}'"):
+              text = text[4:].lstrip()
+          if text.startswith(','):
+              text = text[1:].lstrip()
+          if text.startswith('_'):
+              text = text[1:].lstrip()
+          payload = json.loads(text)
+          rows = payload.get('data', []) if isinstance(payload, dict) else []
+          markers = ('hentai', '18+', '+18', 'adult', 'porn', 'sexo explícito', 'sexo explicito', 'erotica', 'erótica', 'erotico', 'erótico')
+          genre_counts = Counter()
+          explicit = 0
+          for row in rows:
+              if not isinstance(row, dict):
+                  continue
+              genres = row.get('generos') if isinstance(row.get('generos'), list) else []
+              genre_texts = [str(value).strip() for value in genres if str(value).strip()]
+              genre_counts.update(genre_texts)
+              title = ' '.join(str(row.get(key, '') or '') for key in ('titulo_brasil', 'titulo'))
+              haystack = (title + ' ' + ' '.join(genre_texts)).lower()
+              if any(marker in haystack for marker in markers):
+                  explicit += 1
+          total = sum(1 for row in rows if isinstance(row, dict))
+          ratio = (explicit / total) if total else 0.0
+          print(f'manhastro_catalog_total={total}')
+          print(f'manhastro_explicit_marker_occurrences={explicit}')
+          print(f'manhastro_explicit_marker_ratio={ratio:.6f}')
+          print('manhastro_top_genres=' + json.dumps(genre_counts.most_common(20), ensure_ascii=False))
+          PY
+
       - name: Add ephemeral manifest diagnostics
         working-directory: private-source
         shell: bash
@@ -155,4 +252,4 @@ jobs:
 
       - name: Remove private checkout
         if: always()
-        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control" /tmp/ptbr_*.log
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control" /tmp/ptbr_*.log /tmp/manhastro_*.log /tmp/manhastro_catalog.json
