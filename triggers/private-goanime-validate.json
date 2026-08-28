@@ -1,7 +1,7 @@
 {
   "project": "goanime",
-  "ref": "047e89e8938214cc0ffa1a93c668ed8fb693b917",
+  "ref": "8b7c90021eeaf75b0459fcc266ee1c53baf01bdb",
   "requested_by": "chatgpt",
-  "requested_at": "2026-08-26T14:20:00Z",
-  "purpose": "megaplay-shorebird-final-format-validation"
+  "requested_at": "2026-08-28T10:36:00Z",
+  "purpose": "megaplay-startup-guard-red-test"
 }
