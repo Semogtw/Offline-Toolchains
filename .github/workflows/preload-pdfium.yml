@@ -1,0 +1,68 @@
+name: Build GoAnime PDFium preload
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/preload-pdfium.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-pdfium-preload-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PDFIUM_RELEASE: chromium/7811
+  PDFIUM_RELEASE_ENCODED: chromium%2F7811
+  PDFIUM_PLATFORM: linux
+  PDFIUM_ARCH: x64
+
+jobs:
+  build:
+    name: PDFium Linux x64 preload
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Download exact PDFium native asset
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          archive="$RUNNER_TEMP/pdfium-${PDFIUM_PLATFORM}-${PDFIUM_ARCH}.tgz"
+          extract_dir="$RUNNER_TEMP/pdfium-extract"
+          output_dir="$RUNNER_TEMP/goanime-pdfium-preload"
+          url="https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_RELEASE_ENCODED}/pdfium-${PDFIUM_PLATFORM}-${PDFIUM_ARCH}.tgz"
+
+          rm -rf "$extract_dir" "$output_dir"
+          mkdir -p "$extract_dir" "$output_dir"
+
+          curl -fL --retry 3 --retry-delay 2 "$url" -o "$archive"
+          tar -xzf "$archive" -C "$extract_dir"
+          test -s "$extract_dir/lib/libpdfium.so"
+
+          cp "$extract_dir/lib/libpdfium.so" "$output_dir/libpdfium.so"
+          sha256sum "$archive" > "$output_dir/archive.sha256"
+          sha256sum "$output_dir/libpdfium.so" > "$output_dir/libpdfium.so.sha256"
+
+          cat > "$output_dir/MANIFEST.txt" <<EOF
+          source=$url
+          release=$PDFIUM_RELEASE
+          platform=$PDFIUM_PLATFORM
+          arch=$PDFIUM_ARCH
+          hook_target=chromium_7811/linux-x64/libpdfium.so
+          created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          EOF
+
+      - name: Upload PDFium preload
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-pdfium-linux-x64-chromium-7811
+          path: ${{ runner.temp }}/goanime-pdfium-preload
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
