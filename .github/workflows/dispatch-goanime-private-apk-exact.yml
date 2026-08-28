@@ -1,0 +1,142 @@
+name: Dispatch exact GoAnime private APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-private-apk-exact/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dispatch-goanime-private-apk-exact
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact trusted trigger commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/private_ci_request.py
+            triggers/goanime-private-apk-exact
+          sparse-checkout-cone-mode: false
+
+      - name: Dispatch exact private APK build
+        id: dispatch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          mapfile -t changed < <(
+            git show --pretty='' --name-only HEAD -- \
+              'triggers/goanime-private-apk-exact/*.request' \
+              | sed '/^$/d' | sort -u
+          )
+          test "${#changed[@]}" -eq 1 || {
+            echo "Expected exactly one private-APK request in trigger commit; got ${#changed[@]}." >&2
+            exit 1
+          }
+          request_path="${changed[0]}"
+          test -f "$request_path"
+
+          mapfile -t request_lines < <(sed '/^[[:space:]]*$/d' "$request_path")
+          test "${#request_lines[@]}" -eq 2 || {
+            echo 'Request must contain exactly two non-empty lines: ref and expected SHA.' >&2
+            exit 1
+          }
+          requested_ref="${request_lines[0]}"
+          expected_sha="${request_lines[1]}"
+          [[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo 'Expected SHA is not a full lowercase commit SHA.' >&2
+            exit 1
+          }
+
+          normalized_request="$RUNNER_TEMP/goanime-private-apk-request.json"
+          python3 - "$normalized_request" "$requested_ref" <<'PY'
+          import json, sys
+          with open(sys.argv[1], 'w', encoding='utf-8') as stream:
+              json.dump({'project': 'goanime', 'ref': sys.argv[2]}, stream)
+          PY
+          normalized="$(python3 scripts/private_ci_request.py "$normalized_request")"
+          ref="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["ref"])' "$normalized")"
+
+          actual_sha="$(gh api "repos/Semogtw/goanime-mobile/commits/$ref" --jq .sha)"
+          test "$actual_sha" = "$expected_sha" || {
+            echo "Requested ref moved before dispatch: expected $expected_sha, found $actual_sha" >&2
+            exit 1
+          }
+
+          before="$(date -u +%s)"
+          payload="$(python3 -c 'import json,sys; print(json.dumps({"ref":sys.argv[1]}))' "$ref")"
+          gh api --method POST \
+            repos/Semogtw/goanime-mobile/actions/workflows/build_full_credentialed_apk.yml/dispatches \
+            --input - <<<"$payload"
+
+          run_id=''
+          for attempt in $(seq 1 40); do
+            runs="$(gh api 'repos/Semogtw/goanime-mobile/actions/workflows/build_full_credentialed_apk.yml/runs?event=workflow_dispatch&per_page=50')"
+            run_id="$(python3 - "$expected_sha" "$before" <<<"$runs" <<'PY'
+          import datetime, json, sys
+          expected = sys.argv[1]
+          before = int(sys.argv[2])
+          data = json.load(sys.stdin)
+          rows = []
+          for run in data.get('workflow_runs', []):
+              if run.get('head_sha') != expected:
+                  continue
+              created = datetime.datetime.fromisoformat(run['created_at'].replace('Z', '+00:00')).timestamp()
+              if created >= before - 5:
+                  rows.append(run)
+          rows.sort(key=lambda row: row['created_at'], reverse=True)
+          print(rows[0]['id'] if rows else '')
+          PY
+            )"
+            [[ -n "$run_id" ]] && break
+            sleep 3
+          done
+          test -n "$run_id" || {
+            echo 'Unable to resolve dispatched GoAnime private APK run.' >&2
+            exit 1
+          }
+
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$expected_sha" >> "$GITHUB_OUTPUT"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "Dispatched exact private APK run $run_id for $expected_sha"
+
+      - name: Publish sanitized dispatcher receipt
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          SOURCE_REF: ${{ steps.dispatch.outputs.ref }}
+          SOURCE_SHA: ${{ steps.dispatch.outputs.source_sha }}
+          PRIVATE_RUN_ID: ${{ steps.dispatch.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          report="$(python3 - <<'PY'
+          import json, os
+          print(json.dumps({
+              'schemaVersion': 1,
+              'sourceRef': os.environ['SOURCE_REF'],
+              'sourceSha': os.environ['SOURCE_SHA'],
+              'goanimeWorkflowRunId': int(os.environ['PRIVATE_RUN_ID']),
+              'distribution': 'private artifact only; no release or rollout',
+          }, indent=2, sort_keys=True))
+          PY
+          )"
+          encoded="$(printf '%s\n' "$report" | base64 -w0)"
+          path="reports/goanime-private-apk-dispatch/${GITHUB_RUN_ID}.json"
+          gh api --method PUT \
+            "repos/${GITHUB_REPOSITORY}/contents/$path" \
+            -f "message=ci(goanime): report private APK dispatch ${GITHUB_RUN_ID} [skip ci]" \
+            -f "content=$encoded" >/dev/null
