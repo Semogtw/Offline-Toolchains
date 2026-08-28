@@ -1,0 +1,162 @@
+name: Refresh GoAnime manga global cache exact SHA
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-global-cache-exact/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-global-cache
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: Refresh exact manga global cache
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Require private write credential
+        env:
+          WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: test -n "$WRITE_TOKEN"
+
+      - name: Checkout control request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-global-cache-exact/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = goanime
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]
+          [[ "$branch" != /* ]]
+          [[ "$branch" != */ ]]
+          [[ "$branch" != *..* ]]
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify branch still points to requested SHA
+        working-directory: private-source
+        shell: bash
+        env:
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          remote_head="$(git ls-remote --exit-code origin "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get --enforce-lockfile >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+
+      - name: Bind materializer to requested branch without publishing wrapper mutation
+        working-directory: private-source
+        shell: bash
+        env:
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        run: |
+          set -euo pipefail
+          python3 - "$TARGET_BRANCH" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          target = sys.argv[1]
+          path = Path('tools/manga/materialize_global_manga_availability_ci.sh')
+          text = path.read_text()
+          pattern = r'^TARGET_BRANCH="[^"]+"$'
+          matches = re.findall(pattern, text, flags=re.MULTILINE)
+          if len(matches) != 1:
+              raise SystemExit(f'unexpected TARGET_BRANCH declarations: {matches!r}')
+          text = re.sub(pattern, f'TARGET_BRANCH="{target}"', text, count=1, flags=re.MULTILINE)
+
+          old_guard = "elif len(structured_matches) == 2:\n    pass\n"
+          new_guard = "elif len(inline_matches) == 0 and len(structured_matches) >= 2:\n    pass\n"
+          if old_guard in text:
+              text = text.replace(old_guard, new_guard, 1)
+          elif new_guard not in text:
+              raise SystemExit('unexpected openDatabase compatibility guard shape')
+
+          # TARGET_BRANCH is a Toolchains-local CAS binding. Do not persist that
+          # branch-specific wrapper mutation in GoAnime-Mobile's materializer commit.
+          staged = "  tools/manga/materialize_global_manga_availability_ci.sh \\\n"
+          if staged not in text:
+              raise SystemExit('materializer git-add entry not found')
+          text = text.replace(staged, '', 1)
+          path.write_text(text)
+          PY
+          bash -n tools/manga/materialize_global_manga_availability_ci.sh
+          grep -Fq 'expected_enabled = sum(' tools/manga/materialize_global_manga_availability_ci.sh
+          grep -Fq 'RECEIPT_PATH="docs/manga_global_availability_receipt_${RECEIPT_DATE}.md"' tools/manga/materialize_global_manga_availability_ci.sh
+
+      - name: Materialize and publish 18-provider cache
+        working-directory: private-source
+        shell: bash
+        run: bash tools/manga/materialize_global_manga_availability_ci.sh
+
+      - name: Verify published cache receipt
+        working-directory: private-source
+        shell: bash
+        env:
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          START_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          published_sha="$(git rev-parse HEAD)"
+          test "$published_sha" != "$START_SHA"
+          remote_head="$(git ls-remote --exit-code origin "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$published_sha"
+          receipt="docs/manga_global_availability_receipt_$(date -u +%F).md"
+          test -s "$receipt"
+          grep -q 'Enabled providers: \*\*18\*\*' "$receipt"
+          grep -q '`ptbr.mangadex`' "$receipt"
+          grep -q '`ptbr.manhastro`' "$receipt"
+          echo "published_sha=$published_sha"
+          echo "receipt=$receipt"
+          grep -E '^(# Global manga availability receipt|- Enabled providers:|- Providers refreshed exhaustively:|- Providers carried forward:|- Canonical works bundled:|- Source occurrences bundled:|- Readable-proven links:|- Listed-only links:)' "$receipt"
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
