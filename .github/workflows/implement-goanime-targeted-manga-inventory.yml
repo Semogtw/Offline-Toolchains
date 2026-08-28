@@ -1,0 +1,215 @@
+name: Implement GoAnime targeted manga inventory
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-targeted-manga-inventory/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-targeted-manga-inventory
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    name: Add targeted manga inventory after RED gate
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-targeted-manga-inventory/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = goanime
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify branch still points to requested SHA
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+          test "$(git -C private-source rev-parse HEAD)" = "$EXPECTED_SHA"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: |
+          flutter pub get --enforce-lockfile >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+
+      - name: RED - targeted inventory contract must fail before implementation
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          flutter test --no-pub test/tools/inventory_manga_catalog_selection_test.dart > /tmp/targeted-red.log 2>&1
+          status=$?
+          set -e
+          test "$status" -ne 0
+          grep -q 'Unknown or incomplete argument: --only-sources' /tmp/targeted-red.log
+          echo '[tdd] RED observed: --only-sources is not implemented yet'
+
+      - name: Implement targeted provider inventory
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path_name: str, old: str, new: str) -> None:
+              path = Path(path_name)
+              text = path.read_text(encoding='utf-8')
+              if old not in text:
+                  raise SystemExit(f'{path_name}: expected block not found: {old[:120]!r}')
+              path.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          path = 'tools/manga/inventory_manga_catalog.dart'
+
+          replace_once(
+              path,
+              """  final results = <_ProviderInventory>[];\n  for (final provider in registry.providers) {\n    final policy = registry.policyFor(provider.sourceId);\n    stdout.writeln('[inventory] ${provider.sourceId} (${provider.name})');\n""",
+              """  final registeredSourceIds = <String>{\n    for (final provider in registry.providers) provider.sourceId,\n  };\n  final onlySourceIds = options.onlySourceIds;\n  if (onlySourceIds != null) {\n    final unknown = onlySourceIds.difference(registeredSourceIds).toList()..sort();\n    if (unknown.isNotEmpty) {\n      throw ArgumentError('Unknown manga source id(s): ${unknown.join(', ')}');\n    }\n  }\n\n  final results = <_ProviderInventory>[];\n  for (final provider in registry.providers) {\n    if (onlySourceIds != null && !onlySourceIds.contains(provider.sourceId)) {\n      results.add(\n        _ProviderInventory(\n          sourceId: provider.sourceId,\n          name: provider.name,\n          status: 'skipped',\n          stopReason: 'not_selected',\n          pagesScanned: 0,\n          rawItems: 0,\n          uniqueOccurrences: 0,\n          duplicateOccurrences: 0,\n          occurrences: const <_OccurrenceRecord>[],\n        ),\n      );\n      stdout.writeln('[inventory] ${provider.sourceId}: status=skipped');\n      continue;\n    }\n    final policy = registry.policyFor(provider.sourceId);\n    stdout.writeln('[inventory] ${provider.sourceId} (${provider.name})');\n""",
+          )
+
+          replace_once(
+              path,
+              """    required this.readabilityProbeTimeout,\n  });\n\n  final String outputDir;\n""",
+              """    required this.readabilityProbeTimeout,\n    required this.onlySourceIds,\n  });\n\n  final String outputDir;\n""",
+          )
+          replace_once(
+              path,
+              """  final Duration readabilityProbeTimeout;\n\n  static _Options parse(List<String> args) {\n""",
+              """  final Duration readabilityProbeTimeout;\n  final Set<String>? onlySourceIds;\n\n  static _Options parse(List<String> args) {\n""",
+          )
+          replace_once(
+              path,
+              """    var readabilityProbeTimeout = _defaultReadabilityProbeTimeout;\n    for (var index = 0; index < args.length; index++) {\n""",
+              """    var readabilityProbeTimeout = _defaultReadabilityProbeTimeout;\n    Set<String>? onlySourceIds;\n    for (var index = 0; index < args.length; index++) {\n""",
+          )
+          replace_once(
+              path,
+              """      if (arg == '--output-dir' && index + 1 < args.length) {\n        outputDir = args[++index];\n""",
+              """      if (arg == '--only-sources' && index + 1 < args.length) {\n        final raw = args[++index];\n        final values = raw\n            .split(',')\n            .map((value) => value.trim())\n            .where((value) => value.isNotEmpty)\n            .toSet();\n        if (values.isEmpty) {\n          throw ArgumentError.value(\n            raw,\n            'onlySources',\n            'must contain at least one source id',\n          );\n        }\n        onlySourceIds = Set<String>.unmodifiable(values);\n      } else if (arg == '--output-dir' && index + 1 < args.length) {\n        outputDir = args[++index];\n""",
+          )
+          replace_once(
+              path,
+              """      readabilityProbeTimeout: readabilityProbeTimeout,\n    );\n""",
+              """      readabilityProbeTimeout: readabilityProbeTimeout,\n      onlySourceIds: onlySourceIds,\n    );\n""",
+          )
+          replace_once(
+              path,
+              """      'The source-occurrence count is exact for providers marked `exhausted`. Providers marked `partial`, `failed` or `not_enumerable` are explicitly excluded from any claim that this is the absolute upstream universe.',\n""",
+              """      'The source-occurrence count is exact for providers marked `exhausted`. Providers marked `partial`, `failed`, `not_enumerable` or `skipped` are explicitly excluded from any claim that this is the absolute upstream universe.',\n""",
+          )
+
+          script = 'tools/manga/materialize_global_manga_availability_ci.sh'
+          replace_once(
+              script,
+              """dart run tools/manga/inventory_manga_catalog.dart \\\n  --output-dir \"$OUT_DIR\" \\\n  --max-pages 5000 \\\n  --timeout-minutes 105 \\\n  --previous-db assets/data/manga_availability.db \\\n  --readability-cursor-file assets/data/manga_readability_cursor.json \\\n  --max-readability-probes 1024 \\\n  --max-readability-probes-per-provider 128 \\\n  --readability-concurrent-providers 8 \\\n  --readability-stale-days 30 \\\n  --readability-probe-timeout-seconds 30\n""",
+              """inventory_args=(\n  --output-dir \"$OUT_DIR\"\n  --max-pages 5000\n  --timeout-minutes 105\n  --previous-db assets/data/manga_availability.db\n  --readability-cursor-file assets/data/manga_readability_cursor.json\n  --max-readability-probes 1024\n  --max-readability-probes-per-provider 128\n  --readability-concurrent-providers 8\n  --readability-stale-days 30\n  --readability-probe-timeout-seconds 30\n)\nif [[ -n \"${MANGA_ONLY_SOURCES:-}\" ]]; then\n  inventory_args+=(--only-sources \"$MANGA_ONLY_SOURCES\")\nfi\ndart run tools/manga/inventory_manga_catalog.dart \"${inventory_args[@]}\"\n""",
+          )
+          PY
+
+          dart format tools/manga/inventory_manga_catalog.dart test/tools/inventory_manga_catalog_selection_test.dart
+          dart format --output=none --set-exit-if-changed tools/manga/inventory_manga_catalog.dart test/tools/inventory_manga_catalog_selection_test.dart
+          bash -n tools/manga/materialize_global_manga_availability_ci.sh
+          git diff --check
+          grep -q -- '--only-sources' tools/manga/inventory_manga_catalog.dart
+          grep -q 'MANGA_ONLY_SOURCES' tools/manga/materialize_global_manga_availability_ci.sh
+
+      - name: GREEN - verify targeted inventory and carry-forward contracts
+        working-directory: private-source
+        run: |
+          flutter test --no-pub --concurrency=1 \
+            test/tools/inventory_manga_catalog_selection_test.dart \
+            test/tools/build_global_manga_availability_test.dart \
+            test/services/manga/manga_bundled_catalog_v3_source_test.dart
+          flutter analyze --no-pub \
+            tools/manga/inventory_manga_catalog.dart \
+            test/tools/inventory_manga_catalog_selection_test.dart
+
+      - name: Commit targeted inventory implementation
+        id: commit
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            tools/manga/inventory_manga_catalog.dart \
+            tools/manga/materialize_global_manga_availability_ci.sh \
+            test/tools/inventory_manga_catalog_selection_test.dart
+          git diff --cached --check
+          git commit -m 'feat(manga): support targeted catalog inventory'
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Reverify branch and push fast-forward
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push origin "HEAD:refs/heads/$TARGET_BRANCH"
+          echo "published=${{ steps.commit.outputs.sha }}"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control" /tmp/targeted-red.log
