@@ -25,12 +25,12 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          GOANIME_STATUS_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
         run: |
           set -euo pipefail
           request="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-status-attest/*.json' | head -n 1)"
           test -n "$request"
-          test -n "$PRIVATE_REPOSITORIES_TOKEN"
+          test -n "$GOANIME_STATUS_TOKEN"
 
           eval "$(python3 - "$request" <<'PY'
           import json, re, shlex, sys
@@ -58,10 +58,10 @@ jobs:
           validated_target="$(printf '%s' "$encoded" | base64 -d | tr -d '\r\n')"
           test "$validated_target" = "$TARGET_SHA"
 
-          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          auth="$(printf 'x-access-token:%s' "$GOANIME_STATUS_TOKEN" | base64 -w0)"
           test "$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git | grep -c "$TARGET_SHA")" -ge 1
 
-          GH_TOKEN="$PRIVATE_REPOSITORIES_TOKEN" gh api --method POST \
+          GH_TOKEN="$GOANIME_STATUS_TOKEN" gh api --method POST \
             "repos/Semogtw/goanime-mobile/statuses/${TARGET_SHA}" \
             -f state=success \
             -f context='Project health, analysis and principal tests' \
