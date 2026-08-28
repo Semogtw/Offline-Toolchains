@@ -187,6 +187,8 @@ jobs:
 
       - name: Expose Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: ''
 
       - name: Set up pinned Flutter without persistent cache
         uses: subosito/flutter-action@v2
