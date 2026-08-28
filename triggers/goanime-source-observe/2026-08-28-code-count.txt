@@ -1,0 +1,1 @@
+Observe latest GoAnime source bundle for code-count verification.
