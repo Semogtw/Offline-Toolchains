@@ -19,14 +19,13 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
           show-progress: false
-      - name: Probe public MangaDex search offsets
+      - name: Probe public MangaDex request window
         shell: bash
         run: |
           set -euo pipefail
           base='https://api.mangadex.org/manga'
-          probe() {
-            local offset="$1"
-            local tmp
+          for i in $(seq 1 70); do
+            offset=$(( (i - 1) * 24 ))
             tmp="$(mktemp)"
             code="$(curl --silent --show-error --location --max-time 30 \
               --get "$base" \
@@ -38,11 +37,12 @@ jobs:
               --data-urlencode 'includes[]=cover_art' \
               --output "$tmp" \
               --write-out '%{http_code}')"
-            echo "offset=$offset code=$code"
-            jq -c '{result,total,limit,offset,errors}' "$tmp" 2>/dev/null || head -c 800 "$tmp"
-            echo
+            printf 'request=%02d offset=%d code=%s ' "$i" "$offset" "$code"
+            if [[ "$code" == 200 ]]; then
+              jq -r '"total=\(.total) count=\(.data|length)"' "$tmp"
+            else
+              jq -c '{result,errors}' "$tmp" 2>/dev/null || head -c 1000 "$tmp"
+              echo
+            fi
             rm -f "$tmp"
-          }
-          for offset in 0 1368 1392 1416 1440 1464 1488 1512 1536 1560; do
-            probe "$offset"
           done
