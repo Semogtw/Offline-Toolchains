@@ -129,11 +129,14 @@ jobs:
           PY
           bash -n tools/manga/materialize_global_manga_availability_ci.sh
           grep -Fq 'expected_enabled = sum(' tools/manga/materialize_global_manga_availability_ci.sh
+          grep -Fq 'MANGA_ONLY_SOURCES' tools/manga/materialize_global_manga_availability_ci.sh
           grep -Fq 'RECEIPT_PATH="docs/manga_global_availability_receipt_${RECEIPT_DATE}.md"' tools/manga/materialize_global_manga_availability_ci.sh
 
-      - name: Materialize and publish 18-provider cache
+      - name: Materialize and publish targeted 18-provider cache
         working-directory: private-source
         shell: bash
+        env:
+          MANGA_ONLY_SOURCES: ptbr.mangadex,ptbr.manhastro
         run: bash tools/manga/materialize_global_manga_availability_ci.sh
 
       - name: Verify published cache receipt
@@ -151,8 +154,10 @@ jobs:
           receipt="docs/manga_global_availability_receipt_$(date -u +%F).md"
           test -s "$receipt"
           grep -q 'Enabled providers: \*\*18\*\*' "$receipt"
-          grep -q '`ptbr.mangadex`' "$receipt"
-          grep -q '`ptbr.manhastro`' "$receipt"
+          grep -q 'Providers refreshed exhaustively: \*\*2\*\*' "$receipt"
+          grep -q 'Providers carried forward: \*\*16\*\*' "$receipt"
+          grep -Eq '\| `ptbr\.mangadex` \| exhausted \|' "$receipt"
+          grep -Eq '\| `ptbr\.manhastro` \| exhausted \|' "$receipt"
           echo "published_sha=$published_sha"
           echo "receipt=$receipt"
           grep -E '^(# Global manga availability receipt|- Enabled providers:|- Providers refreshed exhaustively:|- Providers carried forward:|- Canonical works bundled:|- Source occurrences bundled:|- Readable-proven links:|- Listed-only links:)' "$receipt"
