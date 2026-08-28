@@ -52,6 +52,24 @@ jobs:
           persist-credentials: false
           show-progress: false
 
+      - name: Instrument MangaDex HTTP 400 response locally
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('lib/services/manga/manga_http_client.dart')
+          text = path.read_text()
+          old = """      final responseBody = await _readBounded(streamed, currentUri.host);\n      if (streamed.statusCode == 429) {\n"""
+          new = """      final responseBody = await _readBounded(streamed, currentUri.host);\n      if (policy.sourceId == 'ptbr.mangadex' && streamed.statusCode >= 400) {\n        final diagnosticBody = utf8\n            .decode(responseBody, allowMalformed: true)\n            .replaceAll(RegExp(r'\\s+'), ' ');\n        print(\n          '[mangadex-http] status=${streamed.statusCode} uri=$currentUri '\n          'retry-after=${streamed.headers['retry-after']} body=$diagnosticBody',\n        );\n      }\n      if (streamed.statusCode == 429) {\n"""
+          if old not in text:
+              raise SystemExit('MangaHttpClient response block changed')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          dart format lib/services/manga/manga_http_client.dart
+          git diff --check
+
       - name: Set up Flutter 3.44.1
         uses: subosito/flutter-action@v2
         with:
