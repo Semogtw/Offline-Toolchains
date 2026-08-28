@@ -1,0 +1,6 @@
+{
+  "target_sha": "e241d96ab82bdccab714a05a4305835ac081081c",
+  "validation_trigger_sha": "1a0f440ba86bb40d89641b29aff20ea65509048b",
+  "validation_run_id": 33131593419,
+  "validation_request_path": "triggers/goanime-full-ci/megaplay-merge-e241d96a.request"
+}
