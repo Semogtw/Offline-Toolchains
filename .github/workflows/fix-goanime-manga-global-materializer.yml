@@ -1,0 +1,187 @@
+name: Fix GoAnime manga global materializer
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-global-materializer-fix/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-global-materializer-fix
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    name: Fix global manga materializer accounting
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-global-materializer-fix/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = goanime
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify branch still points to reviewed SHA
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Make materializer cohort and receipt date dynamic
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tools/manga/materialize_global_manga_availability_ci.sh')
+          text = path.read_text()
+
+          old = 'OUT_DIR="${RUNNER_TEMP:-/tmp}/goanime-manga-global-availability"\n'
+          new = old + 'RECEIPT_DATE="${RECEIPT_DATE:-$(date -u +%F)}"\nRECEIPT_PATH="docs/manga_global_availability_receipt_${RECEIPT_DATE}.md"\n'
+          if old not in text or 'RECEIPT_PATH=' in text:
+              raise SystemExit('unexpected receipt variable source shape')
+          text = text.replace(old, new, 1)
+
+          old = """import json, sys\ninventory = json.load(open(sys.argv[1], encoding='utf-8'))\nglobal_receipt = json.load(open(sys.argv[2], encoding='utf-8'))\nassert inventory['enabledProviders'] == 16, inventory\nassert global_receipt['enabledProviders'] == 16, global_receipt\n"""
+          new = """import json, sys\ninventory = json.load(open(sys.argv[1], encoding='utf-8'))\nglobal_receipt = json.load(open(sys.argv[2], encoding='utf-8'))\nmanifest = json.load(open('docs/manga_sources_ptbr.json', encoding='utf-8'))\nexpected_enabled = sum(\n    1\n    for record in manifest.get('providerRecords', [])\n    if isinstance(record, dict) and record.get('implementationState') == 'enabled'\n)\nassert expected_enabled > 0, manifest\nassert inventory['enabledProviders'] == expected_enabled, (inventory, expected_enabled)\nassert global_receipt['enabledProviders'] == expected_enabled, (global_receipt, expected_enabled)\n"""
+          if old not in text:
+              raise SystemExit('hard-coded enabled provider assertion not found')
+          text = text.replace(old, new, 1)
+
+          old = 'python3 - "$OUT_DIR/manga_catalog_inventory.json" "$OUT_DIR/global_availability_receipt.json" <<\'PY\'\nimport json\nimport sys\nfrom pathlib import Path\n\ninventory = json.load(open(sys.argv[1], encoding=\'utf-8\'))\nglobal_receipt = json.load(open(sys.argv[2], encoding=\'utf-8\'))\n'
+          new = 'python3 - "$OUT_DIR/manga_catalog_inventory.json" "$OUT_DIR/global_availability_receipt.json" "$RECEIPT_DATE" "$RECEIPT_PATH" <<\'PY\'\nimport json\nimport sys\nfrom pathlib import Path\n\ninventory = json.load(open(sys.argv[1], encoding=\'utf-8\'))\nglobal_receipt = json.load(open(sys.argv[2], encoding=\'utf-8\'))\nreceipt_date = sys.argv[3]\nreceipt_path = sys.argv[4]\n'
+          if old not in text:
+              raise SystemExit('receipt generation invocation not found')
+          text = text.replace(old, new, 1)
+
+          old = "    '# Global manga availability receipt — 2026-08-25',"
+          new = "    f'# Global manga availability receipt — {receipt_date}',"
+          if old not in text:
+              raise SystemExit('hard-coded receipt heading not found')
+          text = text.replace(old, new, 1)
+
+          old = "Path('docs/manga_global_availability_receipt_2026-08-25.md').write_text(\n    '\\n'.join(lines), encoding='utf-8'\n)"
+          new = "Path(receipt_path).write_text('\\n'.join(lines), encoding='utf-8')"
+          if old not in text:
+              raise SystemExit('hard-coded receipt output path not found')
+          text = text.replace(old, new, 1)
+
+          old = '  docs/manga_global_availability_receipt_2026-08-25.md \\\n'
+          new = '  "$RECEIPT_PATH" \\\n'
+          if old not in text:
+              raise SystemExit('hard-coded receipt git-add path not found')
+          text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+
+      - name: Verify materializer source shape
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n tools/manga/materialize_global_manga_availability_ci.sh
+          git diff --check
+          ! grep -Fq "enabledProviders'] == 16" tools/manga/materialize_global_manga_availability_ci.sh
+          ! grep -Fq 'manga_global_availability_receipt_2026-08-25.md' tools/manga/materialize_global_manga_availability_ci.sh
+          grep -Fq 'expected_enabled = sum(' tools/manga/materialize_global_manga_availability_ci.sh
+          grep -Fq 'RECEIPT_PATH="docs/manga_global_availability_receipt_${RECEIPT_DATE}.md"' tools/manga/materialize_global_manga_availability_ci.sh
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Run materializer unit and architecture guards
+        working-directory: private-source
+        run: |
+          flutter test --no-pub --concurrency=1 \
+            test/tools/build_global_manga_availability_test.dart \
+            test/services/manga/manga_bundled_catalog_v3_source_test.dart \
+            test/architecture/manga_provider_manifest_validator_test.dart \
+            test/architecture/manga_provider_registry_manifest_test.dart
+
+      - name: Commit materializer fix
+        id: commit
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tools/manga/materialize_global_manga_availability_ci.sh
+          git diff --cached --check
+          git commit -m 'fix(manga): make global cache cohort dynamic'
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Reverify branch and push fast-forward
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push origin "HEAD:refs/heads/$TARGET_BRANCH"
+          echo "materializer_sha=${{ steps.commit.outputs.sha }}"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
