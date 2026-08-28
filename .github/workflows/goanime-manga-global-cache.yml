@@ -1,11 +1,6 @@
 name: GoAnime Manga Global Cache
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - '.github/workflows/goanime-manga-global-cache.yml'
   schedule:
     - cron: '45 6 * * *'
   workflow_dispatch:
@@ -25,12 +20,12 @@ concurrency:
 env:
   FLUTTER_CHANNEL: stable
   FLUTTER_VERSION: 3.44.1
-  SCHEDULED_TARGET_REF: fix/manga-catalog-surface-regressions-20260828
+  SCHEDULED_TARGET_REF: main
 
 jobs:
   refresh:
     runs-on: ubuntu-24.04
-    timeout-minutes: 300
+    timeout-minutes: 120
     steps:
       - name: Resolve trusted target
         id: target
@@ -41,7 +36,7 @@ jobs:
           set -euo pipefail
           target="${DISPATCH_TARGET:-$SCHEDULED_TARGET_REF}"
           case "$target" in
-            codex/manga-parity-20260823|main|fix/manga-catalog-surface-regressions-20260828) ;;
+            codex/manga-parity-20260823|main) ;;
             *)
               echo "::error::Ref is not allowlisted for manga global-cache maintenance."
               exit 1
