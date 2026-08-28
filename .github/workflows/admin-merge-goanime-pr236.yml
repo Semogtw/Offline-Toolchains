@@ -1,0 +1,47 @@
+name: Admin merge GoAnime PR 236
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/admin-merge-goanime-pr236.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  merge:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require private GoAnime credential
+        env:
+          GH_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN" || {
+            echo '::error::GOANIME_CATALOG_WRITE_TOKEN is required.'
+            exit 1
+          }
+
+      - name: Admin merge externally validated cache PR
+        env:
+          GH_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh pr merge 236 \
+            --repo Semogtw/goanime-mobile \
+            --merge \
+            --admin \
+            --match-head-commit baaafa88d1927df9fcaa42bf9c691c5326d296e9
+
+      - name: Verify merge reached main
+        env:
+          GH_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          merged="$(gh pr view 236 --repo Semogtw/goanime-mobile --json mergedAt --jq '.mergedAt // empty')"
+          test -n "$merged"
+          gh api repos/Semogtw/goanime-mobile/branches/main --jq '.commit.sha'
