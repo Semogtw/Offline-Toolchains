@@ -1,5 +1,5 @@
 {
   "project": "goanime",
-  "mode": "snapshot",
-  "ref": "main"
+  "mode": "ref",
+  "ref": "fix/manga-catalog-surface-regressions-20260828"
 }
