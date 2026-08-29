@@ -101,8 +101,10 @@ jobs:
             test/services/manga/providers/mangadex_manga_provider_test.dart \
             test/services/manga/providers/taimu_manga_provider_test.dart \
             test/services/manga/providers/manhastro_manga_provider_test.dart \
+            test/services/manga/manga_http_client_persistence_test.dart \
             test/services/manga/manga_bundled_catalog_source_test.dart \
             test/services/manga/manga_bundled_catalog_v3_source_test.dart \
+            test/tools/manga_inventory_search_retry_test.dart \
             test/tools/inventory_manga_catalog_selection_test.dart \
             test/tools/build_global_manga_availability_test.dart
 
@@ -112,6 +114,7 @@ jobs:
           flutter analyze --no-pub \
             tools/manga/validate_manga_provider_manifest.dart \
             tools/manga/inventory_manga_catalog.dart \
+            tools/manga/manga_inventory_search_retry.dart \
             lib/services/manga/default_manga_source_providers.dart \
             lib/services/manga/manga_provider_policy.dart \
             lib/services/manga/manga_http_client.dart \
@@ -121,9 +124,11 @@ jobs:
             lib/services/manga/providers/mangadex_manga_provider.dart \
             lib/services/manga/providers/taimu_manga_provider.dart \
             lib/services/manga/providers/manhastro_manga_provider.dart \
+            test/services/manga/manga_http_client_persistence_test.dart \
             test/services/manga/providers/mangadex_manga_provider_test.dart \
             test/services/manga/providers/taimu_manga_provider_test.dart \
             test/services/manga/providers/manhastro_manga_provider_test.dart \
+            test/tools/manga_inventory_search_retry_test.dart \
             test/tools/inventory_manga_catalog_selection_test.dart
           bash -n tools/manga/materialize_global_manga_availability_ci.sh
 
@@ -153,11 +158,16 @@ jobs:
           assert 'ptbr.taimumangas' in planned, planned
           assert 'ptbr.taimumangas' not in enabled, enabled
 
-          receipt = Path('docs/manga_global_availability_receipt_2026-08-28.md')
+          receipts = sorted(Path('docs').glob('manga_global_availability_receipt_*.md'))
+          assert receipts, 'No global manga availability receipt found'
+          receipt = receipts[-1]
           text = receipt.read_text()
           assert 'Enabled providers: **18**' in text, text[:500]
           assert '| `ptbr.mangadex` | exhausted |' in text, 'MangaDex partition is not exhaustive'
           assert '| `ptbr.manhastro` | exhausted |' in text, 'Manhastro partition is not exhaustive'
+          assert 'Providers refreshed exhaustively: **2**' in text, 'Targeted refresh receipt is missing'
+          assert 'Providers carried forward: **16**' in text, 'Unexpected carried provider count'
+          print(f'receipt={receipt}')
           print('enabled_runtime=18')
           print('taimu_state=planned')
           for line in text.splitlines():
@@ -170,7 +180,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: keiyoushi/extensions-source
-          ref: 16df97717c304c3f1e309c81acdceaeab5b51314
+          ref: 7bd03614b6d2186262e50a6fae1707f45d063989
           path: extensions-source
           fetch-depth: 0
           persist-credentials: false
@@ -182,7 +192,7 @@ jobs:
           python3 tools/manga/audit_keiyoushi_provider_drift.py \
             --manifest docs/manga_sources_ptbr.json \
             --source-repo ../extensions-source \
-            --head 16df97717c304c3f1e309c81acdceaeab5b51314 \
+            --head 7bd03614b6d2186262e50a6fae1707f45d063989 \
             --json-output /tmp/manga-provider-drift.json
           python3 - <<'PY'
           import json
