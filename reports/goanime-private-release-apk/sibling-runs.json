@@ -1,62 +1,62 @@
 {
   "schema_version": 1,
-  "trigger_run_id": 33261854856,
-  "head_sha": "13316ea66969fe0bf52a3742612269619d4b6224",
+  "trigger_run_id": 33262059661,
+  "head_sha": "08d12578df8c2e09050b00a7cf853a03bab7a8b5",
   "runs": [
     {
-      "id": 33261856361,
+      "id": 33262060917,
       "name": "Report private GoAnime workflow status",
-      "status": "in_progress",
-      "conclusion": null,
-      "event": "workflow_run",
-      "head_sha": "13316ea66969fe0bf52a3742612269619d4b6224",
-      "created_at": "2026-08-29T16:02:05Z",
-      "updated_at": "2026-08-29T16:02:09Z",
-      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/33261856361"
-    },
-    {
-      "id": 33261854931,
-      "name": "Build encrypted private GoAnime release APK",
-      "status": "in_progress",
-      "conclusion": null,
-      "event": "push",
-      "head_sha": "13316ea66969fe0bf52a3742612269619d4b6224",
-      "created_at": "2026-08-29T16:02:03Z",
-      "updated_at": "2026-08-29T16:02:07Z",
-      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/33261854931"
-    },
-    {
-      "id": 33261854908,
-      "name": "Toolchain security gates",
       "status": "completed",
       "conclusion": "success",
-      "event": "push",
-      "head_sha": "13316ea66969fe0bf52a3742612269619d4b6224",
-      "created_at": "2026-08-29T16:02:03Z",
-      "updated_at": "2026-08-29T16:02:15Z",
-      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/33261854908"
+      "event": "workflow_run",
+      "head_sha": "08d12578df8c2e09050b00a7cf853a03bab7a8b5",
+      "created_at": "2026-08-29T16:06:34Z",
+      "updated_at": "2026-08-29T16:06:43Z",
+      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/33262060917"
     },
     {
-      "id": 33261854895,
-      "name": "Build encrypted private GoAnime APK",
-      "status": "in_progress",
+      "id": 33262059629,
+      "name": "Build encrypted private GoAnime release APK",
+      "status": "pending",
       "conclusion": null,
       "event": "push",
-      "head_sha": "13316ea66969fe0bf52a3742612269619d4b6224",
-      "created_at": "2026-08-29T16:02:03Z",
-      "updated_at": "2026-08-29T16:02:07Z",
-      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/33261854895"
+      "head_sha": "08d12578df8c2e09050b00a7cf853a03bab7a8b5",
+      "created_at": "2026-08-29T16:06:32Z",
+      "updated_at": "2026-08-29T16:06:33Z",
+      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/33262059629"
     },
     {
-      "id": 33261854856,
+      "id": 33262059677,
+      "name": "Build encrypted private GoAnime APK",
+      "status": "pending",
+      "conclusion": null,
+      "event": "push",
+      "head_sha": "08d12578df8c2e09050b00a7cf853a03bab7a8b5",
+      "created_at": "2026-08-29T16:06:32Z",
+      "updated_at": "2026-08-29T16:06:33Z",
+      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/33262059677"
+    },
+    {
+      "id": 33262059661,
       "name": "Probe private GoAnime APK trigger",
       "status": "completed",
       "conclusion": "success",
       "event": "push",
-      "head_sha": "13316ea66969fe0bf52a3742612269619d4b6224",
-      "created_at": "2026-08-29T16:02:03Z",
-      "updated_at": "2026-08-29T16:02:09Z",
-      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/33261854856"
+      "head_sha": "08d12578df8c2e09050b00a7cf853a03bab7a8b5",
+      "created_at": "2026-08-29T16:06:32Z",
+      "updated_at": "2026-08-29T16:06:40Z",
+      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/33262059661"
+    },
+    {
+      "id": 33262059644,
+      "name": "Toolchain security gates",
+      "status": "completed",
+      "conclusion": "success",
+      "event": "push",
+      "head_sha": "08d12578df8c2e09050b00a7cf853a03bab7a8b5",
+      "created_at": "2026-08-29T16:06:32Z",
+      "updated_at": "2026-08-29T16:06:43Z",
+      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/33262059644"
     }
   ]
 }
