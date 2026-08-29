@@ -198,12 +198,17 @@ jobs:
           import json
           data = json.load(open('/tmp/manga-provider-drift.json'))
           summary = data['summary']
-          assert summary['enabledProviders'] == 18, summary
+          assert data['enabledProviders'] == 18, data
+          assert data['behaviorPins'] == 19, data
           assert summary['clean'] == 18, summary
           assert summary['review-needed'] == 0, summary
           assert summary['critical'] == 0, summary
           assert summary['untracked'] == 0, summary
-          print(json.dumps(summary, sort_keys=True))
+          print(json.dumps({
+              'enabledProviders': data['enabledProviders'],
+              'behaviorPins': data['behaviorPins'],
+              **summary,
+          }, sort_keys=True))
           PY
 
       - name: Fresh byte probes for promoted sources
