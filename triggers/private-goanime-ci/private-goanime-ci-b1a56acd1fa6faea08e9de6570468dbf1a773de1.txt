@@ -1,0 +1,2 @@
+commit=b1a56acd1fa6faea08e9de6570468dbf1a773de1
+source_ref=tmp/manga-provider-metadata-tdd-20260828
