@@ -1,73 +1,62 @@
 {
   "schema_version": 1,
-  "trigger_run_id": 33179795512,
-  "head_sha": "9f81d710bebcef1f445e95bb6fa3f46ad777da08",
+  "trigger_run_id": 33261854856,
+  "head_sha": "13316ea66969fe0bf52a3742612269619d4b6224",
   "runs": [
     {
-      "id": 33179802384,
+      "id": 33261856361,
       "name": "Report private GoAnime workflow status",
       "status": "in_progress",
       "conclusion": null,
       "event": "workflow_run",
-      "head_sha": "9f81d710bebcef1f445e95bb6fa3f46ad777da08",
-      "created_at": "2026-08-28T14:22:13Z",
-      "updated_at": "2026-08-28T14:22:23Z",
-      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/33179802384"
+      "head_sha": "13316ea66969fe0bf52a3742612269619d4b6224",
+      "created_at": "2026-08-29T16:02:05Z",
+      "updated_at": "2026-08-29T16:02:09Z",
+      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/33261856361"
     },
     {
-      "id": 33179797988,
-      "name": "Report private GoAnime workflow status",
-      "status": "completed",
-      "conclusion": "success",
-      "event": "workflow_run",
-      "head_sha": "9f81d710bebcef1f445e95bb6fa3f46ad777da08",
-      "created_at": "2026-08-28T14:22:10Z",
-      "updated_at": "2026-08-28T14:22:20Z",
-      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/33179797988"
-    },
-    {
-      "id": 33179795512,
-      "name": "Probe private GoAnime APK trigger",
-      "status": "completed",
-      "conclusion": "success",
-      "event": "push",
-      "head_sha": "9f81d710bebcef1f445e95bb6fa3f46ad777da08",
-      "created_at": "2026-08-28T14:22:08Z",
-      "updated_at": "2026-08-28T14:22:17Z",
-      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/33179795512"
-    },
-    {
-      "id": 33179795508,
-      "name": "Toolchain security gates",
-      "status": "completed",
-      "conclusion": "success",
-      "event": "push",
-      "head_sha": "9f81d710bebcef1f445e95bb6fa3f46ad777da08",
-      "created_at": "2026-08-28T14:22:08Z",
-      "updated_at": "2026-08-28T14:22:17Z",
-      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/33179795508"
-    },
-    {
-      "id": 33179795460,
-      "name": "Build encrypted private GoAnime APK",
-      "status": "in_progress",
-      "conclusion": null,
-      "event": "push",
-      "head_sha": "9f81d710bebcef1f445e95bb6fa3f46ad777da08",
-      "created_at": "2026-08-28T14:22:08Z",
-      "updated_at": "2026-08-28T14:22:11Z",
-      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/33179795460"
-    },
-    {
-      "id": 33179795544,
+      "id": 33261854931,
       "name": "Build encrypted private GoAnime release APK",
       "status": "in_progress",
       "conclusion": null,
       "event": "push",
-      "head_sha": "9f81d710bebcef1f445e95bb6fa3f46ad777da08",
-      "created_at": "2026-08-28T14:22:08Z",
-      "updated_at": "2026-08-28T14:22:12Z",
-      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/33179795544"
+      "head_sha": "13316ea66969fe0bf52a3742612269619d4b6224",
+      "created_at": "2026-08-29T16:02:03Z",
+      "updated_at": "2026-08-29T16:02:07Z",
+      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/33261854931"
+    },
+    {
+      "id": 33261854908,
+      "name": "Toolchain security gates",
+      "status": "completed",
+      "conclusion": "success",
+      "event": "push",
+      "head_sha": "13316ea66969fe0bf52a3742612269619d4b6224",
+      "created_at": "2026-08-29T16:02:03Z",
+      "updated_at": "2026-08-29T16:02:15Z",
+      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/33261854908"
+    },
+    {
+      "id": 33261854895,
+      "name": "Build encrypted private GoAnime APK",
+      "status": "in_progress",
+      "conclusion": null,
+      "event": "push",
+      "head_sha": "13316ea66969fe0bf52a3742612269619d4b6224",
+      "created_at": "2026-08-29T16:02:03Z",
+      "updated_at": "2026-08-29T16:02:07Z",
+      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/33261854895"
+    },
+    {
+      "id": 33261854856,
+      "name": "Probe private GoAnime APK trigger",
+      "status": "completed",
+      "conclusion": "success",
+      "event": "push",
+      "head_sha": "13316ea66969fe0bf52a3742612269619d4b6224",
+      "created_at": "2026-08-29T16:02:03Z",
+      "updated_at": "2026-08-29T16:02:09Z",
+      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/33261854856"
     }
   ]
 }
