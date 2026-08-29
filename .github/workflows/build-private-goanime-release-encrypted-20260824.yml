@@ -16,10 +16,10 @@ concurrency:
 env:
   FIREBASE_PROJECT_ID: goanime-5e605
   FIREBASE_WEB_API_KEY: AIzaSyDd8lZtWzWd4cSyMFaN-MPAVdEJa58znig
-  UPDATE_MANIFEST_URL: https://github.com/Semogtw/goanime-mobile/releases/latest/download/update.json
-  UPDATE_APPCAST_URL: https://github.com/Semogtw/goanime-mobile/releases/latest/download/appcast.xml
-  ANIME_METADATA_SEED_MANIFEST_URL: https://github.com/Semogtw/goanime-mobile/releases/latest/download/anime_metadata_manifest.json
-  RUNTIME_DATABASE_MANIFEST_URL: https://github.com/Semogtw/goanime-mobile/releases/latest/download/runtime_database_manifest.json
+  UPDATE_MANIFEST_URL: ''
+  UPDATE_APPCAST_URL: ''
+  ANIME_METADATA_SEED_MANIFEST_URL: ''
+  RUNTIME_DATABASE_MANIFEST_URL: ''
 
 jobs:
   build:
@@ -95,6 +95,16 @@ jobs:
           (cd private-source && flutter config --no-analytics && flutter pub get)
           (cd private-source/packages/goanime_core && dart pub get)
 
+      - name: Validate audit-build client URLs
+        working-directory: private-source
+        shell: bash
+        run: >
+          python3 tools/validate_client_release_urls.py
+          "$UPDATE_MANIFEST_URL"
+          "$UPDATE_APPCAST_URL"
+          "$ANIME_METADATA_SEED_MANIFEST_URL"
+          "$RUNTIME_DATABASE_MANIFEST_URL"
+
       - name: Validate Dart formatting
         working-directory: private-source
         shell: bash
@@ -160,7 +170,7 @@ jobs:
         shell: bash
         run: dart test
 
-      - name: Build release AOT arm64 APK
+      - name: Build release AOT arm64 privacy-audit APK
         working-directory: private-source
         shell: bash
         run: |
@@ -173,7 +183,7 @@ jobs:
             --dart-define="ANIME_METADATA_SEED_MANIFEST_URL=$ANIME_METADATA_SEED_MANIFEST_URL" \
             --dart-define="RUNTIME_DATABASE_MANIFEST_URL=$RUNTIME_DATABASE_MANIFEST_URL"
 
-      - name: Validate release and encrypt handoff
+      - name: Audit release privacy and encrypt handoff
         id: package
         env:
           SOURCE_SHA: ${{ steps.request.outputs.ref }}
@@ -190,6 +200,10 @@ jobs:
           sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
           apksigner="$(find "$sdk_root/build-tools" -type f -name apksigner | sort -V | tail -n1)"
           "$apksigner" verify --verbose --print-certs "$apk" > "$RUNNER_TEMP/apksigner.txt"
+
+          python3 "$GITHUB_WORKSPACE/private-source/tools/audit_android_release_privacy.py" \
+            "$apk" \
+            --certificate-report "$RUNNER_TEMP/apksigner.txt"
 
           work="$RUNNER_TEMP/goanime-release-apk"
           mkdir -p "$work/transfer" "$work/gpg"
@@ -209,13 +223,15 @@ jobs:
           import datetime,json,sys
           path,source,sha,size=sys.argv[1:]
           json.dump({
-            'schema_version':2,
+            'schema_version':3,
             'source_sha':source,
-            'build_type':'release-private-test',
+            'build_type':'release-privacy-audit',
             'flutter_mode':'release-aot',
             'target_platform':'android-arm64',
             'firebase_rest_configured':True,
+            'runtime_update_urls_configured':False,
             'native_google_services_configured':False,
+            'privacy_audit':'passed before encryption',
             'signing':'project release build type; debug certificate fallback because production keystore is intentionally unavailable to Offline-Toolchains',
             'distribution':'private encrypted artifact only; no GitHub Release, Play Store, Shorebird, update publication, or rollout',
             'apk_sha256':sha,
