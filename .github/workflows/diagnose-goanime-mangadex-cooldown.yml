@@ -1,0 +1,72 @@
+name: Diagnose GoAnime MangaDex cooldown
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-mangadex-cooldown/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Measure MangaDex HTTP400 recovery
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Trigger first HTTP400 and measure recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='https://api.mangadex.org/manga'
+          failed_offset=''
+          request_once() {
+            local offset="$1"
+            curl --http1.1 --silent --show-error --location --max-time 30 \
+              --get "$base" \
+              --data-urlencode 'limit=24' \
+              --data-urlencode "offset=$offset" \
+              --data-urlencode 'availableTranslatedLanguage[]=pt-br' \
+              --data-urlencode 'contentRating[]=safe' \
+              --data-urlencode 'contentRating[]=suggestive' \
+              --data-urlencode 'includes[]=cover_art' \
+              --output /dev/null \
+              --write-out '%{http_code}'
+          }
+          for i in $(seq 1 160); do
+            offset=$(( (i - 1) * 24 ))
+            code="$(request_once "$offset")"
+            if [[ "$code" == 400 ]]; then
+              failed_offset="$offset"
+              echo "[cooldown] triggered request=$i offset=$offset"
+              break
+            fi
+            if [[ "$code" != 200 ]]; then
+              echo "[cooldown] unexpected pretrigger code=$code request=$i offset=$offset"
+            fi
+            sleep 0.4
+          done
+          test -n "$failed_offset"
+
+          code="$(request_once "$failed_offset")"
+          echo "[cooldown] elapsed=0 code=$code"
+          sleep 5
+          code="$(request_once "$failed_offset")"
+          echo "[cooldown] elapsed=5 code=$code"
+          sleep 10
+          code="$(request_once "$failed_offset")"
+          echo "[cooldown] elapsed=15 code=$code"
+          sleep 15
+          code="$(request_once "$failed_offset")"
+          echo "[cooldown] elapsed=30 code=$code"
+          sleep 30
+          code="$(request_once "$failed_offset")"
+          echo "[cooldown] elapsed=60 code=$code"
