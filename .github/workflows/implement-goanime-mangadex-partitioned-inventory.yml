@@ -1,0 +1,564 @@
+name: Implement GoAnime MangaDex partitioned inventory
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-mangadex-partitioned-inventory/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  implement:
+    name: Implement and prove partitioned MangaDex inventory
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-mangadex-partitioned-inventory/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = goanime
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify branch still points to requested SHA
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+          test "$(git -C private-source rev-parse HEAD)" = "$EXPECTED_SHA"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: |
+          flutter pub get --enforce-lockfile >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+
+      - name: RED - existing retry contract must fail before implementation
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          flutter test --no-pub test/tools/manga_inventory_search_retry_test.dart > /tmp/mangadex-partition-red.log 2>&1
+          status=$?
+          set -e
+          test "$status" -ne 0
+          grep -Eq "manga_inventory_search_retry.dart|runMangaInventorySearchWithRetry" /tmp/mangadex-partition-red.log
+          echo '[tdd] RED observed'
+
+      - name: Implement partitioned MangaDex inventory
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > tools/manga/manga_inventory_search_retry.dart <<'DART'
+          import 'package:goanime/services/manga/manga_provider_failures.dart';
+
+          typedef MangaInventoryRetryDelay = Future<void> Function(Duration duration);
+
+          const String _mangaDexSourceId = 'ptbr.mangadex';
+          const int _maxMangaDexBadRequestAttempts = 5;
+
+          Future<T> runMangaInventorySearchWithRetry<T>({
+            required String sourceId,
+            required Future<T> Function() search,
+            MangaInventoryRetryDelay? delay,
+          }) async {
+            final wait = delay ?? _defaultDelay;
+            for (var attempt = 1; attempt <= _maxMangaDexBadRequestAttempts; attempt++) {
+              try {
+                return await search();
+              } on MangaProviderFailure catch (failure) {
+                final retryable =
+                    sourceId == _mangaDexSourceId &&
+                    failure.sourceId == _mangaDexSourceId &&
+                    failure.kind == MangaProviderFailureKind.httpStatus &&
+                    failure.statusCode == 400;
+                if (!retryable || attempt >= _maxMangaDexBadRequestAttempts) {
+                  rethrow;
+                }
+                await wait(Duration(seconds: attempt));
+              }
+            }
+            throw StateError('Unreachable MangaDex inventory retry state.');
+          }
+
+          Future<void> _defaultDelay(Duration duration) => Future<void>.delayed(duration);
+          DART
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          # MangaHttpClient: opt-in non-persistent requests, default unchanged.
+          path = Path('lib/services/manga/manga_http_client.dart')
+          text = path.read_text(encoding='utf-8')
+          old = """    this.maxBodyBytes = 2 * 1024 * 1024,\n    this.maxRedirects = 5,\n  }) : _client = client,\n"""
+          new = """    this.maxBodyBytes = 2 * 1024 * 1024,\n    this.maxRedirects = 5,\n    this.persistentConnection = true,\n  }) : _client = client,\n"""
+          if old not in text:
+              raise SystemExit('MangaHttpClient constructor anchor changed')
+          text = text.replace(old, new, 1)
+          old = """  final int maxBodyBytes;\n  final int maxRedirects;\n"""
+          new = """  final int maxBodyBytes;\n  final int maxRedirects;\n  final bool persistentConnection;\n"""
+          if old not in text:
+              raise SystemExit('MangaHttpClient fields anchor changed')
+          text = text.replace(old, new, 1)
+          old = """      final request = http.Request('GET', currentUri)\n        ..followRedirects = false\n        ..headers.addAll(currentHeaders);\n"""
+          new = """      final request = http.Request('GET', currentUri)\n        ..followRedirects = false\n        ..persistentConnection = persistentConnection\n        ..headers.addAll(currentHeaders);\n"""
+          if old not in text:
+              raise SystemExit('MangaHttpClient stream request anchor changed')
+          text = text.replace(old, new, 1)
+          old = """      final request = http.Request(currentMethod, currentUri)\n        ..followRedirects = false\n        ..headers.addAll(currentHeaders);\n"""
+          new = """      final request = http.Request(currentMethod, currentUri)\n        ..followRedirects = false\n        ..persistentConnection = persistentConnection\n        ..headers.addAll(currentHeaders);\n"""
+          if old not in text:
+              raise SystemExit('MangaHttpClient request anchor changed')
+          text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+
+          # MangaDex provider: UI search unchanged; expose inventory-only partition search.
+          path = Path('lib/services/manga/providers/mangadex_manga_provider.dart')
+          text = path.read_text(encoding='utf-8')
+          start = text.index('  @override\n  Future<MangaSearchPage> search(MangaSearchRequest request) async {')
+          end = text.index('\n  @override\n  Future<MangaSourceDetails> details', start)
+          replacement = r'''  @override
+          Future<MangaSearchPage> search(MangaSearchRequest request) {
+            return _search(
+              request,
+              pageSize: _searchPageSize,
+              contentRatings: const <String>['safe', 'suggestive'],
+            );
+          }
+
+          Future<MangaSearchPage> searchCatalogPartition({
+            required String contentRating,
+            String? pageToken,
+            int pageSize = 100,
+          }) {
+            if (contentRating != 'safe' && contentRating != 'suggestive') {
+              throw ArgumentError.value(
+                contentRating,
+                'contentRating',
+                'Only safe and suggestive partitions are supported.',
+              );
+            }
+            if (pageSize < 1 || pageSize > 100) {
+              throw ArgumentError.value(pageSize, 'pageSize', 'Must be 1..100.');
+            }
+            return _search(
+              MangaSearchRequest(query: '', pageToken: pageToken),
+              pageSize: pageSize,
+              contentRatings: <String>[contentRating],
+            );
+          }
+
+          Future<MangaSearchPage> _search(
+            MangaSearchRequest request, {
+            required int pageSize,
+            required List<String> contentRatings,
+          }) async {
+            final offset = _nonNegativeInt(request.pageToken) ?? 0;
+            final query = request.query.trim();
+            final uri = _mangaDexApiBase
+                .resolve('manga')
+                .replace(
+                  queryParameters: <String, dynamic>{
+                    'limit': '$pageSize',
+                    'offset': '$offset',
+                    if (query.isNotEmpty) 'title': query,
+                    'availableTranslatedLanguage[]': const ['pt-br'],
+                    'includes[]': const ['cover_art'],
+                    'contentRating[]': contentRatings,
+                  },
+                );
+            final payload = await _jsonMap(uri);
+            final rawItems = payload['data'];
+            if (rawItems is! List) {
+              throw const FormatException('MangaDex search response has no data.');
+            }
+
+            final items = <MangaSourceOccurrence>[];
+            for (final raw in rawItems) {
+              final item = _map(raw);
+              final id = _text(item?['id']);
+              final attributes = _map(item?['attributes']);
+              final title = _localizedText(attributes?['title']);
+              if (id == null || title == null) continue;
+              items.add(
+                MangaSourceOccurrence(
+                  sourceId: sourceId,
+                  mangaId: id,
+                  title: title,
+                  coverUrl: _coverUrl(id, item?['relationships']),
+                ),
+              );
+            }
+
+            final limit = _nonNegativeInt(payload['limit']) ?? pageSize;
+            final responseOffset = _nonNegativeInt(payload['offset']) ?? offset;
+            final total =
+                _nonNegativeInt(payload['total']) ?? responseOffset + items.length;
+            final nextOffset = responseOffset + limit;
+            return MangaSearchPage(
+              items: List<MangaSourceOccurrence>.unmodifiable(items),
+              nextPageToken: nextOffset < total ? '$nextOffset' : null,
+            );
+          }
+          '''
+          text = text[:start] + replacement + text[end:]
+          path.write_text(text, encoding='utf-8')
+
+          # Inventory: use fresh HTTP/1.1 connections and two disjoint MangaDex partitions.
+          path = Path('tools/manga/inventory_manga_catalog.dart')
+          text = path.read_text(encoding='utf-8')
+          import_anchor = "import 'package:goanime/services/manga/manga_remote_content_probe.dart';\n"
+          if import_anchor not in text:
+              raise SystemExit('inventory import anchor changed')
+          text = text.replace(
+              import_anchor,
+              import_anchor + "import 'package:goanime/services/manga/providers/mangadex_manga_provider.dart';\n",
+              1,
+          )
+          helper_anchor = "import 'manga_progressive_readability_verifier.dart';\n"
+          if helper_anchor not in text:
+              raise SystemExit('inventory helper import anchor changed')
+          text = text.replace(
+              helper_anchor,
+              "import 'manga_inventory_search_retry.dart';\n" + helper_anchor,
+              1,
+          )
+          old = """      final mangaClient = MangaHttpClient(\n        policy: policy,\n        client: client,\n        maxBodyBytes: 8 * 1024 * 1024,\n      );\n"""
+          new = """      final mangaClient = MangaHttpClient(\n        policy: policy,\n        client: client,\n        maxBodyBytes: 8 * 1024 * 1024,\n        persistentConnection:\n            policy.sourceId != MangaDexMangaProvider.sourceIdValue,\n      );\n"""
+          if old not in text:
+              raise SystemExit('inventory MangaHttpClient anchor changed')
+          text = text.replace(old, new, 1)
+
+          function_anchor = "Future<_ProviderInventory> _inventoryProvider({\n"
+          idx = text.index(function_anchor)
+          helper = r'''const List<String> _mangaDexInventoryContentRatings = <String>[
+            'safe',
+            'suggestive',
+          ];
+          const int _mangaDexInventoryPageSize = 100;
+
+          Future<_ProviderInventory> _inventoryMangaDexProvider({
+            required MangaDexMangaProvider provider,
+            required MangaProviderPolicy policy,
+            required int maxPages,
+          }) async {
+            final seenTokens = <String>{};
+            final seenKeys = <String>{};
+            final occurrences = <_OccurrenceRecord>[];
+            var pages = 0;
+            var rawItems = 0;
+            var duplicateOccurrences = 0;
+            var status = 'exhausted';
+            var stopReason = 'next_page_token_null';
+            String? failure;
+
+            for (final contentRating in _mangaDexInventoryContentRatings) {
+              String? pageToken;
+              while (pages < maxPages) {
+                final tokenKey = '$contentRating:${pageToken ?? '<first>'}';
+                if (!seenTokens.add(tokenKey)) {
+                  status = 'partial';
+                  stopReason = 'page_token_cycle';
+                  break;
+                }
+
+                MangaSearchPage page;
+                try {
+                  page = await runMangaInventorySearchWithRetry<MangaSearchPage>(
+                    sourceId: provider.sourceId,
+                    search: () => provider.searchCatalogPartition(
+                      contentRating: contentRating,
+                      pageToken: pageToken,
+                      pageSize: _mangaDexInventoryPageSize,
+                    ),
+                  );
+                } on MangaProviderFailure catch (error) {
+                  status = pages == 0 ? 'failed' : 'partial';
+                  stopReason = 'provider_failure';
+                  failure = _sanitizeFailure(error);
+                  break;
+                } catch (error) {
+                  status = pages == 0 ? 'failed' : 'partial';
+                  stopReason = 'exception';
+                  failure = error.runtimeType.toString();
+                  break;
+                }
+
+                pages += 1;
+                rawItems += page.items.length;
+                for (final occurrence in page.items) {
+                  if (occurrence.sourceId != provider.sourceId) {
+                    status = 'partial';
+                    stopReason = 'source_identity_mismatch';
+                    failure = 'MangaSourceOccurrence.sourceId mismatch';
+                    break;
+                  }
+                  if (!seenKeys.add(occurrence.occurrenceKey)) {
+                    duplicateOccurrences += 1;
+                    continue;
+                  }
+                  occurrences.add(
+                    _OccurrenceRecord(
+                      sourceId: occurrence.sourceId,
+                      mangaId: occurrence.mangaId,
+                      title: occurrence.title,
+                      coverReference: normalizeMangaCoverReference(
+                        occurrence.coverUrl,
+                      ),
+                    ),
+                  );
+                }
+                if (status == 'partial') break;
+
+                final next = page.nextPageToken?.trim();
+                if (next == null || next.isEmpty) {
+                  pageToken = null;
+                  break;
+                }
+                if (pages >= maxPages) {
+                  status = 'partial';
+                  stopReason = 'max_pages_reached';
+                  break;
+                }
+                pageToken = next;
+
+                final spacing = policy.minimumRequestSpacing;
+                if (spacing > Duration.zero) {
+                  await Future<void>.delayed(spacing);
+                }
+              }
+              if (status != 'exhausted') break;
+            }
+
+            return _ProviderInventory(
+              sourceId: provider.sourceId,
+              name: provider.name,
+              status: status,
+              stopReason: stopReason,
+              pagesScanned: pages,
+              rawItems: rawItems,
+              uniqueOccurrences: occurrences.length,
+              duplicateOccurrences: duplicateOccurrences,
+              failure: failure,
+              occurrences: List<_OccurrenceRecord>.unmodifiable(occurrences),
+            );
+          }
+
+          '''
+          text = text[:idx] + helper + text[idx:]
+
+          old = """}) async {\n  if (!provider.capabilities.search) {\n"""
+          new = """}) async {\n  if (provider is MangaDexMangaProvider) {\n    return _inventoryMangaDexProvider(\n      provider: provider,\n      policy: policy,\n      maxPages: maxPages,\n    );\n  }\n  if (!provider.capabilities.search) {\n"""
+          if old not in text:
+              raise SystemExit('inventory provider entry anchor changed')
+          text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          cat > test/services/manga/manga_http_client_persistence_test.dart <<'DART'
+          import 'package:flutter_test/flutter_test.dart';
+          import 'package:goanime/services/manga/manga_http_client.dart';
+          import 'package:goanime/services/manga/manga_provider_policy.dart';
+          import 'package:http/http.dart' as http;
+          import 'package:http/testing.dart';
+
+          void main() {
+            test('can disable persistent connections for inventory traffic', () async {
+              bool? persistentConnection;
+              final client = MangaHttpClient(
+                policy: const MangaProviderPolicy(sourceId: 'test.persistence'),
+                client: MockClient((request) async {
+                  persistentConnection = request.persistentConnection;
+                  return http.Response('{}', 200);
+                }),
+                persistentConnection: false,
+              );
+
+              await client.get(Uri.parse('https://example.com/catalog'));
+
+              expect(persistentConnection, isFalse);
+            });
+          }
+          DART
+
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('test/services/manga/providers/mangadex_manga_provider_test.dart')
+          text = path.read_text(encoding='utf-8')
+          anchor = "  test('passes generic provider contract with independent fixtures', () async {\n"
+          if anchor not in text:
+              raise SystemExit('MangaDex test anchor changed')
+          test = r'''  test('catalog inventory can request one rating in 100-item pages', () async {
+            final requests = <http.Request>[];
+            final provider = _provider((request) async {
+              requests.add(request);
+              if (request.url.path == '/manga') {
+                return _json(fixture['search']);
+              }
+              return http.Response('not found', 404);
+            });
+
+            await provider.searchCatalogPartition(
+              contentRating: 'safe',
+              pageSize: 100,
+            );
+
+            expect(requests.single.url.queryParameters['limit'], '100');
+            expect(requests.single.url.queryParameters['offset'], '0');
+            expect(
+              requests.single.url.queryParametersAll['contentRating[]'],
+              ['safe'],
+            );
+          });
+
+          '''
+          path.write_text(text.replace(anchor, test + anchor, 1), encoding='utf-8')
+          PY
+
+          dart format \
+            lib/services/manga/manga_http_client.dart \
+            lib/services/manga/providers/mangadex_manga_provider.dart \
+            tools/manga/inventory_manga_catalog.dart \
+            tools/manga/manga_inventory_search_retry.dart \
+            test/tools/manga_inventory_search_retry_test.dart \
+            test/services/manga/manga_http_client_persistence_test.dart \
+            test/services/manga/providers/mangadex_manga_provider_test.dart
+          git diff --check
+
+      - name: GREEN - deterministic contracts and analyzer
+        working-directory: private-source
+        run: |
+          flutter test --no-pub --concurrency=1 \
+            test/tools/manga_inventory_search_retry_test.dart \
+            test/tools/inventory_manga_catalog_selection_test.dart \
+            test/tools/build_global_manga_availability_test.dart \
+            test/services/manga/manga_http_client_persistence_test.dart \
+            test/services/manga/providers/mangadex_manga_provider_test.dart \
+            test/services/manga/manga_bundled_catalog_v3_source_test.dart
+          flutter analyze --no-pub \
+            lib/services/manga/manga_http_client.dart \
+            lib/services/manga/providers/mangadex_manga_provider.dart \
+            tools/manga/inventory_manga_catalog.dart \
+            tools/manga/manga_inventory_search_retry.dart \
+            test/tools/manga_inventory_search_retry_test.dart \
+            test/services/manga/manga_http_client_persistence_test.dart \
+            test/services/manga/providers/mangadex_manga_provider_test.dart
+
+      - name: Live prove both MangaDex partitions exhaust completely
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/mangadex-partitioned"
+          rm -rf "$out" && mkdir -p "$out"
+          timeout 1200s dart run tools/manga/inventory_manga_catalog.dart \
+            --only-sources ptbr.mangadex \
+            --output-dir "$out" \
+            --max-pages 150 \
+            --timeout-minutes 18 \
+            --max-readability-probes 1 \
+            --max-readability-probes-per-provider 1 \
+            --readability-concurrent-providers 1 \
+            --readability-stale-days 30 \
+            --readability-probe-timeout-seconds 10
+          python3 - "$out/manga_catalog_inventory.json" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding='utf-8'))
+          row = next(p for p in data['providers'] if p['sourceId'] == 'ptbr.mangadex')
+          safe = {k: row.get(k) for k in ('status','stopReason','pagesScanned','rawItems','uniqueOccurrences','duplicateOccurrences','failure')}
+          print(json.dumps(safe, sort_keys=True))
+          assert row['status'] == 'exhausted', row
+          assert row['stopReason'] == 'next_page_token_null', row
+          assert row['uniqueOccurrences'] > 11000, row
+          assert row['rawItems'] >= row['uniqueOccurrences'], row
+          PY
+
+      - name: Commit implementation
+        id: commit
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'Arthur Almeida'
+          git config user.email 'arthurgva1602@gmail.com'
+          git add \
+            lib/services/manga/manga_http_client.dart \
+            lib/services/manga/providers/mangadex_manga_provider.dart \
+            tools/manga/inventory_manga_catalog.dart \
+            tools/manga/manga_inventory_search_retry.dart \
+            test/tools/manga_inventory_search_retry_test.dart \
+            test/services/manga/manga_http_client_persistence_test.dart \
+            test/services/manga/providers/mangadex_manga_provider_test.dart
+          git diff --cached --check
+          git commit -m 'fix(manga): exhaust MangaDex catalog in safe partitions'
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Reverify branch and push fast-forward
+        working-directory: private-source
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/goanime-mobile.git "HEAD:refs/heads/$TARGET_BRANCH"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control" /tmp/mangadex-partition-red.log
