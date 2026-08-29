@@ -1,0 +1,55 @@
+name: Diagnose GoAnime MangaDex HTTP1.1
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-mangadex-http11/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Probe MangaDex over HTTP1.1
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Probe HTTP1.1 request window
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='https://api.mangadex.org/manga'
+          failures=0
+          first_failure=''
+          for i in $(seq 1 110); do
+            offset=$(( (i - 1) * 24 ))
+            tmp="$(mktemp)"
+            code="$(curl --http1.1 --silent --show-error --location --max-time 30 \
+              --get "$base" \
+              --data-urlencode 'limit=24' \
+              --data-urlencode "offset=$offset" \
+              --data-urlencode 'availableTranslatedLanguage[]=pt-br' \
+              --data-urlencode 'contentRating[]=safe' \
+              --data-urlencode 'contentRating[]=suggestive' \
+              --data-urlencode 'includes[]=cover_art' \
+              --output "$tmp" \
+              --write-out '%{http_code}')"
+            if [[ "$code" != 200 ]]; then
+              failures=$((failures + 1))
+              if [[ -z "$first_failure" ]]; then first_failure="request=$i offset=$offset code=$code"; fi
+              printf '[http11] failure request=%d offset=%d code=%s ' "$i" "$offset" "$code"
+              jq -c '{result,errors}' "$tmp" 2>/dev/null || grep -o -m1 -E '<h1>[^<]+</h1>|<p>[^<]+</p>' "$tmp" | tr '\n' ' '
+              echo
+            fi
+            rm -f "$tmp"
+            sleep 0.4
+          done
+          echo "[http11] failures=$failures first=${first_failure:-none}"
