@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source_sha": "7bd636136b7dac88bd679f1b98f9bec2d605efde",
-  "workflow_run_id": 33261854931,
-  "workflow_run_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/33261854931",
-  "conclusion": "cancelled",
+  "workflow_run_id": 33262059629,
+  "workflow_run_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/33262059629",
+  "conclusion": "failure",
   "artifact_id": null,
   "artifact_name": null,
   "artifact_expired": null,
-  "completed_at": "2026-08-29T16:06:49Z",
+  "completed_at": "2026-08-29T16:24:41Z",
   "distribution": "private encrypted artifact only; no release or rollout"
 }
