@@ -1,0 +1,47 @@
+name: Diagnose GoAnime MangaDex partitions
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-mangadex-partitions/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Measure MangaDex safe/suggestive partitions
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Count candidate partitions
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='https://api.mangadex.org/manga'
+          count() {
+            local label="$1" rating="$2"
+            local body code
+            body="$(mktemp)"
+            code="$(curl --silent --show-error --location --max-time 30 \
+              --get "$base" \
+              --data-urlencode 'limit=1' \
+              --data-urlencode 'offset=0' \
+              --data-urlencode 'availableTranslatedLanguage[]=pt-br' \
+              --data-urlencode "contentRating[]=$rating" \
+              --output "$body" \
+              --write-out '%{http_code}')"
+            printf '[partition] %s code=%s ' "$label" "$code"
+            jq -c '{result,total,limit,offset,errors}' "$body"
+            rm -f "$body"
+          }
+          count safe safe
+          count suggestive suggestive
