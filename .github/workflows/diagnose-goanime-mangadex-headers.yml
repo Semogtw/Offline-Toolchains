@@ -1,0 +1,64 @@
+name: Diagnose GoAnime MangaDex request headers
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-mangadex-headers/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Compare MangaDex provider headers
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Probe exact provider headers with curl
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='https://api.mangadex.org/manga'
+          ua='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+          failures=0
+          first_failure=''
+          for i in $(seq 1 110); do
+            offset=$(( (i - 1) * 24 ))
+            tmp="$(mktemp)"
+            code="$(curl --silent --show-error --location --max-time 30 \
+              --user-agent "$ua" \
+              --header 'Accept: application/json' \
+              --header 'Accept-Language: pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7' \
+              --header 'Referer: https://mangadex.org/' \
+              --header 'Origin: https://mangadex.org' \
+              --get "$base" \
+              --data-urlencode 'limit=24' \
+              --data-urlencode "offset=$offset" \
+              --data-urlencode 'availableTranslatedLanguage[]=pt-br' \
+              --data-urlencode 'contentRating[]=safe' \
+              --data-urlencode 'contentRating[]=suggestive' \
+              --data-urlencode 'includes[]=cover_art' \
+              --output "$tmp" \
+              --write-out '%{http_code}')"
+            if [[ "$code" != 200 ]]; then
+              failures=$((failures + 1))
+              if [[ -z "$first_failure" ]]; then first_failure="request=$i offset=$offset code=$code"; fi
+              printf '[headers] failure request=%d offset=%d code=%s ' "$i" "$offset" "$code"
+              jq -c '{result,errors}' "$tmp" 2>/dev/null || grep -o -m1 -E '<h1>[^<]+</h1>|<p>[^<]+</p>' "$tmp" | tr '\n' ' '
+              echo
+            fi
+            rm -f "$tmp"
+            sleep 0.4
+          done
+          echo "[headers] exact-provider failures=$failures first=${first_failure:-none}"
+          if (( failures == 0 )); then
+            echo '[headers] exact provider headers did not reproduce the Dart-only 400'
+          fi
