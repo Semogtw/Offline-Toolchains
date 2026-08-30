@@ -73,6 +73,10 @@ helper = """  String? _coverText(Object? value) {
 if text.count(anchor) != 1:
     raise SystemExit(f'unexpected Taimu cover helper anchor: {text.count(anchor)}')
 text = text.replace(anchor, helper + anchor, 1)
+obsolete = "String? _httpsText(Object? value) => _httpsUri(value)?.toString();\n\n"
+if text.count(obsolete) != 1:
+    raise SystemExit(f'unexpected Taimu obsolete helper shape: {text.count(obsolete)}')
+text = text.replace(obsolete, '', 1)
 taimu.write_text(text, encoding='utf-8')
 
 manhastro = Path('lib/services/manga/providers/manhastro_manga_provider.dart')
