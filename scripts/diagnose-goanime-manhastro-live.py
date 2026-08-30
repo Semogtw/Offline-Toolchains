@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import math
 import sys
 import urllib.error
 import urllib.request
@@ -18,6 +19,21 @@ request = urllib.request.Request(
         'Referer': 'https://manhastro.net/',
     },
 )
+
+
+def nonempty_text(value):
+    return isinstance(value, str) and bool(value.strip())
+
+
+def valid_id(value):
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return True
+    if isinstance(value, float):
+        return math.isfinite(value) and value.is_integer()
+    return nonempty_text(value)
+
 
 try:
     with urllib.request.urlopen(request, timeout=25) as response:
@@ -60,16 +76,59 @@ print(f'success_type={type(success).__name__}')
 print(f'success_value={success!r}')
 data = decoded.get('data', '<missing>')
 print(f'data_type={type(data).__name__}')
+
+meta = decoded.get('meta', '<missing>')
+print(f'meta_type={type(meta).__name__}')
+if isinstance(meta, dict):
+    print('meta_keys=' + ','.join(sorted(str(key) for key in meta.keys())))
+    for key in (
+        'current_page',
+        'page',
+        'per_page',
+        'total',
+        'last_page',
+        'from',
+        'to',
+    ):
+        value = meta.get(key, '<missing>')
+        if isinstance(value, (str, int, float, bool)) or value == '<missing>':
+            print(f'meta_{key}={value!r}')
+
 if isinstance(data, list):
     print(f'data_count={len(data)}')
-    if data:
-        first = data[0]
-        print(f'first_item_type={type(first).__name__}')
-        if isinstance(first, dict):
-            print('first_item_keys=' + ','.join(sorted(str(key) for key in first.keys())))
+    invalid_type = 0
+    invalid_id = 0
+    invalid_title = 0
+    first_invalid_index = None
+    for index, raw in enumerate(data):
+        if not isinstance(raw, dict):
+            invalid_type += 1
+            if first_invalid_index is None:
+                first_invalid_index = index
+            continue
+        item_id_valid = valid_id(raw.get('manga_id'))
+        title_valid = nonempty_text(raw.get('titulo_brasil')) or nonempty_text(
+            raw.get('titulo')
+        )
+        if not item_id_valid:
+            invalid_id += 1
+        if not title_valid:
+            invalid_title += 1
+        if (not item_id_valid or not title_valid) and first_invalid_index is None:
+            first_invalid_index = index
+    print(f'invalid_item_type_count={invalid_type}')
+    print(f'invalid_id_count={invalid_id}')
+    print(f'invalid_title_count={invalid_title}')
+    print(
+        'first_invalid_index='
+        + ('none' if first_invalid_index is None else str(first_invalid_index))
+    )
 
 if success is True and isinstance(data, list):
-    print('classification=adapter_contract_compatible')
+    if invalid_type or invalid_id or invalid_title:
+        print('classification=strict_item_contract_violation')
+    else:
+        print('classification=adapter_contract_compatible')
 elif isinstance(data, list) and success == '<missing>':
     print('classification=success_field_missing')
 elif isinstance(data, list):
