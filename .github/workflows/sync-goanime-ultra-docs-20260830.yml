@@ -1,0 +1,123 @@
+name: Sync GoAnime Ultra stable docs
+
+on:
+  push:
+    branches:
+      - agent/vendor-artcnn-goanime-20260830
+    paths:
+      - .github/workflows/sync-goanime-ultra-docs-20260830.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOANIME_EXPECTED_SHA: 29f4641f6dc99c517530c4e9edd7b1f1a06aa572
+  GOANIME_BRANCH: feat/ultra-video-enhancement-rx6600-20260830
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout Ultra branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.GOANIME_BRANCH }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          persist-credentials: false
+          fetch-depth: 1
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Refuse stale source
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$GOANIME_EXPECTED_SHA" || {
+            echo "::error::Expected $GOANIME_EXPECTED_SHA, found $actual"
+            exit 1
+          }
+
+      - name: Sync stable enhancement documentation
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          playback = Path('docs/playback_pipeline.md')
+          text = playback.read_text(encoding='utf-8')
+          heading = '### Enhancement de vídeo pós-resolução no desktop'
+          if heading not in text:
+              marker = '\n## AniSkip e posição salva\n'
+              if marker not in text:
+                  raise SystemExit('playback insertion marker not found')
+              section = '''\n### Enhancement de vídeo pós-resolução no desktop\n\nDepois que um candidato **nativo** já foi resolvido e aberto, Windows/Linux podem aplicar o enhancement opcional de vídeo. Essa etapa é downstream de `VideoPlaybackResolver`: ela não resolve providers, não altera headers, não participa do ranking de health e não deve transformar falha de shader em falha da fonte.\n\nA seleção da cadeia estável vive no planner puro de `lib/core/video_enhancement/`. O nível `ultra` considera resolução de origem/saída e tratamento da fonte; para 720p a escada de calibração usa ArtCNN C4F32 em `MAX`, C4F16 em `SAFE` e scaler nativo/libplacebo em `MIN`. A aplicação ao `media_kit`/mpv continua pertencendo ao lifecycle do player desktop, que limpa shaders antigos e reaplica o plano quando um novo `Player` assume a sessão.\n\nTelemetria de deadline/frame drops pode reduzir capacidade dentro da mesma semântica de tratamento da fonte, mas utilização alta de GPU por si só não reduz qualidade. O contrato detalhado, proveniência dos shaders e comportamento fail-open ficam em `docs/video_enhancement.md`. WebView-only continua fora dessa cadeia GLSL nativa.\n'''
+              text = text.replace(marker, section + marker, 1)
+              playback.write_text(text, encoding='utf-8')
+
+          performance = Path('docs/performance.md')
+          text = performance.read_text(encoding='utf-8')
+          heading = '### Enhancement Ultra e orçamento de frame'
+          if heading not in text:
+              marker = '\n## Paralelismo de latência perceptível\n'
+              if marker not in text:
+                  raise SystemExit('performance insertion marker not found')
+              section = '''\n### Enhancement Ultra e orçamento de frame\n\nNo desktop, `Ultra` pode usar uma RX 6600 em carga alta: porcentagem de GPU não é um gate de qualidade. O gate é cumprir a apresentação. Em conteúdo ~23.976/24 fps o intervalo de frame é ~41,7 ms; a calibração reserva margem para decode/composição e usa pressão repetida de render/frame drops para descer a escada, em vez de reduzir qualidade preventivamente por utilização da placa.\n\nPara fontes 720p, a escada estável preserva o tratamento da fonte enquanto reduz capacidade: ArtCNN C4F32 (`MAX`) -> ArtCNN C4F16 (`SAFE`) -> scaler nativo/libplacebo (`MIN`). Uma calibração só é reutilizada quando a assinatura relevante de sistema/backend e os buckets de origem/saída/tratamento são compatíveis. Os detalhes do planner, persistência e fail-open estão em `docs/video_enhancement.md`.\n\nCI/analyze/build provam integridade de software, não desempenho real da RX 6600. Afirmações de qualidade, p95 de render e ausência de frames perdidos continuam exigindo medição manual no hardware-alvo com SHA/build/backend registrados.\n'''
+              text = text.replace(marker, section + marker, 1)
+              performance.write_text(text, encoding='utf-8')
+
+          plan = Path('docs/superpowers/plans/2026-08-30-ultra-video-enhancement.md')
+          text = plan.read_text(encoding='utf-8')
+          status = '> Status de execução: escopo estável implementado; a implementação final evoluiu para `lib/core/video_enhancement/` e inclui calibração adaptativa MAX/SAFE/MIN. Estado atual: `docs/video_enhancement.md`.\n'
+          base_line = '> Base: `fix/shader-upscaling-lifecycle`\n'
+          if status not in text:
+              if base_line not in text:
+                  raise SystemExit('Ultra plan base marker not found')
+              text = text.replace(base_line, base_line + status, 1)
+          old = '- known limitations and deferred chroma/neural/calibration work;'
+          new = '- known limitations; chroma/neural work remains deferred, while adaptive realtime calibration is implemented;'
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit('Ultra plan deferred-work marker not found')
+          plan.write_text(text, encoding='utf-8')
+          PY
+          git diff --check
+          git diff -- docs/playback_pipeline.md docs/performance.md docs/superpowers/plans/2026-08-30-ultra-video-enhancement.md
+
+      - name: Commit and push documentation sync
+        working-directory: private-source
+        shell: bash
+        env:
+          PUSH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/playback_pipeline.md docs/performance.md docs/superpowers/plans/2026-08-30-ultra-video-enhancement.md
+          if git diff --cached --quiet; then
+            echo 'Documentation already synchronized.'
+            exit 0
+          fi
+          git commit -m "docs: sync Ultra stable enhancement contracts"
+          git remote set-url origin "https://x-access-token:${PUSH_TOKEN}@github.com/Semogtw/goanime-mobile.git"
+          git push origin "HEAD:${GOANIME_BRANCH}"
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf private-source
