@@ -1,0 +1,52 @@
+name: Verify GoAnime ArtCNN C4F16 GREEN
+
+on:
+  push:
+    branches:
+      - agent/vendor-artcnn-goanime-20260830
+    paths:
+      - .github/workflows/verify-goanime-c4f16-green-20260830.yml
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: 3.44.1
+
+jobs:
+  green:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout exact GREEN commit
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: 2ef5c3f224f973c6eb66ccc83b540d3215add54a
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: goanime
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+
+      - name: Set up pinned Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: false
+
+      - name: Resolve dependencies
+        working-directory: goanime
+        run: flutter pub get
+
+      - name: Verify GREEN planner contract
+        working-directory: goanime
+        run: flutter test --no-pub test/services/video_enhancement_planner_test.dart
