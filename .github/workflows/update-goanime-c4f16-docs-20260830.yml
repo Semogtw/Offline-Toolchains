@@ -1,0 +1,58 @@
+name: Update GoAnime ArtCNN C4F16 documentation
+
+on:
+  push:
+    branches:
+      - agent/vendor-artcnn-goanime-20260830
+    paths:
+      - .github/workflows/update-goanime-c4f16-docs-20260830.yml
+
+permissions:
+  contents: read
+
+jobs:
+  docs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout trusted patch source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout GoAnime feature branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: feat/ultra-video-enhancement-rx6600-20260830
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: goanime
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+
+      - name: Update stable C4F16 policy documentation
+        run: python3 scripts/update_goanime_c4f16_docs_20260830.py
+
+      - name: Commit and push
+        working-directory: goanime
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/video_enhancement.md
+          git diff --cached --quiet && { echo 'C4F16 documentation already current.'; exit 0; }
+          git commit -m "docs: document stable ArtCNN C4F16 fallback ladder"
+          git remote set-url origin "https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git"
+          git push origin HEAD:feat/ultra-video-enhancement-rx6600-20260830
