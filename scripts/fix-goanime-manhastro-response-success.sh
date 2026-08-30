@@ -85,15 +85,21 @@ materializer.write_text(text, encoding='utf-8')
 
 gate = Path('test/tools/materialize_global_manga_availability_gate_test.dart')
 text = gate.read_text(encoding='utf-8')
-entry = "        'test/services/manga/providers/manhastro_manga_provider_test.dart',\n"
-if text.count(entry) != 1:
-    raise SystemExit(f'unexpected Manhastro gate entry count: {text.count(entry)}')
-text = text.replace(
-    entry,
-    entry + "        'test/services/manga/providers/manhastro_manga_provider_response_test.dart',\n",
-    1,
+lines = text.splitlines()
+matches = [
+    index
+    for index, line in enumerate(lines)
+    if "test/services/manga/providers/manhastro_manga_provider_test.dart" in line
+]
+if len(matches) != 1:
+    raise SystemExit(f'unexpected Manhastro gate entry count: {len(matches)}')
+index = matches[0]
+indent = lines[index][: len(lines[index]) - len(lines[index].lstrip())]
+lines.insert(
+    index + 1,
+    f"{indent}'test/services/manga/providers/manhastro_manga_provider_response_test.dart',",
 )
-gate.write_text(text, encoding='utf-8')
+gate.write_text('\n'.join(lines) + '\n', encoding='utf-8')
 PY
 
 dart format \
