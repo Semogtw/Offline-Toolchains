@@ -1,0 +1,148 @@
+name: Update GoAnime current manga rollout docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-current-rollout-docs/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-current-rollout-docs
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: Update current manga rollout docs
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-current-rollout-docs/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = goanime
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]
+          [[ "$branch" != /* ]]
+          [[ "$branch" != */ ]]
+          [[ "$branch" != *..* ]]
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify branch still points to exact SHA
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+          test "$(git -C private-source rev-parse HEAD)" = "$EXPECTED_SHA"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Generate current documentation from latest receipt
+        working-directory: private-source
+        run: bash ../control/scripts/update-goanime-manga-current-rollout-docs.sh
+
+      - name: Verify documentation diff
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          grep -q 'autoriza atualmente \*\*18\*\* fontes' docs/manga_provider_rollout_status.md
+          grep -q 'Providers refreshed exhaustively: \*\*2\*\*' docs/manga_global_availability_receipt_2026-08-30.md
+          grep -q 'ptbr.taimumangas.*planned' docs/manga_provider_rollout_status.md
+          grep -q 'HTTP \*\*523\*\*' docs/manga_provider_rollout_status.md
+          grep -q '33341458888' docs/manga_provider_rollout_status.md
+          grep -q '33341458888' docs/manga_ptbr_provider_audit.md
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: |
+          flutter pub get --enforce-lockfile >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+
+      - name: Run documentation and rollout guards
+        working-directory: private-source
+        run: |
+          flutter test --no-pub \
+            test/architecture/documentation_drift_test.dart \
+            test/architecture/manga_provider_manifest_validator_test.dart \
+            test/architecture/manga_provider_registry_manifest_test.dart \
+            test/architecture/manga_planned_provider_definitions_test.dart
+
+      - name: Commit current documentation
+        id: commit
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add README_AI.md docs/manga_provider_rollout_status.md docs/manga_ptbr_provider_audit.md docs/manga_source_aggregation.md
+          git diff --cached --check
+          git commit -m 'docs(manga): update current rollout evidence'
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Reverify branch and push fast-forward
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push origin "HEAD:refs/heads/$TARGET_BRANCH"
+          echo "docs_sha=${{ steps.commit.outputs.sha }}"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
