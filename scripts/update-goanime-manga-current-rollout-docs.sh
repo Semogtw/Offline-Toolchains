@@ -55,60 +55,98 @@ if metrics['enabled'] != 18 or metrics['refreshed'] != 2 or metrics['carried'] !
 mangadex = provider('ptbr.mangadex')
 manhastro = provider('ptbr.manhastro')
 if mangadex[0] != 'exhausted' or manhastro[0] != 'exhausted':
-    raise SystemExit(
-        f'target providers are not exhaustive: mangadex={mangadex} manhastro={manhastro}'
-    )
+    raise SystemExit(f'target provider receipt is not exhaustive: {mangadex=} {manhastro=}')
 
 head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
 branch = 'feat/manga-sources-mangadex-taimu-manhastro-20260828'
 fresh_probe_run = '33341458888'
 fresh_probe_sha = 'cd5158b55e075504dfbaefa4760c21428f5b3134'
 
+enabled_ids = [
+    'ptbr.arthurscan',
+    'ptbr.astratoons',
+    'ptbr.capitoons',
+    'ptbr.hqnow',
+    'ptbr.hipertoon',
+    'ptbr.kamisamaexplorer',
+    'ptbr.kivaratoons',
+    'ptbr.leituramanga',
+    'ptbr.ler999',
+    'ptbr.littletyrant',
+    'ptbr.maidscan',
+    'ptbr.mangadash',
+    'ptbr.mangadex',
+    'ptbr.mangaflix',
+    'ptbr.mangalivreblog',
+    'ptbr.mangalivreorg',
+    'ptbr.manhastro',
+    'ptbr.ninjascan',
+]
+numbered_sources = '\n'.join(
+    f'{index}. `{source_id}`' for index, source_id in enumerate(enabled_ids, start=1)
+)
+
 rollout = f'''# Manga provider rollout status
 
-> **Status: atual para desenvolvimento.** Esta é a fonte operacional compacta da branch MangaDex / Taimu / Manhastro. Receipts certificam o SHA em que foram materializados; probes live certificam o SHA em que foram executados.
+> **Status: atual para desenvolvimento.** Esta é a fonte operacional compacta da branch MangaDex / Taimu / Manhastro. Receipts certificam o SHA materializado; probes live certificam o SHA explicitamente citado.
 
-**Atualizado em:** 2026-08-30  
-**Branch:** `{branch}`  
-**Checkpoint observado antes deste commit documental:** `{head}`  
-**Último receipt global:** `docs/{receipt.name}`  
-**Último probe live dos três candidates:** Offline-Toolchains run `{fresh_probe_run}` sobre `{fresh_probe_sha}`
+**Atualizado em:** 2026-08-30
+**Branch:** `{branch}`
+**Checkpoint observado antes deste commit documental:** `{head}`
+**Último receipt global:** `docs/{receipt.name}`
+**Fresh candidate probe:** Offline-Toolchains run `{fresh_probe_run}` sobre `{fresh_probe_sha}`
 
-## Resumo executivo
+## Estado atual
 
-- O runtime padrão autoriza **{metrics['enabled']} providers**.
-- `ptbr.mangadex` e `ptbr.manhastro` estão habilitados.
-- `ptbr.taimumangas` continua **planned** e fora de `defaultEnabledMangaSourceIds`.
-- O receipt atual contém **{br(metrics['works'])} obras canônicas**, **{br(metrics['links'])} ocorrências de fonte**, **{br(metrics['readable'])} links com readability comprovada** e **{br(metrics['listed'])} links listed-only**.
-- A rodada materializada refreshou exatamente **{metrics['refreshed']} providers** e carregou **{metrics['carried']}** partições conhecidas anteriores.
-- MangaDex está `exhausted` com **{br(mangadex[1])} ocorrências únicas**; Manhastro está `exhausted` com **{br(manhastro[1])}**.
-- No probe live `{fresh_probe_run}`, MangaDex e Manhastro completaram search → details → chapters → content → transporte de bytes e terminaram `terminal=readable`.
-- No mesmo probe, Taimu falhou **3/3 tentativas de search** com HTTP **523** em `apiv2.taimumangas.com`, terminando `terminal=no_search_result`. O bloqueio observado é upstream/live, não falha dos testes determinísticos do adapter.
+- Runtime padrão: **{metrics['enabled']} providers habilitados**.
+- `ptbr.mangadex`: enabled, `exhausted`, **{br(mangadex[1])} ocorrências únicas** no receipt atual.
+- `ptbr.manhastro`: enabled, `exhausted`, **{br(manhastro[1])} ocorrências únicas** no receipt atual.
+- `ptbr.taimumangas`: **planned**, fora de `defaultEnabledMangaSourceIds`.
+- Bundle: **{br(metrics['works'])} obras canônicas**, **{br(metrics['links'])} ocorrências**, **{br(metrics['readable'])} readable-proven**, **{br(metrics['listed'])} listed-only**.
+- Materialização alvo: **{metrics['refreshed']} refreshes exaustivos / {metrics['carried']} partições carried-forward**.
 
 ## Autorização runtime
 
-`defaultEnabledMangaSourceIds` autoriza atualmente **18** fontes:
+`defaultEnabledMangaSourceIds` contém:
 
-1. `ptbr.arthurscan`
-2. `ptbr.astratoons`
-3. `ptbr.capitoons`
-4. `ptbr.hqnow`
-5. `ptbr.hipertoon`
-6. `ptbr.kamisamaexplorer`
-7. `ptbr.kivaratoons`
-8. `ptbr.leituramanga`
-9. `ptbr.ler999`
-10. `ptbr.littletyrant`
-11. `ptbr.maidscan`
-12. `ptbr.mangadash`
-13. `ptbr.mangadex`
-14. `ptbr.mangaflix`
-15. `ptbr.mangalivreblog`
-16. `ptbr.mangalivreorg`
-17. `ptbr.manhastro`
-18. `ptbr.ninjascan`
+{numbered_sources}
 
-`ptbr.taimumangas` permanece `planned`. O baseline histórico PT-BR continua **114 inventariadas / 98 permitidas / 16 excluídas**; MangaDex é externo ao snapshot `src/pt` e não altera esse accounting.
+O baseline histórico PT-BR continua **114 inventariadas / 98 permitidas / 16 excluídas**. MangaDex é externo ao snapshot Keiyoushi `src/pt` e não altera esse accounting. Taimu permanece `planned` mesmo possuindo adapter/fixtures.
+
+## Evidência live fresca — 2026-08-30
+
+Run `{fresh_probe_run}`, exact SHA `{fresh_probe_sha}`:
+
+```text
+ptbr.mangadex
+  search=24 resultados
+  details=success
+  chapters=success (26)
+  content=imageSequence
+  transport=success
+  verifier=success
+  terminal=readable
+
+ptbr.taimumangas
+  search attempt 1 = HTTP 523
+  search attempt 2 = HTTP 523
+  search attempt 3 = HTTP 523
+  host=apiv2.taimumangas.com
+  terminal=no_search_result
+
+ptbr.manhastro
+  search=99 resultados
+  details=success
+  chapters=success (143)
+  content=imageSequence
+  transport=success
+  verifier=success
+  terminal=readable
+```
+
+A falha do Taimu ocorre antes de qualquer resultado de search e continua sendo um bloqueio live/upstream, não uma autorização para promover o provider. Nova promoção exige search → details → chapters → content → bytes reproduzível.
+
+A auditoria Manhastro da mesma rodada completou 4/4 queries e 12 details. Houve 1 ocorrência explícita na amostra e 2/100 na primeira página do catálogo; a evidência continua compatível com a política atual de não adult-primary.
 
 ## Catálogo global materializado
 
@@ -122,141 +160,85 @@ canonicalWorks={metrics['works']}
 sourceOccurrences={metrics['links']}
 readableProvenLinks={metrics['readable']}
 listedOnlyLinks={metrics['listed']}
+ptbr.mangadex=exhausted:{mangadex[1]}:{mangadex[2]}
+ptbr.manhastro=exhausted:{manhastro[1]}:{manhastro[2]}
 ```
 
-Refresh exaustivo:
+Partição `exhausted` substitui sua versão anterior. Provider `partial`, `failed`, `blocked`, não selecionado ou não enumerável preserva a partição conhecida anterior. Listing e readability continuam garantias diferentes.
 
-```text
-ptbr.mangadex  exhausted  {mangadex[1]}  {mangadex[2]}
-ptbr.manhastro exhausted  {manhastro[1]}  {manhastro[2]}
-```
+## Hardening atual
 
-A política do bundle continua fail-safe: partição `exhausted` substitui sua versão anterior; provider `partial`, `failed`, `blocked`, não selecionado ou não enumerável preserva a partição conhecida anterior em vez de apagar catálogo válido.
+### MangaDex
 
-**Listed availability e readability são garantias diferentes.** Listing confirmado pode alimentar inventário, mas o Reader continua exigindo resolução legível/prova compatível.
+- safe/suggestive inventariados em partições próprias;
+- page tokens, `limit`, `offset` e `total` validados fail-closed;
+- metadata fracionária não é truncada silenciosamente;
+- recursos malformados em search/chapters/AtHome falham a operação;
+- capítulos rejeitam linguagem inesperada e possuem cap de paginação;
+- retry especial de HTTP 400 é restrito a `api.mangadex.org`;
+- `mangadex.network` depende de suffix policy com boundary de label.
 
-## Hardening atual — MangaDex
+### Manhastro
 
-- inventário separado por `safe` e `suggestive` em páginas de 100;
-- page tokens precisam ser offsets inteiros não-negativos;
-- `limit`, `offset` e `total` da resposta são validados;
-- `total` ausente/malformado não vira falso fim de paginação;
-- recursos malformados em search/chapters/AtHome falham a operação em vez de produzir coleção parcial;
-- chapters rejeita linguagem inesperada;
-- metadata numérica fracionária não é truncada silenciosamente;
-- paginação de capítulos possui cap explícito;
-- retry especial de HTTP 400 é restrito a MangaDex **e** `api.mangadex.org`;
-- hosts `*.mangadex.network` dependem da suffix policy com boundary de label.
-
-## Hardening atual — Manhastro
-
-- search usa `page`, `per_page=100` e filtro server-side `nome` quando há query;
-- details resolve por `manga_id` e exige cardinalidade/identidade coerentes;
-- cache é por consulta/página e details reutiliza item recentemente validado;
-- o registro live com ID válido, mas sem qualquer título textual utilizável, é explicitamente não catalogável; demais itens inválidos continuam fail-closed;
-- `meta.current_page/per_page/total/last_page/has_more` é validado;
-- a página terminal pode conter overlap real do upstream, mas nunca underfill frente ao mínimo implicado por `total`;
+- search usa paginação server-side e filtro `nome`;
+- details resolve por `manga_id` com cardinalidade/identidade estritas;
+- cache é por consulta/página e details reutiliza item validado;
+- registro com ID válido sem título textual é explicitamente não catalogável;
+- `current_page/per_page/total/last_page/has_more` são validados;
+- overlap terminal observado live é aceito, mas terminal underfill é rejeitado;
 - IDs numéricos fracionários são rejeitados;
-- envelopes exigem `success == true`;
-- capítulos/páginas inválidos não geram coleções parciais;
-- capas de search/details, inclusive fallback legado, só sobrevivem quando o host passa por `MangaProviderPolicy.allowsContentHost`.
+- capítulos/páginas inválidos não produzem coleção parcial;
+- capas de search/details, inclusive fallback legado, obedecem à `MangaProviderPolicy`.
 
-O upstream atual apresenta 3 itens sobrepostos na página terminal; o inventário deduplica por ocorrência e ainda termina `exhausted`.
+O upstream apresenta 3 ocorrências sobrepostas na página terminal; o inventário deduplica por `(sourceId, mangaId)` e a partição termina `exhausted`.
 
-## Hardening atual — Taimu
+### Taimu
 
-Taimu está implementado, mas continua `planned`:
-
-- page token e identidade da página de resposta são validados;
-- continuation metadata precisa existir e ser coerente;
+- page token, page identity e continuation metadata são validados;
 - página vazia que afirma continuação falha fechado;
 - metadata de paginação fracionária é rejeitada;
 - search/details/chapters/pages rejeitam itens malformados;
-- `adult=true` é rejeitado e search usa `adult=false`;
-- paginação de capítulos possui cap de 100 requests;
-- capas de search/details e fallback legado obedecem à content-host policy.
+- `adult=true` é rejeitado; search usa `adult=false`;
+- capítulos têm cap de 100 requests;
+- capas de search/details, inclusive fallback legado, obedecem à content-host policy;
+- permanece `planned` por HTTP 523 live.
 
-A evidência live mais recente não autoriza promoção: o run `{fresh_probe_run}` recebeu HTTP 523 nas três tentativas de search antes de qualquer resultado. Promoção futura exige nova prova reproduzível até bytes.
+### Transporte compartilhado
 
-## Transporte e segurança compartilhados
+- `MangaRemoteContentProbe` valida o host inicial antes de I/O;
+- Reader respeita hosts exatos e `allowedContentHostSuffixes`;
+- redirects ficam sob `MangaHttpClient`;
+- HTTP 200 com HTML/challenge não é readability;
+- headers/cookies/tokens/URLs efêmeras não são persistidos;
+- materializador cobre formatter, diff guard, analyzer e testes dos providers/readability.
 
-- `MangaRemoteContentProbe` valida o host inicial pela policy antes de I/O;
-- o Reader respeita hosts exatos e `allowedContentHostSuffixes`;
-- redirects continuam sob `MangaHttpClient` e headers sensíveis não atravessam hosts não confiáveis;
-- HTTP 200 com HTML/challenge não conta como imagem/PDF;
-- URLs assinadas, cookies, tokens e headers efêmeros não entram no estado durável;
-- o materializador executa formatter, diff guard, analyzer e testes dos providers/readability antes de inventário/build/publicação.
+## Afirmações permitidas
 
-## Evidência live fresca — 2026-08-30
+Pode ser afirmado que MangaDex e Manhastro estão enabled, possuem partição `exhausted` no receipt atual e terminaram fresh probe live até bytes em 2026-08-30. Pode ser afirmado que Taimu possui implementação determinística, mas continua `planned` por HTTP 523.
 
-Offline-Toolchains run `{fresh_probe_run}`, SHA `{fresh_probe_sha}`:
+Não pode ser afirmado que Taimu é live/readable, que todos os {br(metrics['links'])} links do bundle são readable, ou que receipt antigo certifica código posterior que altere providers materializados/pipeline.
 
-```text
-ptbr.mangadex:
-  search=24 resultados
-  details=success
-  chapters=success (26)
-  content=imageSequence
-  transport=success
-  verifier=success
-  terminal=readable
+## Próximos gates
 
-ptbr.taimumangas:
-  search attempt 1 = HTTP 523
-  search attempt 2 = HTTP 523
-  search attempt 3 = HTTP 523
-  host=apiv2.taimumangas.com
-  terminal=no_search_result
-
-ptbr.manhastro:
-  search=99 resultados
-  details=success
-  chapters=success (143)
-  content=imageSequence
-  transport=success
-  verifier=success
-  terminal=readable
-```
-
-A auditoria de segurança Manhastro da mesma rodada completou 4/4 queries e 12 details; a amostra teve 1 ocorrência com marcador explícito e a primeira página do catálogo teve 2/100 ocorrências com marcador explícito. Isso não altera a classificação atual de não adult-primary.
-
-## Gates e afirmações permitidas
-
-### Pode ser afirmado
-
-- MangaDex e Manhastro estão habilitados no runtime padrão;
-- ambos têm partições atuais `exhausted` no receipt mais recente;
-- ambos possuem prova live fresh até bytes em 2026-08-30;
-- Taimu possui implementação/testes determinísticos, mas continua `planned` por HTTP 523 live;
-- o materializador preserva partições degradadas e não converte listing em readability automaticamente.
-
-### Não pode ser afirmado
-
-- que Taimu é live/readable ou pronto para promoção;
-- que todos os {br(metrics['links'])} links do bundle são readable;
-- que um receipt antigo certifica código posterior que altera MangaDex/Manhastro ou o pipeline de materialização.
-
-## Próxima sequência operacional
-
-1. Manter Taimu fora do runtime padrão até nova prova live reproduzível search → details → chapters → bytes.
-2. Continuar hardening fail-closed apenas quando houver contrato real/teste que o justifique.
-3. Após mudanças em providers materializados, rodar novamente o materializador exact-SHA com CAS.
-4. Antes de merge, rodar o verifier final de rollout exact-SHA, incluindo docs/manifest/registry, provider tests, analyzer, receipt, drift e fresh byte probes de MangaDex + Manhastro.
+1. Manter Taimu fora do runtime até nova prova live completa.
+2. Materializar novamente após alterações em MangaDex/Manhastro ou pipeline global.
+3. Antes de merge, executar verifier final exact-SHA de docs/manifest/registry/receipt/drift/bytes e o gate complementar de strict-items/paginação/host-policy.
 
 ## Referências
 
-- `docs/{receipt.name}` — bundle global atual;
-- `docs/manga_ptbr_provider_audit.md` — auditoria PT-BR e histórico de rollout;
-- `docs/manga_source_aggregation.md` — agregação/canonicalização;
-- `docs/manga_sources_ptbr.md` / `docs/manga_sources_ptbr.json` — baseline de policy/inventory;
-- `tools/manga/inventory_manga_catalog.dart` — inventário runtime;
-- `tools/manga/materialize_global_manga_availability_ci.sh` — materializador/gate global.
+- `docs/{receipt.name}`
+- `docs/manga_ptbr_provider_audit.md`
+- `docs/manga_source_aggregation.md`
+- `docs/manga_sources_ptbr.md`
+- `docs/manga_sources_ptbr.json`
+- `tools/manga/inventory_manga_catalog.dart`
+- `tools/manga/materialize_global_manga_availability_ci.sh`
 
-Detalhes históricos continuam recuperáveis no Git e nos receipts datados. Estado operacional deve ser interpretado pelo SHA e pelo run explicitamente citados, não apenas pela data do arquivo.
+Detalhes históricos permanecem no Git e nos receipts datados; o estado operacional deve ser interpretado pelo SHA/run citado.
 '''
 (root / 'docs/manga_provider_rollout_status.md').write_text(rollout, encoding='utf-8')
 
-# Keep the deep audit historical, but prepend a current operational checkpoint.
+# Preserve the detailed historical audit, but make the current checkpoint explicit.
 audit_path = root / 'docs/manga_ptbr_provider_audit.md'
 audit = audit_path.read_text(encoding='utf-8')
 current = f'''<!-- current-2026-08-30:start -->
@@ -265,13 +247,13 @@ current = f'''<!-- current-2026-08-30:start -->
 - Branch: `{branch}`.
 - Checkpoint observado antes deste commit documental: `{head}`.
 - Receipt atual: `docs/{receipt.name}` com **{br(metrics['works'])} obras**, **{br(metrics['links'])} ocorrências**, **{br(metrics['readable'])} readable-proven** e **{br(metrics['listed'])} listed-only**.
-- `ptbr.mangadex`: enabled, `exhausted` com **{br(mangadex[1])} ocorrências únicas; fresh probe `{fresh_probe_run}` terminou `terminal=readable` até bytes.
-- `ptbr.manhastro`: enabled, `exhausted` com **{br(manhastro[1])} ocorrências únicas; fresh probe `{fresh_probe_run}` terminou `terminal=readable` até bytes.
-- `ptbr.taimumangas`: `planned`; no fresh probe `{fresh_probe_run}`, 3/3 buscas retornaram HTTP **523** de `apiv2.taimumangas.com`, antes de qualquer resultado.
-- Manhastro agora segue paginação live server-side, details por `manga_id`, tolera apenas overlap terminal seguro, rejeita underfill terminal e filtra capas pela content-host policy.
+- `ptbr.mangadex`: enabled, `exhausted` com **{br(mangadex[1])} ocorrências únicas**; fresh probe `{fresh_probe_run}` terminou `terminal=readable` até bytes.
+- `ptbr.manhastro`: enabled, `exhausted` com **{br(manhastro[1])} ocorrências únicas**; fresh probe `{fresh_probe_run}` terminou `terminal=readable` até bytes.
+- `ptbr.taimumangas`: `planned`; no fresh probe `{fresh_probe_run}`, 3/3 buscas retornaram HTTP **523** de `apiv2.taimumangas.com` antes de qualquer resultado.
+- Manhastro segue paginação server-side, details por `manga_id`, aceita apenas overlap terminal seguro, rejeita underfill e filtra capas pela content-host policy.
 - Taimu/Manhastro filtram capas de search/details e fallbacks legados pela `MangaProviderPolicy`; Reader/readability probe também validam content hosts antes de I/O.
 
-Este checkpoint substitui os números operacionais antigos abaixo; as seções históricas permanecem como evidência datada e não como garantia do HEAD atual.
+Este checkpoint substitui números operacionais antigos abaixo. As seções históricas permanecem como evidência datada, não como garantia do HEAD atual.
 <!-- current-2026-08-30:end -->
 '''
 pattern = re.compile(
