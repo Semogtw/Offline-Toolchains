@@ -30,26 +30,21 @@ flutter pub get --enforce-lockfile >/dev/null
 (cd packages/goanime_core && dart pub get >/dev/null)
 
 set +e
-flutter test --no-pub \
-  test/services/manga/providers/taimu_manga_provider_test.dart \
-  test/services/manga/providers/manhastro_manga_provider_test.dart \
-  > /tmp/branch-provider-cover-policy-red.log 2>&1
-red_status=$?
+flutter test --no-pub test/services/manga/providers/taimu_manga_provider_test.dart \
+  > /tmp/taimu-cover-policy-red.log 2>&1
+taimu_red_status=$?
+flutter test --no-pub test/services/manga/providers/manhastro_manga_provider_test.dart \
+  > /tmp/manhastro-cover-policy-red.log 2>&1
+manhastro_red_status=$?
 set -e
-test "$red_status" -ne 0
-grep -Fq 'drops cover URLs outside provider content policy' /tmp/branch-provider-cover-policy-red.log
-echo '[tdd] RED observed: branch providers expose cover URLs outside content policy'
+test "$taimu_red_status" -ne 0
+test "$manhastro_red_status" -ne 0
+grep -Fq 'drops cover URLs outside provider content policy' /tmp/taimu-cover-policy-red.log
+grep -Fq 'drops cover URLs outside provider content policy' /tmp/manhastro-cover-policy-red.log
+echo '[tdd] RED observed: Taimu and Manhastro expose cover URLs outside content policy'
 
 python3 - <<'PY'
 from pathlib import Path
-
-
-def replace_exact(path: Path, old: str, new: str, *, expected: int = 1) -> None:
-    text = path.read_text(encoding='utf-8')
-    count = text.count(old)
-    if count != expected:
-        raise SystemExit(f'unexpected source shape in {path}: expected {expected}, found {count}')
-    path.write_text(text.replace(old, new, expected), encoding='utf-8')
 
 
 taimu = Path('lib/services/manga/providers/taimu_manga_provider.dart')
@@ -92,7 +87,7 @@ new = "coverUrl: _coverUrl(item['imagem']) ?? _coverUrl(occurrence.coverUrl),"
 if text.count(old) != 1:
     raise SystemExit(f'unexpected Manhastro details cover shape: {text.count(old)}')
 text = text.replace(old, new, 1)
-anchor = """  Future<List<Map<String, dynamic>>> _catalog() async {
+anchor = """  Future<Map<String, dynamic>> _catalogItem(String mangaId) async {
 """
 helper = """  String? _coverUrl(Object? value) {
     final normalized = _normalizeUrl(value);
@@ -131,12 +126,14 @@ flutter test --no-pub \
   test/services/manga/providers/manhastro_manga_provider_response_test.dart \
   test/services/manga/providers/manhastro_manga_provider_strict_items_test.dart \
   test/services/manga/providers/manhastro_manga_provider_cache_test.dart \
+  test/services/manga/providers/manhastro_manga_provider_pagination_test.dart \
   test/tools/materialize_global_manga_availability_gate_test.dart
 flutter analyze --no-pub \
   lib/services/manga/providers/taimu_manga_provider.dart \
   lib/services/manga/providers/manhastro_manga_provider.dart \
   test/services/manga/providers/taimu_manga_provider_test.dart \
-  test/services/manga/providers/manhastro_manga_provider_test.dart
+  test/services/manga/providers/manhastro_manga_provider_test.dart \
+  test/services/manga/providers/manhastro_manga_provider_pagination_test.dart
 
 git config user.name 'github-actions[bot]'
 git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -155,5 +152,7 @@ git -c http.extraheader="AUTHORIZATION: basic $auth" push -q origin "HEAD:refs/h
 echo "[branch-provider-cover-policy] published $published_sha"
 popd >/dev/null
 
-rm -rf private-source /tmp/branch-provider-cover-policy-red.log
+rm -rf private-source \
+  /tmp/taimu-cover-policy-red.log \
+  /tmp/manhastro-cover-policy-red.log
 unset auth PRIVATE_REPOSITORIES_TOKEN
