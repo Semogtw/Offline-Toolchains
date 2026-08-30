@@ -37,4 +37,4 @@ jobs:
       - name: Apply exact-SHA strict MangaDex response-resource fix
         env:
           PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-        run: bash scripts/fix-goanime-mangadex-strict-items.sh
+        run: bash scripts/fix-goanime-mangadex-strict-items-v2.sh
