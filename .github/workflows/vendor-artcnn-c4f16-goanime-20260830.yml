@@ -1,0 +1,76 @@
+name: Vendor stable ArtCNN C4F16 shaders into GoAnime
+
+on:
+  push:
+    branches:
+      - agent/vendor-artcnn-goanime-20260830
+    paths:
+      - .github/workflows/vendor-artcnn-c4f16-goanime-20260830.yml
+
+permissions:
+  contents: read
+
+jobs:
+  vendor:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout GoAnime feature branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: feat/ultra-video-enhancement-rx6600-20260830
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: goanime
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+
+      - name: Checkout pinned ArtCNN upstream
+        uses: actions/checkout@v6
+        with:
+          repository: Artoriuz/ArtCNN
+          ref: c619fc3292d8867378e072f08bb0500c086440d5
+          path: artcnn
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify and vendor stable realtime C4F16 models
+        shell: bash
+        run: |
+          set -euo pipefail
+          declare -A expected=(
+            [ArtCNN_C4F16.glsl]=4086dce92db6c1d9d81d3e396aa94d35a1e389a8
+            [ArtCNN_C4F16_DN.glsl]=12f9fec62bc17391a8c67ea98e5fc798d8beec4d
+            [ArtCNN_C4F16_DS.glsl]=69d1a95818e9a57723e609eda7e860a45b0c873b
+          )
+          for file in "${!expected[@]}"; do
+            actual="$(git hash-object "artcnn/GLSL/$file")"
+            test "$actual" = "${expected[$file]}" || {
+              echo "Unexpected upstream blob for $file: $actual" >&2
+              exit 1
+            }
+            install -m 0644 "artcnn/GLSL/$file" "goanime/assets/shaders/$file"
+          done
+
+      - name: Commit exact upstream assets to feature branch
+        working-directory: goanime
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add assets/shaders/ArtCNN_C4F16.glsl assets/shaders/ArtCNN_C4F16_DN.glsl assets/shaders/ArtCNN_C4F16_DS.glsl
+          git diff --cached --quiet && { echo 'Stable C4F16 assets already match upstream.'; exit 0; }
+          git commit -m "feat: vendor stable ArtCNN C4F16 fallback models"
+          git remote set-url origin "https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git"
+          git push origin HEAD:feat/ultra-video-enhancement-rx6600-20260830
