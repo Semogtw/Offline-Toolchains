@@ -1,0 +1,99 @@
+name: Merge GoAnime main into Ultra branch v3
+
+on:
+  push:
+    branches:
+      - agent/vendor-artcnn-goanime-20260830
+    paths:
+      - .github/workflows/merge-main-into-goanime-ultra-v3-20260830.yml
+
+permissions:
+  contents: read
+
+jobs:
+  merge:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout GoAnime Ultra branch with full refs
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: feat/ultra-video-enhancement-rx6600-20260830
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: goanime
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+
+      - name: Merge main and resolve the verified enhancement conflict
+        working-directory: goanime
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          feature_before="$(git rev-parse HEAD)"
+          main_sha="$(git rev-parse origin/main)"
+          echo "FEATURE_BEFORE=$feature_before"
+          echo "MAIN=$main_sha"
+
+          set +e
+          git merge --no-commit --no-ff origin/main
+          merge_status=$?
+          set -e
+
+          unmerged="$(git diff --name-only --diff-filter=U)"
+          if [ "$merge_status" -ne 0 ]; then
+            expected='lib/platform/desktop/screens/desktop_video_player_screen_methods_1.dart'
+            if [ "$unmerged" != "$expected" ]; then
+              echo 'Unexpected merge conflicts:' >&2
+              printf '%s\n' "$unmerged" >&2
+              git merge --abort
+              exit 1
+            fi
+            git checkout --ours -- "$expected"
+            git add "$expected"
+          elif [ -n "$unmerged" ]; then
+            echo 'Merge reported success with unresolved paths:' >&2
+            printf '%s\n' "$unmerged" >&2
+            exit 1
+          fi
+
+          if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+            echo 'Unresolved merge paths remain.' >&2
+            git diff --name-only --diff-filter=U >&2
+            exit 1
+          fi
+
+          # Lifecycle invariants from main must remain present in the resolved tree.
+          grep -F "await _videoParamsSubscription?.cancel();" lib/platform/desktop/screens/desktop_video_player_screen_methods_1.dart
+          grep -F "identical(_player, player)" lib/platform/desktop/screens/desktop_video_player_screen_methods_1.dart
+          grep -F "'glsl-shaders'" lib/platform/desktop/screens/desktop_video_player_screen_methods_1.dart
+          grep -F "await _configureVideoEnhancementForPlayer(player, sessionTicket);" lib/platform/desktop/screens/desktop_video_player_screen_methods_3.dart
+          grep -F "_stopVideoEnhancementPerformanceMonitoring();" lib/platform/desktop/screens/desktop_video_player_screen_methods_3.dart
+
+          python3 tools/validate_frontend_future_ownership.py
+          python3 tools/validate_video_enhancement_state_safety.py
+          python3 tools/validate_refresh_release_safety.py
+
+          git diff --check
+          git commit --no-edit
+          echo "FEATURE_AFTER=$(git rev-parse HEAD)"
+
+      - name: Push resolved merge
+        working-directory: goanime
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          git remote set-url origin "https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git"
+          git push origin HEAD:feat/ultra-video-enhancement-rx6600-20260830
