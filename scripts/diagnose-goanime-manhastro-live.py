@@ -90,6 +90,20 @@ def inspect_page(page, decoded):
         print(f'page_{page}_meta_total={meta.get("total", "<missing>")!r}')
         print(f'page_{page}_meta_last_page={meta.get("last_page", "<missing>")!r}')
         print(f'page_{page}_meta_has_more={meta.get("has_more", "<missing>")!r}')
+        filters = meta.get('filters')
+        print(f'page_{page}_meta_filters_type={type(filters).__name__}')
+        if isinstance(filters, dict):
+            print(
+                f'page_{page}_meta_filter_keys='
+                + ','.join(sorted(str(key) for key in filters.keys()))
+            )
+            for key in sorted(filters.keys()):
+                print(
+                    f'page_{page}_meta_filter_{key}_type='
+                    f'{type(filters[key]).__name__}'
+                )
+        print(f'page_{page}_meta_sort_type={type(meta.get("sort")).__name__}')
+        print(f'page_{page}_meta_order_type={type(meta.get("order")).__name__}')
 
     if not isinstance(data, list):
         print(f'page_{page}_classification=unexpected_payload_shape')
@@ -143,11 +157,6 @@ def inspect_page(page, decoded):
                 f'page_{page}_first_invalid_nonempty_alternative_count='
                 f'{len(alternative_strings)}'
             )
-            if alternative_strings:
-                print(
-                    f'page_{page}_first_invalid_first_alternative_length='
-                    f'{len(alternative_strings[0])}'
-                )
 
     if success is True:
         if invalid_type or invalid_id or invalid_title:
