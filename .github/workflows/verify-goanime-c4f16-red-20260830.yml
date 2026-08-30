@@ -1,0 +1,64 @@
+name: Verify GoAnime ArtCNN C4F16 RED
+
+on:
+  push:
+    branches:
+      - agent/vendor-artcnn-goanime-20260830
+    paths:
+      - .github/workflows/verify-goanime-c4f16-red-20260830.yml
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: 3.44.1
+
+jobs:
+  red:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout exact RED commit
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: 7e862617a2211b37de0f2b570c4207594e0172b9
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: goanime
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+
+      - name: Set up pinned Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: false
+
+      - name: Resolve dependencies
+        working-directory: goanime
+        run: flutter pub get
+
+      - name: Verify RED planner contract
+        working-directory: goanime
+        shell: bash
+        run: |
+          set +e
+          output="$(flutter test --no-pub test/services/video_enhancement_planner_test.dart 2>&1)"
+          status=$?
+          printf '%s\n' "$output"
+          if [ "$status" -eq 0 ]; then
+            echo 'RED contract unexpectedly passed before planner implementation.' >&2
+            exit 1
+          fi
+          printf '%s\n' "$output" | grep -F 'ArtCNN_C4F16_DS.glsl'
+          printf '%s\n' "$output" | grep -F 'Anime4K_Upscale_CNN_x2_M.glsl'
+          echo 'RED_CONFIRMED: planner tier 1 still returns Anime4K instead of stable ArtCNN C4F16.'
