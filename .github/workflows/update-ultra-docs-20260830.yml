@@ -1,0 +1,54 @@
+name: Update Ultra stable documentation
+
+on:
+  push:
+    branches:
+      - agent/vendor-artcnn-goanime-20260830
+    paths:
+      - .github/workflows/update-ultra-docs-20260830.yml
+
+permissions:
+  contents: read
+
+jobs:
+  docs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted patch source
+        uses: actions/checkout@v6
+        with:
+          ref: agent/vendor-artcnn-goanime-20260830
+          path: trusted
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/update_ultra_docs_20260830.py
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout GoAnime feature branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: feat/ultra-video-enhancement-rx6600-20260830
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: goanime
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Update documentation
+        run: python3 trusted/scripts/update_ultra_docs_20260830.py goanime
+
+      - name: Commit documentation
+        working-directory: goanime
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/video_enhancement.md
+          git commit -m "docs: mark stable Ultra pipeline complete"
+          git remote set-url origin "https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git"
+          git push origin HEAD:feat/ultra-video-enhancement-rx6600-20260830
