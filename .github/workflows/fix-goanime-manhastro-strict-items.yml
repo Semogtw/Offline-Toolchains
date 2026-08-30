@@ -37,4 +37,4 @@ jobs:
       - name: Apply exact-SHA strict Manhastro response-item fix
         env:
           PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-        run: bash scripts/fix-goanime-manhastro-strict-items.sh
+        run: bash scripts/fix-goanime-manhastro-strict-items-v2.sh
