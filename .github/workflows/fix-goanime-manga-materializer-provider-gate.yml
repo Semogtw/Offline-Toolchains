@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   fix:
-    name: Cover branch providers in materializer gate
+    name: Diagnose branch-provider materializer RED
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -34,7 +34,7 @@ jobs:
           flutter-version: 3.44.1
           cache: true
 
-      - name: Apply exact-SHA materializer provider gate fix
+      - name: Diagnose exact-SHA materializer provider RED
         env:
           PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-        run: bash scripts/fix-goanime-manga-materializer-provider-gate.sh
+        run: bash scripts/diagnose-goanime-manga-materializer-provider-gate-red.sh
