@@ -1,0 +1,180 @@
+name: Certify GoAnime Ultra desktop builds
+
+on:
+  push:
+    branches:
+      - agent/vendor-artcnn-goanime-20260830
+    paths:
+      - .github/workflows/certify-goanime-ultra-desktop-20260830.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOANIME_SHA: 29f4641f6dc99c517530c4e9edd7b1f1a06aa572
+  FLUTTER_CHANNEL: stable
+  FLUTTER_VERSION: 3.44.1
+
+jobs:
+  linux:
+    name: Linux debug bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout exact GoAnime snapshot
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.GOANIME_SHA }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          persist-credentials: false
+          fetch-depth: 1
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Install Linux desktop dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake curl elfutils file flatpak flatpak-builder libfuse2t64 libgtk-3-dev \
+            libjsoncpp-dev liblzma-dev libmpv-dev libsecret-1-0 libsecret-1-dev \
+            libsoup-3.0-dev libwebkit2gtk-4.1-dev \
+            gstreamer1.0-libav gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
+            lld llvm ninja-build pkg-config
+
+      - name: Set up pinned Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: false
+
+      - name: Resolve locked dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics --enable-linux-desktop
+          flutter pub get --enforce-lockfile
+
+      - name: Build Linux debug bundle
+        working-directory: private-source
+        shell: bash
+        run: flutter build linux --debug --no-pub
+
+      - name: Verify Linux bundle and shader assets
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle=build/linux/x64/debug/bundle
+          test -d "$bundle"
+          shader_root="$bundle/data/flutter_assets/assets/shaders"
+          for shader in \
+            ArtCNN_C4F16.glsl \
+            ArtCNN_C4F16_DN.glsl \
+            ArtCNN_C4F16_DS.glsl \
+            ArtCNN_C4F32.glsl \
+            ArtCNN_C4F32_DN.glsl \
+            ArtCNN_C4F32_DS.glsl \
+            Anime4K_Clamp_Highlights.glsl; do
+            test -s "$shader_root/$shader" || {
+              echo "::error::Missing packaged shader: $shader"
+              exit 1
+            }
+          done
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf private-source
+
+  windows:
+    name: Windows debug bundle
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Require private repository token
+        shell: pwsh
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          if (-not $env:PRIVATE_REPOSITORIES_TOKEN) { throw 'PRIVATE_REPOSITORIES_TOKEN is required' }
+
+      - name: Checkout exact GoAnime snapshot
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.GOANIME_SHA }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          persist-credentials: false
+          fetch-depth: 1
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Enable Git long paths
+        shell: pwsh
+        run: git config --system core.longpaths true
+
+      - name: Set up pinned Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: false
+
+      - name: Resolve locked dependencies
+        working-directory: private-source
+        shell: pwsh
+        run: |
+          flutter config --no-analytics --enable-windows-desktop
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          flutter pub get --enforce-lockfile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build Windows debug bundle
+        working-directory: private-source
+        shell: pwsh
+        run: |
+          flutter build windows --debug --no-pub
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify Windows bundle and shader assets
+        working-directory: private-source
+        shell: pwsh
+        run: |
+          $bundle = 'build\windows\x64\runner\Debug'
+          if (-not (Test-Path -LiteralPath $bundle -PathType Container)) { throw "Missing Windows bundle: $bundle" }
+          $shaderRoot = Join-Path $bundle 'data\flutter_assets\assets\shaders'
+          $shaders = @(
+            'ArtCNN_C4F16.glsl',
+            'ArtCNN_C4F16_DN.glsl',
+            'ArtCNN_C4F16_DS.glsl',
+            'ArtCNN_C4F32.glsl',
+            'ArtCNN_C4F32_DN.glsl',
+            'ArtCNN_C4F32_DS.glsl',
+            'Anime4K_Clamp_Highlights.glsl'
+          )
+          foreach ($shader in $shaders) {
+            $path = Join-Path $shaderRoot $shader
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing packaged shader: $shader" }
+            if ((Get-Item -LiteralPath $path).Length -le 0) { throw "Empty packaged shader: $shader" }
+          }
+
+      - name: Remove private checkout
+        if: always()
+        shell: pwsh
+        run: Remove-Item -Recurse -Force private-source -ErrorAction SilentlyContinue
