@@ -1,0 +1,223 @@
+from pathlib import Path
+import sys
+
+ROOT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path('.')
+
+
+def replace_once(path: str, old: str, new: str) -> None:
+    p = ROOT / path
+    text = p.read_text(encoding='utf-8')
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit(f'{path}: expected one match, found {count}')
+    p.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+
+main = 'lib/platform/desktop/screens/desktop_video_player_screen.dart'
+replace_once(
+    main,
+    "import '../../../services/video_enhancement_performance_controller.dart';\nimport '../../../services/video_enhancement_planner.dart';",
+    "import '../../../services/video_enhancement_calibration.dart';\nimport '../../../services/video_enhancement_performance_controller.dart';\nimport '../../../services/video_enhancement_planner.dart';\nimport '../../../services/video_enhancement_source_classifier.dart';",
+)
+replace_once(
+    main,
+    "import '../../../utils/playback_failure_message.dart';\nimport '../../../utils/safe_network_log.dart';",
+    "import '../../../utils/playback_failure_message.dart';\nimport '../../../utils/safe_network_log.dart';\nimport '../../../utils/video_enhancement_preference.dart';",
+)
+replace_once(
+    main,
+    "  int _ultraEnhancementQualityTier = 2;\n  int? _enhancementSourceHeight;\n  int? _enhancementTargetHeight;\n  String _enhancementPerformanceLabel = '';",
+    "  int _ultraEnhancementQualityTier = 2;\n  int? _enhancementSourceWidth;\n  int? _enhancementSourceHeight;\n  int? _enhancementTargetHeight;\n  String _enhancementSourceProfilePreference = 'auto';\n  String _enhancementResolvedSourceProfile = 'compressed';\n  String? _enhancementCalibrationKey;\n  bool _enhancementContextResolved = false;\n  String _enhancementPerformanceLabel = '';",
+)
+
+methods1 = 'lib/platform/desktop/screens/desktop_video_player_screen_methods_1.dart'
+replace_once(
+    methods1,
+    "      _enhancementLevel =\n          prefs.getString('video_enhancement_level') ??\n          (prefs.getBool('enable_video_enhancement') == true\n              ? 'normal'\n              : 'none');",
+    "      _enhancementLevel = normalizeVideoEnhancementLevel(\n        prefs.getString('video_enhancement_level'),\n        legacyEnabled: prefs.getBool('enable_video_enhancement') == true,\n      );\n      _enhancementSourceProfilePreference =\n          normalizeVideoEnhancementSourceProfile(\n            prefs.getString('video_enhancement_source_profile'),\n          );",
+)
+replace_once(
+    methods1,
+    "    _ultraEnhancementQualityTier = 2;\n    _enhancementSourceHeight = null;\n    _enhancementTargetHeight = null;\n    _enhancementPerformanceLabel = '';",
+    "    _ultraEnhancementQualityTier = 2;\n    _enhancementSourceWidth = null;\n    _enhancementSourceHeight = null;\n    _enhancementTargetHeight = null;\n    _enhancementResolvedSourceProfile = 'compressed';\n    _enhancementCalibrationKey = null;\n    _enhancementContextResolved = false;\n    _enhancementPerformanceLabel = '';",
+)
+replace_once(
+    methods1,
+    "      _enhancementSourceHeight = params.h!;\n      _enhancementTargetHeight = targetHeight;\n\n      setState(() {\n        _originalResolution = '${params.w}x${params.h}';\n      });\n\n      await _applyVideoEnhancementForPlayer(player, sessionTicket);",
+    "      _enhancementSourceWidth = params.w!;\n      _enhancementSourceHeight = params.h!;\n      _enhancementTargetHeight = targetHeight;\n\n      setState(() {\n        _originalResolution = '${params.w}x${params.h}';\n      });\n\n      if (_enhancementLevel == 'ultra' && !_enhancementContextResolved) {\n        _enhancementContextResolved = true;\n        await _resolveUltraEnhancementContext(player);\n      }\n      await _applyVideoEnhancementForPlayer(player, sessionTicket);",
+)
+replace_once(
+    methods1,
+    "        ultraQualityTier: _ultraEnhancementQualityTier,\n      );",
+    "        ultraQualityTier: _ultraEnhancementQualityTier,\n        sourceProfile: _enhancementResolvedSourceProfile,\n      );",
+)
+
+old_scalers = """  Future<void> _configureUltraMpvScalers(dynamic platform) async {
+    const properties = <String, String>{
+      'scale': 'ewa_lanczossharp',
+      'cscale': 'ewa_lanczossharp',
+      'dscale': 'ewa_lanczossharp',
+      'scale-antiring': '0.6',
+      'cscale-antiring': '0.6',
+    };
+    for (final entry in properties.entries) {
+      try {
+        // ignore: avoid_dynamic_calls
+        await platform.setProperty(entry.key, entry.value);
+      } catch (e) {
+        // Scaler tuning is best-effort. A backend that does not expose one
+        // property must still receive the GLSL plan and continue playback.
+        debugPrint(
+          '[DesktopVideoPlayer] Ultra scaler ${entry.key} unavailable: $e',
+        );
+      }
+    }
+  }
+"""
+new_scalers = """  Future<void> _configureUltraMpvScalers(dynamic platform) async {
+    final primaryScale = switch (_ultraEnhancementQualityTier) {
+      2 => 'ewa_lanczos4sharpest',
+      1 => 'ewa_lanczossharp',
+      _ => 'ewa_lanczos',
+    };
+    final antiring = switch (_ultraEnhancementQualityTier) {
+      2 => '0.70',
+      1 => '0.50',
+      _ => '0.30',
+    };
+    final properties = <String, String>{
+      'scale': primaryScale,
+      'cscale': 'ewa_lanczossharp',
+      'dscale': 'ewa_lanczossharp',
+      'scale-antiring': antiring,
+      'cscale-antiring': antiring,
+      'correct-downscaling': 'yes',
+      'linear-downscaling': 'yes',
+      'sigmoid-upscaling': 'yes',
+      'scaler-resizes-only': 'yes',
+    };
+    for (final entry in properties.entries) {
+      try {
+        // ignore: avoid_dynamic_calls
+        await platform.setProperty(entry.key, entry.value);
+      } catch (e) {
+        if (entry.key == 'scale' && primaryScale == 'ewa_lanczos4sharpest') {
+          try {
+            // Some older libplacebo/mpv combinations do not expose the
+            // four-lobe sharp preset. Fall back to the stable HQ preset.
+            // ignore: avoid_dynamic_calls
+            await platform.setProperty('scale', 'ewa_lanczossharp');
+            continue;
+          } catch (_) {}
+        }
+        debugPrint(
+          '[DesktopVideoPlayer] Ultra scaler ${entry.key} unavailable: $e',
+        );
+      }
+    }
+  }
+
+  Future<void> _resolveUltraEnhancementContext(Player player) async {
+    final platform = player.platform;
+    final sourceWidth = _enhancementSourceWidth;
+    final sourceHeight = _enhancementSourceHeight;
+    final targetHeight = _enhancementTargetHeight;
+    if (platform == null ||
+        sourceWidth == null ||
+        sourceHeight == null ||
+        targetHeight == null) {
+      return;
+    }
+
+    var fps = await _readMpvDoubleProperty(platform, 'estimated-vf-fps');
+    fps ??= await _readMpvDoubleProperty(platform, 'container-fps');
+    final bitrate = await _readMpvDoubleProperty(platform, 'video-bitrate');
+    final codec = await _readMpvStringProperty(platform, 'video-codec');
+    _enhancementResolvedSourceProfile = VideoEnhancementSourceClassifier.resolve(
+      requestedProfile: _enhancementSourceProfilePreference,
+      metrics: VideoEnhancementSourceMetrics(
+        width: sourceWidth,
+        height: sourceHeight,
+        fps: fps,
+        videoBitrateBitsPerSecond: bitrate,
+        qualityLabel: _currentQualityLabel,
+        codec: codec,
+      ),
+    );
+
+    final backendParts = <String>[];
+    for (final property in const ['gpu-api', 'gpu-context', 'gpu-device']) {
+      final value = await _readMpvStringProperty(platform, property);
+      if (value != null && value.trim().isNotEmpty && value != 'auto') {
+        backendParts.add(value.trim());
+      }
+    }
+    final backendSignature = backendParts.isEmpty ? 'mpv' : backendParts.join('/');
+    final key = buildVideoEnhancementCalibrationKey(
+      platform: Platform.operatingSystem,
+      backendSignature: backendSignature,
+      sourceBucket: VideoEnhancementPlanner.sourceBucket(
+        sourceHeight: sourceHeight,
+        targetHeight: targetHeight,
+      ),
+      targetHeight: targetHeight,
+      sourceProfile: _enhancementResolvedSourceProfile,
+    );
+    _enhancementCalibrationKey = key;
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final registry = VideoEnhancementCalibrationRegistry.decode(
+        prefs.getString(videoEnhancementCalibrationPreferenceKey),
+      );
+      final tier = registry.recommendedTier(key);
+      if (tier != null) {
+        _ultraEnhancementQualityTier = tier;
+      }
+    } catch (e) {
+      debugPrint('[DesktopVideoPlayer] Ultra calibration unavailable: $e');
+    }
+  }
+
+  Future<void> _persistUltraEnhancementCalibration() async {
+    final key = _enhancementCalibrationKey;
+    if (key == null || _enhancementLevel != 'ultra') return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final registry = VideoEnhancementCalibrationRegistry.decode(
+        prefs.getString(videoEnhancementCalibrationPreferenceKey),
+      );
+      if (registry.recommendedTier(key) == _ultraEnhancementQualityTier) return;
+      registry.recordTier(key, _ultraEnhancementQualityTier);
+      await prefs.setString(
+        videoEnhancementCalibrationPreferenceKey,
+        registry.encode(),
+      );
+    } catch (e) {
+      debugPrint('[DesktopVideoPlayer] Ultra calibration save failed: $e');
+    }
+  }
+"""
+replace_once(methods1, old_scalers, new_scalers)
+replace_once(
+    methods1,
+    "      if (decision.shouldReduceQuality &&\n          _ultraEnhancementQualityTier > 0 &&",
+    "      if (decision.stableEnoughToPersist) {\n        await _persistUltraEnhancementCalibration();\n      }\n\n      if (decision.shouldReduceQuality &&\n          _ultraEnhancementQualityTier > 0 &&",
+)
+replace_once(
+    methods1,
+    "        controller.reset();\n        debugPrint(\n          '[DesktopVideoPlayer] Ultra tier reduced to '",
+    "        controller.reset();\n        await _persistUltraEnhancementCalibration();\n        debugPrint(\n          '[DesktopVideoPlayer] Ultra tier reduced to '",
+)
+replace_once(
+    methods1,
+    "  Future<int?> _readMpvIntProperty(dynamic platform, String property) async {",
+    "  Future<String?> _readMpvStringProperty(\n    dynamic platform,\n    String property,\n  ) async {\n    try {\n      // ignore: avoid_dynamic_calls\n      final value = await platform.getProperty(property);\n      final text = value?.toString().trim();\n      return text == null || text.isEmpty ? null : text;\n    } catch (_) {\n      return null;\n    }\n  }\n\n  Future<int?> _readMpvIntProperty(dynamic platform, String property) async {",
+)
+
+methods3 = 'lib/platform/desktop/screens/desktop_video_player_screen_methods_3.dart'
+replace_once(
+    methods3,
+    "  Future<void> _stopCurrentPlaybackForEpisodeSwitch() async {\n    await _persistMegaPlayProgress(force: true);",
+    "  Future<void> _stopCurrentPlaybackForEpisodeSwitch() async {\n    _stopVideoEnhancementPerformanceMonitoring();\n    await _persistMegaPlayProgress(force: true);",
+)
