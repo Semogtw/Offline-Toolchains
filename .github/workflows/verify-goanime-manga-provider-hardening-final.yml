@@ -1,0 +1,137 @@
+name: Verify GoAnime manga provider hardening final
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-provider-hardening-final/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-provider-hardening-final
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify provider hardening exact SHA
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-provider-hardening-final/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = goanime
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]
+          [[ "$branch" != /* ]]
+          [[ "$branch" != */ ]]
+          [[ "$branch" != *..* ]]
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify branch still points to exact SHA
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+          test "$(git -C private-source rev-parse HEAD)" = "$EXPECTED_SHA"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: |
+          flutter pub get --enforce-lockfile >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+
+      - name: Test provider hardening contracts
+        working-directory: private-source
+        run: |
+          flutter test --no-pub --concurrency=1 \
+            test/services/manga/providers/mangadex_manga_provider_test.dart \
+            test/services/manga/providers/mangadex_manga_provider_strict_items_test.dart \
+            test/services/manga/providers/taimu_manga_provider_test.dart \
+            test/services/manga/providers/taimu_manga_provider_pagination_test.dart \
+            test/services/manga/providers/taimu_manga_provider_strict_items_test.dart \
+            test/services/manga/providers/manhastro_manga_provider_test.dart \
+            test/services/manga/providers/manhastro_manga_provider_response_test.dart \
+            test/services/manga/providers/manhastro_manga_provider_strict_items_test.dart \
+            test/services/manga/providers/manhastro_manga_provider_cache_test.dart \
+            test/services/manga/providers/manhastro_manga_provider_pagination_test.dart \
+            test/services/manga/manga_remote_content_probe_policy_test.dart \
+            test/services/manga/manga_reader_remote_transport_policy_test.dart \
+            test/tools/materialize_global_manga_availability_gate_test.dart
+
+      - name: Analyze provider hardening scope
+        working-directory: private-source
+        run: |
+          flutter analyze --no-pub \
+            lib/services/manga/manga_provider_policy.dart \
+            lib/services/manga/manga_remote_content_probe.dart \
+            lib/services/manga/manga_reader_remote_transport.dart \
+            lib/services/manga/providers/mangadex_manga_provider.dart \
+            lib/services/manga/providers/taimu_manga_provider.dart \
+            lib/services/manga/providers/manhastro_manga_provider.dart \
+            test/services/manga/providers/mangadex_manga_provider_test.dart \
+            test/services/manga/providers/mangadex_manga_provider_strict_items_test.dart \
+            test/services/manga/providers/taimu_manga_provider_test.dart \
+            test/services/manga/providers/taimu_manga_provider_pagination_test.dart \
+            test/services/manga/providers/taimu_manga_provider_strict_items_test.dart \
+            test/services/manga/providers/manhastro_manga_provider_test.dart \
+            test/services/manga/providers/manhastro_manga_provider_response_test.dart \
+            test/services/manga/providers/manhastro_manga_provider_strict_items_test.dart \
+            test/services/manga/providers/manhastro_manga_provider_cache_test.dart \
+            test/services/manga/providers/manhastro_manga_provider_pagination_test.dart \
+            test/services/manga/manga_remote_content_probe_policy_test.dart \
+            test/services/manga/manga_reader_remote_transport_policy_test.dart \
+            test/tools/materialize_global_manga_availability_gate_test.dart
+          bash -n tools/manga/materialize_global_manga_availability_ci.sh
+          git diff --check
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
