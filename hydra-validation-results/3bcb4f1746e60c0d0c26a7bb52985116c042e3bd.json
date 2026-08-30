@@ -1,0 +1,17 @@
+{
+  "status": "success",
+  "targetSha": "3bcb4f1746e60c0d0c26a7bb52985116c042e3bd",
+  "targetBranch": "main",
+  "requestPath": "schedule:hydra-main",
+  "runId": 33318049176,
+  "runAttempt": 1,
+  "steps": {
+    "deps": "success",
+    "electron": "success",
+    "compilePython": "success",
+    "pythonTests": "success",
+    "localTests": "success",
+    "downloaderTests": "success",
+    "typecheck": "success"
+  }
+}
