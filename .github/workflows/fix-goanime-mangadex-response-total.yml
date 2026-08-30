@@ -1,0 +1,40 @@
+name: Fix GoAnime MangaDex response totals
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-mangadex-response-total-fix/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-mangadex-response-total-fix
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    name: Require MangaDex pagination totals
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout control repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Apply exact-SHA MangaDex response-total fix
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: bash scripts/fix-goanime-mangadex-response-total.sh
