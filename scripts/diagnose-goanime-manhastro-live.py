@@ -126,13 +126,28 @@ def inspect_page(page, decoded):
         index, raw = first_invalid
         print(f'page_{page}_first_invalid_index={index}')
         if isinstance(raw, dict):
+            alternatives = raw.get('titulo_alternative')
+            alternative_strings = (
+                [value.strip() for value in alternatives if nonempty_text(value)]
+                if isinstance(alternatives, list)
+                else []
+            )
             print(f'page_{page}_first_invalid_manga_id_type={type(raw.get("manga_id")).__name__}')
             print(f'page_{page}_first_invalid_titulo={describe_text(raw.get("titulo"))}')
             print(f'page_{page}_first_invalid_titulo_brasil={describe_text(raw.get("titulo_brasil"))}')
             print(
                 f'page_{page}_first_invalid_titulo_alternative='
-                f'{describe_text(raw.get("titulo_alternative"))}'
+                f'{describe_text(alternatives)}'
             )
+            print(
+                f'page_{page}_first_invalid_nonempty_alternative_count='
+                f'{len(alternative_strings)}'
+            )
+            if alternative_strings:
+                print(
+                    f'page_{page}_first_invalid_first_alternative_length='
+                    f'{len(alternative_strings[0])}'
+                )
 
     if success is True:
         if invalid_type or invalid_id or invalid_title:
