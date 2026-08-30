@@ -1,0 +1,66 @@
+name: Finish Ultra stable UI integration
+
+on:
+  push:
+    branches:
+      - agent/vendor-artcnn-goanime-20260830
+    paths:
+      - .github/workflows/finish-ultra-stable-ui-20260830.yml
+
+permissions:
+  contents: read
+
+jobs:
+  integrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout trusted patch source
+        uses: actions/checkout@v6
+        with:
+          ref: agent/vendor-artcnn-goanime-20260830
+          path: trusted
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/finish_ultra_stable_ui_20260830.py
+          sparse-checkout-cone-mode: false
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout GoAnime feature branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: feat/ultra-video-enhancement-rx6600-20260830
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: goanime
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+
+      - name: Apply final stable UI integration
+        run: python3 trusted/scripts/finish_ultra_stable_ui_20260830.py goanime
+
+      - name: Commit integration
+        working-directory: goanime
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add lib/platform/desktop/screens/desktop_video_player_screen.dart \
+            lib/platform/desktop/screens/desktop_video_player_screen_methods_1.dart \
+            lib/screens/settings_screen.dart \
+            lib/screens/settings_screen_video.dart \
+            lib/l10n/ui_settings_localizations.dart
+          git commit -m "feat: finish stable Ultra controls and calibration UI"
+          git remote set-url origin "https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git"
+          git push origin HEAD:feat/ultra-video-enhancement-rx6600-20260830
