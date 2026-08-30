@@ -1,0 +1,184 @@
+name: Fix GoAnime MangaDex inventory budget
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-mangadex-inventory-budget-fix/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-mangadex-inventory-budget-fix
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    name: Fix MangaDex partition budget accounting
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-mangadex-inventory-budget-fix/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = goanime
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]
+          [[ "$branch" != /* ]]
+          [[ "$branch" != */ ]]
+          [[ "$branch" != *..* ]]
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify branch still points to reviewed SHA
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+          test "$(git -C private-source rev-parse HEAD)" = "$EXPECTED_SHA"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: |
+          flutter pub get --enforce-lockfile >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+
+      - name: RED - budget guard is absent before implementation
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          flutter test --no-pub test/tools/mangadex_inventory_partition_budget_guard_test.dart > /tmp/mangadex-budget-red.log 2>&1
+          status=$?
+          set -e
+          test "$status" -ne 0
+          grep -Fq 'MangaDex inventory fails closed before an unvisited partition' /tmp/mangadex-budget-red.log
+          echo '[tdd] RED observed: unvisited partition can be skipped at exhausted page budget'
+
+      - name: Fail closed before an unvisited MangaDex partition
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tools/manga/inventory_manga_catalog.dart')
+          text = path.read_text(encoding='utf-8')
+          old = """  for (final contentRating in _mangaDexInventoryContentRatings) {
+    String? pageToken;
+    while (pages < maxPages) {
+"""
+          new = """  for (final contentRating in _mangaDexInventoryContentRatings) {
+    if (pages >= maxPages) {
+      status = 'partial';
+      stopReason = 'max_pages_reached';
+      break;
+    }
+    String? pageToken;
+    while (pages < maxPages) {
+"""
+          old_count = text.count(old)
+          if old_count != 1:
+              raise SystemExit(f'unexpected MangaDex partition loop shape: {old_count}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          dart format tools/manga/inventory_manga_catalog.dart test/tools/mangadex_inventory_partition_budget_guard_test.dart
+          dart format --output=none --set-exit-if-changed tools/manga/inventory_manga_catalog.dart test/tools/mangadex_inventory_partition_budget_guard_test.dart
+          git diff --check
+
+      - name: GREEN - verify budget and MangaDex inventory contracts
+        working-directory: private-source
+        run: |
+          flutter test --no-pub --concurrency=1 \
+            test/tools/mangadex_inventory_partition_budget_guard_test.dart \
+            test/tools/manga_inventory_search_retry_test.dart \
+            test/services/manga/providers/mangadex_manga_provider_test.dart \
+            test/tools/inventory_manga_catalog_selection_test.dart
+          flutter analyze --no-pub \
+            tools/manga/inventory_manga_catalog.dart \
+            tools/manga/manga_inventory_search_retry.dart \
+            lib/services/manga/providers/mangadex_manga_provider.dart \
+            test/tools/mangadex_inventory_partition_budget_guard_test.dart \
+            test/tools/manga_inventory_search_retry_test.dart \
+            test/services/manga/providers/mangadex_manga_provider_test.dart \
+            test/tools/inventory_manga_catalog_selection_test.dart
+
+      - name: Commit MangaDex budget fix
+        id: commit
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tools/manga/inventory_manga_catalog.dart test/tools/mangadex_inventory_partition_budget_guard_test.dart
+          git diff --cached --check
+          git commit -m 'fix(manga): fail closed across MangaDex partitions'
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Reverify branch and push fast-forward
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push origin "HEAD:refs/heads/$TARGET_BRANCH"
+          echo "published=${{ steps.commit.outputs.sha }}"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control" /tmp/mangadex-budget-red.log
