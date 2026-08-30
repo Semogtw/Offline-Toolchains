@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 env:
-  GOANIME_SHA: 29f4641f6dc99c517530c4e9edd7b1f1a06aa572
+  GOANIME_SHA: 3a43e758c75867a8719ea42e167fd5640d8df5cc
   FLUTTER_CHANNEL: stable
   FLUTTER_VERSION: 3.44.1
 
