@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 env:
-  GOANIME_EXPECTED_SHA: 29f4641f6dc99c517530c4e9edd7b1f1a06aa572
+  GOANIME_EXPECTED_SHA: da94e9716e2dd49e8355b4df9dc8ef9d33f053b3
   GOANIME_BRANCH: feat/ultra-video-enhancement-rx6600-20260830
 
 jobs:
@@ -65,7 +65,7 @@ jobs:
               marker = '\n## AniSkip e posição salva\n'
               if marker not in text:
                   raise SystemExit('playback insertion marker not found')
-              section = '''\n### Enhancement de vídeo pós-resolução no desktop\n\nDepois que um candidato **nativo** já foi resolvido e aberto, Windows/Linux podem aplicar o enhancement opcional de vídeo. Essa etapa é downstream de `VideoPlaybackResolver`: ela não resolve providers, não altera headers, não participa do ranking de health e não deve transformar falha de shader em falha da fonte.\n\nA seleção da cadeia estável vive no planner puro de `lib/core/video_enhancement/`. O nível `ultra` considera resolução de origem/saída e tratamento da fonte; para 720p a escada de calibração usa ArtCNN C4F32 em `MAX`, C4F16 em `SAFE` e scaler nativo/libplacebo em `MIN`. A aplicação ao `media_kit`/mpv continua pertencendo ao lifecycle do player desktop, que limpa shaders antigos e reaplica o plano quando um novo `Player` assume a sessão.\n\nTelemetria de deadline/frame drops pode reduzir capacidade dentro da mesma semântica de tratamento da fonte, mas utilização alta de GPU por si só não reduz qualidade. O contrato detalhado, proveniência dos shaders e comportamento fail-open ficam em `docs/video_enhancement.md`. WebView-only continua fora dessa cadeia GLSL nativa.\n'''
+              section = '''\n### Enhancement de vídeo pós-resolução no desktop\n\nDepois que um candidato **nativo** já foi resolvido e aberto, Windows/Linux podem aplicar o enhancement opcional de vídeo. Essa etapa é downstream de `VideoPlaybackResolver`: ela não resolve providers, não altera headers, não participa do ranking de health e não deve transformar falha de shader em falha da fonte.\n\nA seleção da cadeia estável vive em `lib/services/video_enhancement_planner.dart`. O nível `ultra` considera resolução de origem/saída e tratamento da fonte; para 720p a escada de calibração usa ArtCNN C4F32 em `MAX`, C4F16 em `SAFE` e scaler nativo/libplacebo em `MIN`. A aplicação ao `media_kit`/mpv continua pertencendo ao lifecycle do player desktop, que limpa shaders antigos e reaplica o plano quando um novo `Player` assume a sessão.\n\nTelemetria de deadline/frame drops pode reduzir capacidade dentro da mesma semântica de tratamento da fonte, mas utilização alta de GPU por si só não reduz qualidade. O contrato detalhado, proveniência dos shaders e comportamento fail-open ficam em `docs/video_enhancement.md`. WebView-only continua fora dessa cadeia GLSL nativa.\n'''
               text = text.replace(marker, section + marker, 1)
               playback.write_text(text, encoding='utf-8')
 
@@ -82,7 +82,7 @@ jobs:
 
           plan = Path('docs/superpowers/plans/2026-08-30-ultra-video-enhancement.md')
           text = plan.read_text(encoding='utf-8')
-          status = '> Status de execução: escopo estável implementado; a implementação final evoluiu para `lib/core/video_enhancement/` e inclui calibração adaptativa MAX/SAFE/MIN. Estado atual: `docs/video_enhancement.md`.\n'
+          status = '> Status de execução: escopo estável implementado; a implementação final evoluiu e inclui classificação de fonte e calibração adaptativa MAX/SAFE/MIN. Código atual em `lib/services/video_enhancement_*.dart`; estado de produto em `docs/video_enhancement.md`.\n'
           base_line = '> Base: `fix/shader-upscaling-lifecycle`\n'
           if status not in text:
               if base_line not in text:
