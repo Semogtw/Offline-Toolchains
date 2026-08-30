@@ -1,7 +1,6 @@
 {
   "project": "goanime",
-  "ref": "92fd359e6765fcbb6571924f5296327e0fc8afde",
+  "ref": "da98c946e8493b45c5ab1aa30c94b0510eeed3ca",
   "requested_by": "chatgpt",
-  "requested_at": "2026-08-28T15:44:00-03:00",
-  "purpose": "megaplay-final-validated"
+  "purpose": "shader-upscaling-lifecycle-pr-246"
 }
