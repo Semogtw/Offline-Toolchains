@@ -1,0 +1,40 @@
+name: Fix GoAnime Manhastro catalog cache TTL
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manhastro-catalog-cache-ttl-fix/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manhastro-catalog-cache-ttl-fix
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    name: Expire Manhastro catalog cache
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout control repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Apply exact-SHA Manhastro catalog-cache TTL fix
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: bash scripts/fix-goanime-manhastro-catalog-cache-ttl.sh
