@@ -1,0 +1,76 @@
+name: Format GoAnime Ultra with pinned Dart
+
+on:
+  push:
+    branches:
+      - agent/vendor-artcnn-goanime-20260830
+    paths:
+      - .github/workflows/format-goanime-ultra-20260830.yml
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: 3.44.1
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout GoAnime Ultra branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: feat/ultra-video-enhancement-rx6600-20260830
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: goanime
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+
+      - name: Set up pinned Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: false
+
+      - name: Resolve dependencies
+        working-directory: goanime
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Apply repository formatter
+        working-directory: goanime
+        run: dart format lib test packages tools
+
+      - name: Verify formatter is idempotent
+        working-directory: goanime
+        run: dart format --output=none --set-exit-if-changed lib test packages tools
+
+      - name: Commit and push formatting
+        working-directory: goanime
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add lib test packages tools
+          git diff --cached --check
+          git diff --cached --quiet && { echo 'Formatting already clean.'; exit 0; }
+          git commit -m "style: apply Dart 3.44.1 formatting"
+          git remote set-url origin "https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git"
+          git push origin HEAD:feat/ultra-video-enhancement-rx6600-20260830
