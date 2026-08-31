@@ -107,7 +107,9 @@ jobs:
           echo 'RED observed for all three integration regressions.'
 
       - name: Apply architecture and documentation reconciliation
-        run: bash control/scripts/fix-goanime-integration-architecture-guards.sh private-source
+        run: |
+          bash control/scripts/fix-goanime-integration-architecture-guards.sh private-source
+          bash control/scripts/fix-goanime-integration-sources-of-truth-example.sh private-source
 
       - name: Verify focused architecture and documentation GREEN
         working-directory: private-source
