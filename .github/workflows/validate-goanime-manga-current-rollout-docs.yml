@@ -74,11 +74,13 @@ jobs:
       - name: Check generated evidence
         working-directory: private-source
         run: |
+          set -euo pipefail
           git diff --check
           grep -Fq '33341458888' docs/manga_provider_rollout_status.md
-          grep -Fq 'HTTP **523**' docs/manga_provider_rollout_status.md
-          grep -Fq 'MangaDex foi enumerado como `exhausted`' docs/manga_provider_rollout_status.md
-          grep -Fq 'Manhastro foi enumerado como `exhausted`' docs/manga_provider_rollout_status.md
+          grep -Fq 'HTTP 523' docs/manga_provider_rollout_status.md
+          grep -Fq '`ptbr.mangadex`: enabled, `exhausted`' docs/manga_provider_rollout_status.md
+          grep -Fq '`ptbr.manhastro`: enabled, `exhausted`' docs/manga_provider_rollout_status.md
+          grep -Fq '`ptbr.taimumangas`: **planned**' docs/manga_provider_rollout_status.md
 
       - name: Set up Flutter 3.44.1
         uses: subosito/flutter-action@v2
