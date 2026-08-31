@@ -1,0 +1,200 @@
+name: Verify GoAnime integration PR gates
+
+on:
+  push:
+    paths:
+      - 'triggers/goanime-integration-pr-gates/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      branch: ${{ steps.request.outputs.branch }}
+      sha: ${{ steps.request.outputs.sha }}
+      base_sha: ${{ steps.request.outputs.base_sha }}
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control request
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-integration-pr-gates/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha base_sha < "$request"
+          test "$project" = goanime
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]
+          [[ "$branch" != /* ]]
+          [[ "$branch" != */ ]]
+          [[ "$branch" != *..* ]]
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Verify branch still points to exact SHA
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+
+  ubuntu-gates:
+    name: Fast high-risk Android Linux and AppImage
+    needs: resolve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact private source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ needs.resolve.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify exact tree and base ancestry
+        env:
+          EXPECTED_SHA: ${{ needs.resolve.outputs.sha }}
+          BASE_SHA: ${{ needs.resolve.outputs.base_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git merge-base --is-ancestor "$BASE_SHA" HEAD
+          git update-ref refs/remotes/origin/main "$BASE_SHA"
+          test "$(git merge-base "$BASE_SHA" HEAD)" = "$BASE_SHA"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Project health and Python tooling
+        run: |
+          set -euo pipefail
+          bash ./tools/validate_project_health.sh
+          python3 -m unittest discover -s tools/tests -p 'test_*.py'
+          python3 tools/validate_repository_guards.py
+
+      - name: Resolve dependencies and lockfile guard
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get --enforce-lockfile
+          (cd packages/goanime_core && dart pub get --enforce-lockfile)
+          bash ./tools/validate_ci_lockfiles.sh
+
+      - name: Check changed Dart formatting
+        env:
+          BASE_SHA: ${{ needs.resolve.outputs.base_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t dart_files < <(git diff --name-only "$BASE_SHA...HEAD" -- '*.dart' | while IFS= read -r file; do test -f "$file" && printf '%s\n' "$file"; done)
+          if ((${#dart_files[@]})); then
+            dart format --output=none --set-exit-if-changed "${dart_files[@]}"
+          fi
+
+      - name: Analyze and run fast/high-risk tests
+        env:
+          GITHUB_BASE_REF: main
+        run: |
+          set -euo pipefail
+          flutter analyze --no-pub
+          bash ./tools/run_pr_fast_flutter_tests.sh
+          (cd packages/goanime_core && dart test)
+          bash ./tools/run_pr_high_risk_tests.sh
+
+      - name: Verify Linux AppImage packaging contract
+        run: bash ./tools/tests/test_package_linux_appimage.sh
+
+      - name: Build Android debug APK
+        run: flutter build apk --debug --no-pub
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang cmake curl ninja-build pkg-config libgtk-3-dev liblzma-dev libsecret-1-dev libjsoncpp-dev
+
+      - name: Build Linux debug bundle
+        run: flutter build linux --debug --no-pub
+
+  windows-gate:
+    name: Windows debug build
+    needs: resolve
+    runs-on: windows-2022
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact private source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ needs.resolve.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify exact tree and base ancestry
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ needs.resolve.outputs.sha }}
+          BASE_SHA: ${{ needs.resolve.outputs.base_sha }}
+        run: |
+          if ((git rev-parse HEAD) -ne $env:EXPECTED_SHA) { throw 'Exact SHA mismatch' }
+          git merge-base --is-ancestor $env:BASE_SHA HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Base is not an ancestor' }
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        shell: pwsh
+        run: |
+          flutter config --no-analytics
+          flutter pub get --enforce-lockfile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build Windows debug bundle
+        shell: pwsh
+        run: |
+          flutter build windows --debug --no-pub
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
