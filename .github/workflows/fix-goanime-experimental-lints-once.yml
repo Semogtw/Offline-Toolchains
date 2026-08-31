@@ -49,6 +49,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GOANIME_EXPECTED_SHA"
           flutter config --no-analytics
           flutter pub get >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
 
           python3 - <<'PY'
           from pathlib import Path
@@ -91,7 +92,7 @@ jobs:
               Path('test/platform/desktop/real_cugan_vulkan_backend_test.dart'): [
                   (
                       """        final request = jsonDecode(call.stdinJson) as Map<String, dynamic>;\n        expect(request['operation'], 'benchmark');\n        expect(request['protocolVersion'], 1);\n        expect(request['source']['uri'], contains('media.example'));\n        expect(\n          request['source']['headers']['Authorization'],\n          'Bearer authorization-super-secret',\n        );\n        expect(request['benchmark']['sampleFrames'], 120);\n        expect(request['benchmark']['warmupFrames'], 24);\n        expect(request['profile']['precision'], 'fp16');\n        expect(request['profile']['scale'], 2);\n        expect(request['profile']['denoiseLevel'], -1);\n""",
-                      """        final request = jsonDecode(call.stdinJson) as Map<String, dynamic>;\n        final source = request['source'] as Map<String, dynamic>;\n        final headers = source['headers'] as Map<String, dynamic>;\n        final benchmark = request['benchmark'] as Map<String, dynamic>;\n        final profile = request['profile'] as Map<String, dynamic>;\n        expect(request['operation'], 'benchmark');\n        expect(request['protocolVersion'], 1);\n        expect(source['uri'], contains('media.example'));\n        expect(\n          headers['Authorization'],\n          'Bearer authorization-super-secret',\n        );\n        expect(benchmark['sampleFrames'], 120);\n        expect(benchmark['warmupFrames'], 24);\n        expect(profile['precision'], 'fp16');\n        expect(profile['scale'], 2);\n        expect(profile['denoiseLevel'], -1);\n""",
+                      """        final request = jsonDecode(call.stdinJson) as Map<String, dynamic>;\n        final sourcePayload = request['source'] as Map<String, dynamic>;\n        final headers = sourcePayload['headers'] as Map<String, dynamic>;\n        final benchmark = request['benchmark'] as Map<String, dynamic>;\n        final profile = request['profile'] as Map<String, dynamic>;\n        expect(request['operation'], 'benchmark');\n        expect(request['protocolVersion'], 1);\n        expect(sourcePayload['uri'], contains('media.example'));\n        expect(\n          headers['Authorization'],\n          'Bearer authorization-super-secret',\n        );\n        expect(benchmark['sampleFrames'], 120);\n        expect(benchmark['warmupFrames'], 24);\n        expect(profile['precision'], 'fp16');\n        expect(profile['scale'], 2);\n        expect(profile['denoiseLevel'], -1);\n""",
                   ),
                   (
                       """        final request = jsonDecode(call.stdinJson) as Map<String, dynamic>;\n        expect(request['output']['stagingRoot'], '/controlled/workdir/staging');\n        expect(request['output']['segmentDurationMs'], 4000);\n""",
@@ -110,8 +111,6 @@ jobs:
               ],
           }
 
-          # The same configured-executable pattern occurs three times; apply the
-          # first exact replacement above to all three occurrences in that file.
           worker = Path('tools/experimental_video/real_cugan_helper_worker.dart')
           text = worker.read_text()
           old = """  if (configured != null && configured.trim().isNotEmpty)\n    return configured.trim();\n"""
@@ -121,7 +120,6 @@ jobs:
           text = text.replace(old, new)
           worker.write_text(text)
 
-          # Process all replacements except the already-applied repeated worker pattern.
           for file, edits in replacements.items():
               text = file.read_text()
               for old, new in edits:
