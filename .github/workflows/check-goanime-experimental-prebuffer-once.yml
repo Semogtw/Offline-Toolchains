@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 env:
-  GOANIME_SHA: a2fe276cf112f625a7af637be18585b9ebde94e1
+  GOANIME_SHA: 37dfdf310c66324266f4766a5dfadd75258db835
   FLUTTER_VERSION: 3.44.1
 
 jobs:
