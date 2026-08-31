@@ -85,12 +85,14 @@ jobs:
         run: |
           set -euo pipefail
           git diff --check
-          grep -q 'autoriza atualmente \*\*18\*\* fontes' docs/manga_provider_rollout_status.md
-          grep -q 'Providers refreshed exhaustively: \*\*2\*\*' docs/manga_global_availability_receipt_2026-08-30.md
-          grep -q 'ptbr.taimumangas.*planned' docs/manga_provider_rollout_status.md
-          grep -q 'HTTP \*\*523\*\*' docs/manga_provider_rollout_status.md
-          grep -q '33341458888' docs/manga_provider_rollout_status.md
-          grep -q '33341458888' docs/manga_ptbr_provider_audit.md
+          receipt="$(find docs -maxdepth 1 -type f -name 'manga_global_availability_receipt_*.md' -printf '%f\n' | sort | tail -n1)"
+          test -n "$receipt"
+          grep -Fq 'autoriza atualmente **18** fontes' docs/manga_provider_rollout_status.md
+          grep -Fq 'Providers refreshed exhaustively: **2**' "docs/$receipt"
+          grep -Fq '`ptbr.taimumangas` permanece `planned`' docs/manga_provider_rollout_status.md
+          grep -Fq 'HTTP **523**' docs/manga_provider_rollout_status.md
+          grep -Fq '33341458888' docs/manga_provider_rollout_status.md
+          grep -Fq '33341458888' docs/manga_ptbr_provider_audit.md
 
       - name: Set up Flutter 3.44.1
         uses: subosito/flutter-action@v2
