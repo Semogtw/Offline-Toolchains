@@ -1,0 +1,169 @@
+name: Fix GoAnime integration architecture guards
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-integration-architecture-fix/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-integration-architecture-fix
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    name: Reconcile integrated architecture and active docs
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-integration-architecture-fix/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = goanime
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]
+          [[ "$branch" != /* ]]
+          [[ "$branch" != */ ]]
+          [[ "$branch" != *..* ]]
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify branch still points to exact SHA
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+          test "$(git -C private-source rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: |
+          flutter pub get --enforce-lockfile >/dev/null
+          (cd packages/goanime_core && dart pub get --enforce-lockfile >/dev/null)
+
+      - name: Observe architecture RED before reconciliation
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          flutter test --no-pub --concurrency=1 \
+            test/architecture/platform_boundaries_test.dart \
+            test/architecture/active_parity_documentation_guard_test.dart \
+            > /tmp/goanime-integration-architecture-red.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/goanime-integration-architecture-red.log
+          test "$status" -ne 0
+          grep -Fq 'mobile package excludes desktop discord and upscaling assets' /tmp/goanime-integration-architecture-red.log
+          grep -Fq 'active AI entrypoints track parity branch and dynamic providers' /tmp/goanime-integration-architecture-red.log
+          grep -Fq 'availability owner mirrors runtime enabled provider ids' /tmp/goanime-integration-architecture-red.log
+          echo 'RED observed for all three integration regressions.'
+
+      - name: Apply architecture and documentation reconciliation
+        run: bash control/scripts/fix-goanime-integration-architecture-guards.sh private-source
+
+      - name: Verify focused architecture and documentation GREEN
+        working-directory: private-source
+        run: |
+          flutter test --no-pub --concurrency=1 \
+            test/architecture/platform_boundaries_test.dart \
+            test/architecture/active_parity_documentation_guard_test.dart \
+            test/architecture/documentation_drift_test.dart
+          python3 tools/validate_refresh_release_safety.py
+          bash tools/tests/test_package_linux_appimage.sh
+
+      - name: Analyze changed Dart guards
+        working-directory: private-source
+        run: |
+          flutter analyze --no-pub \
+            test/architecture/platform_boundaries_test.dart \
+            test/architecture/active_parity_documentation_guard_test.dart
+          git diff --check
+
+      - name: Commit reconciliation
+        id: commit
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git status --short
+          test -n "$(git status --porcelain)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            README_AI.md \
+            NEXT_AGENT.md \
+            docs/ai/README.md \
+            docs/ai/repository_map.md \
+            docs/ai/change_impact_matrix.md \
+            docs/ai/sources_of_truth.md \
+            docs/manga_availability_policy.md \
+            test/architecture/platform_boundaries_test.dart \
+            test/architecture/active_parity_documentation_guard_test.dart
+          git commit -m 'fix(integration): reconcile architecture guards and active docs'
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Reverify branch and push fast-forward
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/Semogtw/goanime-mobile.git "HEAD:refs/heads/$TARGET_BRANCH"
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control" /tmp/goanime-integration-architecture-red.log
