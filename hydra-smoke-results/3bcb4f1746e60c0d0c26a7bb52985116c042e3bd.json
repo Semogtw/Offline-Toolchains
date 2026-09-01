@@ -1,9 +1,19 @@
 {
-  "status": "running",
+  "status": "failure",
   "targetSha": "3bcb4f1746e60c0d0c26a7bb52985116c042e3bd",
   "targetBranch": "main",
   "requestPath": "schedule:hydra-main",
   "runId": 33517932762,
   "runAttempt": 1,
-  "steps": {}
+  "steps": {
+    "deps": "success",
+    "electron": "success",
+    "scrapling": "success",
+    "gamebounty": "failure",
+    "ecologica": "skipped",
+    "ankergames": "skipped",
+    "trustPipeline": "skipped",
+    "downloadE2e": "skipped",
+    "directHttpManager": "skipped"
+  }
 }
