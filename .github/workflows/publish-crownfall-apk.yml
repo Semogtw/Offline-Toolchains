@@ -19,10 +19,10 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
-      SOURCE_RUN_ID: '33890220818'
+      SOURCE_RUN_ID: '33894484608'
       ARTIFACT_NAME: 'crownfall-arena-android-arm64'
-      RELEASE_TAG: 'crownfall-v0.2.0'
-      APK_SHA256: 'e87f29a77fb27e36f448c1d89e642546aaaa14215c14486291a249eb87b2de45'
+      RELEASE_TAG: 'crownfall-v0.3.0'
+      APK_SHA256: '1591136aed013e726e43decf84367f544b232834c4ca36de0aef66c44800a667'
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -39,26 +39,26 @@ jobs:
           APK="$(find "$RUNNER_TEMP/crownfall-artifact" -type f -name 'CrownfallArena.apk' -print -quit)"
           test -n "$APK"
           echo "$APK_SHA256  $APK" | sha256sum -c -
-          cp "$APK" "$RUNNER_TEMP/CrownfallArena-v0.2.0-arm64.apk"
-          printf '%s  %s\n' "$APK_SHA256" 'CrownfallArena-v0.2.0-arm64.apk' > "$RUNNER_TEMP/CrownfallArena-v0.2.0-arm64.apk.sha256"
+          cp "$APK" "$RUNNER_TEMP/CrownfallArena-v0.3.0-arm64.apk"
+          printf '%s  %s\n' "$APK_SHA256" 'CrownfallArena-v0.3.0-arm64.apk' > "$RUNNER_TEMP/CrownfallArena-v0.3.0-arm64.apk.sha256"
 
       - name: Publish direct APK download
         shell: bash
         run: |
           set -euo pipefail
-          NOTES='Crownfall Arena v0.2.0 is the visual overhaul release. It rebuilds the battle presentation with distinct procedural unit silhouettes and motion profiles, interpolated movement, hit flashes, spawn/death/impact VFX, camera shake, animated water, richer bridges and towers, a redesigned hand/Arcana HUD and accessibility-aware reduced motion/high contrast. The lobby is also rebuilt with distinct animated visual identities for Home, Collection, Decks, Missions, Vaults, Exchange and Profile, plus redesigned card frames, rarity/family marks, vault art and atmospheric backgrounds. Built with Godot 4.7.2 for Android arm64-v8a. Package: com.crownfallarena.game. Internal version: 0.2.0 (versionCode 2). Debug-signed APK. SHA-256: e87f29a77fb27e36f448c1d89e642546aaaa14215c14486291a249eb87b2de45'
+          NOTES='Crownfall Arena v0.3.0 is the textured art pass. The arena now uses real bitmap surface materials for grassy cobblestone, wood/stone pathways, masonry, metal and wood, sourced at build time from Poly Haven CC0 and stylized/downsampled for mobile. Water and parchment are raster assets generated specifically for Crownfall. The 24-card roster now uses a dedicated 1536x1024 raster card-art atlas and a 1024x1536 unit-sprite atlas with four visual states per card (idle, movement, attack and hit). A TextureBank and ArtOverlay integrate these textures into the arena, bridges, towers, hand, Collection, Decks and Home while preserving the existing gameplay and accessibility settings. No Supercell or Clash Royale art is included. Built with Godot 4.7.2 for Android arm64-v8a. Package: com.crownfallarena.game. Internal version: 0.3.0 (versionCode 3). Debug-signed APK. SHA-256: 1591136aed013e726e43decf84367f544b232834c4ca36de0aef66c44800a667'
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" \
-              "$RUNNER_TEMP/CrownfallArena-v0.2.0-arm64.apk" \
-              "$RUNNER_TEMP/CrownfallArena-v0.2.0-arm64.apk.sha256" \
+              "$RUNNER_TEMP/CrownfallArena-v0.3.0-arm64.apk" \
+              "$RUNNER_TEMP/CrownfallArena-v0.3.0-arm64.apk.sha256" \
               --repo "$GITHUB_REPOSITORY" --clobber
           else
             gh release create "$RELEASE_TAG" \
-              "$RUNNER_TEMP/CrownfallArena-v0.2.0-arm64.apk#Crownfall Arena v0.2.0 · Android arm64" \
-              "$RUNNER_TEMP/CrownfallArena-v0.2.0-arm64.apk.sha256#SHA-256" \
+              "$RUNNER_TEMP/CrownfallArena-v0.3.0-arm64.apk#Crownfall Arena v0.3.0 · Android arm64" \
+              "$RUNNER_TEMP/CrownfallArena-v0.3.0-arm64.apk.sha256#SHA-256" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
-              --title 'Crownfall Arena v0.2.0 — Visual Overhaul' \
+              --title 'Crownfall Arena v0.3.0 — Textured Art Pass' \
               --notes "$NOTES" \
               --prerelease
           fi
@@ -68,4 +68,4 @@ jobs:
         run: |
           set -euo pipefail
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json url,assets | tee "$RUNNER_TEMP/release.json"
-          grep -q 'CrownfallArena-v0.2.0-arm64.apk' "$RUNNER_TEMP/release.json"
+          grep -q 'CrownfallArena-v0.3.0-arm64.apk' "$RUNNER_TEMP/release.json"
