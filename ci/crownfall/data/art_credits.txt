@@ -1,0 +1,9 @@
+Crownfall Arena v0.3 Art Credits
+
+Original card illustrations, unit sprite atlas, water, parchment, UI compositing and all Crownfall-specific artwork are generated specifically for Crownfall Arena by its build pipeline and are not derived from Clash Royale assets.
+
+Surface material sources: Poly Haven — CC0.
+Build-time source assets: grassy_cobblestone, wood_stone_pathway, stone_wall, metal_plate, wood_floor.
+Poly Haven assets are CC0. The Crownfall build uses the Poly Haven public API with an identifying User-Agent to fetch 1K diffuse source maps, then downsamples and stylizes them for the offline Android build. If the API is unavailable, deterministic original fallback textures are generated instead.
+
+https://polyhaven.com/license
