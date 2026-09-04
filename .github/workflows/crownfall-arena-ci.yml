@@ -20,29 +20,32 @@ env:
   GODOT_VERSION: '4.7.2'
   GODOT_TAG: '4.7.2-stable'
   PROJECT_DIR: 'ci/crownfall'
+  GODOT_EDITOR_SHA256: 'cadd3204e728a35d3f13adb7fd0d7902636b79f6b95c40c265eb73b6c35329e4'
+  GODOT_TEMPLATES_SHA256: 'f298490b8d44d934be425a5a65a51bf15f422428b229a06a6e11d9ffea248011'
 
 jobs:
   test:
-    name: Godot headless tests
+    name: Godot tests and live-scene smoke
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Install Godot 4.7.2
+      - name: Install Godot 4.7.2 editor
         shell: bash
         run: |
           set -euo pipefail
           curl -fL --retry 3 -o "$RUNNER_TEMP/godot.zip" \
             "https://github.com/godotengine/godot/releases/download/${GODOT_TAG}/Godot_v${GODOT_TAG}_linux.x86_64.zip"
+          echo "$GODOT_EDITOR_SHA256  $RUNNER_TEMP/godot.zip" | sha256sum -c -
           unzip -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP/godot"
           GODOT_BIN="$(find "$RUNNER_TEMP/godot" -maxdepth 1 -type f -name 'Godot*' | head -n1)"
           chmod +x "$GODOT_BIN"
           echo "GODOT_BIN=$GODOT_BIN" >> "$GITHUB_ENV"
           "$GODOT_BIN" --version
 
-      - name: Run Crownfall tests
+      - name: Run Crownfall unit and integration tests
         shell: bash
         run: |
           set -o pipefail
@@ -50,11 +53,133 @@ jobs:
             "$GODOT_BIN" --headless --path "$PROJECT_DIR" -s tests/run_tests.gd \
             2>&1 | tee "$RUNNER_TEMP/crownfall-test.log"
 
-      - name: Upload test log
+      - name: Run live-scene smoke test
+        shell: bash
+        run: |
+          set -o pipefail
+          timeout --signal=TERM --kill-after=5s 45s \
+            "$GODOT_BIN" --headless --path "$PROJECT_DIR" -s tests/smoke_app.gd \
+            2>&1 | tee "$RUNNER_TEMP/crownfall-smoke.log"
+          grep -q '\[SMOKE\] RESULT: 0 failures' "$RUNNER_TEMP/crownfall-smoke.log"
+
+      - name: Upload test logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: crownfall-test-log
-          path: ${{ runner.temp }}/crownfall-test.log
+          name: crownfall-test-logs
+          path: |
+            ${{ runner.temp }}/crownfall-test.log
+            ${{ runner.temp }}/crownfall-smoke.log
           if-no-files-found: warn
           retention-days: 3
+
+  android:
+    name: Build and validate Android arm64 APK
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Godot editor and matching export templates
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_TAG}"
+          curl -fL --retry 4 -o "$RUNNER_TEMP/godot.zip" \
+            "$base/Godot_v${GODOT_TAG}_linux.x86_64.zip"
+          curl -fL --retry 4 -o "$RUNNER_TEMP/templates.tpz" \
+            "$base/Godot_v${GODOT_TAG}_export_templates.tpz"
+          echo "$GODOT_EDITOR_SHA256  $RUNNER_TEMP/godot.zip" | sha256sum -c -
+          echo "$GODOT_TEMPLATES_SHA256  $RUNNER_TEMP/templates.tpz" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP/godot"
+          GODOT_BIN="$(find "$RUNNER_TEMP/godot" -maxdepth 1 -type f -name 'Godot*' | head -n1)"
+          chmod +x "$GODOT_BIN"
+          echo "GODOT_BIN=$GODOT_BIN" >> "$GITHUB_ENV"
+          template_dir="$HOME/.local/share/godot/export_templates/4.7.2.stable"
+          mkdir -p "$template_dir" "$RUNNER_TEMP/templates"
+          unzip -q "$RUNNER_TEMP/templates.tpz" -d "$RUNNER_TEMP/templates"
+          cp -a "$RUNNER_TEMP/templates/templates/." "$template_dir/"
+          test -f "$template_dir/android_debug.apk"
+          "$GODOT_BIN" --version
+
+      - name: Verify Android SDK and build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${ANDROID_HOME:-}"
+          test -x "$ANDROID_HOME/platform-tools/adb"
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [[ -x "$SDKMANAGER" ]]; then
+            yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses >/dev/null || true
+            "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
+              "platform-tools" "build-tools;35.0.1" "platforms;android-35" >/dev/null
+          fi
+          java -version
+          "$ANDROID_HOME/platform-tools/adb" version | head -n 1
+
+      - name: Create deterministic debug signing key
+        shell: bash
+        run: |
+          set -euo pipefail
+          keytool -genkeypair -v \
+            -keystore "$RUNNER_TEMP/crownfall-debug.keystore" \
+            -storepass android -alias androiddebugkey -keypass android \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Crownfall Arena Debug,O=Crownfall Arena,C=BR" \
+            -deststoretype PKCS12 >/dev/null 2>&1
+          echo "GODOT_ANDROID_KEYSTORE_DEBUG_PATH=$RUNNER_TEMP/crownfall-debug.keystore" >> "$GITHUB_ENV"
+          echo "GODOT_ANDROID_KEYSTORE_DEBUG_USER=androiddebugkey" >> "$GITHUB_ENV"
+          echo "GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD=android" >> "$GITHUB_ENV"
+
+      - name: Export installable APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/$PROJECT_DIR/build"
+          set -o pipefail
+          "$GODOT_BIN" --headless --path "$PROJECT_DIR" \
+            --export-debug "Android" "$GITHUB_WORKSPACE/$PROJECT_DIR/build/CrownfallArena.apk" \
+            2>&1 | tee "$RUNNER_TEMP/crownfall-export.log"
+          test -s "$GITHUB_WORKSPACE/$PROJECT_DIR/build/CrownfallArena.apk"
+
+      - name: Validate package, signature and ABI
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$GITHUB_WORKSPACE/$PROJECT_DIR/build/CrownfallArena.apk"
+          unzip -l "$APK" | tee "$RUNNER_TEMP/apk-contents.txt"
+          grep -q 'lib/arm64-v8a/' "$RUNNER_TEMP/apk-contents.txt"
+          if grep -Eq 'lib/(armeabi-v7a|x86|x86_64)/' "$RUNNER_TEMP/apk-contents.txt"; then
+            echo "Unexpected non-arm64 ABI detected" >&2
+            exit 1
+          fi
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt -perm -111 | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -perm -111 | sort -V | tail -n 1)"
+          test -n "$AAPT"
+          test -n "$APKSIGNER"
+          "$AAPT" dump badging "$APK" | tee "$GITHUB_WORKSPACE/$PROJECT_DIR/build/apk-badging.txt"
+          grep -q "package: name='com.crownfallarena.game'" "$GITHUB_WORKSPACE/$PROJECT_DIR/build/apk-badging.txt"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee "$GITHUB_WORKSPACE/$PROJECT_DIR/build/apk-signature.txt"
+          sha256sum "$APK" | tee "$GITHUB_WORKSPACE/$PROJECT_DIR/build/CrownfallArena.apk.sha256"
+
+      - name: Upload Crownfall Arena APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: crownfall-arena-android-arm64
+          path: |
+            ci/crownfall/build/CrownfallArena.apk
+            ci/crownfall/build/CrownfallArena.apk.sha256
+            ci/crownfall/build/apk-badging.txt
+            ci/crownfall/build/apk-signature.txt
+            ${{ runner.temp }}/crownfall-export.log
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
