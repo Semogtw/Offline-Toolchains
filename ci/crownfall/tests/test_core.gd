@@ -141,7 +141,7 @@ func test_units_move_fight_and_can_destroy_citadel() -> Dictionary:
 	for i in range(120): sim.step(0.1)
 	_expect(r, sim.entities.size() > 0, "battle should retain active entities")
 	_expect(r, sim.entities[0].pos.y < start_y, "player unit should advance toward enemy")
-	var core := sim.get_tower("enemy_core")
+	var core: Dictionary = sim.get_tower("enemy_core")
 	core.hp = 1
 	sim.damage_tower("enemy_core", 5, 0)
 	_expect(r, sim.finished and sim.winner == 0, "destroying enemy Citadel should immediately win")
