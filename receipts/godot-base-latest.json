@@ -1,0 +1,58 @@
+{
+  "artifacts": [
+    {
+      "artifact_id": 9938252428,
+      "created_at": "2026-09-04T13:15:15Z",
+      "expired": false,
+      "expires_at": "2026-09-05T13:15:13Z",
+      "name": "godot-base-linux-x64-editor",
+      "size_bytes": 77860600
+    },
+    {
+      "artifact_id": 9938250995,
+      "created_at": "2026-09-04T13:15:12Z",
+      "expired": false,
+      "expires_at": "2026-09-05T13:15:11Z",
+      "name": "godot-base-linux-x64-manifest",
+      "size_bytes": 1794
+    },
+    {
+      "artifact_id": 9938255571,
+      "created_at": "2026-09-04T13:15:20Z",
+      "expired": false,
+      "expires_at": "2026-09-05T13:15:15Z",
+      "name": "godot-base-linux-x64-templates-part-00",
+      "size_bytes": 367001790
+    },
+    {
+      "artifact_id": 9938258765,
+      "created_at": "2026-09-04T13:15:25Z",
+      "expired": false,
+      "expires_at": "2026-09-05T13:15:20Z",
+      "name": "godot-base-linux-x64-templates-part-01",
+      "size_bytes": 367001790
+    },
+    {
+      "artifact_id": 9938261743,
+      "created_at": "2026-09-04T13:15:30Z",
+      "expired": false,
+      "expires_at": "2026-09-05T13:15:25Z",
+      "name": "godot-base-linux-x64-templates-part-02",
+      "size_bytes": 367001790
+    },
+    {
+      "artifact_id": 9938263798,
+      "created_at": "2026-09-04T13:15:33Z",
+      "expired": false,
+      "expires_at": "2026-09-05T13:15:30Z",
+      "name": "godot-base-linux-x64-templates-part-03",
+      "size_bytes": 180345092
+    }
+  ],
+  "recorded_at_utc": "2026-09-04T13:15:45Z",
+  "run_id": 33876981122,
+  "run_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/33876981122",
+  "schema_version": 1,
+  "workflow_event": "push",
+  "workflow_head_sha": "168b7b8cf3f9adbb4e63c04dd1b7daf6bb3a470f"
+}
