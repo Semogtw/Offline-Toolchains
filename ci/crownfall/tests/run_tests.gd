@@ -7,7 +7,7 @@ func _initialize() -> void:
 	call_deferred("_run")
 
 func _run() -> void:
-	for suite_path in ["res://tests/test_core.gd", "res://tests/test_app.gd", "res://tests/test_presentation.gd", "res://tests/test_lobby_presentation.gd"]:
+	for suite_path in ["res://tests/test_core.gd", "res://tests/test_app.gd", "res://tests/test_presentation.gd", "res://tests/test_lobby_presentation.gd", "res://tests/test_art_assets.gd"]:
 		var suite_script = load(suite_path)
 		if suite_script == null or not suite_script.can_instantiate():
 			push_error("Could not load test suite: %s" % suite_path)
