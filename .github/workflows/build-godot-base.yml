@@ -1,0 +1,165 @@
+name: Build shared Godot base
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-godot-base.yml
+      - triggers/godot-base.txt
+
+permissions:
+  contents: read
+
+concurrency:
+  group: godot-base-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Godot 4.7.2 editor and export templates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download and verify Godot 4.7.2
+        id: bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="4.7.2-stable"
+          base_url="https://github.com/godotengine/godot/releases/download/${version}"
+          editor="Godot_v4.7.2-stable_linux.x86_64.zip"
+          templates="Godot_v4.7.2-stable_export_templates.tpz"
+          editor_sha="cadd3204e728a35d3f13adb7fd0d7902636b79f6b95c40c265eb73b6c35329e4"
+          templates_sha="f298490b8d44d934be425a5a65a51bf15f422428b229a06a6e11d9ffea248011"
+
+          out="$RUNNER_TEMP/godot-base"
+          parts="$RUNNER_TEMP/godot-base-parts"
+          rm -rf "$out" "$parts"
+          mkdir -p "$out" "$parts"
+
+          curl --fail --location --retry 5 --retry-delay 2 \
+            "$base_url/$editor" -o "$out/$editor"
+          curl --fail --location --retry 5 --retry-delay 2 \
+            "$base_url/$templates" -o "$out/$templates"
+
+          echo "$editor_sha  $out/$editor" | sha256sum -c -
+          echo "$templates_sha  $out/$templates" | sha256sum -c -
+
+          unzip -q "$out/$editor" -d "$out/editor"
+          godot_bin="$(find "$out/editor" -maxdepth 1 -type f -name 'Godot_v4.7.2-stable_linux.x86_64' -print -quit)"
+          test -n "$godot_bin"
+          chmod +x "$godot_bin"
+          "$godot_bin" --version | tee "$out/GODOT_VERSION.txt"
+
+          split -b 350M -d -a 2 "$out/$templates" "$parts/godot-base-linux-x64-templates.part-"
+          cp "$out/$editor" "$parts/godot-base-linux-x64-editor.zip"
+
+          (
+            cd "$parts"
+            sha256sum godot-base-linux-x64-editor.zip godot-base-linux-x64-templates.part-* > SHA256SUMS.parts
+          )
+
+          cat > "$parts/RESTORE.txt" <<'EOF'
+          Godot 4.7.2 stable portable restore
+          1. Verify SHA256SUMS.parts.
+          2. unzip godot-base-linux-x64-editor.zip -d godot-editor
+          3. cat godot-base-linux-x64-templates.part-* > Godot_v4.7.2-stable_export_templates.tpz
+          4. Verify templates SHA-256: f298490b8d44d934be425a5a65a51bf15f422428b229a06a6e11d9ffea248011
+          5. mkdir -p "$HOME/.local/share/godot/export_templates/4.7.2.stable"
+          6. unzip -q Godot_v4.7.2-stable_export_templates.tpz -d /tmp/godot-templates
+          7. Copy the files inside /tmp/godot-templates/templates/ into "$HOME/.local/share/godot/export_templates/4.7.2.stable/"
+          EOF
+
+          cat > "$parts/MANIFEST.txt" <<EOF
+          repository=$GITHUB_REPOSITORY
+          commit=$GITHUB_SHA
+          runner=$RUNNER_OS-$RUNNER_ARCH
+          created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          godot_version=4.7.2-stable
+          editor_sha256=$editor_sha
+          export_templates_sha256=$templates_sha
+          EOF
+
+          echo "parts_dir=$parts" >> "$GITHUB_OUTPUT"
+          for index in $(seq -f '%02g' 0 9); do
+            if [[ -f "$parts/godot-base-linux-x64-templates.part-$index" ]]; then
+              echo "part_$index=true" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
+      - name: Upload Godot manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: godot-base-linux-x64-manifest
+          path: |
+            ${{ steps.bundle.outputs.parts_dir }}/MANIFEST.txt
+            ${{ steps.bundle.outputs.parts_dir }}/RESTORE.txt
+            ${{ steps.bundle.outputs.parts_dir }}/SHA256SUMS.parts
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload Godot editor
+        uses: actions/upload-artifact@v7
+        with:
+          name: godot-base-linux-x64-editor
+          path: ${{ steps.bundle.outputs.parts_dir }}/godot-base-linux-x64-editor.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload template part 00
+        if: steps.bundle.outputs.part_00 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: godot-base-linux-x64-templates-part-00
+          path: ${{ steps.bundle.outputs.parts_dir }}/godot-base-linux-x64-templates.part-00
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload template part 01
+        if: steps.bundle.outputs.part_01 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: godot-base-linux-x64-templates-part-01
+          path: ${{ steps.bundle.outputs.parts_dir }}/godot-base-linux-x64-templates.part-01
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload template part 02
+        if: steps.bundle.outputs.part_02 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: godot-base-linux-x64-templates-part-02
+          path: ${{ steps.bundle.outputs.parts_dir }}/godot-base-linux-x64-templates.part-02
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload template part 03
+        if: steps.bundle.outputs.part_03 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: godot-base-linux-x64-templates-part-03
+          path: ${{ steps.bundle.outputs.parts_dir }}/godot-base-linux-x64-templates.part-03
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload template part 04
+        if: steps.bundle.outputs.part_04 == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: godot-base-linux-x64-templates-part-04
+          path: ${{ steps.bundle.outputs.parts_dir }}/godot-base-linux-x64-templates.part-04
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
