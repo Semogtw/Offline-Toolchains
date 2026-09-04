@@ -1,13 +1,15 @@
 extends SceneTree
 
 func _init() -> void:
-    var suite_script := load("res://tests/test_core.gd")
-    if suite_script == null:
-        printerr("Unable to load test suite")
-        quit(1)
-        return
-    var suite = suite_script.new()
-    var failures: Array[String] = suite.run_all()
+    var failures: Array[String] = []
+    for path in ["res://tests/test_core.gd", "res://tests/test_battle.gd"]:
+        var suite_script := load(path)
+        if suite_script == null:
+            failures.append("Unable to load suite: " + path)
+            continue
+        var suite = suite_script.new()
+        for failure in suite.run_all():
+            failures.append(String(failure))
     if failures.is_empty():
         print("CROWNFALL TESTS: PASS")
         quit(0)
