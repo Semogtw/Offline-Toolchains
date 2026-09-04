@@ -12,6 +12,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: crownfall-arena-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   GODOT_VERSION: '4.7.2'
   GODOT_TAG: '4.7.2-stable'
@@ -21,7 +25,7 @@ jobs:
   test:
     name: Godot headless tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -42,7 +46,9 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          "$GODOT_BIN" --headless --path "$PROJECT_DIR" -s tests/run_tests.gd 2>&1 | tee "$RUNNER_TEMP/crownfall-test.log"
+          timeout --signal=TERM --kill-after=5s 30s \
+            "$GODOT_BIN" --headless --path "$PROJECT_DIR" -s tests/run_tests.gd \
+            2>&1 | tee "$RUNNER_TEMP/crownfall-test.log"
 
       - name: Upload test log
         if: always()
