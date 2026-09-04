@@ -1,0 +1,121 @@
+name: Record shared Godot base receipt
+
+on:
+  workflow_run:
+    workflows:
+      - Build shared Godot base
+    types:
+      - completed
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: record-godot-base-receipt
+  cancel-in-progress: false
+
+jobs:
+  record:
+    name: Record public Godot base metadata
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.actor.login == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout trusted receipt publisher
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Fetch and validate artifact metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_RUN_URL: ${{ github.event.workflow_run.html_url }}
+          SOURCE_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_EVENT: ${{ github.event.workflow_run.event }}
+        run: |
+          set -euo pipefail
+          mkdir -p receipts
+          gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/artifacts?per_page=100" \
+            > "$RUNNER_TEMP/artifacts.json"
+          python3 - \
+            "$RUNNER_TEMP/artifacts.json" \
+            receipts/godot-base-latest.json \
+            "$SOURCE_RUN_ID" \
+            "$SOURCE_RUN_URL" \
+            "$SOURCE_HEAD_SHA" \
+            "$SOURCE_EVENT" <<'PY'
+          import datetime as dt
+          import json
+          import sys
+          from pathlib import Path
+
+          prefix = "godot-base-linux-x64-"
+          source = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          artifacts = []
+          for artifact in source.get("artifacts", []):
+              name = artifact.get("name", "")
+              if not name.startswith(prefix):
+                  continue
+              artifacts.append(
+                  {
+                      "artifact_id": artifact["id"],
+                      "name": name,
+                      "size_bytes": artifact.get("size_in_bytes"),
+                      "expired": bool(artifact.get("expired", False)),
+                      "created_at": artifact.get("created_at"),
+                      "expires_at": artifact.get("expires_at"),
+                  }
+              )
+
+          if not artifacts:
+              raise SystemExit("Godot base run produced no expected artifacts")
+          required = {"godot-base-linux-x64-manifest", "godot-base-linux-x64-editor"}
+          names = {item["name"] for item in artifacts}
+          if not required.issubset(names):
+              raise SystemExit("Godot base manifest/editor artifact is missing")
+          if not any("templates-part-" in name for name in names):
+              raise SystemExit("Godot template part artifacts are missing")
+
+          artifacts.sort(key=lambda item: item["name"])
+          receipt = {
+              "schema_version": 1,
+              "run_id": int(sys.argv[3]),
+              "run_url": sys.argv[4],
+              "workflow_head_sha": sys.argv[5],
+              "workflow_event": sys.argv[6],
+              "recorded_at_utc": dt.datetime.now(dt.timezone.utc)
+              .replace(microsecond=0)
+              .isoformat()
+              .replace("+00:00", "Z"),
+              "artifacts": artifacts,
+          }
+          Path(sys.argv[2]).write_text(
+              json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Publish receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add receipts/godot-base-latest.json
+          if git diff --cached --quiet -- receipts/godot-base-latest.json; then
+            echo "Receipt is unchanged."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "ci: record latest Godot base artifacts"
+          git push origin HEAD:main
