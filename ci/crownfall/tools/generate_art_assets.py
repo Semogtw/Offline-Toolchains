@@ -15,7 +15,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageOps
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "assets" / "generated"
@@ -146,8 +146,7 @@ def stylize_material(img: Image.Image, tint: tuple[int, int, int]) -> Image.Imag
     img = ImageEnhance.Contrast(img).enhance(1.12)
     overlay = Image.new("RGB", img.size, tint)
     img = Image.blend(img, overlay, 0.14)
-    img = img.filter(ImageFilter.UnsharpMask(radius=1.2, percent=115, threshold=3))
-    return img
+    return img.filter(ImageFilter.UnsharpMask(radius=1.2, percent=115, threshold=3))
 
 
 def build_materials() -> dict[str, Image.Image]:
@@ -251,12 +250,15 @@ def draw_unit_cell(card_id: str, state: int, materials: dict[str, Image.Image]) 
         if card_id == "prism_turret":
             draw.polygon([(64,22-attack_shift//2),(83,48),(64,63),(45,48)], fill=accent+(240,), outline=(245,245,255,230))
         elif card_id == "arc_coil":
-            for r in (13,22,31): draw.arc((64-r,42-r+bounce,64+r,42+r+bounce), 195, 345, fill=accent+(240,), width=5)
+            for r in (13,22,31):
+                draw.arc((64-r,42-r+bounce,64+r,42+r+bounce), 195, 345, fill=accent+(240,), width=5)
         elif card_id == "sunwell":
             draw.ellipse((45,29+bounce,83,67+bounce), fill=(255,211,88,210), outline=(255,244,190,245), width=4)
         else:
-            for x in (38,58,78): draw.polygon([(x,47+bounce),(x+10,25+bounce),(x+20,47+bounce)], fill=accent+(220,))
-        if hit_alpha: draw.rectangle((24,22,104,108), fill=(255,255,255,hit_alpha))
+            for x in (38,58,78):
+                draw.polygon([(x,47+bounce),(x+10,25+bounce),(x+20,47+bounce)], fill=accent+(220,))
+        if hit_alpha:
+            draw.rectangle((24,22,104,108), fill=(255,255,255,hit_alpha))
         return cell
 
     body_mask = Image.new("L", (128, 128), 0)
@@ -282,9 +284,7 @@ def draw_unit_cell(card_id: str, state: int, materials: dict[str, Image.Image]) 
     base_material = materials["metal_trim.png"] if card_id in {"iron_warden","storm_knight","rune_duelist","gearling_trio","dune_lancer"} else materials["arena_ground.png"] if card_id in {"moss_colossus","root_mender","ember_fox"} else materials["tower_stone.png"]
     paste_mask(cell, material_fill(base_material, color=accent), body_mask)
     draw = ImageDraw.Draw(cell, "RGBA")
-    # face/highlight details
     draw.ellipse((54,34+y,61,41+y), fill=(235,249,255,230)); draw.ellipse((68,34+y,75,41+y), fill=(235,249,255,230))
-    # weapon / wings / distinctive profile
     facing = -1 if idx % 2 else 1
     if a in {0,7}:
         draw.line((80,62+y,109+attack_shift*facing,35+y-attack_shift), fill=(220,232,238,245), width=6)
@@ -334,17 +334,19 @@ def build_card_atlas(unit_atlas: Image.Image, materials: dict[str, Image.Image])
         sd = ImageDraw.Draw(shade, "RGBA")
         sd.rectangle((0,0,255,255), outline=accent+(210,), width=9)
         sd.ellipse((34,25,222,213), fill=accent+(26,), outline=(245,247,250,45), width=3)
-        for r in (84,66): sd.arc((128-r,115-r,128+r,115+r), 205, 335, fill=accent+(80,), width=3)
+        for r in (84,66):
+            sd.arc((128-r,115-r,128+r,115+r), 205, 335, fill=accent+(80,), width=3)
         cell = Image.alpha_composite(cell.convert("RGBA"), shade)
         frame_index = index * 4
         sx, sy = (frame_index % 8)*128, (frame_index//8)*128
         sprite = unit_atlas.crop((sx,sy,sx+128,sy+128)).resize((190,190), Image.Resampling.LANCZOS)
-        shadow = Image.new("RGBA", (190,190), (0,0,0,0)); sh = ImageDraw.Draw(shadow); sh.ellipse((25,150,165,178), fill=(0,0,0,100))
+        shadow = Image.new("RGBA", (190,190), (0,0,0,0))
+        sh = ImageDraw.Draw(shadow)
+        sh.ellipse((25,150,165,178), fill=(0,0,0,100))
         cell.alpha_composite(shadow, (33,36)); cell.alpha_composite(sprite, (33,25))
         cd = ImageDraw.Draw(cell, "RGBA")
         cd.rectangle((0,208,256,256), fill=(8,13,20,180))
         cd.rectangle((0,208,256,214), fill=accent+(235,))
-        # family rune
         if FAMILIES[card_id] == "spell":
             cd.ellipse((105,216,151,254), outline=accent+(245,), width=4)
         elif FAMILIES[card_id] == "structure":
@@ -359,14 +361,13 @@ def build_card_atlas(unit_atlas: Image.Image, materials: dict[str, Image.Image])
 
 def build_hero_banner(card_atlas: Image.Image) -> None:
     banner = Image.new("RGB", (1024,512), (12,21,31))
-    draw = ImageDraw.Draw(banner, "RGBA")
     ground = ImageOps.fit(Image.open(OUT/"arena_ground.png"), banner.size, method=Image.Resampling.LANCZOS)
     banner = Image.blend(banner, ground.convert("RGB"), 0.36)
     for i, idx in enumerate([0,1,2,6,10,12]):
         sx, sy = (idx % 6)*256, (idx // 6)*256
         art = card_atlas.crop((sx,sy,sx+256,sy+256)).resize((220,220), Image.Resampling.LANCZOS)
-        x = 20 + i*165
-        y = 125 + abs(i-2.5)*18
+        x = int(20 + i*165)
+        y = int(125 + abs(i-2.5)*18)
         banner.paste(art, (x,y))
     draw = ImageDraw.Draw(banner, "RGBA")
     for r, alpha in [(210,25),(150,34),(95,46)]:
