@@ -1,0 +1,52 @@
+name: Crownfall Arena Art Preview
+
+on:
+  push:
+    branches:
+      - build/crownfall-arena
+    paths:
+      - '.github/workflows/crownfall-art-preview.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v6
+      - name: Generate raster art
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --quiet 'pillow>=10,<13'
+          python3 ci/crownfall/tools/generate_art_assets.py
+          python3 - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageDraw
+          root=Path('ci/crownfall/assets/generated')
+          names=['arena_ground.png','bridge_wood.png','tower_stone.png','metal_trim.png','water.png','card_art_atlas.png','unit_sprite_atlas.png','hero_banner.png']
+          thumb=Image.new('RGB',(1600,1800),(18,22,30))
+          d=ImageDraw.Draw(thumb)
+          slots=[(20,40,380,400),(410,40,770,400),(800,40,1160,400),(1190,40,1550,400),(20,430,380,790),(410,430,1550,1150),(20,1180,760,1760),(790,1180,1550,1560)]
+          for name,box in zip(names,slots):
+              img=Image.open(root/name).convert('RGBA')
+              maxw,maxh=box[2]-box[0],box[3]-box[1]
+              img.thumbnail((maxw,maxh),Image.Resampling.LANCZOS)
+              x=box[0]+(maxw-img.width)//2; y=box[1]+(maxh-img.height)//2
+              thumb.paste(img.convert('RGB'),(x,y))
+              d.text((box[0]+6,box[1]+6),name,fill=(240,245,250))
+          thumb.save(root/'art_contact_sheet.jpg',quality=91,optimize=True)
+          PY
+      - name: Upload visual preview
+        uses: actions/upload-artifact@v7
+        with:
+          name: crownfall-v0.3-art-preview
+          path: |
+            ci/crownfall/assets/generated/*.png
+            ci/crownfall/assets/generated/art_contact_sheet.jpg
+            ci/crownfall/assets/generated/manifest.json
+          compression-level: 6
+          retention-days: 3
