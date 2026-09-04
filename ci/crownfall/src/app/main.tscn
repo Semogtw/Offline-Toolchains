@@ -1,8 +1,9 @@
-[gd_scene load_steps=4 format=3]
+[gd_scene load_steps=5 format=3]
 
 [ext_resource path="res://src/app/main.gd" type="Script" id="1_main"]
 [ext_resource path="res://src/presentation/battle_view.gd" type="Script" id="2_battle"]
 [ext_resource path="res://src/presentation/lobby_view.gd" type="Script" id="3_lobby"]
+[ext_resource path="res://src/presentation/art_overlay.gd" type="Script" id="4_art"]
 
 [node name="CrownfallArena" type="Control"]
 layout_mode = 3
@@ -33,3 +34,13 @@ grow_horizontal = 2
 grow_vertical = 2
 mouse_filter = 2
 script = ExtResource("3_lobby")
+
+[node name="ArtOverlay" type="Control" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("4_art")
