@@ -150,7 +150,7 @@ jobs:
             2>&1 | tee "$RUNNER_TEMP/crownfall-export.log"
           test -s "$GITHUB_WORKSPACE/$PROJECT_DIR/build/CrownfallArena.apk"
 
-      - name: Validate package, signature and ABI
+      - name: Validate package, version, signature and ABI
         shell: bash
         run: |
           set -euo pipefail
@@ -167,6 +167,7 @@ jobs:
           test -n "$APKSIGNER"
           "$AAPT" dump badging "$APK" | tee "$GITHUB_WORKSPACE/$PROJECT_DIR/build/apk-badging.txt"
           grep -q "package: name='com.crownfallarena.game'" "$GITHUB_WORKSPACE/$PROJECT_DIR/build/apk-badging.txt"
+          grep -q "versionCode='2' versionName='0.2.0'" "$GITHUB_WORKSPACE/$PROJECT_DIR/build/apk-badging.txt"
           "$APKSIGNER" verify --verbose --print-certs "$APK" | tee "$GITHUB_WORKSPACE/$PROJECT_DIR/build/apk-signature.txt"
           sha256sum "$APK" | tee "$GITHUB_WORKSPACE/$PROJECT_DIR/build/CrownfallArena.apk.sha256"
 
