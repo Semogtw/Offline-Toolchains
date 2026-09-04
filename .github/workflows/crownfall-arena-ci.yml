@@ -186,7 +186,7 @@ jobs:
             2>&1 | tee "$RUNNER_TEMP/crownfall-export.log"
           test -s "$GITHUB_WORKSPACE/$PROJECT_DIR/build/CrownfallArena.apk"
 
-      - name: Validate package, version, signature and ABI
+      - name: Validate package, version, raster assets, signature and ABI
         shell: bash
         run: |
           set -euo pipefail
@@ -197,13 +197,16 @@ jobs:
             echo "Unexpected non-arm64 ABI detected" >&2
             exit 1
           fi
+          grep -q 'card_art_atlas' "$RUNNER_TEMP/apk-contents.txt"
+          grep -q 'unit_sprite_atlas' "$RUNNER_TEMP/apk-contents.txt"
+          grep -q 'arena_ground' "$RUNNER_TEMP/apk-contents.txt"
           AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt -perm -111 | sort -V | tail -n 1)"
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -perm -111 | sort -V | tail -n 1)"
           test -n "$AAPT"
           test -n "$APKSIGNER"
           "$AAPT" dump badging "$APK" | tee "$GITHUB_WORKSPACE/$PROJECT_DIR/build/apk-badging.txt"
           grep -q "package: name='com.crownfallarena.game'" "$GITHUB_WORKSPACE/$PROJECT_DIR/build/apk-badging.txt"
-          grep -q "versionCode='2' versionName='0.2.0'" "$GITHUB_WORKSPACE/$PROJECT_DIR/build/apk-badging.txt"
+          grep -q "versionCode='3' versionName='0.3.0'" "$GITHUB_WORKSPACE/$PROJECT_DIR/build/apk-badging.txt"
           "$APKSIGNER" verify --verbose --print-certs "$APK" | tee "$GITHUB_WORKSPACE/$PROJECT_DIR/build/apk-signature.txt"
           sha256sum "$APK" | tee "$GITHUB_WORKSPACE/$PROJECT_DIR/build/CrownfallArena.apk.sha256"
 
