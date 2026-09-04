@@ -27,10 +27,20 @@ jobs:
   test:
     name: Godot tests and live-scene smoke
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Generate v0.3 raster art pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --quiet 'pillow>=10,<13'
+          python3 "$PROJECT_DIR/tools/generate_art_assets.py" | tee "$RUNNER_TEMP/crownfall-art.log"
+          test -s "$PROJECT_DIR/assets/generated/arena_ground.png"
+          test -s "$PROJECT_DIR/assets/generated/card_art_atlas.png"
+          test -s "$PROJECT_DIR/assets/generated/unit_sprite_atlas.png"
 
       - name: Install Godot 4.7.2 editor
         shell: bash
@@ -45,11 +55,19 @@ jobs:
           echo "GODOT_BIN=$GODOT_BIN" >> "$GITHUB_ENV"
           "$GODOT_BIN" --version
 
+      - name: Import generated art
+        shell: bash
+        run: |
+          set -o pipefail
+          timeout --signal=TERM --kill-after=5s 45s \
+            "$GODOT_BIN" --headless --editor --path "$PROJECT_DIR" --quit \
+            2>&1 | tee "$RUNNER_TEMP/crownfall-import.log"
+
       - name: Run Crownfall unit and integration tests
         shell: bash
         run: |
           set -o pipefail
-          timeout --signal=TERM --kill-after=5s 30s \
+          timeout --signal=TERM --kill-after=5s 40s \
             "$GODOT_BIN" --headless --path "$PROJECT_DIR" -s tests/run_tests.gd \
             2>&1 | tee "$RUNNER_TEMP/crownfall-test.log"
 
@@ -68,6 +86,8 @@ jobs:
         with:
           name: crownfall-test-logs
           path: |
+            ${{ runner.temp }}/crownfall-art.log
+            ${{ runner.temp }}/crownfall-import.log
             ${{ runner.temp }}/crownfall-test.log
             ${{ runner.temp }}/crownfall-smoke.log
           if-no-files-found: warn
@@ -81,6 +101,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Generate v0.3 raster art pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --quiet 'pillow>=10,<13'
+          python3 "$PROJECT_DIR/tools/generate_art_assets.py" | tee "$RUNNER_TEMP/crownfall-art.log"
+          test -s "$PROJECT_DIR/assets/generated/hero_banner.png"
 
       - name: Set up Java 17
         uses: actions/setup-java@v5
@@ -109,6 +137,14 @@ jobs:
           cp -a "$RUNNER_TEMP/templates/templates/." "$template_dir/"
           test -f "$template_dir/android_debug.apk"
           "$GODOT_BIN" --version
+
+      - name: Import generated art
+        shell: bash
+        run: |
+          set -o pipefail
+          timeout --signal=TERM --kill-after=5s 45s \
+            "$GODOT_BIN" --headless --editor --path "$PROJECT_DIR" --quit \
+            2>&1 | tee "$RUNNER_TEMP/crownfall-import.log"
 
       - name: Verify Android SDK and build tools
         shell: bash
@@ -180,6 +216,8 @@ jobs:
             ci/crownfall/build/CrownfallArena.apk.sha256
             ci/crownfall/build/apk-badging.txt
             ci/crownfall/build/apk-signature.txt
+            ${{ runner.temp }}/crownfall-art.log
+            ${{ runner.temp }}/crownfall-import.log
             ${{ runner.temp }}/crownfall-export.log
           if-no-files-found: error
           compression-level: 0
