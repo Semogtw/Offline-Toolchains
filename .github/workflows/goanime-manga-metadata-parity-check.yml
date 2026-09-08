@@ -50,6 +50,7 @@ jobs:
           tools/manga/manga_metadata_merger.dart
           tools/manga/manga_metadata_catalog_targets.dart
           tools/manga/manga_metadata_cache.dart
+          tools/manga/manga_metadata_refresh.dart
           test/tools/manga_jikan_bulk_enricher_test.dart
           test/tools/manga_anilist_bulk_enricher_test.dart
           test/tools/manga_metadata_merger_test.dart
@@ -65,6 +66,7 @@ jobs:
           tools/manga/manga_metadata_merger.dart
           tools/manga/manga_metadata_catalog_targets.dart
           tools/manga/manga_metadata_cache.dart
+          tools/manga/manga_metadata_refresh.dart
           test/tools/manga_jikan_bulk_enricher_test.dart
           test/tools/manga_anilist_bulk_enricher_test.dart
           test/tools/manga_metadata_merger_test.dart
@@ -87,5 +89,5 @@ jobs:
       - name: Run metadata cache GREEN tests
         run: flutter test test/tools/manga_metadata_cache_test.dart
 
-      - name: Run metadata refresh RED/GREEN tests
+      - name: Run metadata refresh GREEN tests
         run: flutter test test/tools/manga_metadata_refresh_test.dart
