@@ -21,7 +21,7 @@ jobs:
       - name: Require private repository token
         shell: bash
         env:
-          GOANIME_TOKEN: ${{ secrets.GOANIME_PRIVATE_REPO_TOKEN }}
+          GOANIME_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
         run: |
           test -n "$GOANIME_TOKEN"
 
@@ -30,7 +30,7 @@ jobs:
         with:
           repository: Semogtw/goanime-mobile
           ref: agent/manga-metadata-catalog-parity-20260908
-          token: ${{ secrets.GOANIME_PRIVATE_REPO_TOKEN }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
           persist-credentials: false
 
       - name: Set up Flutter 3.44.1
