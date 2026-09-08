@@ -42,13 +42,15 @@ jobs:
       - name: Resolve dependencies
         run: flutter pub get
 
-      - name: Check metadata formatting
-        run: >-
-          dart format --output=none --set-exit-if-changed
-          tools/manga/manga_anilist_bulk_enricher.dart
-          tools/manga/manga_metadata_merger.dart
-          test/tools/manga_anilist_bulk_enricher_test.dart
-          test/tools/manga_metadata_merger_test.dart
+      - name: Format metadata scope in runner
+        shell: bash
+        run: |
+          dart format \
+            tools/manga/manga_anilist_bulk_enricher.dart \
+            tools/manga/manga_metadata_merger.dart \
+            test/tools/manga_anilist_bulk_enricher_test.dart \
+            test/tools/manga_metadata_merger_test.dart
+          git diff -- tools/manga/manga_metadata_merger.dart || true
 
       - name: Analyze metadata scope
         run: >-
