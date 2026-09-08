@@ -28,7 +28,7 @@ env:
 jobs:
   refresh:
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 360
     steps:
       - name: Checkout toolchains repository
         uses: actions/checkout@v4
