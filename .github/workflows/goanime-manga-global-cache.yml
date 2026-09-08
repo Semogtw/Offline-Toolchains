@@ -123,8 +123,6 @@ jobs:
         shell: bash
         env:
           TARGET_BRANCH: ${{ steps.target.outputs.ref }}
-          MAX_READABILITY_PROBES: 512
-          MAX_READABILITY_PROBES_PER_PROVIDER: 128
         run: bash tools/manga/materialize_global_manga_availability_ci.sh
 
       - name: Publish sanitized refresh receipt
