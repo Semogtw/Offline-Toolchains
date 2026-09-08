@@ -39,19 +39,21 @@ jobs:
         id: target
         shell: bash
         env:
+          EVENT_NAME: ${{ github.event_name }}
           DISPATCH_TARGET: ${{ github.event.inputs.target_ref || '' }}
         run: |
           set -euo pipefail
           target=""
-          if [[ -n "$DISPATCH_TARGET" ]]; then
-            target="$DISPATCH_TARGET"
-          elif compgen -G "toolchains-root/triggers/goanime-manga-global-cache/*.request" >/dev/null; then
-            latest_req="$(ls -t toolchains-root/triggers/goanime-manga-global-cache/*.request | head -n 1)"
-            target="$(cat "$latest_req" | tr -d ' \n\r')"
-          fi
 
-          if [[ -z "$target" && -f "toolchains-root/triggers/goanime-manga-global-cache/target.txt" ]]; then
-            target="$(cat toolchains-root/triggers/goanime-manga-global-cache/target.txt | tr -d ' \n\r')"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && -n "$DISPATCH_TARGET" ]]; then
+            target="$DISPATCH_TARGET"
+          elif [[ "$EVENT_NAME" == "push" ]]; then
+            if compgen -G "toolchains-root/triggers/goanime-manga-global-cache/*.request" >/dev/null; then
+              latest_req="$(find toolchains-root/triggers/goanime-manga-global-cache -maxdepth 1 -type f -name '*.request' -printf '%f\n' | sort | tail -n 1)"
+              target="$(cat "toolchains-root/triggers/goanime-manga-global-cache/$latest_req" | tr -d ' \n\r')"
+            elif [[ -f "toolchains-root/triggers/goanime-manga-global-cache/target.txt" ]]; then
+              target="$(cat toolchains-root/triggers/goanime-manga-global-cache/target.txt | tr -d ' \n\r')"
+            fi
           fi
 
           if [[ -z "$target" ]]; then
