@@ -50,14 +50,16 @@ jobs:
 
       - name: Check formatting
         working-directory: private-source
-        run: >-
-          dart format --output=none --set-exit-if-changed
-          tools/manga/build_global_manga_availability.dart
-          tools/manga/build_global_manga_availability_impl.dart
-          tools/manga/materialize_global_manga_availability_ci.sh
-          test/tools/build_global_manga_availability_test.dart
-          test/tools/manga_provider_availability_receipt_test.dart
-          test/tools/materialize_global_manga_availability_gate_test.dart
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format --output=none --set-exit-if-changed \
+            tools/manga/build_global_manga_availability.dart \
+            tools/manga/build_global_manga_availability_impl.dart \
+            test/tools/build_global_manga_availability_test.dart \
+            test/tools/manga_provider_availability_receipt_test.dart \
+            test/tools/materialize_global_manga_availability_gate_test.dart
+          bash -n tools/manga/materialize_global_manga_availability_ci.sh
 
       - name: Analyze changed Dart surface
         working-directory: private-source
