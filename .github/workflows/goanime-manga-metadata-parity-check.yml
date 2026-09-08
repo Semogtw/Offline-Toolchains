@@ -101,5 +101,5 @@ jobs:
       - name: Validate complete metadata builder snapshot contract
         run: flutter test test/tools/build_global_manga_metadata_integration_test.dart
 
-      - name: Validate materializer metadata integration RED gate
+      - name: Validate semantic materializer metadata integration RED
         run: flutter test test/tools/materialize_global_manga_metadata_gate_test.dart
