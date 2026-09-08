@@ -78,3 +78,5 @@ jobs:
           test/tools/build_global_manga_availability_test.dart
           test/tools/manga_provider_availability_receipt_test.dart
           test/tools/materialize_global_manga_availability_gate_test.dart
+
+# rerun against formatted provider-report branch 2026-09-08
