@@ -11,7 +11,7 @@ on:
       target_ref:
         description: Allowlisted GoAnime-Mobile branch to refresh
         required: true
-        default: main
+        default: feat/manga-catalog-canonicalization-v2-20260906
 
 permissions:
   contents: write
@@ -28,8 +28,13 @@ env:
 jobs:
   refresh:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
+      - name: Checkout toolchains repository
+        uses: actions/checkout@v4
+        with:
+          path: toolchains-root
+
       - name: Resolve trusted target
         id: target
         shell: bash
@@ -37,15 +42,27 @@ jobs:
           DISPATCH_TARGET: ${{ github.event.inputs.target_ref || '' }}
         run: |
           set -euo pipefail
-          if [[ -f "triggers/goanime-manga-global-cache/target.txt" ]]; then
-            target="$(cat triggers/goanime-manga-global-cache/target.txt | tr -d ' \n\r')"
-          else
-            target="${DISPATCH_TARGET:-$SCHEDULED_TARGET_REF}"
+          target=""
+          if [[ -n "$DISPATCH_TARGET" ]]; then
+            target="$DISPATCH_TARGET"
+          elif compgen -G "toolchains-root/triggers/goanime-manga-global-cache/*.request" >/dev/null; then
+            latest_req="$(ls -t toolchains-root/triggers/goanime-manga-global-cache/*.request | head -n 1)"
+            target="$(cat "$latest_req" | tr -d ' \n\r')"
           fi
+
+          if [[ -z "$target" && -f "toolchains-root/triggers/goanime-manga-global-cache/target.txt" ]]; then
+            target="$(cat toolchains-root/triggers/goanime-manga-global-cache/target.txt | tr -d ' \n\r')"
+          fi
+
+          if [[ -z "$target" ]]; then
+            target="$SCHEDULED_TARGET_REF"
+          fi
+
+          echo "Resolved target ref: $target"
           case "$target" in
             codex/manga-parity-20260823|main|feat/manga-catalog-canonicalization-v2-20260906) ;;
             *)
-              echo "::error::Ref is not allowlisted for manga global-cache maintenance."
+              echo "::error::Ref is not allowlisted for manga global-cache maintenance: $target"
               exit 1
               ;;
           esac
@@ -63,7 +80,7 @@ jobs:
           }
 
       - name: Checkout exact private GoAnime target
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           repository: Semogtw/goanime-mobile
           ref: ${{ steps.target.outputs.ref }}
@@ -101,40 +118,11 @@ jobs:
           flutter pub get --enforce-lockfile >/dev/null
           (cd packages/goanime_core && dart pub get >/dev/null)
 
-      - name: Bind materializer CAS to trusted target
-        working-directory: private-source
-        shell: bash
-        env:
-          TARGET_REF: ${{ steps.target.outputs.ref }}
-        run: |
-          set -euo pipefail
-          python3 - "$TARGET_REF" <<'PY'
-          from pathlib import Path
-          import re
-          import sys
-
-          target = sys.argv[1]
-          path = Path('tools/manga/materialize_global_manga_availability_ci.sh')
-          text = path.read_text(encoding='utf-8')
-          pattern = r'^TARGET_BRANCH="[^"]+"$'
-          matches = re.findall(pattern, text, flags=re.MULTILINE)
-          if len(matches) != 1:
-              raise SystemExit(f'unexpected TARGET_BRANCH declarations: {matches!r}')
-          text = re.sub(
-              pattern,
-              f'TARGET_BRANCH="{target}"',
-              text,
-              count=1,
-              flags=re.MULTILINE,
-          )
-          path.write_text(text, encoding='utf-8')
-          PY
-          git diff --check
-
       - name: Materialize and publish global manga availability
         working-directory: private-source
         shell: bash
         env:
+          TARGET_BRANCH: ${{ steps.target.outputs.ref }}
           MAX_READABILITY_PROBES: 512
           MAX_READABILITY_PROBES_PER_PROVIDER: 128
         run: bash tools/manga/materialize_global_manga_availability_ci.sh
@@ -182,4 +170,4 @@ jobs:
       - name: Remove private checkout
         if: always()
         shell: bash
-        run: rm -rf "$GITHUB_WORKSPACE/private-source"
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchains-root"
