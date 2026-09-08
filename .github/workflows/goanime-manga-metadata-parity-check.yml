@@ -5,7 +5,6 @@ on:
   push:
     paths:
       - .github/workflows/goanime-manga-metadata-parity-check.yml
-      - scripts/manga_metadata_task1_patch.py
 
 permissions:
   contents: read
@@ -25,20 +24,13 @@ jobs:
           GOANIME_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
         run: test -n "$GOANIME_TOKEN"
 
-      - name: Checkout patch helper
-        uses: actions/checkout@v4
-        with:
-          path: helper
-          persist-credentials: false
-
       - name: Checkout GoAnime metadata branch
         uses: actions/checkout@v4
         with:
           repository: Semogtw/goanime-mobile
           ref: agent/manga-metadata-catalog-parity-20260908
           token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
-          path: goanime
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Set up Flutter 3.44.1
         uses: subosito/flutter-action@v2
@@ -47,44 +39,11 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Apply and publish Task 1 production patch
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 helper/scripts/manga_metadata_task1_patch.py goanime
-          dart format \
-            goanime/tools/manga/manga_availability_v3_builder.dart \
-            goanime/lib/services/manga/manga_bundled_catalog_source.dart \
-            goanime/test/tools/manga_availability_v3_builder_test.dart \
-            goanime/test/services/manga/manga_bundled_catalog_source_test.dart
-          cd goanime
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add \
-            tools/manga/manga_availability_v3_builder.dart \
-            lib/services/manga/manga_bundled_catalog_source.dart \
-            test/tools/manga_availability_v3_builder_test.dart
-          if ! git diff --cached --quiet; then
-            git commit -m 'feat(manga): persist rich bundled work metadata'
-            git push origin HEAD:agent/manga-metadata-catalog-parity-20260908
-          fi
-
       - name: Resolve dependencies
-        working-directory: goanime
         run: flutter pub get
 
-      - name: Analyze Task 1 scope
-        working-directory: goanime
-        run: >-
-          flutter analyze
-          tools/manga/manga_availability_v3_builder.dart
-          lib/services/manga/manga_bundled_catalog_source.dart
-          test/tools/manga_availability_v3_builder_test.dart
-          test/services/manga/manga_bundled_catalog_source_test.dart
-
-      - name: Run metadata schema GREEN tests
-        working-directory: goanime
+      - name: Run Jikan metadata RED tests
         run: >-
           flutter test
-          test/tools/manga_availability_v3_builder_test.dart
-          test/services/manga/manga_bundled_catalog_source_test.dart
+          test/tools/manga_jikan_bulk_enricher_test.dart
+          test/tools/jikan_tool_pacing_contract_test.dart
