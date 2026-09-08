@@ -1,4 +1,4 @@
-name: GoAnime Manga Metadata Cache Test Format Fix
+name: GoAnime Manga Metadata Cache Format Fix
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: goanime-manga-metadata-cache-test-format-fix
+  group: goanime-manga-metadata-cache-format-fix
   cancel-in-progress: true
 
 jobs:
@@ -40,24 +40,24 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Format only metadata cache RED test
+      - name: Format only persistent metadata cache
         shell: bash
         run: |
           set -euo pipefail
-          dart format test/tools/manga_metadata_cache_test.dart
+          dart format tools/manga/manga_metadata_cache.dart
           git diff --check
-          git diff -- test/tools/manga_metadata_cache_test.dart
+          git diff -- tools/manga/manga_metadata_cache.dart
 
       - name: Commit and push formatting only
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet -- test/tools/manga_metadata_cache_test.dart; then
+          if git diff --quiet -- tools/manga/manga_metadata_cache.dart; then
             echo "No formatting changes required."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add test/tools/manga_metadata_cache_test.dart
-          git commit -m "style(manga): format metadata cache test"
+          git add tools/manga/manga_metadata_cache.dart
+          git commit -m "style(manga): format persistent metadata cache"
           git push "https://x-access-token:${GOANIME_TOKEN}@github.com/Semogtw/goanime-mobile.git" "HEAD:refs/heads/${TARGET_BRANCH}"
