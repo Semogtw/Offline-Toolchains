@@ -48,6 +48,6 @@ jobs:
           flutter pub get --enforce-lockfile >/dev/null
           (cd packages/goanime_core && dart pub get >/dev/null)
 
-      - name: Run provider probe-metrics regression test
+      - name: Run materializer probe-outcomes contract test
         working-directory: private-source
-        run: flutter test --no-pub --concurrency=1 test/tools/manga_provider_availability_receipt_test.dart
+        run: flutter test --no-pub --concurrency=1 test/tools/materialize_global_manga_availability_gate_test.dart
