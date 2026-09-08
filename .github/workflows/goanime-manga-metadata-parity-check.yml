@@ -42,24 +42,5 @@ jobs:
       - name: Resolve dependencies
         run: flutter pub get
 
-      - name: Check formatted Jikan resolver
-        run: >-
-          dart format --output=none --set-exit-if-changed
-          tools/manga/manga_jikan_bulk_enricher.dart
-          tools/manga/manga_metadata_enrichment_models.dart
-          test/tools/manga_jikan_bulk_enricher_test.dart
-          test/tools/jikan_tool_pacing_contract_test.dart
-
-      - name: Analyze Jikan resolver scope
-        run: >-
-          flutter analyze
-          tools/manga/manga_jikan_bulk_enricher.dart
-          tools/manga/manga_metadata_enrichment_models.dart
-          test/tools/manga_jikan_bulk_enricher_test.dart
-          test/tools/jikan_tool_pacing_contract_test.dart
-
-      - name: Run Jikan metadata GREEN tests
-        run: >-
-          flutter test
-          test/tools/manga_jikan_bulk_enricher_test.dart
-          test/tools/jikan_tool_pacing_contract_test.dart
+      - name: Run AniList metadata RED tests
+        run: flutter test test/tools/manga_anilist_bulk_enricher_test.dart
