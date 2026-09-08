@@ -1,0 +1,57 @@
+name: GoAnime Manga Metadata Format Fix
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/goanime-manga-metadata-format-fix.yml
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          GOANIME_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: test -n "$GOANIME_TOKEN"
+
+      - name: Checkout GoAnime metadata branch
+        uses: actions/checkout@v4
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: agent/manga-metadata-catalog-parity-20260908
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          persist-credentials: true
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.1'
+          channel: stable
+          cache: true
+
+      - name: Format and publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format \
+            tools/manga/manga_jikan_bulk_enricher.dart \
+            tools/manga/manga_metadata_enrichment_models.dart \
+            test/tools/manga_jikan_bulk_enricher_test.dart \
+            test/tools/jikan_tool_pacing_contract_test.dart
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            tools/manga/manga_jikan_bulk_enricher.dart \
+            tools/manga/manga_metadata_enrichment_models.dart \
+            test/tools/manga_jikan_bulk_enricher_test.dart \
+            test/tools/jikan_tool_pacing_contract_test.dart
+          if ! git diff --cached --quiet; then
+            git commit -m 'style(manga): format Jikan metadata resolver'
+            git push origin HEAD:agent/manga-metadata-catalog-parity-20260908
+          fi
