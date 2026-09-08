@@ -17,7 +17,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: goanime-manga-global-cache
+  group: goanime-manga-global-cache-v2
   cancel-in-progress: false
 
 env:
