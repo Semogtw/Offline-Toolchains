@@ -127,19 +127,6 @@ jobs:
               count=1,
               flags=re.MULTILINE,
           )
-
-          old_guard = "elif len(structured_matches) == 2:
-    pass
-"
-          new_guard = (
-              "elif len(inline_matches) == 0 and len(structured_matches) >= 2:
-"
-              "    pass
-"
-          )
-          if old_guard in text:
-              text = text.replace(old_guard, new_guard, 1)
-
           path.write_text(text, encoding='utf-8')
           PY
           git diff --check
