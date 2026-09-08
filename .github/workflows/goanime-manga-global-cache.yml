@@ -18,7 +18,7 @@ permissions:
 
 concurrency:
   group: goanime-manga-global-cache-v2
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   FLUTTER_CHANNEL: stable
