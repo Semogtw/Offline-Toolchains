@@ -28,7 +28,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Semogtw/goanime-mobile
-          ref: agent/manga-metadata-catalog-parity-20260908
+          ref: feat/manga-catalog-canonicalization-v2-20260906
           token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
           persist-credentials: false
 
