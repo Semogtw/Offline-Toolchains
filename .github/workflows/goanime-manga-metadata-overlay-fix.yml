@@ -1,0 +1,54 @@
+name: GoAnime Manga Metadata Overlay Fix
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/goanime-manga-metadata-overlay-fix.yml
+
+permissions:
+  contents: read
+
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          GOANIME_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: test -n "$GOANIME_TOKEN"
+
+      - name: Checkout GoAnime metadata branch
+        uses: actions/checkout@v4
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: agent/manga-metadata-catalog-parity-20260908
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          persist-credentials: false
+
+      - name: Fix mutable metadata title list and publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('tools/manga/build_global_manga_availability.dart')
+          text = p.read_text()
+          old = "return merged.toList(growable: false)..sort();"
+          new = "return merged.toList(growable: true)..sort();"
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one merge-list marker, found {text.count(old)}')
+          p.write_text(text.replace(old, new))
+          PY
+          dart format tools/manga/build_global_manga_availability.dart
+          sha="$(gh api repos/Semogtw/goanime-mobile/contents/tools/manga/build_global_manga_availability.dart -f ref=agent/manga-metadata-catalog-parity-20260908 --jq .sha)"
+          content="$(base64 -w0 tools/manga/build_global_manga_availability.dart)"
+          gh api --method PUT repos/Semogtw/goanime-mobile/contents/tools/manga/build_global_manga_availability.dart \
+            -f message='fix(manga): keep merged metadata titles mutable' \
+            -f branch='agent/manga-metadata-catalog-parity-20260908' \
+            -f sha="$sha" \
+            -f content="$content" >/dev/null
