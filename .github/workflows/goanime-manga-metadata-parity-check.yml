@@ -42,26 +42,24 @@ jobs:
       - name: Resolve dependencies
         run: flutter pub get
 
-      - name: Check AniList enricher formatting
+      - name: Check metadata formatting
         run: >-
           dart format --output=none --set-exit-if-changed
           tools/manga/manga_anilist_bulk_enricher.dart
+          tools/manga/manga_metadata_merger.dart
           test/tools/manga_anilist_bulk_enricher_test.dart
+          test/tools/manga_metadata_merger_test.dart
 
-      - name: Analyze AniList enricher scope
+      - name: Analyze metadata scope
         run: >-
           flutter analyze
           tools/manga/manga_anilist_bulk_enricher.dart
+          tools/manga/manga_metadata_merger.dart
           test/tools/manga_anilist_bulk_enricher_test.dart
+          test/tools/manga_metadata_merger_test.dart
 
       - name: Run AniList metadata GREEN tests
         run: flutter test test/tools/manga_anilist_bulk_enricher_test.dart
 
-      - name: Format merger test in runner
-        shell: bash
-        run: |
-          dart format test/tools/manga_metadata_merger_test.dart
-          git diff -- test/tools/manga_metadata_merger_test.dart || true
-
-      - name: Run metadata merger RED/GREEN test
+      - name: Run metadata merger GREEN tests
         run: flutter test test/tools/manga_metadata_merger_test.dart
