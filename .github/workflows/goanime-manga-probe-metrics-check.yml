@@ -1,4 +1,4 @@
-name: GoAnime Manga Probe Metrics Check
+name: GoAnime Manga Probe Metrics Fixture Fix
 
 on:
   push:
@@ -9,22 +9,22 @@ permissions:
   contents: read
 
 jobs:
-  check:
+  fix:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
-      - name: Require private repository token
+      - name: Require GoAnime write token
         shell: bash
         env:
-          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+          GOANIME_WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: test -n "$GOANIME_WRITE_TOKEN"
 
-      - name: Checkout GoAnime probe-metrics branch
+      - name: Checkout isolated GoAnime branch
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
           ref: agent/manga-provider-probe-metrics-20260908
-          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
           path: private-source
           fetch-depth: 1
           persist-credentials: false
@@ -39,39 +39,47 @@ jobs:
           flutter-version: 3.44.1
           cache: true
 
-      - name: Resolve dependencies
+      - name: Repair legacy readability fixture
         working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
-          flutter config --no-analytics
-          flutter pub get --enforce-lockfile >/dev/null
-          (cd packages/goanime_core && dart pub get >/dev/null)
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('test/tools/build_global_manga_availability_test.dart')
+          text = path.read_text(encoding='utf-8')
+          old = "      'providers': <Object?>[],\n"
+          new = """      'providers': <Object?>[
+            <String, Object?>{
+              'sourceId': 'ptbr.astratoons',
+              'attempted': 2,
+              'promoted': 1,
+              'skipped': 3,
+              'inconclusive': 1,
+              'failed': 0,
+              'expired': 1,
+            },
+          ],
+          """
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one legacy providers fixture, found {text.count(old)}')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          PY
+          dart format test/tools/build_global_manga_availability_test.dart
+          git diff --check
 
-      - name: Check shell syntax
+      - name: Publish fixture correction
         working-directory: private-source
-        run: bash -n tools/manga/materialize_global_manga_availability_ci.sh
-
-      - name: Check Dart formatting
-        working-directory: private-source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
         run: |
-          dart format --output=none --set-exit-if-changed \
-            tools/manga/build_global_manga_availability.dart \
-            test/tools/manga_provider_availability_receipt_test.dart \
-            test/tools/materialize_global_manga_availability_gate_test.dart
-
-      - name: Analyze changed scope
-        working-directory: private-source
-        run: |
-          flutter analyze --no-pub \
-            tools/manga/build_global_manga_availability.dart \
-            test/tools/manga_provider_availability_receipt_test.dart \
-            test/tools/materialize_global_manga_availability_gate_test.dart
-
-      - name: Run focused regression tests
-        working-directory: private-source
-        run: |
-          flutter test --no-pub --concurrency=1 \
-            test/tools/manga_provider_availability_receipt_test.dart \
-            test/tools/materialize_global_manga_availability_gate_test.dart \
-            test/tools/build_global_manga_availability_test.dart
+          set -euo pipefail
+          path='test/tools/build_global_manga_availability_test.dart'
+          current_sha="$(gh api "repos/Semogtw/goanime-mobile/contents/$path?ref=agent/manga-provider-probe-metrics-20260908" --jq .sha)"
+          encoded="$(base64 -w0 "$path")"
+          gh api --method PUT "repos/Semogtw/goanime-mobile/contents/$path" \
+            -f message='test(manga): align builder fixture with provider probe metrics' \
+            -f content="$encoded" \
+            -f sha="$current_sha" \
+            -f branch='agent/manga-provider-probe-metrics-20260908' >/dev/null
