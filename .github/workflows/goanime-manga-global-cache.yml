@@ -3,6 +3,9 @@ name: GoAnime Manga Global Cache
 on:
   schedule:
     - cron: '45 6 * * *'
+  push:
+    paths:
+      - 'triggers/goanime-manga-global-cache/**'
   workflow_dispatch:
     inputs:
       target_ref:
@@ -34,7 +37,11 @@ jobs:
           DISPATCH_TARGET: ${{ github.event.inputs.target_ref || '' }}
         run: |
           set -euo pipefail
-          target="${DISPATCH_TARGET:-$SCHEDULED_TARGET_REF}"
+          if [[ -f "triggers/goanime-manga-global-cache/target.txt" ]]; then
+            target="$(cat triggers/goanime-manga-global-cache/target.txt | tr -d ' \n\r')"
+          else
+            target="${DISPATCH_TARGET:-$SCHEDULED_TARGET_REF}"
+          fi
           case "$target" in
             codex/manga-parity-20260823|main|feat/manga-catalog-canonicalization-v2-20260906) ;;
             *)
