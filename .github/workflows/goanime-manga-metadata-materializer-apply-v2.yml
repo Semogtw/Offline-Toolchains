@@ -1,0 +1,318 @@
+name: GoAnime Manga Metadata Materializer Apply V2
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/goanime-manga-metadata-materializer-apply-v2.yml
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          GOANIME_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: test -n "$GOANIME_TOKEN"
+
+      - name: Checkout GoAnime metadata branch
+        uses: actions/checkout@v4
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: agent/manga-metadata-catalog-parity-20260908
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          persist-credentials: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.1'
+          channel: stable
+          cache: true
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Patch metadata materializer
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tools/manga/materialize_global_manga_availability_ci.sh')
+          text = path.read_text()
+
+          def replace_exact(old, new, label, expected=1):
+              global text
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(f'{label}: expected {expected} marker(s), found {count}')
+              text = text.replace(old, new)
+
+          replace_exact(
+              'RECEIPT_PATH="docs/manga_global_availability_receipt_${RECEIPT_DATE}.md"\n\ncleanup() {',
+              'RECEIPT_PATH="docs/manga_global_availability_receipt_${RECEIPT_DATE}.md"\n'
+              'MANGA_METADATA_MAX_JIKAN_SEARCHES="${MANGA_METADATA_MAX_JIKAN_SEARCHES:-512}"\n'
+              'if ! [[ "$MANGA_METADATA_MAX_JIKAN_SEARCHES" =~ ^[0-9]+$ ]]; then\n'
+              '  echo "MANGA_METADATA_MAX_JIKAN_SEARCHES must be a non-negative integer" >&2\n'
+              '  exit 2\n'
+              'fi\n\ncleanup() {',
+              'metadata budget',
+          )
+
+          replace_exact(
+              '  tools/manga/build_global_manga_availability_impl.dart\n'
+              '  test/services/manga/manga_catalog_availability_service_test.dart',
+              '  tools/manga/build_global_manga_availability_impl.dart\n'
+              '  tools/manga/manga_jikan_bulk_enricher.dart\n'
+              '  tools/manga/manga_anilist_bulk_enricher.dart\n'
+              '  tools/manga/manga_metadata_merger.dart\n'
+              '  tools/manga/manga_metadata_catalog_targets.dart\n'
+              '  tools/manga/manga_metadata_cache.dart\n'
+              '  tools/manga/manga_metadata_refresh.dart\n'
+              '  tools/manga/refresh_manga_metadata_cache.dart\n'
+              '  test/services/manga/manga_catalog_availability_service_test.dart',
+              'format tool files',
+          )
+
+          replace_exact(
+              '  test/tools/materialize_global_manga_availability_gate_test.dart\n'
+              '  test/tools/inventory_manga_catalog_selection_test.dart',
+              '  test/tools/materialize_global_manga_availability_gate_test.dart\n'
+              '  test/tools/materialize_global_manga_metadata_gate_test.dart\n'
+              '  test/tools/manga_jikan_bulk_enricher_test.dart\n'
+              '  test/tools/manga_anilist_bulk_enricher_test.dart\n'
+              '  test/tools/manga_metadata_merger_test.dart\n'
+              '  test/tools/manga_metadata_catalog_targets_test.dart\n'
+              '  test/tools/manga_metadata_cache_test.dart\n'
+              '  test/tools/manga_metadata_refresh_test.dart\n'
+              '  test/tools/build_global_manga_metadata_integration_test.dart\n'
+              '  test/tools/refresh_manga_metadata_cache_test.dart\n'
+              '  test/tools/inventory_manga_catalog_selection_test.dart',
+              'format test files',
+          )
+
+          replace_exact(
+              '  tools/manga/build_global_manga_availability_impl.dart \\\n'
+              '  test/services/manga/manga_catalog_availability_service_test.dart',
+              '  tools/manga/build_global_manga_availability_impl.dart \\\n'
+              '  tools/manga/manga_jikan_bulk_enricher.dart \\\n'
+              '  tools/manga/manga_anilist_bulk_enricher.dart \\\n'
+              '  tools/manga/manga_metadata_merger.dart \\\n'
+              '  tools/manga/manga_metadata_catalog_targets.dart \\\n'
+              '  tools/manga/manga_metadata_cache.dart \\\n'
+              '  tools/manga/manga_metadata_refresh.dart \\\n'
+              '  tools/manga/refresh_manga_metadata_cache.dart \\\n'
+              '  test/services/manga/manga_catalog_availability_service_test.dart',
+              'analyze tool files',
+          )
+
+          test_marker = (
+              '  test/tools/materialize_global_manga_availability_gate_test.dart \\\n'
+              '  test/tools/inventory_manga_catalog_selection_test.dart'
+          )
+          metadata_test_marker = (
+              '  test/tools/materialize_global_manga_availability_gate_test.dart \\\n'
+              '  test/tools/materialize_global_manga_metadata_gate_test.dart \\\n'
+              '  test/tools/manga_jikan_bulk_enricher_test.dart \\\n'
+              '  test/tools/manga_anilist_bulk_enricher_test.dart \\\n'
+              '  test/tools/manga_metadata_merger_test.dart \\\n'
+              '  test/tools/manga_metadata_catalog_targets_test.dart \\\n'
+              '  test/tools/manga_metadata_cache_test.dart \\\n'
+              '  test/tools/manga_metadata_refresh_test.dart \\\n'
+              '  test/tools/build_global_manga_metadata_integration_test.dart \\\n'
+              '  test/tools/refresh_manga_metadata_cache_test.dart \\\n'
+              '  test/tools/inventory_manga_catalog_selection_test.dart'
+          )
+          replace_exact(
+              test_marker,
+              metadata_test_marker,
+              'analyze and test metadata files',
+              expected=2,
+          )
+
+          old_build = '''dart run tools/manga/build_global_manga_availability.dart \\
+            --snapshot "$OUT_DIR/manga_catalog_snapshot.private.json" \\
+            --previous-db assets/data/manga_availability.db \\
+            --output-db "$OUT_DIR/manga_availability.db" \\
+            --receipt "$OUT_DIR/global_availability_receipt.json"
+
+          test -s "$OUT_DIR/manga_availability.db"
+          test -s "$OUT_DIR/global_availability_receipt.json"'''
+          new_build = '''dart run tools/manga/build_global_manga_availability.dart \\
+            --snapshot "$OUT_DIR/manga_catalog_snapshot.private.json" \\
+            --previous-db assets/data/manga_availability.db \\
+            --output-db "$OUT_DIR/manga_availability.provider.db" \\
+            --receipt "$OUT_DIR/provider_availability_receipt.json"
+
+          metadata_args=(
+            --catalog-db "$OUT_DIR/manga_availability.provider.db"
+            --output-cache "$OUT_DIR/manga_metadata_cache.json"
+            --receipt "$OUT_DIR/manga_metadata_refresh_receipt.json"
+            --max-jikan-searches "$MANGA_METADATA_MAX_JIKAN_SEARCHES"
+          )
+          if [[ -s assets/data/manga_metadata_cache.json ]]; then
+            metadata_args+=(--baseline-cache assets/data/manga_metadata_cache.json)
+          fi
+          dart run tools/manga/refresh_manga_metadata_cache.dart "${metadata_args[@]}"
+
+          dart run tools/manga/build_global_manga_availability.dart \\
+            --snapshot "$OUT_DIR/manga_catalog_snapshot.private.json" \\
+            --previous-db assets/data/manga_availability.db \\
+            --metadata-cache "$OUT_DIR/manga_metadata_cache.json" \\
+            --output-db "$OUT_DIR/manga_availability.db" \\
+            --receipt "$OUT_DIR/global_availability_receipt.json"
+
+          test -s "$OUT_DIR/manga_availability.provider.db"
+          test -s "$OUT_DIR/provider_availability_receipt.json"
+          test -s "$OUT_DIR/manga_metadata_cache.json"
+          test -s "$OUT_DIR/manga_metadata_refresh_receipt.json"
+          test -s "$OUT_DIR/manga_availability.db"
+          test -s "$OUT_DIR/global_availability_receipt.json"'''
+          replace_exact(old_build, new_build, 'two-phase build')
+
+          replace_exact(
+              'python3 - "$OUT_DIR/manga_catalog_inventory.json" "$OUT_DIR/global_availability_receipt.json" <<\'PY\'\n'
+              'import json, sys\n'
+              'inventory = json.load(open(sys.argv[1], encoding=\'utf-8\'))\n'
+              'global_receipt = json.load(open(sys.argv[2], encoding=\'utf-8\'))',
+              'python3 - "$OUT_DIR/manga_catalog_inventory.json" "$OUT_DIR/global_availability_receipt.json" "$OUT_DIR/manga_metadata_refresh_receipt.json" <<\'PY\'\n'
+              'import json, sys\n'
+              'inventory = json.load(open(sys.argv[1], encoding=\'utf-8\'))\n'
+              'global_receipt = json.load(open(sys.argv[2], encoding=\'utf-8\'))\n'
+              'metadata_refresh = json.load(open(sys.argv[3], encoding=\'utf-8\'))',
+              'validation receipt inputs',
+          )
+
+          replace_exact(
+              "assert global_receipt['refreshedProviders'] >= 1, global_receipt\n"
+              "provider_availability = global_receipt.get('providerAvailability')",
+              "assert global_receipt['refreshedProviders'] >= 1, global_receipt\n"
+              "metadata_overlay = global_receipt.get('metadata')\n"
+              "assert isinstance(metadata_overlay, dict), global_receipt\n"
+              "assert metadata_refresh.get('schemaVersion') == 1, metadata_refresh\n"
+              "assert isinstance(metadata_refresh.get('targets'), int) and metadata_refresh['targets'] > 0, metadata_refresh\n"
+              "assert 0 <= metadata_refresh['outputEntries'] <= metadata_refresh['targets'], metadata_refresh\n"
+              "assert 0 <= metadata_refresh['retainedBaseline'] <= metadata_refresh['baselineEntries'], metadata_refresh\n"
+              "assert metadata_refresh['conflicts'] >= 0, metadata_refresh\n"
+              "assert metadata_overlay['cacheEntries'] == metadata_refresh['outputEntries'], (metadata_overlay, metadata_refresh)\n"
+              "assert metadata_overlay['appliedWorks'] <= metadata_overlay['cacheEntries'], metadata_overlay\n"
+              "assert metadata_overlay['ignoredEntries'] == metadata_overlay['cacheEntries'] - metadata_overlay['appliedWorks'], metadata_overlay\n"
+              "provider_availability = global_receipt.get('providerAvailability')",
+              'metadata validation',
+          )
+
+          replace_exact(
+              'cp "$OUT_DIR/manga_availability.db" assets/data/manga_availability.db',
+              'cp "$OUT_DIR/manga_availability.db" assets/data/manga_availability.db\n'
+              'cp "$OUT_DIR/manga_metadata_cache.json" assets/data/manga_metadata_cache.json',
+              'persist metadata cache',
+          )
+
+          replace_exact(
+              'python3 - "$OUT_DIR/manga_catalog_inventory.json" "$OUT_DIR/global_availability_receipt.json" "$RECEIPT_DATE" "$RECEIPT_PATH" <<\'PY\'\n'
+              'import json\n'
+              'import sys\n'
+              'from pathlib import Path\n\n'
+              'inventory = json.load(open(sys.argv[1], encoding=\'utf-8\'))\n'
+              'global_receipt = json.load(open(sys.argv[2], encoding=\'utf-8\'))\n'
+              'receipt_date = sys.argv[3]\n'
+              'receipt_path = sys.argv[4]',
+              'python3 - "$OUT_DIR/manga_catalog_inventory.json" "$OUT_DIR/global_availability_receipt.json" "$OUT_DIR/manga_metadata_refresh_receipt.json" "$RECEIPT_DATE" "$RECEIPT_PATH" <<\'PY\'\n'
+              'import json\n'
+              'import sys\n'
+              'from pathlib import Path\n\n'
+              'inventory = json.load(open(sys.argv[1], encoding=\'utf-8\'))\n'
+              'global_receipt = json.load(open(sys.argv[2], encoding=\'utf-8\'))\n'
+              'metadata_refresh = json.load(open(sys.argv[3], encoding=\'utf-8\'))\n'
+              'metadata_overlay = global_receipt[\'metadata\']\n'
+              'receipt_date = sys.argv[4]\n'
+              'receipt_path = sys.argv[5]',
+              'markdown receipt inputs',
+          )
+
+          replace_exact(
+              "    '',\n"
+              "    '## Provider catalog and readability proof coverage',",
+              "    '',\n"
+              "    '## Metadata enrichment this run',\n"
+              "    '',\n"
+              "    f\"- Provider-backed targets: **{metadata_refresh['targets']}**\",\n"
+              "    f\"- Baseline cache entries before refresh: **{metadata_refresh['baselineEntries']}**\",\n"
+              "    f\"- Baseline entries retained: **{metadata_refresh['retainedBaseline']}**\",\n"
+              "    f\"- Metadata cache entries after refresh: **{metadata_refresh['outputEntries']}**\",\n"
+              "    f\"- Identity conflicts rejected: **{metadata_refresh['conflicts']}**\",\n"
+              "    f\"- Jikan searches attempted: **{metadata_refresh['jikan']['searchesAttempted']}**\",\n"
+              "    f\"- Jikan works resolved this run: **{metadata_refresh['jikan']['resolved']}**\",\n"
+              "    f\"- AniList requests attempted: **{metadata_refresh['anilist']['requestsAttempted']}**\",\n"
+              "    f\"- AniList works resolved this run: **{metadata_refresh['anilist']['resolved']}**\",\n"
+              "    f\"- Metadata entries applied to final DB: **{metadata_overlay['appliedWorks']}**\",\n"
+              "    f\"- Final DB works with MAL IDs from cache: **{metadata_overlay['malIds']}**\",\n"
+              "    f\"- Final DB works with AniList IDs from cache: **{metadata_overlay['anilistIds']}**\",\n"
+              "    '',\n"
+              "    'Upstream failures preserve compatible provider-backed baseline metadata; external metadata never creates catalog membership.',\n"
+              "    '',\n"
+              "    '## Provider catalog and readability proof coverage',",
+              'metadata markdown section',
+          )
+
+          replace_exact(
+              '  assets/data/manga_availability.db \\\n'
+              '  assets/data/manga_readability_cursor.json \\\n',
+              '  assets/data/manga_availability.db \\\n'
+              '  assets/data/manga_metadata_cache.json \\\n'
+              '  assets/data/manga_readability_cursor.json \\\n',
+              'stage metadata cache',
+          )
+
+          path.write_text(text)
+          PY
+
+      - name: Format and validate integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format \
+            tools/manga/refresh_manga_metadata_cache.dart \
+            test/tools/refresh_manga_metadata_cache_test.dart \
+            test/tools/materialize_global_manga_metadata_gate_test.dart
+          bash -n tools/manga/materialize_global_manga_availability_ci.sh
+          dart format --output=none --set-exit-if-changed \
+            tools/manga/refresh_manga_metadata_cache.dart \
+            test/tools/refresh_manga_metadata_cache_test.dart \
+            test/tools/materialize_global_manga_metadata_gate_test.dart
+          flutter analyze \
+            tools/manga/refresh_manga_metadata_cache.dart \
+            test/tools/refresh_manga_metadata_cache_test.dart \
+            test/tools/materialize_global_manga_metadata_gate_test.dart
+          flutter test test/tools/refresh_manga_metadata_cache_test.dart
+          flutter test test/tools/materialize_global_manga_metadata_gate_test.dart
+
+      - name: Publish validated integration
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          branch='agent/manga-metadata-catalog-parity-20260908'
+          for path in \
+            tools/manga/refresh_manga_metadata_cache.dart \
+            test/tools/refresh_manga_metadata_cache_test.dart \
+            test/tools/materialize_global_manga_metadata_gate_test.dart \
+            tools/manga/materialize_global_manga_availability_ci.sh
+          do
+            encoded_path="${path//\//%2F}"
+            sha="$(gh api "repos/Semogtw/goanime-mobile/contents/$encoded_path?ref=agent%2Fmanga-metadata-catalog-parity-20260908" --jq .sha)"
+            content="$(base64 -w0 "$path")"
+            gh api --method PUT "repos/Semogtw/goanime-mobile/contents/$path" \
+              -f message='feat(manga): integrate metadata refresh into materializer' \
+              -f branch="$branch" \
+              -f sha="$sha" \
+              -f content="$content" >/dev/null
+          done
