@@ -1,0 +1,229 @@
+name: GoAnime Manga Dedupe Audit
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/goanime-manga-dedupe-audit.yml
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          GOANIME_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: test -n "$GOANIME_TOKEN"
+
+      - name: Checkout immutable GoAnime snapshot
+        uses: actions/checkout@v4
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: 1ac1f3bb1cb8d0e3c4b78d618f6f1abdd23729a1
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Audit bundled manga identity invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import sqlite3
+          from itertools import combinations
+          from pathlib import Path
+
+          path = Path('assets/data/manga_availability.db')
+          if not path.is_file():
+              raise SystemExit('bundled manga availability DB is missing')
+
+          db = sqlite3.connect(f'file:{path}?mode=ro', uri=True)
+          db.row_factory = sqlite3.Row
+          try:
+              scalar = lambda sql: db.execute(sql).fetchone()[0]
+              totals = {
+                  'works': scalar('SELECT COUNT(*) FROM works'),
+                  'sourceLinks': scalar('SELECT COUNT(*) FROM source_links'),
+                  'providers': scalar('SELECT COUNT(DISTINCT sourceId) FROM source_links'),
+                  'readableLinks': scalar("SELECT COUNT(*) FROM source_links WHERE availabilityState = 'readable'"),
+                  'externalIds': scalar('SELECT COUNT(*) FROM external_ids'),
+              }
+
+              provider_distribution = {
+                  str(row['providerCount']): row['works']
+                  for row in db.execute('''
+                    SELECT providerCount, COUNT(*) AS works
+                    FROM (
+                      SELECT workId, COUNT(DISTINCT sourceId) AS providerCount
+                      FROM source_links
+                      GROUP BY workId
+                    )
+                    GROUP BY providerCount
+                    ORDER BY providerCount
+                  ''')
+              }
+              multi = {
+                  'worksWith2PlusProviders': scalar('''
+                    SELECT COUNT(*) FROM (
+                      SELECT workId FROM source_links GROUP BY workId
+                      HAVING COUNT(DISTINCT sourceId) >= 2
+                    )
+                  '''),
+                  'worksWith3PlusProviders': scalar('''
+                    SELECT COUNT(*) FROM (
+                      SELECT workId FROM source_links GROUP BY workId
+                      HAVING COUNT(DISTINCT sourceId) >= 3
+                    )
+                  '''),
+                  'worksWith4PlusProviders': scalar('''
+                    SELECT COUNT(*) FROM (
+                      SELECT workId FROM source_links GROUP BY workId
+                      HAVING COUNT(DISTINCT sourceId) >= 4
+                    )
+                  '''),
+                  'maxProvidersPerWork': scalar('''
+                    SELECT COALESCE(MAX(providerCount), 0) FROM (
+                      SELECT COUNT(DISTINCT sourceId) AS providerCount
+                      FROM source_links GROUP BY workId
+                    )
+                  '''),
+                  'maxLinksPerWork': scalar('''
+                    SELECT COALESCE(MAX(linkCount), 0) FROM (
+                      SELECT COUNT(*) AS linkCount FROM source_links GROUP BY workId
+                    )
+                  '''),
+              }
+
+              collision_rows = list(db.execute('''
+                SELECT titleKey, GROUP_CONCAT(workId, char(31)) AS workIds,
+                       COUNT(DISTINCT workId) AS workCount
+                FROM title_keys
+                GROUP BY titleKey
+                HAVING COUNT(DISTINCT workId) > 1
+              '''))
+              collision_work_ids = set()
+              overlap_groups = 0
+              disjoint_groups = 0
+              groups_with_external_identity = 0
+              groups_with_conflicting_external_identity = 0
+              max_works_per_key = 0
+
+              provider_cache = {}
+              external_cache = {}
+              for row in collision_rows:
+                  work_ids = row['workIds'].split(chr(31))
+                  collision_work_ids.update(work_ids)
+                  max_works_per_key = max(max_works_per_key, len(work_ids))
+
+                  provider_sets = []
+                  external_sets = []
+                  for work_id in work_ids:
+                      providers = provider_cache.get(work_id)
+                      if providers is None:
+                          providers = {
+                              r[0] for r in db.execute(
+                                  'SELECT DISTINCT sourceId FROM source_links WHERE workId = ?',
+                                  (work_id,),
+                              )
+                          }
+                          provider_cache[work_id] = providers
+                      provider_sets.append(providers)
+
+                      externals = external_cache.get(work_id)
+                      if externals is None:
+                          externals = {
+                              (r[0].lower(), r[1]) for r in db.execute(
+                                  'SELECT namespace, externalId FROM external_ids WHERE workId = ?',
+                                  (work_id,),
+                              )
+                          }
+                          external_cache[work_id] = externals
+                      external_sets.append(externals)
+
+                  has_overlap = any(left & right for left, right in combinations(provider_sets, 2))
+                  if has_overlap:
+                      overlap_groups += 1
+                  else:
+                      disjoint_groups += 1
+
+                  if any(external_sets):
+                      groups_with_external_identity += 1
+                  identities_by_namespace = {}
+                  for externals in external_sets:
+                      for namespace, value in externals:
+                          identities_by_namespace.setdefault(namespace, set()).add(value)
+                  if any(len(values) > 1 for values in identities_by_namespace.values()):
+                      groups_with_conflicting_external_identity += 1
+
+              title_collisions = {
+                  'normalizedTitleKeyGroups': len(collision_rows),
+                  'worksParticipating': len(collision_work_ids),
+                  'maxWorksPerTitleKey': max_works_per_key,
+                  'groupsWithProviderOverlap': overlap_groups,
+                  'groupsWithDisjointProviderSets': disjoint_groups,
+                  'groupsWithAnyExternalIdentity': groups_with_external_identity,
+                  'groupsWithConflictingExternalIdentity': groups_with_conflicting_external_identity,
+                  'exactCanonicalCasefoldGroups': scalar('''
+                    SELECT COUNT(*) FROM (
+                      SELECT lower(trim(canonicalTitle)) AS k
+                      FROM works GROUP BY k HAVING COUNT(*) > 1
+                    )
+                  '''),
+              }
+
+              integrity = {
+                  'worksWithoutSourceLinks': scalar('''
+                    SELECT COUNT(*) FROM works w
+                    WHERE NOT EXISTS (SELECT 1 FROM source_links s WHERE s.workId = w.workId)
+                  '''),
+                  'orphanSourceLinks': scalar('''
+                    SELECT COUNT(*) FROM source_links s
+                    WHERE NOT EXISTS (SELECT 1 FROM works w WHERE w.workId = s.workId)
+                  '''),
+                  'orphanTitleKeys': scalar('''
+                    SELECT COUNT(*) FROM title_keys t
+                    WHERE NOT EXISTS (SELECT 1 FROM works w WHERE w.workId = t.workId)
+                  '''),
+                  'orphanExternalIds': scalar('''
+                    SELECT COUNT(*) FROM external_ids e
+                    WHERE NOT EXISTS (SELECT 1 FROM works w WHERE w.workId = e.workId)
+                  '''),
+                  'duplicateSourceOccurrenceKeys': scalar('''
+                    SELECT COUNT(*) FROM (
+                      SELECT sourceId, mangaId FROM source_links
+                      GROUP BY sourceId, mangaId HAVING COUNT(*) > 1
+                    )
+                  '''),
+                  'duplicateExternalIdentityKeys': scalar('''
+                    SELECT COUNT(*) FROM (
+                      SELECT lower(namespace), externalId FROM external_ids
+                      GROUP BY lower(namespace), externalId HAVING COUNT(*) > 1
+                    )
+                  '''),
+              }
+
+              report = {
+                  'schemaVersion': 1,
+                  'sourceSha': '1ac1f3bb1cb8d0e3c4b78d618f6f1abdd23729a1',
+                  'totals': totals,
+                  'providerDistribution': provider_distribution,
+                  'multiProvider': multi,
+                  'titleKeyCollisions': title_collisions,
+                  'integrity': integrity,
+              }
+              print(json.dumps(report, sort_keys=True, indent=2))
+
+              if any(integrity.values()):
+                  raise SystemExit('identity/catalog integrity invariant failed')
+          finally:
+              db.close()
+          PY
