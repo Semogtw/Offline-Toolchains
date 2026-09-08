@@ -40,7 +40,7 @@ jobs:
           ref="$(tr -d '\r\n ' < "$request")"
           test -n "$ref"
           case "$ref" in
-            feat/manga-checkpoint-resume-20260908) ;;
+            feat/manga-checkpoint-resume-20260908|feat/manga-catalog-canonicalization-v2-20260906) ;;
             *) echo "::error::Unexpected ref: $ref"; exit 1 ;;
           esac
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
