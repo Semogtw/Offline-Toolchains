@@ -12,18 +12,33 @@ on:
         description: Allowlisted GoAnime-Mobile branch to refresh
         required: true
         default: feat/manga-catalog-canonicalization-v2-20260906
+      checkpoint_branch:
+        description: Private checkpoint branch for an existing materialization generation
+        required: false
+        default: ''
+      source_sha:
+        description: Immutable target SHA captured when the checkpoint generation started
+        required: false
+        default: ''
+      retry_count:
+        description: Automatic retries already attempted for the current bounded unit
+        required: false
+        default: '0'
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
-  group: goanime-manga-global-cache-v2
-  cancel-in-progress: ${{ github.event_name != 'schedule' }}
+  group: goanime-manga-global-cache-v3
+  cancel-in-progress: false
 
 env:
   FLUTTER_CHANNEL: stable
   FLUTTER_VERSION: 3.44.1
   SCHEDULED_TARGET_REF: main
+  CHECKPOINT_UNIT_TIMEOUT_MINUTES: 125
+  CHECKPOINT_MAX_RETRIES: 2
 
 jobs:
   refresh:
@@ -31,9 +46,11 @@ jobs:
     timeout-minutes: 360
     steps:
       - name: Checkout toolchains repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: toolchains-root
+          fetch-depth: 2
+          persist-credentials: false
 
       - name: Resolve trusted target
         id: target
@@ -48,11 +65,14 @@ jobs:
           if [[ "$EVENT_NAME" == "workflow_dispatch" && -n "$DISPATCH_TARGET" ]]; then
             target="$DISPATCH_TARGET"
           elif [[ "$EVENT_NAME" == "push" ]]; then
-            if compgen -G "toolchains-root/triggers/goanime-manga-global-cache/*.request" >/dev/null; then
-              latest_req="$(find toolchains-root/triggers/goanime-manga-global-cache -maxdepth 1 -type f -name '*.request' -printf '%f\n' | sort | tail -n 1)"
-              target="$(cat "toolchains-root/triggers/goanime-manga-global-cache/$latest_req" | tr -d ' \n\r')"
+            request="$(
+              git -C toolchains-root diff-tree --no-commit-id --name-only --diff-filter=AM -r HEAD^ HEAD -- \
+                'triggers/goanime-manga-global-cache/*.request' | sort | tail -n 1
+            )"
+            if [[ -n "$request" ]]; then
+              target="$(tr -d ' \n\r' < "toolchains-root/$request")"
             elif [[ -f "toolchains-root/triggers/goanime-manga-global-cache/target.txt" ]]; then
-              target="$(cat toolchains-root/triggers/goanime-manga-global-cache/target.txt | tr -d ' \n\r')"
+              target="$(tr -d ' \n\r' < toolchains-root/triggers/goanime-manga-global-cache/target.txt)"
             fi
           fi
 
@@ -62,7 +82,7 @@ jobs:
 
           echo "Resolved target ref: $target"
           case "$target" in
-            codex/manga-parity-20260823|main|feat/manga-catalog-canonicalization-v2-20260906) ;;
+            codex/manga-parity-20260823|main|feat/manga-catalog-canonicalization-v2-20260906|feat/manga-checkpoint-resume-20260908) ;;
             *)
               echo "::error::Ref is not allowlisted for manga global-cache maintenance: $target"
               exit 1
@@ -82,27 +102,81 @@ jobs:
           }
 
       - name: Checkout exact private GoAnime target
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
           ref: ${{ steps.target.outputs.ref }}
           token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
           path: private-source
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: true
           lfs: false
           submodules: false
           show-progress: false
 
-      - name: Record immutable source revision
-        id: source
+      - name: Prepare checkpoint generation
+        id: checkpoint
         working-directory: private-source
         shell: bash
+        env:
+          TARGET_REF: ${{ steps.target.outputs.ref }}
+          REQUESTED_CHECKPOINT_BRANCH: ${{ github.event.inputs.checkpoint_branch || '' }}
+          REQUESTED_SOURCE_SHA: ${{ github.event.inputs.source_sha || '' }}
+          REQUESTED_RETRY_COUNT: ${{ github.event.inputs.retry_count || '0' }}
         run: |
           set -euo pipefail
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          test -x tools/manga/materialize_global_manga_availability_ci.sh || \
+          target_sha="$(git rev-parse HEAD)"
+          mode=legacy
+          checkpoint_branch=""
+          source_sha="$target_sha"
+          retry_count=0
+
+          if [[ -f tools/manga/materialize_global_manga_availability_checkpointed_ci.sh ]]; then
+            mode=checkpoint
+            retry_count="$REQUESTED_RETRY_COUNT"
+            [[ "$retry_count" =~ ^[0-9]+$ ]] || {
+              echo "::error::retry_count must be a non-negative integer"
+              exit 1
+            }
+
+            if [[ -n "$REQUESTED_CHECKPOINT_BRANCH" || -n "$REQUESTED_SOURCE_SHA" ]]; then
+              test -n "$REQUESTED_CHECKPOINT_BRANCH" && test -n "$REQUESTED_SOURCE_SHA" || {
+                echo "::error::checkpoint_branch and source_sha must be supplied together"
+                exit 1
+              }
+              [[ "$REQUESTED_CHECKPOINT_BRANCH" =~ ^ci/manga-global-cache-[A-Za-z0-9._-]+$ ]] || {
+                echo "::error::Invalid manga checkpoint branch"
+                exit 1
+              }
+              [[ "$REQUESTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+                echo "::error::Invalid immutable manga checkpoint source SHA"
+                exit 1
+              }
+              checkpoint_branch="$REQUESTED_CHECKPOINT_BRANCH"
+              source_sha="$REQUESTED_SOURCE_SHA"
+              git cat-file -e "${source_sha}^{commit}"
+              git fetch --force --no-tags origin \
+                "refs/heads/$checkpoint_branch:refs/remotes/origin/manga-global-cache-checkpoint"
+              git checkout --detach refs/remotes/origin/manga-global-cache-checkpoint
+            else
+              source_sha="$target_sha"
+              checkpoint_branch="ci/manga-global-cache-${source_sha:0:12}-${GITHUB_RUN_ID}"
+              git switch -c "$checkpoint_branch"
+              git push origin HEAD:"$checkpoint_branch"
+            fi
+
+            test -f tools/manga/manga_checkpoint_state.py
+            test -f tools/manga/materialize_global_manga_availability_checkpointed_ci.sh
+          else
             test -f tools/manga/materialize_global_manga_availability_ci.sh
+          fi
+
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "checkpoint_branch=$checkpoint_branch" >> "$GITHUB_OUTPUT"
+          echo "retry_count=$retry_count" >> "$GITHUB_OUTPUT"
+          echo "target_sha=$target_sha" >> "$GITHUB_OUTPUT"
+          echo "Prepared manga cache mode=$mode source=$source_sha checkpoint=${checkpoint_branch:-none} retry=$retry_count"
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -120,19 +194,120 @@ jobs:
           flutter pub get --enforce-lockfile >/dev/null
           (cd packages/goanime_core && dart pub get >/dev/null)
 
-      - name: Materialize and publish global manga availability
+      - name: Materialize one durable manga unit
+        id: materialize
+        if: steps.checkpoint.outputs.mode == 'checkpoint'
+        continue-on-error: true
+        working-directory: private-source
+        shell: bash
+        env:
+          MANGA_CHECKPOINT_BRANCH: ${{ steps.checkpoint.outputs.checkpoint_branch }}
+          MANGA_CHECKPOINT_SOURCE_SHA: ${{ steps.checkpoint.outputs.source_sha }}
+          MANGA_CHECKPOINT_TARGET_BRANCH: ${{ steps.target.outputs.ref }}
+          MANGA_CHECKPOINT_GENERATION_ID: ${{ steps.checkpoint.outputs.checkpoint_branch }}
+        run: |
+          set -euo pipefail
+          timeout \
+            --signal=TERM \
+            --kill-after=5m \
+            "${CHECKPOINT_UNIT_TIMEOUT_MINUTES}m" \
+            bash tools/manga/materialize_global_manga_availability_checkpointed_ci.sh
+
+      - name: Materialize legacy global manga availability
+        id: legacy_materialize
+        if: steps.checkpoint.outputs.mode == 'legacy'
+        continue-on-error: true
         working-directory: private-source
         shell: bash
         env:
           TARGET_BRANCH: ${{ steps.target.outputs.ref }}
         run: bash tools/manga/materialize_global_manga_availability_ci.sh
 
+      - name: Queue checkpoint continuation
+        id: continuation
+        if: >-
+          steps.checkpoint.outputs.mode == 'checkpoint' &&
+          steps.materialize.outcome == 'success' &&
+          steps.materialize.outputs.CHECKPOINT_CONTINUE == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REF: ${{ steps.target.outputs.ref }}
+          CHECKPOINT_BRANCH: ${{ steps.checkpoint.outputs.checkpoint_branch }}
+          SOURCE_SHA: ${{ steps.checkpoint.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run goanime-manga-global-cache.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            --field target_ref="$TARGET_REF" \
+            --field checkpoint_branch="$CHECKPOINT_BRANCH" \
+            --field source_sha="$SOURCE_SHA" \
+            --field retry_count=0
+          echo "queued=1" >> "$GITHUB_OUTPUT"
+          echo "Queued next bounded manga checkpoint unit."
+
+      - name: Retry interrupted checkpoint unit
+        id: retry
+        if: >-
+          steps.checkpoint.outputs.mode == 'checkpoint' &&
+          steps.materialize.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REF: ${{ steps.target.outputs.ref }}
+          CHECKPOINT_BRANCH: ${{ steps.checkpoint.outputs.checkpoint_branch }}
+          SOURCE_SHA: ${{ steps.checkpoint.outputs.source_sha }}
+          RETRY_COUNT: ${{ steps.checkpoint.outputs.retry_count }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          next_retry="$((RETRY_COUNT + 1))"
+          if (( next_retry > CHECKPOINT_MAX_RETRIES )); then
+            echo "Retry budget exhausted for the current checkpoint unit."
+            echo "queued=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh workflow run goanime-manga-global-cache.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            --field target_ref="$TARGET_REF" \
+            --field checkpoint_branch="$CHECKPOINT_BRANCH" \
+            --field source_sha="$SOURCE_SHA" \
+            --field retry_count="$next_retry"
+          echo "queued=1" >> "$GITHUB_OUTPUT"
+          echo "Queued retry $next_retry/$CHECKPOINT_MAX_RETRIES for the same durable manga unit."
+
+      - name: Fail exhausted checkpoint unit
+        if: >-
+          steps.checkpoint.outputs.mode == 'checkpoint' &&
+          steps.materialize.outcome == 'failure' &&
+          steps.retry.outputs.queued != '1'
+        shell: bash
+        run: |
+          echo '::error::Manga checkpoint unit failed and automatic retry budget is exhausted.'
+          exit 1
+
+      - name: Fail legacy materialization error
+        if: >-
+          steps.checkpoint.outputs.mode == 'legacy' &&
+          steps.legacy_materialize.outcome == 'failure'
+        shell: bash
+        run: |
+          echo '::error::Legacy manga global-cache materialization failed.'
+          exit 1
+
       - name: Publish sanitized refresh receipt
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          SOURCE_SHA: ${{ steps.checkpoint.outputs.source_sha }}
           TARGET_REF: ${{ steps.target.outputs.ref }}
+          MODE: ${{ steps.checkpoint.outputs.mode }}
+          CHECKPOINT_BRANCH: ${{ steps.checkpoint.outputs.checkpoint_branch }}
+          MATERIALIZE_OUTCOME: ${{ steps.materialize.outcome || steps.legacy_materialize.outcome || 'unknown' }}
+          CONTINUE: ${{ steps.materialize.outputs.CHECKPOINT_CONTINUE || '0' }}
+          COMPLETE: ${{ steps.materialize.outputs.CHECKPOINT_COMPLETE || '0' }}
+          RETRY_QUEUED: ${{ steps.retry.outputs.queued || '0' }}
           STATE: ${{ job.status }}
         shell: bash
         run: |
@@ -142,9 +317,15 @@ jobs:
           body="$(jq -cn \
             --arg sourceSha "$source_sha" \
             --arg targetRef "$target_ref" \
+            --arg mode "${MODE:-unknown}" \
+            --arg checkpointBranch "${CHECKPOINT_BRANCH:-}" \
+            --arg materializeOutcome "${MATERIALIZE_OUTCOME:-unknown}" \
             --arg state "$STATE" \
+            --argjson continue "${CONTINUE:-0}" \
+            --argjson complete "${COMPLETE:-0}" \
+            --argjson retryQueued "${RETRY_QUEUED:-0}" \
             --argjson runId "$GITHUB_RUN_ID" \
-            '{schemaVersion:1,sourceSha:$sourceSha,targetRef:$targetRef,state:$state,runId:$runId}')"
+            '{schemaVersion:2,sourceSha:$sourceSha,targetRef:$targetRef,mode:$mode,checkpointBranch:$checkpointBranch,materializeOutcome:$materializeOutcome,state:$state,continue:$continue,complete:$complete,retryQueued:$retryQueued,runId:$runId}')"
           encoded="$(printf '%s\n' "$body" | base64 -w0)"
           path="results/goanime-manga-global-cache/${source_sha}-${GITHUB_RUN_ID}.json"
           gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" \
@@ -155,7 +336,11 @@ jobs:
         if: always()
         env:
           TARGET_REF: ${{ steps.target.outputs.ref }}
-          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          SOURCE_SHA: ${{ steps.checkpoint.outputs.source_sha }}
+          MODE: ${{ steps.checkpoint.outputs.mode }}
+          CHECKPOINT_BRANCH: ${{ steps.checkpoint.outputs.checkpoint_branch }}
+          CONTINUE: ${{ steps.materialize.outputs.CHECKPOINT_CONTINUE || '0' }}
+          COMPLETE: ${{ steps.materialize.outputs.CHECKPOINT_COMPLETE || '0' }}
         shell: bash
         run: |
           {
@@ -164,7 +349,13 @@ jobs:
             echo "- runner: \`ubuntu-24.04\`"
             echo "- target: \`${TARGET_REF:-unknown}\`"
             echo "- source SHA: \`${SOURCE_SHA:-unknown}\`"
-            echo '- private source/artifacts are not uploaded to Toolchains'
+            echo "- mode: \`${MODE:-unknown}\`"
+            if [[ "${MODE:-}" == checkpoint ]]; then
+              echo "- checkpoint: \`${CHECKPOINT_BRANCH:-unknown}\`"
+              echo "- continuation requested: \`${CONTINUE:-0}\`"
+              echo "- generation complete: \`${COMPLETE:-0}\`"
+            fi
+            echo '- private source/checkpoint artifacts are not uploaded to Toolchains'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove private checkout
