@@ -59,6 +59,7 @@ jobs:
           test/tools/manga_metadata_cache_test.dart
           test/tools/manga_metadata_refresh_test.dart
           test/tools/build_global_manga_metadata_integration_test.dart
+          test/tools/materialize_global_manga_metadata_gate_test.dart
 
       - name: Analyze metadata scope
         run: >-
@@ -77,6 +78,7 @@ jobs:
           test/tools/manga_metadata_cache_test.dart
           test/tools/manga_metadata_refresh_test.dart
           test/tools/build_global_manga_metadata_integration_test.dart
+          test/tools/materialize_global_manga_metadata_gate_test.dart
 
       - name: Run Jikan metadata GREEN tests
         run: flutter test test/tools/manga_jikan_bulk_enricher_test.dart
@@ -98,3 +100,6 @@ jobs:
 
       - name: Validate complete metadata builder snapshot contract
         run: flutter test test/tools/build_global_manga_metadata_integration_test.dart
+
+      - name: Validate materializer metadata integration gate
+        run: flutter test test/tools/materialize_global_manga_metadata_gate_test.dart
