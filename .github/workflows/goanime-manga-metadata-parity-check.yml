@@ -45,26 +45,35 @@ jobs:
       - name: Check metadata formatting
         run: >-
           dart format --output=none --set-exit-if-changed
+          tools/manga/manga_jikan_bulk_enricher.dart
           tools/manga/manga_anilist_bulk_enricher.dart
           tools/manga/manga_metadata_merger.dart
           tools/manga/manga_metadata_catalog_targets.dart
           tools/manga/manga_metadata_cache.dart
+          test/tools/manga_jikan_bulk_enricher_test.dart
           test/tools/manga_anilist_bulk_enricher_test.dart
           test/tools/manga_metadata_merger_test.dart
           test/tools/manga_metadata_catalog_targets_test.dart
           test/tools/manga_metadata_cache_test.dart
+          test/tools/manga_metadata_refresh_test.dart
 
       - name: Analyze metadata scope
         run: >-
           flutter analyze
+          tools/manga/manga_jikan_bulk_enricher.dart
           tools/manga/manga_anilist_bulk_enricher.dart
           tools/manga/manga_metadata_merger.dart
           tools/manga/manga_metadata_catalog_targets.dart
           tools/manga/manga_metadata_cache.dart
+          test/tools/manga_jikan_bulk_enricher_test.dart
           test/tools/manga_anilist_bulk_enricher_test.dart
           test/tools/manga_metadata_merger_test.dart
           test/tools/manga_metadata_catalog_targets_test.dart
           test/tools/manga_metadata_cache_test.dart
+          test/tools/manga_metadata_refresh_test.dart
+
+      - name: Run Jikan metadata GREEN tests
+        run: flutter test test/tools/manga_jikan_bulk_enricher_test.dart
 
       - name: Run AniList metadata GREEN tests
         run: flutter test test/tools/manga_anilist_bulk_enricher_test.dart
@@ -77,3 +86,6 @@ jobs:
 
       - name: Run metadata cache GREEN tests
         run: flutter test test/tools/manga_metadata_cache_test.dart
+
+      - name: Run metadata refresh RED/GREEN tests
+        run: flutter test test/tools/manga_metadata_refresh_test.dart
