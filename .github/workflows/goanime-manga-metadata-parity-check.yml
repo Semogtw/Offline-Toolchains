@@ -49,6 +49,7 @@ jobs:
           tools/manga/manga_metadata_merger.dart
           test/tools/manga_anilist_bulk_enricher_test.dart
           test/tools/manga_metadata_merger_test.dart
+          test/tools/manga_metadata_catalog_targets_test.dart
 
       - name: Analyze metadata scope
         run: >-
@@ -57,9 +58,13 @@ jobs:
           tools/manga/manga_metadata_merger.dart
           test/tools/manga_anilist_bulk_enricher_test.dart
           test/tools/manga_metadata_merger_test.dart
+          test/tools/manga_metadata_catalog_targets_test.dart
 
       - name: Run AniList metadata GREEN tests
         run: flutter test test/tools/manga_anilist_bulk_enricher_test.dart
 
       - name: Run metadata merger GREEN tests
         run: flutter test test/tools/manga_metadata_merger_test.dart
+
+      - name: Run metadata target RED/GREEN tests
+        run: flutter test test/tools/manga_metadata_catalog_targets_test.dart
