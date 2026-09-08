@@ -42,7 +42,7 @@ jobs:
       - name: Resolve dependencies
         run: flutter pub get
 
-      - name: Check Jikan resolver formatting
+      - name: Check formatted Jikan resolver
         run: >-
           dart format --output=none --set-exit-if-changed
           tools/manga/manga_jikan_bulk_enricher.dart
