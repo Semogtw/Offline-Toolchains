@@ -40,18 +40,14 @@ jobs:
         run: |
           set -euo pipefail
           dart format \
-            tools/manga/manga_jikan_bulk_enricher.dart \
-            tools/manga/manga_metadata_enrichment_models.dart \
-            test/tools/manga_jikan_bulk_enricher_test.dart \
-            test/tools/jikan_tool_pacing_contract_test.dart
+            tools/manga/manga_anilist_bulk_enricher.dart \
+            test/tools/manga_anilist_bulk_enricher_test.dart
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add \
-            tools/manga/manga_jikan_bulk_enricher.dart \
-            tools/manga/manga_metadata_enrichment_models.dart \
-            test/tools/manga_jikan_bulk_enricher_test.dart \
-            test/tools/jikan_tool_pacing_contract_test.dart
+            tools/manga/manga_anilist_bulk_enricher.dart \
+            test/tools/manga_anilist_bulk_enricher_test.dart
           if ! git diff --cached --quiet; then
-            git commit -m 'style(manga): format Jikan metadata resolver'
+            git commit -m 'style(manga): format AniList metadata enricher'
             git push origin HEAD:agent/manga-metadata-catalog-parity-20260908
           fi
