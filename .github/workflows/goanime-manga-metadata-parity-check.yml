@@ -1,0 +1,50 @@
+name: GoAnime Manga Metadata Parity Check
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/goanime-manga-metadata-parity-check.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-metadata-parity-check
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Require private repository token
+        shell: bash
+        env:
+          GOANIME_TOKEN: ${{ secrets.GOANIME_PRIVATE_REPO_TOKEN }}
+        run: |
+          test -n "$GOANIME_TOKEN"
+
+      - name: Checkout GoAnime metadata branch
+        uses: actions/checkout@v4
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: agent/manga-metadata-catalog-parity-20260908
+          token: ${{ secrets.GOANIME_PRIVATE_REPO_TOKEN }}
+          persist-credentials: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.1'
+          channel: stable
+          cache: true
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Run metadata schema RED tests
+        run: >-
+          flutter test
+          test/tools/manga_availability_v3_builder_test.dart
+          test/services/manga/manga_bundled_catalog_source_test.dart
