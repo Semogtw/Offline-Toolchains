@@ -1,0 +1,90 @@
+name: Verify GoAnime manga checkpoint resume
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/verify-goanime-manga-checkpoint-resume.yml'
+      - 'triggers/goanime-manga-checkpoint-resume-verify/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-checkpoint-resume-verify
+  cancel-in-progress: false
+
+env:
+  FLUTTER_CHANNEL: stable
+  FLUTTER_VERSION: 3.44.1
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout trusted request
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve requested GoAnime ref
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-checkpoint-resume-verify/*.request' | head -n 1)"
+          test -n "$request"
+          ref="$(tr -d '\r\n ' < "$request")"
+          test -n "$ref"
+          case "$ref" in
+            feat/manga-checkpoint-resume-20260908) ;;
+            *) echo "::error::Unexpected ref: $ref"; exit 1 ;;
+          esac
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout private GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get --enforce-lockfile >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+
+      - name: Run checkpoint resume gate
+        working-directory: private-source
+        run: flutter test --no-pub test/tools/materialize_global_manga_checkpoint_resume_gate_test.dart
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf private-source
