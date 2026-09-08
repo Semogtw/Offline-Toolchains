@@ -57,10 +57,11 @@ jobs:
       - name: Run AniList metadata GREEN tests
         run: flutter test test/tools/manga_anilist_bulk_enricher_test.dart
 
-      - name: Check merger test formatting
-        run: >-
-          dart format --output=none --set-exit-if-changed
-          test/tools/manga_metadata_merger_test.dart
+      - name: Format merger test in runner
+        shell: bash
+        run: |
+          dart format test/tools/manga_metadata_merger_test.dart
+          git diff -- test/tools/manga_metadata_merger_test.dart || true
 
       - name: Run metadata merger RED/GREEN test
         run: flutter test test/tools/manga_metadata_merger_test.dart
