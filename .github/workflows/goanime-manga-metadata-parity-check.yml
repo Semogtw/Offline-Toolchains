@@ -96,5 +96,5 @@ jobs:
       - name: Run metadata refresh GREEN tests
         run: flutter test test/tools/manga_metadata_refresh_test.dart
 
-      - name: Run global metadata builder RED/GREEN integration
+      - name: Validate global metadata builder integration
         run: flutter test test/tools/build_global_manga_metadata_integration_test.dart
