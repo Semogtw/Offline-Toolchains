@@ -51,6 +51,7 @@ jobs:
           tools/manga/manga_metadata_catalog_targets.dart
           tools/manga/manga_metadata_cache.dart
           tools/manga/manga_metadata_refresh.dart
+          tools/manga/refresh_manga_metadata_cache.dart
           tools/manga/build_global_manga_availability.dart
           test/tools/manga_jikan_bulk_enricher_test.dart
           test/tools/manga_anilist_bulk_enricher_test.dart
@@ -58,6 +59,7 @@ jobs:
           test/tools/manga_metadata_catalog_targets_test.dart
           test/tools/manga_metadata_cache_test.dart
           test/tools/manga_metadata_refresh_test.dart
+          test/tools/refresh_manga_metadata_cache_test.dart
           test/tools/build_global_manga_metadata_integration_test.dart
           test/tools/materialize_global_manga_metadata_gate_test.dart
 
@@ -70,6 +72,7 @@ jobs:
           tools/manga/manga_metadata_catalog_targets.dart
           tools/manga/manga_metadata_cache.dart
           tools/manga/manga_metadata_refresh.dart
+          tools/manga/refresh_manga_metadata_cache.dart
           tools/manga/build_global_manga_availability.dart
           test/tools/manga_jikan_bulk_enricher_test.dart
           test/tools/manga_anilist_bulk_enricher_test.dart
@@ -77,6 +80,7 @@ jobs:
           test/tools/manga_metadata_catalog_targets_test.dart
           test/tools/manga_metadata_cache_test.dart
           test/tools/manga_metadata_refresh_test.dart
+          test/tools/refresh_manga_metadata_cache_test.dart
           test/tools/build_global_manga_metadata_integration_test.dart
           test/tools/materialize_global_manga_metadata_gate_test.dart
 
@@ -98,8 +102,11 @@ jobs:
       - name: Run metadata refresh GREEN tests
         run: flutter test test/tools/manga_metadata_refresh_test.dart
 
+      - name: Run metadata refresh CLI GREEN test
+        run: flutter test test/tools/refresh_manga_metadata_cache_test.dart
+
       - name: Validate complete metadata builder snapshot contract
         run: flutter test test/tools/build_global_manga_metadata_integration_test.dart
 
-      - name: Validate semantic materializer metadata integration RED
+      - name: Validate materializer metadata integration GREEN gate
         run: flutter test test/tools/materialize_global_manga_metadata_gate_test.dart
