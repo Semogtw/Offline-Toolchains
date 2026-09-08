@@ -64,6 +64,15 @@ jobs:
           submodules: false
           show-progress: false
 
+      - name: Verify checkpoint helper and shell
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest tools.tests.test_manga_checkpoint_state
+          python3 -m py_compile tools/manga/manga_checkpoint_state.py
+          bash -n tools/manga/materialize_global_manga_availability_checkpointed_ci.sh
+
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
