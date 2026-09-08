@@ -1,0 +1,62 @@
+name: GoAnime Manga Unify Metadata And Metrics
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/goanime-manga-unify-metrics.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-unify-metrics
+  cancel-in-progress: true
+
+jobs:
+  unify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      TARGET_BRANCH: agent/manga-metadata-catalog-parity-20260908
+      GOANIME_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+    steps:
+      - name: Require private repository token
+        shell: bash
+        run: test -n "$GOANIME_TOKEN"
+
+      - name: Checkout metadata branch with full history
+        uses: actions/checkout@v4
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: agent/manga-metadata-catalog-parity-20260908
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Cherry-pick validated provider probe metrics
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git cherry-pick \
+            97d2f0dd122597bdbc74fa810efbea54b51d40a1 \
+            3283be70b274bdb45dfc4b70461f0708008141c4 \
+            571dac8b89e7f9393566b82333b09f0a466e209c \
+            650a8974cb51c89b620eedeeb4924238a16f38f3 \
+            20b8d35a45f8d4e4e4c60b2b4d7f623faf9e76c4
+
+      - name: Verify resulting lineage
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 20b8d35a45f8d4e4e4c60b2b4d7f623faf9e76c4 HEAD || true
+          git diff --check HEAD~5..HEAD
+          git log --oneline -7
+
+      - name: Push unified branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push "https://x-access-token:${GOANIME_TOKEN}@github.com/Semogtw/goanime-mobile.git" "HEAD:refs/heads/${TARGET_BRANCH}"
