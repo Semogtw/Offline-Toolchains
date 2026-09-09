@@ -57,8 +57,8 @@ class MetadataD1MigrateWorkflowTest(unittest.TestCase):
 
     def test_schema_inventory_fails_closed_on_unknown_user_tables(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("name NOT LIKE 'sqlite_%'", workflow)
-        self.assertIn("name NOT LIKE '_cf_%'", workflow)
+        for internal_pattern in ("sqlite_*", "d1_*", "_cf_*"):
+            self.assertIn(f"name NOT GLOB '{internal_pattern}'", workflow)
         self.assertNotIn("name IN ('snapshot_versions'", workflow)
         self.assertIn("Expected exactly one D1 database named", workflow)
 
