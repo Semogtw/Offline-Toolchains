@@ -1,0 +1,112 @@
+name: Smoke GoAnime Manga Continuous Metadata Pool
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-continuous-pool-smoke/*.request.json'
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_CHANNEL: stable
+  FLUTTER_VERSION: 3.44.1
+  CODE_BRANCH: feat/manga-metadata-continuous-pool-20260909
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Toolchains
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve smoke request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-continuous-pool-smoke/*.request.json' | head -n 1)"
+          test -n "$request"
+          checkpoint_branch="$(jq -er '.checkpointBranch | strings | select(length > 0)' "$request")"
+          [[ "$checkpoint_branch" =~ ^ci/manga-global-cache-[A-Za-z0-9._-]+$ ]]
+          echo "checkpoint_branch=$checkpoint_branch" >> "$GITHUB_OUTPUT"
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout optimized code read-only
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.CODE_BRANCH }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: code-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Checkout production checkpoint data read-only
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.checkpoint_branch }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: checkpoint-data
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: code-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get --enforce-lockfile >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+
+      - name: Smoke optimized metadata resolver on production catalog
+        working-directory: code-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/goanime-manga-continuous-pool-smoke"
+          mkdir -p "$out"
+          started_ms="$(date +%s%3N)"
+          dart run tools/manga/refresh_manga_metadata_cache.dart \
+            --catalog-db ../checkpoint-data/assets/data/manga_availability.db \
+            --output-cache "$out/cache.json" \
+            --receipt "$out/receipt.json" \
+            --max-jikan-searches 32 \
+            --jikan-search-offset 0
+          finished_ms="$(date +%s%3N)"
+          elapsed_ms=$((finished_ms - started_ms))
+          jq -e '.jikan.searchTargetsAttempted == 32' "$out/receipt.json" >/dev/null
+          jq -e '.jikan.resolved > 0' "$out/receipt.json" >/dev/null
+          jq -e '.jikan.failed == 0' "$out/receipt.json" >/dev/null
+          echo "elapsed_ms=$elapsed_ms"
+          jq '{identityResolver, targets, outputEntries, jikan}' "$out/receipt.json"
+
+      - name: Remove private checkouts
+        if: always()
+        shell: bash
+        run: rm -rf code-source checkpoint-data
