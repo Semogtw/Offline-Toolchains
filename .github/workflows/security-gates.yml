@@ -47,5 +47,8 @@ jobs:
       - name: Validate Fichário builder contract
         run: bash tests/fichario-builder-contract.sh
 
+      - name: Validate metadata Cloudflare readiness workflow contract
+        run: python3 tests/test_goanime_metadata_cloudflare_readiness_workflow.py
+
       - name: Reject tracked private material
         run: bash scripts/check-no-private-material.sh
