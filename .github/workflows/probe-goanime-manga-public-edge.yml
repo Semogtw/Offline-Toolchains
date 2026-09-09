@@ -138,6 +138,51 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Validate public Manga payload semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+
+          fetch_authoritative_json() {
+            local url="$1"
+            local body="$2"
+            local headers="$3"
+            curl --silent --show-error --fail \
+              --max-time 30 \
+              --header 'Accept: application/json' \
+              --header 'Cache-Control: no-cache' \
+              --dump-header "$headers" \
+              --output "$body" \
+              "$url"
+
+            local origin fallback
+            origin="$(awk -F': *' 'tolower($1) == "x-goanime-origin" { gsub(/\r/, "", $2); value=$2 } END { print value }' "$headers")"
+            fallback="$(awk -F': *' 'tolower($1) == "x-goanime-fallback" { gsub(/\r/, "", $2); value=$2 } END { print value }' "$headers")"
+            [[ "$origin" == 'a71' ]] || { echo "::error::Semantic probe expected origin a71, got ${origin:-none}"; return 1; }
+            [[ "$fallback" == 'false' ]] || { echo "::error::Semantic probe unexpectedly used fallback=${fallback:-none}"; return 1; }
+          }
+
+          fetch_authoritative_json \
+            "$EDGE_BASE_URL/v4/manga?q=berserk&limit=5&sfw=true" \
+            /tmp/goanime-manga-search.json \
+            /tmp/goanime-manga-search.headers
+          jq -e '.data | type == "array"' /tmp/goanime-manga-search.json >/dev/null
+          jq -e '.data | length > 0' /tmp/goanime-manga-search.json >/dev/null
+          jq -e 'any(.data[]; (.mal_id == 2) and (((.title // "") | ascii_downcase | contains("berserk")) or ((.title_english // "") | ascii_downcase | contains("berserk"))))' \
+            /tmp/goanime-manga-search.json >/dev/null
+
+          fetch_authoritative_json \
+            "$EDGE_BASE_URL/v4/manga/2/full" \
+            /tmp/goanime-manga-full.json \
+            /tmp/goanime-manga-full.headers
+          jq -e '.data.mal_id == 2' /tmp/goanime-manga-full.json >/dev/null
+          jq -e '((.data.title // "") | ascii_downcase | contains("berserk")) or ((.data.title_english // "") | ascii_downcase | contains("berserk"))' \
+            /tmp/goanime-manga-full.json >/dev/null
+
+          echo 'Manga semantic payload validation: PASS (Berserk MAL 2 via authoritative a71 origin)'
+          echo '- Semantic Manga payload validation: PASS (`Berserk`, MAL `2`, authoritative `a71`, no fallback).' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Record sanitized diagnostics on failure
         if: failure()
         shell: bash
@@ -171,4 +216,4 @@ jobs:
       - name: Cleanup private checkout
         if: always()
         shell: bash
-        run: rm -rf private-source /tmp/goanime-manga-public-routes.json /tmp/goanime-manga-public-edge-report.json /tmp/goanime-edge-headers-*.txt
+        run: rm -rf private-source /tmp/goanime-manga-public-routes.json /tmp/goanime-manga-public-edge-report.json /tmp/goanime-edge-headers-*.txt /tmp/goanime-manga-search.json /tmp/goanime-manga-search.headers /tmp/goanime-manga-full.json /tmp/goanime-manga-full.headers
