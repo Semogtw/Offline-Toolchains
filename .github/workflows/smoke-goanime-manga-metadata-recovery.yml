@@ -1,0 +1,93 @@
+name: Smoke GoAnime Manga Metadata Recovery
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-metadata-recovery-smoke/*.request.json'
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_CHANNEL: stable
+  FLUTTER_VERSION: 3.44.1
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Toolchains
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve smoke request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git diff-tree --no-commit-id --name-only --diff-filter=AM -r HEAD^ HEAD -- 'triggers/goanime-manga-metadata-recovery-smoke/*.request.json' | sort | tail -n 1)"
+          test -n "$request"
+          checkpoint_branch="$(jq -er '.checkpointBranch | strings | select(length > 0)' "$request")"
+          [[ "$checkpoint_branch" =~ ^ci/manga-global-cache-[A-Za-z0-9._-]+$ ]]
+          echo "checkpoint_branch=$checkpoint_branch" >> "$GITHUB_OUTPUT"
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout private GoAnime checkpoint
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.checkpoint_branch }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get --enforce-lockfile >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+
+      - name: Smoke MangaDex identity recovery
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/goanime-manga-metadata-smoke"
+          mkdir -p "$out"
+          dart run tools/manga/refresh_manga_metadata_cache.dart \
+            --catalog-db assets/data/manga_availability.db \
+            --output-cache "$out/cache.json" \
+            --receipt "$out/receipt.json" \
+            --max-jikan-searches 32 \
+            --jikan-search-offset 0
+          jq -e '.jikan.searchTargetsAttempted > 0' "$out/receipt.json" >/dev/null
+          jq -e '.jikan.resolved > 0' "$out/receipt.json" >/dev/null
+          jq '{identityResolver, targets, outputEntries, jikan}' "$out/receipt.json"
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf private-source
