@@ -63,6 +63,14 @@ class MangaPublicEdgeProbeWorkflowTest(unittest.TestCase):
         self.assertIn(".data.mal_id == 2", workflow)
         self.assertIn("x-goanime-fallback", workflow.lower())
 
+    def test_semantic_failure_reports_only_compact_public_metadata(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("search-summary=", workflow)
+        self.assertIn("full-summary=", workflow)
+        self.assertIn("{mal_id, title, title_english}", workflow)
+        self.assertIn("dataType", workflow)
+        self.assertNotIn("jq -c '.' /tmp/goanime-manga", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
