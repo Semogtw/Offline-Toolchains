@@ -163,29 +163,36 @@ jobs:
             [[ "$fallback" == 'false' ]] || { echo "::error::Semantic probe unexpectedly used fallback=${fallback:-none}"; return 1; }
           }
 
-          fetch_authoritative_json \
-            "$EDGE_BASE_URL/v4/manga?q=berserk&limit=5&sfw=true" \
-            /tmp/goanime-manga-search.json \
-            /tmp/goanime-manga-search.headers
-          search_summary="$(jq -c '{dataType:(.data|type), count:(if (.data|type)=="array" then (.data|length) else null end), results:(if (.data|type)=="array" then [.data[] | {mal_id, title, title_english}] else [] end)}' /tmp/goanime-manga-search.json)"
-          echo "search-summary=$search_summary"
-          jq -e '.data | type == "array"' /tmp/goanime-manga-search.json >/dev/null
-          jq -e '.data | length > 0' /tmp/goanime-manga-search.json >/dev/null
-          jq -e 'any(.data[]; (.mal_id == 2) and (((.title // "") | ascii_downcase | contains("berserk")) or ((.title_english // "") | ascii_downcase | contains("berserk"))))' \
-            /tmp/goanime-manga-search.json >/dev/null
+          for attempt in 1 2 3; do
+            echo "semantic-attempt=$attempt"
+            fetch_authoritative_json \
+              "$EDGE_BASE_URL/v4/manga?q=berserk&limit=5&sfw=true" \
+              /tmp/goanime-manga-search.json \
+              /tmp/goanime-manga-search.headers
+            search_summary="$(jq -c '{dataType:(.data|type), count:(if (.data|type)=="array" then (.data|length) else null end), results:(if (.data|type)=="array" then [.data[] | {mal_id, title, title_english}] else [] end)}' /tmp/goanime-manga-search.json)"
+            echo "search-summary=$search_summary"
+            jq -e '.data | type == "array"' /tmp/goanime-manga-search.json >/dev/null
+            jq -e '.data | length > 0' /tmp/goanime-manga-search.json >/dev/null
+            jq -e 'any(.data[]; (.mal_id == 2) and (((.title // "") | ascii_downcase | contains("berserk")) or ((.title_english // "") | ascii_downcase | contains("berserk"))))' \
+              /tmp/goanime-manga-search.json >/dev/null
 
-          fetch_authoritative_json \
-            "$EDGE_BASE_URL/v4/manga/2/full" \
-            /tmp/goanime-manga-full.json \
-            /tmp/goanime-manga-full.headers
-          full_summary="$(jq -c '{dataType:(.data|type), result:(if (.data|type)=="object" then (.data | {mal_id, title, title_english}) else null end)}' /tmp/goanime-manga-full.json)"
-          echo "full-summary=$full_summary"
-          jq -e '.data.mal_id == 2' /tmp/goanime-manga-full.json >/dev/null
-          jq -e '((.data.title // "") | ascii_downcase | contains("berserk")) or ((.data.title_english // "") | ascii_downcase | contains("berserk"))' \
-            /tmp/goanime-manga-full.json >/dev/null
+            fetch_authoritative_json \
+              "$EDGE_BASE_URL/v4/manga/2/full" \
+              /tmp/goanime-manga-full.json \
+              /tmp/goanime-manga-full.headers
+            full_summary="$(jq -c '{dataType:(.data|type), result:(if (.data|type)=="object" then (.data | {mal_id, title, title_english}) else null end)}' /tmp/goanime-manga-full.json)"
+            echo "full-summary=$full_summary"
+            jq -e '.data.mal_id == 2' /tmp/goanime-manga-full.json >/dev/null
+            jq -e '((.data.title // "") | ascii_downcase | contains("berserk")) or ((.data.title_english // "") | ascii_downcase | contains("berserk"))' \
+              /tmp/goanime-manga-full.json >/dev/null
 
-          echo 'Manga semantic payload validation: PASS (Berserk MAL 2 via authoritative a71 origin)'
-          echo '- Semantic Manga payload validation: PASS (`Berserk`, MAL `2`, authoritative `a71`, no fallback).' >> "$GITHUB_STEP_SUMMARY"
+            if [[ "$attempt" -lt 3 ]]; then
+              sleep 2
+            fi
+          done
+
+          echo 'Semantic Manga stability: PASS (3/3 rounds)'
+          echo '- Semantic Manga stability: PASS (3/3 rounds; `Berserk`, MAL `2`, authoritative `a71`, no fallback).' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Record sanitized diagnostics on failure
         if: failure()
