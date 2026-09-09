@@ -1,0 +1,137 @@
+name: Probe GoAnime metadata Cloudflare readiness
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-metadata-cloudflare-readiness/*.request.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-metadata-cloudflare-readiness-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  D1_DATABASE_NAME: goanime-metadata-index
+  WORKER_NAME: goanime-metadata-edge
+
+jobs:
+  probe:
+    name: Inspect metadata deployment readiness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Toolchains request
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(
+            git diff-tree --no-commit-id --name-only --diff-filter=AM -r HEAD^ HEAD -- \
+              'triggers/goanime-metadata-cloudflare-readiness/*.request.json' | sort | tail -n 1
+          )"
+          test -n "$request" || {
+            echo '::error::Readiness push did not contain a request file.'
+            exit 1
+          }
+          source_sha="$(jq -er '.sourceSha | strings | select(test("^[0-9a-f]{40}$"))' "$request")"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Inspect credential presence
+        id: credentials
+        shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          GOANIME_CATALOG_WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          ready=true
+          {
+            echo '### Metadata Cloudflare readiness'
+            for name in CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN GOANIME_CATALOG_WRITE_TOKEN; do
+              if [[ -n "${!name:-}" ]]; then
+                echo "- ${name}: present"
+              else
+                echo "- ${name}: missing"
+                ready=false
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+
+      - name: Stop safely when credentials are incomplete
+        if: steps.credentials.outputs.ready != 'true'
+        shell: bash
+        run: |
+          echo '- Remote inspection skipped; no Cloudflare mutation was attempted.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Inspect D1 and Worker without mutation
+        if: steps.credentials.outputs.ready == 'true'
+        shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          auth="Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"
+
+          list_response="$(curl --silent --show-error --fail-with-body \
+            --header "$auth" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database?name=${D1_DATABASE_NAME}&per_page=100")"
+          jq -e '.success == true' >/dev/null <<<"$list_response"
+          database_id="$(jq -r --arg name "$D1_DATABASE_NAME" '.result[]? | select(.name == $name) | .uuid' <<<"$list_response" | head -n 1)"
+          test -n "$database_id" || {
+            echo '::error::Expected metadata D1 database was not found.'
+            exit 1
+          }
+
+          inspect_sql="SELECT name FROM sqlite_master WHERE type='table' AND name IN ('snapshot_versions','snapshot_datasets','anime_search_items','anime_search_terms','manga_search_items','manga_search_terms','producer_search_items','producer_search_terms') ORDER BY name;"
+          inspect_body="$(jq -n --arg sql "$inspect_sql" '{sql: $sql}')"
+          inspect_response="$(curl --silent --show-error --fail-with-body \
+            --request POST \
+            --header "$auth" \
+            --header 'Content-Type: application/json' \
+            --data "$inspect_body" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database/${database_id}/query")"
+          jq -e '.success == true' >/dev/null <<<"$inspect_response"
+          tables="$(jq -r '[.result[]?.results[]?.name] | unique | sort | join(",")' <<<"$inspect_response")"
+          table_count="$(jq '[.result[]?.results[]?.name] | unique | length' <<<"$inspect_response")"
+
+          worker_response="$(curl --silent --show-error --fail-with-body \
+            --header "$auth" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${WORKER_NAME}/settings")"
+          jq -e '.success == true' >/dev/null <<<"$worker_response"
+          has_d1="$(jq '[.result.bindings[]? | select(.name == "METADATA_INDEX")] | length == 1' <<<"$worker_response")"
+          has_assets="$(jq '[.result.bindings[]? | select(.name == "ASSETS")] | length == 1' <<<"$worker_response")"
+
+          schema=unknown
+          case "$table_count:$tables" in
+            "6:anime_search_items,anime_search_terms,producer_search_items,producer_search_terms,snapshot_datasets,snapshot_versions") schema=legacy-6 ;;
+            "8:anime_search_items,anime_search_terms,manga_search_items,manga_search_terms,producer_search_items,producer_search_terms,snapshot_datasets,snapshot_versions") schema=manga-8 ;;
+          esac
+
+          {
+            echo "- D1 database: found"
+            echo "- D1 application schema: ${schema}"
+            echo "- Worker METADATA_INDEX binding: ${has_d1}"
+            echo "- Worker ASSETS binding: ${has_assets}"
+            echo '- Probe mode: read-only; no migration/import/deploy attempted.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record source identity
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+        run: |
+          echo "- GoAnime source SHA under consideration: \`$SOURCE_SHA\`" >> "$GITHUB_STEP_SUMMARY"
