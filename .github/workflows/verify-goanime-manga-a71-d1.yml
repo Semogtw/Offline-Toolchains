@@ -1,0 +1,166 @@
+name: Verify GoAnime Manga A71 D1
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-a71-d1-verify/*.request.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-a71-d1-verify-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  GOANIME_REPOSITORY: Semogtw/goanime-mobile
+  EXPECTED_SOURCE_BRANCH: feat/manga-a71-indexing-supervisor
+
+jobs:
+  verify:
+    name: Verify immutable GoAnime branch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout Toolchains request
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve verification request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(
+            git diff-tree --no-commit-id --name-only --diff-filter=AM -r HEAD^ HEAD -- \
+              'triggers/goanime-manga-a71-d1-verify/*.request.json' | sort | tail -n 1
+          )"
+          test -n "$request" || {
+            echo '::error::Verification push did not contain a request file.'
+            exit 1
+          }
+
+          source_branch="$(jq -er '.sourceBranch | strings | select(length > 0)' "$request")"
+          source_sha="$(jq -er '.sourceSha | strings | select(test("^[0-9a-f]{40}$"))' "$request")"
+          base_sha="$(jq -er '.baseSha | strings | select(test("^[0-9a-f]{40}$"))' "$request")"
+
+          if [[ "$source_branch" != "$EXPECTED_SOURCE_BRANCH" ]]; then
+            echo "::error::Unexpected source branch: $source_branch"
+            exit 1
+          fi
+          if [[ "$source_sha" == "$base_sha" ]]; then
+            echo '::error::Source SHA must differ from base SHA.'
+            exit 1
+          fi
+
+          echo "source_branch=$source_branch" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Require private repository credential
+        shell: bash
+        env:
+          READ_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$READ_TOKEN" || {
+            echo '::error::GOANIME_CATALOG_WRITE_TOKEN is required to read goanime-mobile.'
+            exit 1
+          }
+
+      - name: Checkout requested GoAnime branch
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.GOANIME_REPOSITORY }}
+          ref: ${{ steps.request.outputs.source_branch }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify immutable source identity
+        working-directory: private-source
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+          BASE_SHA: ${{ steps.request.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          if [[ "$actual_sha" != "$SOURCE_SHA" ]]; then
+            echo '::error::Requested branch moved before verification.'
+            echo "expected=$SOURCE_SHA actual=$actual_sha"
+            exit 1
+          fi
+          git cat-file -e "${BASE_SHA}^{commit}"
+          git merge-base --is-ancestor "$BASE_SHA" "$SOURCE_SHA" || {
+            echo '::error::Requested base is not an ancestor of the source SHA.'
+            exit 1
+          }
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Ensure PHP CLI is available
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v php >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y php-cli
+          fi
+          php --version
+
+      - name: Verify Toolchains workflow contract
+        shell: bash
+        run: python3 tests/test_goanime_manga_a71_d1_verify_workflow.py
+
+      - name: Run GoAnime metadata repository verification
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --prefix cloudflare/metadata-worker run repository:verify
+
+      - name: Verify branch diff hygiene
+        working-directory: private-source
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+          BASE_SHA: ${{ steps.request.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          git diff --check "$BASE_SHA..$SOURCE_SHA"
+          changed="$(git diff --name-only "$BASE_SHA..$SOURCE_SHA" | wc -l | tr -d ' ')"
+          test "$changed" -gt 0
+          echo "Verified $changed changed files from $BASE_SHA to $SOURCE_SHA." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record verification identity
+        shell: bash
+        env:
+          SOURCE_BRANCH: ${{ steps.request.outputs.source_branch }}
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+          BASE_SHA: ${{ steps.request.outputs.base_sha }}
+        run: |
+          {
+            echo '### GoAnime Manga A71/D1 verification'
+            echo "- Branch: \`$SOURCE_BRANCH\`"
+            echo "- Source SHA: \`$SOURCE_SHA\`"
+            echo "- Base SHA: \`$BASE_SHA\`"
+            echo '- Actions executed only in `Semogtw/Offline-Toolchains`.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf private-source
