@@ -1,0 +1,247 @@
+name: GoAnime metadata D1 Manga migration
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-metadata-d1-migrate/*.request.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-metadata-d1-migrate
+  cancel-in-progress: false
+
+env:
+  GOANIME_REPOSITORY: Semogtw/goanime-mobile
+  EXPECTED_SOURCE_BRANCH: feat/manga-a71-indexing-supervisor
+  EXPECTED_BASE_SHA: f71a6d91ceccfa09addb84ed264a3bbee4c7f796
+  D1_DATABASE_NAME: goanime-metadata-index
+  MIGRATION_PATH: cloudflare/metadata-worker/migrations/0002_manga_search.sql
+
+jobs:
+  migrate:
+    name: Apply exact Manga D1 migration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout trusted Toolchains request
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve immutable migration request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(
+            git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- \
+              'triggers/goanime-metadata-d1-migrate/*.request.json' | sort | tail -n 1
+          )"
+          test -n "$request" || {
+            echo '::error::Migration push did not add a request file.'
+            exit 1
+          }
+
+          source_branch="$(jq -er '.sourceBranch | strings | select(length > 0)' "$request")"
+          source_sha="$(jq -er '.sourceSha | strings | select(test("^[0-9a-f]{40}$"))' "$request")"
+          base_sha="$(jq -er '.baseSha | strings | select(test("^[0-9a-f]{40}$"))' "$request")"
+          migration_blob_sha="$(jq -er '.migrationBlobSha | strings | select(test("^[0-9a-f]{40}$"))' "$request")"
+          apply="$(jq -er 'if has("apply") and (.apply | type == "boolean") then .apply else error("apply boolean is required") end' "$request")"
+
+          if [[ "$source_branch" != "$EXPECTED_SOURCE_BRANCH" ]]; then
+            echo "::error::Unexpected source branch: $source_branch"
+            exit 1
+          fi
+          if [[ "$base_sha" != "$EXPECTED_BASE_SHA" ]]; then
+            echo "::error::Unexpected base SHA: $base_sha"
+            exit 1
+          fi
+          if [[ "$source_sha" == "$base_sha" ]]; then
+            echo '::error::Source SHA must differ from base SHA.'
+            exit 1
+          fi
+
+          echo "source_branch=$source_branch" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+          echo "migration_blob_sha=$migration_blob_sha" >> "$GITHUB_OUTPUT"
+          echo "apply=$apply" >> "$GITHUB_OUTPUT"
+
+      - name: Require exact migration credentials
+        shell: bash
+        env:
+          READ_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CF_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$READ_TOKEN" || {
+            echo '::error::GOANIME_CATALOG_WRITE_TOKEN is required to read goanime-mobile.'
+            exit 1
+          }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || {
+            echo '::error::CLOUDFLARE_ACCOUNT_ID is required.'
+            exit 1
+          }
+          test -n "$CLOUDFLARE_API_TOKEN" || {
+            echo '::error::CLOUDFLARE_API_TOKEN or CF_API_TOKEN is required.'
+            exit 1
+          }
+
+      - name: Checkout immutable GoAnime source branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.source_branch }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify source identity and migration blob
+        working-directory: private-source
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+          BASE_SHA: ${{ steps.request.outputs.base_sha }}
+          MIGRATION_BLOB_SHA: ${{ steps.request.outputs.migration_blob_sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          if [[ "$actual_sha" != "$SOURCE_SHA" ]]; then
+            echo "::error::Requested branch moved before migration. expected=$SOURCE_SHA actual=$actual_sha"
+            exit 1
+          fi
+          git cat-file -e "${BASE_SHA}^{commit}"
+          git merge-base --is-ancestor "$BASE_SHA" "$SOURCE_SHA" || {
+            echo '::error::Requested base is not an ancestor of source SHA.'
+            exit 1
+          }
+          test -f "$MIGRATION_PATH"
+          actual_blob_sha="$(git hash-object "$MIGRATION_PATH")"
+          if [[ "$actual_blob_sha" != "$MIGRATION_BLOB_SHA" ]]; then
+            echo "::error::Migration blob does not match request. expected=$MIGRATION_BLOB_SHA actual=$actual_blob_sha"
+            exit 1
+          fi
+
+      - name: Inspect exact remote D1 schema
+        id: inspect
+        shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CF_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          auth="Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"
+          list_response="$(curl --silent --show-error --fail-with-body \
+            --header "$auth" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database?name=${D1_DATABASE_NAME}&per_page=100")"
+          jq -e '.success == true' >/dev/null <<<"$list_response"
+          database_id="$(jq -r --arg name "$D1_DATABASE_NAME" '.result[]? | select(.name == $name) | .uuid' <<<"$list_response" | head -n 1)"
+          test -n "$database_id" || {
+            echo '::error::Expected metadata D1 database does not exist; refusing to mutate or provision.'
+            exit 1
+          }
+
+          inspect_sql="SELECT name FROM sqlite_master WHERE type='table' AND name IN ('snapshot_versions','snapshot_datasets','anime_search_items','anime_search_terms','manga_search_items','manga_search_terms','producer_search_items','producer_search_terms') ORDER BY name;"
+          inspect_body="$(jq -n --arg sql "$inspect_sql" '{sql: $sql}')"
+          inspect_response="$(curl --silent --show-error --fail-with-body \
+            --request POST \
+            --header "$auth" \
+            --header 'Content-Type: application/json' \
+            --data "$inspect_body" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database/${database_id}/query")"
+          jq -e '.success == true' >/dev/null <<<"$inspect_response"
+          names="$(jq -r '[.result[]?.results[]?.name] | unique | sort | join(",")' <<<"$inspect_response")"
+          count="$(jq '[.result[]?.results[]?.name] | unique | length' <<<"$inspect_response")"
+
+          legacy_names='anime_search_items,anime_search_terms,producer_search_items,producer_search_terms,snapshot_datasets,snapshot_versions'
+          complete_names='anime_search_items,anime_search_terms,manga_search_items,manga_search_terms,producer_search_items,producer_search_terms,snapshot_datasets,snapshot_versions'
+          schema=unknown
+          if [[ "$count:$names" == "6:$legacy_names" ]]; then
+            schema=legacy-6
+          elif [[ "$count:$names" == "8:$complete_names" ]]; then
+            schema=manga-8
+          fi
+
+          echo "database_id=$database_id" >> "$GITHUB_OUTPUT"
+          echo "schema=$schema" >> "$GITHUB_OUTPUT"
+          echo "- D1 schema before migration: \`$schema\`." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Refuse unknown or partial schema
+        if: steps.inspect.outputs.schema != 'legacy-6' && steps.inspect.outputs.schema != 'manga-8'
+        shell: bash
+        run: |
+          echo '::error::Remote D1 schema is partial or unknown; refusing to mutate.'
+          exit 1
+
+      - name: Record already migrated schema
+        if: steps.inspect.outputs.schema == 'manga-8'
+        shell: bash
+        run: |
+          echo '- Remote D1 is already manga-8; migration is an idempotent no-op.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Require explicit apply authorization
+        if: steps.inspect.outputs.schema == 'legacy-6' && steps.request.outputs.apply != 'true'
+        shell: bash
+        run: |
+          echo '::error::Remote D1 is legacy-6 but request apply is not true; refusing to mutate.'
+          exit 1
+
+      - name: Apply exact 0002_manga_search.sql
+        if: steps.request.outputs.apply == 'true' && steps.inspect.outputs.schema == 'legacy-6'
+        shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CF_API_TOKEN }}
+          DATABASE_ID: ${{ steps.inspect.outputs.database_id }}
+        run: |
+          set -euo pipefail
+          migration_file="private-source/${MIGRATION_PATH}"
+          migration_sql="$(cat "$migration_file")"
+          migration_body="$(jq -n --arg sql "$migration_sql" '{sql: $sql}')"
+          migration_response="$(curl --silent --show-error --fail-with-body \
+            --request POST \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --header 'Content-Type: application/json' \
+            --data "$migration_body" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database/${DATABASE_ID}/query")"
+          jq -e '.success == true and ([.result[]?.success] | all)' >/dev/null <<<"$migration_response"
+          echo '- Applied exact `0002_manga_search.sql` from the immutable GoAnime source SHA.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify final Manga D1 schema
+        if: steps.inspect.outputs.schema == 'manga-8' || (steps.request.outputs.apply == 'true' && steps.inspect.outputs.schema == 'legacy-6')
+        shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CF_API_TOKEN }}
+          DATABASE_ID: ${{ steps.inspect.outputs.database_id }}
+        run: |
+          set -euo pipefail
+          verify_sql="SELECT name FROM sqlite_master WHERE type='table' AND name IN ('snapshot_versions','snapshot_datasets','anime_search_items','anime_search_terms','manga_search_items','manga_search_terms','producer_search_items','producer_search_terms') ORDER BY name;"
+          verify_body="$(jq -n --arg sql "$verify_sql" '{sql: $sql}')"
+          verify_response="$(curl --silent --show-error --fail-with-body \
+            --request POST \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --header 'Content-Type: application/json' \
+            --data "$verify_body" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database/${DATABASE_ID}/query")"
+          jq -e '.success == true' >/dev/null <<<"$verify_response"
+          verified_names="$(jq -r '[.result[]?.results[]?.name] | unique | sort | join(",")' <<<"$verify_response")"
+          expected_names='anime_search_items,anime_search_terms,manga_search_items,manga_search_terms,producer_search_items,producer_search_terms,snapshot_datasets,snapshot_versions'
+          test "$verified_names" = "$expected_names" || {
+            echo '::error::D1 migration verification failed.'
+            exit 1
+          }
+          echo '- Verified all 8 required D1 tables, including Manga search.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup private checkout
+        if: always()
+        shell: bash
+        run: rm -rf private-source
