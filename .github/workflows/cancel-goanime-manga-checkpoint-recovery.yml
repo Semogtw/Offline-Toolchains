@@ -1,0 +1,92 @@
+name: Cancel GoAnime Manga Checkpoint Recovery
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-checkpoint-cancel/*.request.json'
+  workflow_dispatch:
+    inputs:
+      superseded_run_id:
+        description: Existing Toolchains recovery run to cancel without starting another writer
+        required: true
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  cancel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout Toolchains request
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve cancel request
+        id: request
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_SUPERSEDED_RUN_ID: ${{ github.event.inputs.superseded_run_id || '' }}
+        run: |
+          set -euo pipefail
+          superseded_run_id="$DISPATCH_SUPERSEDED_RUN_ID"
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            request="$(
+              git diff-tree --no-commit-id --name-only --diff-filter=AM -r HEAD^ HEAD -- \
+                'triggers/goanime-manga-checkpoint-cancel/*.request.json' | sort | tail -n 1
+            )"
+            test -n "$request" || {
+              echo '::error::Cancel push did not contain a request file.'
+              exit 1
+            }
+            superseded_run_id="$(jq -er '.supersededRunId | tostring | select(length > 0)' "$request")"
+          fi
+          [[ "$superseded_run_id" =~ ^[0-9]+$ ]] || {
+            echo '::error::Superseded run id must be numeric.'
+            exit 1
+          }
+          if [[ "$superseded_run_id" == "$GITHUB_RUN_ID" ]]; then
+            echo '::error::Cancel workflow cannot cancel its own run.'
+            exit 1
+          fi
+          echo "superseded_run_id=$superseded_run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Cancel writer and wait for completion
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SUPERSEDED_RUN_ID: ${{ steps.request.outputs.superseded_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$SUPERSEDED_RUN_ID" =~ ^[0-9]+$ ]] || {
+            echo '::error::Superseded run id must be numeric.'
+            exit 1
+          }
+          status="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SUPERSEDED_RUN_ID" --jq '.status')"
+          case "$status" in
+            queued|in_progress|pending|waiting|requested)
+              gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$SUPERSEDED_RUN_ID/cancel" >/dev/null
+              ;;
+            completed)
+              echo "Run $SUPERSEDED_RUN_ID already completed; no cancellation needed."
+              exit 0
+              ;;
+            *)
+              echo "::error::Unexpected superseded run status: $status"
+              exit 1
+              ;;
+          esac
+
+          for _ in $(seq 1 90); do
+            status="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SUPERSEDED_RUN_ID" --jq '.status')"
+            [[ "$status" == completed ]] && exit 0
+            sleep 2
+          done
+          echo '::error::Superseded run did not stop within the cancellation safety window.'
+          exit 1
