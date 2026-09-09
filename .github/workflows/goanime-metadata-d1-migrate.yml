@@ -39,14 +39,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          request="$(
+          mapfile -t changed_files < <(
+            git diff-tree --no-commit-id --name-only -r HEAD^ HEAD | sort
+          )
+          mapfile -t added_requests < <(
             git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- \
-              'triggers/goanime-metadata-d1-migrate/*.request.json' | sort | tail -n 1
-          )"
-          test -n "$request" || {
-            echo '::error::Migration push did not add a request file.'
+              'triggers/goanime-metadata-d1-migrate/*.request.json' | sort
+          )
+          if [[ "${#changed_files[@]}" -ne 1 || "${#added_requests[@]}" -ne 1 || "${changed_files[0]:-}" != "${added_requests[0]:-}" ]]; then
+            echo '::error::Migration request commit must contain exactly one added request and no other changes.'
             exit 1
-          }
+          fi
+          request="${added_requests[0]}"
 
           source_branch="$(jq -er '.sourceBranch | strings | select(length > 0)' "$request")"
           source_sha="$(jq -er '.sourceSha | strings | select(test("^[0-9a-f]{40}$"))' "$request")"
@@ -143,13 +147,14 @@ jobs:
             --header "$auth" \
             "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database?name=${D1_DATABASE_NAME}&per_page=100")"
           jq -e '.success == true' >/dev/null <<<"$list_response"
-          database_id="$(jq -r --arg name "$D1_DATABASE_NAME" '.result[]? | select(.name == $name) | .uuid' <<<"$list_response" | head -n 1)"
-          test -n "$database_id" || {
-            echo '::error::Expected metadata D1 database does not exist; refusing to mutate or provision.'
+          database_matches="$(jq --arg name "$D1_DATABASE_NAME" '[.result[]? | select(.name == $name)] | length' <<<"$list_response")"
+          if [[ "$database_matches" -ne 1 ]]; then
+            echo "::error::Expected exactly one D1 database named ${D1_DATABASE_NAME}; found ${database_matches}; refusing to mutate."
             exit 1
-          }
+          fi
+          database_id="$(jq -r --arg name "$D1_DATABASE_NAME" '.result[] | select(.name == $name) | .uuid' <<<"$list_response")"
 
-          inspect_sql="SELECT name FROM sqlite_master WHERE type='table' AND name IN ('snapshot_versions','snapshot_datasets','anime_search_items','anime_search_terms','manga_search_items','manga_search_terms','producer_search_items','producer_search_terms') ORDER BY name;"
+          inspect_sql="SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name;"
           inspect_body="$(jq -n --arg sql "$inspect_sql" '{sql: $sql}')"
           inspect_response="$(curl --silent --show-error --fail-with-body \
             --request POST \
@@ -224,7 +229,7 @@ jobs:
           DATABASE_ID: ${{ steps.inspect.outputs.database_id }}
         run: |
           set -euo pipefail
-          verify_sql="SELECT name FROM sqlite_master WHERE type='table' AND name IN ('snapshot_versions','snapshot_datasets','anime_search_items','anime_search_terms','manga_search_items','manga_search_terms','producer_search_items','producer_search_terms') ORDER BY name;"
+          verify_sql="SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name;"
           verify_body="$(jq -n --arg sql "$verify_sql" '{sql: $sql}')"
           verify_response="$(curl --silent --show-error --fail-with-body \
             --request POST \
