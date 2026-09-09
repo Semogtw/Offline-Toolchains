@@ -13,16 +13,18 @@ class MangaCheckpointRecoveryWorkflowTest(unittest.TestCase):
 
         required = [
             "workflow_dispatch:",
+            "triggers/goanime-manga-checkpoint-recovery/*.request.json",
             "target_ref:",
             "checkpoint_branch:",
             "source_sha:",
-            "goanime-manga-checkpoint-recovery-${{ inputs.checkpoint_branch }}",
+            "superseded_run_id:",
+            "goanime-manga-checkpoint-recovery-${{ steps.request.outputs.checkpoint_branch }}",
             "git fetch --force --no-tags origin",
             "git checkout --detach refs/remotes/origin/manga-global-cache-checkpoint",
             "run_manga_checkpoint_budget_loop.sh",
-            "MANGA_CHECKPOINT_BRANCH: ${{ inputs.checkpoint_branch }}",
-            "MANGA_CHECKPOINT_SOURCE_SHA: ${{ inputs.source_sha }}",
-            "MANGA_CHECKPOINT_TARGET_BRANCH: ${{ inputs.target_ref }}",
+            "MANGA_CHECKPOINT_BRANCH: ${{ steps.request.outputs.checkpoint_branch }}",
+            "MANGA_CHECKPOINT_SOURCE_SHA: ${{ steps.request.outputs.source_sha }}",
+            "MANGA_CHECKPOINT_TARGET_BRANCH: ${{ steps.request.outputs.target_ref }}",
             "gh workflow run goanime-manga-checkpoint-recovery.yml",
         ]
         for token in required:
@@ -47,6 +49,12 @@ class MangaCheckpointRecoveryWorkflowTest(unittest.TestCase):
         ]
         for token in required:
             self.assertIn(token, workflow)
+
+    def test_recovery_can_cancel_one_explicitly_superseded_stuck_run(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("Superseded run id must be numeric", workflow)
+        self.assertIn("actions/runs/$SUPERSEDED_RUN_ID/cancel", workflow)
+        self.assertIn("--method POST", workflow)
 
 
 if __name__ == "__main__":
