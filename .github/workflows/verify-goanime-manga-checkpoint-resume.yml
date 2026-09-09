@@ -141,7 +141,8 @@ jobs:
           flutter test --no-pub \
             test/tools/materialize_global_manga_checkpoint_resume_gate_test.dart \
             test/tools/manga_metadata_refresh_test.dart \
-            test/tools/manga_jikan_title_fallback_regression_test.dart
+            test/tools/manga_jikan_title_fallback_regression_test.dart \
+            test/tools/manga_metadata_checkpoint_guard_regression_test.dart
 
       - name: Remove private checkout
         if: always()
