@@ -145,19 +145,30 @@ jobs:
           set +e
           {
             echo '### Public Manga edge failure diagnostics'
+            index=0
             for url in \
               "$EDGE_BASE_URL/healthz" \
               "$EDGE_BASE_URL/readyz" \
               "$EDGE_BASE_URL/v4/manga?q=berserk&limit=5&sfw=true" \
               "$EDGE_BASE_URL/v4/manga/2/full"; do
+              headers="/tmp/goanime-edge-headers-${index}.txt"
+              measurement="$(curl --silent --show-error --max-time 30 \
+                --dump-header "$headers" \
+                --output /dev/null \
+                --write-out 'status=%{http_code} total=%{time_total}s' \
+                "$url" 2>/dev/null)"
+              curl_rc=$?
+              origin="$(awk -F': *' 'tolower($1) == "x-goanime-origin" { gsub(/\r/, "", $2); value=$2 } END { print value }' "$headers" 2>/dev/null)"
+              fallback="$(awk -F': *' 'tolower($1) == "x-goanime-fallback" { gsub(/\r/, "", $2); value=$2 } END { print value }' "$headers" 2>/dev/null)"
+              cache="$(awk -F': *' 'tolower($1) == "x-goanime-edge-cache" { gsub(/\r/, "", $2); value=$2 } END { print value }' "$headers" 2>/dev/null)"
               echo "- \`$url\`"
-              curl --silent --show-error --max-time 30 --output /dev/null \
-                --write-out '  - status=%{http_code} total=%{time_total}s\n' \
-                "$url"
+              echo "  - ${measurement:-status=000 total=unknown} curl_rc=$curl_rc origin=${origin:-none} fallback=${fallback:-none} cache=${cache:-none}"
+              rm -f "$headers"
+              index=$((index + 1))
             done
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Cleanup private checkout
         if: always()
         shell: bash
-        run: rm -rf private-source /tmp/goanime-manga-public-routes.json /tmp/goanime-manga-public-edge-report.json
+        run: rm -rf private-source /tmp/goanime-manga-public-routes.json /tmp/goanime-manga-public-edge-report.json /tmp/goanime-edge-headers-*.txt
