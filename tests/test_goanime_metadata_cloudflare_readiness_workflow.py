@@ -43,6 +43,15 @@ class MetadataCloudflareReadinessWorkflowTest(unittest.TestCase):
         self.assertIn("Remote inspection skipped; no Cloudflare mutation was attempted.", workflow)
         self.assertIn("steps.credentials.outputs.ready == 'true'", workflow)
 
+    def test_probe_accepts_legacy_cf_api_token_fallback(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        fallback = "${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CF_API_TOKEN }}"
+        self.assertGreaterEqual(
+            workflow.count(fallback),
+            2,
+            "credential probe and remote inspection must use the same Cloudflare token fallback",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
