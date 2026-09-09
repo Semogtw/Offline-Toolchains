@@ -1,0 +1,163 @@
+name: Probe GoAnime public Manga edge
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-public-edge/*.request.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-public-edge-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  GOANIME_REPOSITORY: Semogtw/goanime-mobile
+  EXPECTED_SOURCE_BRANCH: feat/manga-a71-indexing-supervisor
+  EXPECTED_SOURCE_SHA: e84e231ac7b5b8777a70732045e07cff8591713d
+  EDGE_BASE_URL: https://goanime-metadata-edge.arthurgva1602.workers.dev
+  PROBE_VERSION: public-manga-probe-20260909
+
+jobs:
+  probe:
+    name: Smoke public Manga routes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout trusted Toolchains request
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve isolated public edge probe request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t changed_files < <(
+            git diff-tree --no-commit-id --name-only -r HEAD^ HEAD | sort
+          )
+          mapfile -t added_requests < <(
+            git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- \
+              'triggers/goanime-manga-public-edge/*.request.json' | sort
+          )
+          if [[ "${#changed_files[@]}" -ne 1 || "${#added_requests[@]}" -ne 1 || "${changed_files[0]:-}" != "${added_requests[0]:-}" ]]; then
+            echo '::error::Public edge probe request commit must contain exactly one added request and no other changes.'
+            exit 1
+          fi
+          request="${added_requests[0]}"
+          source_sha="$(jq -er '.sourceSha | strings | select(test("^[0-9a-f]{40}$"))' "$request")"
+          if [[ "$source_sha" != "$EXPECTED_SOURCE_SHA" ]]; then
+            echo "::error::Unexpected GoAnime source SHA: $source_sha"
+            exit 1
+          fi
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Require private source read token
+        shell: bash
+        env:
+          READ_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$READ_TOKEN" || {
+            echo '::error::GOANIME_CATALOG_WRITE_TOKEN is required to read goanime-mobile.'
+            exit 1
+          }
+
+      - name: Checkout immutable GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: feat/manga-a71-indexing-supervisor
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify immutable source identity
+        working-directory: private-source
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          if [[ "$actual_sha" != "$SOURCE_SHA" ]]; then
+            echo "::error::GoAnime branch moved before public smoke. expected=$SOURCE_SHA actual=$actual_sha"
+            exit 1
+          fi
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Build exact Manga public route plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          cat > /tmp/goanime-manga-public-routes.json <<'JSON'
+          {
+            "schemaVersion": 1,
+            "routes": [
+              "/v4/manga?q=berserk&limit=5&sfw=true",
+              "/v4/manga/2/full"
+            ]
+          }
+          JSON
+
+      - name: Smoke public Manga routes through deployed Worker
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --prefix cloudflare/metadata-worker run edge:smoke -- \
+            --base "$EDGE_BASE_URL" \
+            --version "$PROBE_VERSION" \
+            --routes /tmp/goanime-manga-public-routes.json \
+            --expect-origin a71 \
+            --timeout-ms 30000 \
+            --cache-check 0 \
+            --report-output /tmp/goanime-manga-public-edge-report.json
+          {
+            echo '### GoAnime public Manga edge smoke'
+            echo "- Source SHA: \`${{ steps.request.outputs.source_sha }}\`"
+            echo "- Worker: \`$EDGE_BASE_URL\`"
+            echo '- Expected origin: `a71`'
+            echo '- Routes: `/v4/manga?q=berserk&limit=5&sfw=true`, `/v4/manga/2/full`'
+            echo '- Result: PASS'
+            echo '```json'
+            jq '{schemaVersion, generatedAt, expectedOrigin, routes, cacheChecked, metrics}' /tmp/goanime-manga-public-edge-report.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record sanitized diagnostics on failure
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          {
+            echo '### Public Manga edge failure diagnostics'
+            for url in \
+              "$EDGE_BASE_URL/healthz" \
+              "$EDGE_BASE_URL/readyz" \
+              "$EDGE_BASE_URL/v4/manga?q=berserk&limit=5&sfw=true" \
+              "$EDGE_BASE_URL/v4/manga/2/full"; do
+              echo "- \`$url\`"
+              curl --silent --show-error --max-time 30 --output /dev/null \
+                --write-out '  - status=%{http_code} total=%{time_total}s\n' \
+                "$url"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup private checkout
+        if: always()
+        shell: bash
+        run: rm -rf private-source /tmp/goanime-manga-public-routes.json /tmp/goanime-manga-public-edge-report.json
