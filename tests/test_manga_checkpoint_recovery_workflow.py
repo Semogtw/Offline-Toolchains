@@ -18,7 +18,7 @@ class MangaCheckpointRecoveryWorkflowTest(unittest.TestCase):
             "checkpoint_branch:",
             "source_sha:",
             "superseded_run_id:",
-            "goanime-manga-checkpoint-recovery-${{ steps.request.outputs.checkpoint_branch }}",
+            "goanime-manga-checkpoint-recovery-${{ github.event.inputs.checkpoint_branch || github.sha }}",
             "git fetch --force --no-tags origin",
             "git checkout --detach refs/remotes/origin/manga-global-cache-checkpoint",
             "run_manga_checkpoint_budget_loop.sh",
