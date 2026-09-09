@@ -222,9 +222,22 @@ jobs:
               rm -f "$headers"
               index=$((index + 1))
             done
+
+            echo '### A71 readiness load metrics'
+            metrics=/tmp/goanime-a71-safe-metrics.txt
+            if curl --silent --show-error --fail --max-time 30 \
+              --header 'Accept: text/plain' \
+              --header 'Cache-Control: no-cache' \
+              --output "$metrics" \
+              "$EDGE_BASE_URL/metrics"; then
+              grep -E '^(goanime_metadata_jikan_active_requests|goanime_metadata_jikan_queued_requests|goanime_metadata_jikan_circuit_failures|goanime_metadata_jikan_circuit_retry_after_seconds)([[:space:]]|$)|^goanime_metadata_jikan_circuit_state\{' "$metrics" || true
+            else
+              echo '- metrics endpoint unavailable'
+            fi
+            rm -f "$metrics"
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Cleanup private checkout
         if: always()
         shell: bash
-        run: rm -rf private-source /tmp/goanime-manga-public-routes.json /tmp/goanime-manga-public-edge-report.json /tmp/goanime-edge-headers-*.txt /tmp/goanime-manga-search.json /tmp/goanime-manga-search.headers /tmp/goanime-manga-full.json /tmp/goanime-manga-full.headers
+        run: rm -rf private-source /tmp/goanime-manga-public-routes.json /tmp/goanime-manga-public-edge-report.json /tmp/goanime-edge-headers-*.txt /tmp/goanime-a71-safe-metrics.txt /tmp/goanime-manga-search.json /tmp/goanime-manga-search.headers /tmp/goanime-manga-full.json /tmp/goanime-manga-full.headers
