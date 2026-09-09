@@ -1,0 +1,302 @@
+name: GoAnime Manga Checkpoint Recovery
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'triggers/goanime-manga-checkpoint-recovery/*.request.json'
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: Existing GoAnime target branch for this generation
+        required: true
+        default: feat/manga-catalog-canonicalization-v2-20260906
+      checkpoint_branch:
+        description: Existing private checkpoint branch to resume
+        required: true
+      source_sha:
+        description: Immutable source SHA recorded by the generation
+        required: true
+      superseded_run_id:
+        description: Optional stuck Toolchains run to cancel before recovery
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: goanime-manga-checkpoint-recovery-${{ github.event.inputs.checkpoint_branch || github.sha }}
+  cancel-in-progress: false
+
+env:
+  FLUTTER_CHANNEL: stable
+  FLUTTER_VERSION: 3.44.1
+  CHECKPOINT_RUN_BUDGET_MINUTES: 300
+  CHECKPOINT_MIN_UNIT_WINDOW_MINUTES: 30
+  CHECKPOINT_STEP_TIMEOUT_MINUTES: 330
+
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout Toolchains
+        uses: actions/checkout@v6
+        with:
+          path: toolchains-root
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve recovery request
+        id: request
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_TARGET_REF: ${{ github.event.inputs.target_ref || '' }}
+          DISPATCH_CHECKPOINT_BRANCH: ${{ github.event.inputs.checkpoint_branch || '' }}
+          DISPATCH_SOURCE_SHA: ${{ github.event.inputs.source_sha || '' }}
+          DISPATCH_SUPERSEDED_RUN_ID: ${{ github.event.inputs.superseded_run_id || '' }}
+        run: |
+          set -euo pipefail
+
+          target_ref="$DISPATCH_TARGET_REF"
+          checkpoint_branch="$DISPATCH_CHECKPOINT_BRANCH"
+          source_sha="$DISPATCH_SOURCE_SHA"
+          superseded_run_id="$DISPATCH_SUPERSEDED_RUN_ID"
+
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            request="$(
+              git -C toolchains-root diff-tree --no-commit-id --name-only --diff-filter=AM -r HEAD^ HEAD -- \
+                'triggers/goanime-manga-checkpoint-recovery/*.request.json' | sort | tail -n 1
+            )"
+            test -n "$request" || {
+              echo '::error::Recovery push did not contain a request file.'
+              exit 1
+            }
+            request_path="toolchains-root/$request"
+            target_ref="$(jq -er '.targetRef | strings | select(length > 0)' "$request_path")"
+            checkpoint_branch="$(jq -er '.checkpointBranch | strings | select(length > 0)' "$request_path")"
+            source_sha="$(jq -er '.sourceSha | strings | select(length > 0)' "$request_path")"
+            superseded_run_id="$(jq -r '(.supersededRunId // "") | tostring' "$request_path")"
+          fi
+
+          case "$target_ref" in
+            codex/manga-parity-20260823|main|feat/manga-catalog-canonicalization-v2-20260906|feat/manga-checkpoint-resume-20260908) ;;
+            *)
+              echo "::error::Target ref is not allowlisted for manga checkpoint recovery: $target_ref"
+              exit 1
+              ;;
+          esac
+          [[ "$checkpoint_branch" =~ ^ci/manga-global-cache-[A-Za-z0-9._-]+$ ]] || {
+            echo '::error::Invalid checkpoint branch.'
+            exit 1
+          }
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo '::error::Invalid immutable source SHA.'
+            exit 1
+          }
+          if [[ -n "$superseded_run_id" && ! "$superseded_run_id" =~ ^[0-9]+$ ]]; then
+            echo '::error::Superseded run id must be numeric.'
+            exit 1
+          fi
+
+          echo "target_ref=$target_ref" >> "$GITHUB_OUTPUT"
+          echo "checkpoint_branch=$checkpoint_branch" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "superseded_run_id=$superseded_run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Cancel explicitly superseded stuck run
+        if: steps.request.outputs.superseded_run_id != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SUPERSEDED_RUN_ID: ${{ steps.request.outputs.superseded_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$SUPERSEDED_RUN_ID" =~ ^[0-9]+$ ]] || {
+            echo '::error::Superseded run id must be numeric.'
+            exit 1
+          }
+          if [[ "$SUPERSEDED_RUN_ID" == "$GITHUB_RUN_ID" ]]; then
+            echo '::error::Recovery cannot cancel its own run.'
+            exit 1
+          fi
+
+          status="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SUPERSEDED_RUN_ID" --jq '.status')"
+          case "$status" in
+            queued|in_progress|pending|waiting|requested)
+              gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$SUPERSEDED_RUN_ID/cancel" >/dev/null
+              ;;
+            completed)
+              echo "Superseded run $SUPERSEDED_RUN_ID already completed; no cancellation needed."
+              ;;
+            *)
+              echo "::error::Unexpected superseded run status: $status"
+              exit 1
+              ;;
+          esac
+
+          for _ in $(seq 1 30); do
+            status="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SUPERSEDED_RUN_ID" --jq '.status')"
+            [[ "$status" == completed ]] && exit 0
+            sleep 2
+          done
+          echo '::error::Superseded run did not stop within the recovery safety window.'
+          exit 1
+
+      - name: Require private write credential
+        shell: bash
+        env:
+          WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$WRITE_TOKEN" || {
+            echo '::error::GOANIME_CATALOG_WRITE_TOKEN is required for checkpoint recovery.'
+            exit 1
+          }
+
+      - name: Checkout exact private GoAnime target
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.target_ref }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Checkout and validate existing checkpoint
+        working-directory: private-source
+        shell: bash
+        env:
+          TARGET_REF: ${{ steps.request.outputs.target_ref }}
+          CHECKPOINT_BRANCH: ${{ steps.request.outputs.checkpoint_branch }}
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          git cat-file -e "${SOURCE_SHA}^{commit}"
+          current_target_sha="$(git rev-parse HEAD)"
+          if [[ "$current_target_sha" != "$SOURCE_SHA" ]]; then
+            echo "::error::Target ref moved: expected $SOURCE_SHA, got $current_target_sha"
+            exit 1
+          fi
+
+          git fetch --force --no-tags origin \
+            "refs/heads/$CHECKPOINT_BRANCH:refs/remotes/origin/manga-global-cache-checkpoint"
+          git checkout --detach refs/remotes/origin/manga-global-cache-checkpoint
+
+          state=.ci/manga-global-cache/state.json
+          test -f "$state" || {
+            echo '::error::Existing checkpoint has no state.json.'
+            exit 1
+          }
+
+          actual_checkpoint="$(jq -r '.checkpointBranch // ""' "$state")"
+          actual_source="$(jq -r '.sourceSha // ""' "$state")"
+          actual_target="$(jq -r '.targetBranch // ""' "$state")"
+          if [[ "$actual_checkpoint" != "$CHECKPOINT_BRANCH" || \
+                "$actual_source" != "$SOURCE_SHA" || \
+                "$actual_target" != "$TARGET_REF" ]]; then
+            echo '::error::Generation identity mismatch.'
+            echo "expected checkpoint=$CHECKPOINT_BRANCH source=$SOURCE_SHA target=$TARGET_REF"
+            echo "actual checkpoint=$actual_checkpoint source=$actual_source target=$actual_target"
+            exit 1
+          fi
+
+          test -f tools/manga/materialize_global_manga_availability_checkpointed_ci.sh
+          test -f tools/manga/manga_checkpoint_state.py
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get --enforce-lockfile >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+
+      - name: Recover checkpoint units within run budget
+        id: materialize
+        continue-on-error: true
+        working-directory: private-source
+        shell: bash
+        env:
+          MANGA_CHECKPOINT_BRANCH: ${{ steps.request.outputs.checkpoint_branch }}
+          MANGA_CHECKPOINT_SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+          MANGA_CHECKPOINT_TARGET_BRANCH: ${{ steps.request.outputs.target_ref }}
+          MANGA_CHECKPOINT_GENERATION_ID: ${{ steps.request.outputs.checkpoint_branch }}
+        run: |
+          set -euo pipefail
+          timeout \
+            --signal=TERM \
+            --kill-after=5m \
+            "${CHECKPOINT_STEP_TIMEOUT_MINUTES}m" \
+            bash ../toolchains-root/scripts/run_manga_checkpoint_budget_loop.sh
+
+      - name: Queue recovery continuation
+        if: >-
+          steps.materialize.outcome == 'success' &&
+          steps.materialize.outputs.CHECKPOINT_CONTINUE == '1'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REF: ${{ steps.request.outputs.target_ref }}
+          CHECKPOINT_BRANCH: ${{ steps.request.outputs.checkpoint_branch }}
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          gh workflow run goanime-manga-checkpoint-recovery.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            --field target_ref="$TARGET_REF" \
+            --field checkpoint_branch="$CHECKPOINT_BRANCH" \
+            --field source_sha="$SOURCE_SHA" \
+            --field superseded_run_id=''
+          echo 'Queued recovery continuation for the same durable generation.'
+
+      - name: Fail interrupted recovery unit
+        if: steps.materialize.outcome == 'failure'
+        shell: bash
+        run: |
+          echo '::error::Checkpoint recovery unit failed; durable state was not advanced past the last successful checkpoint.'
+          exit 1
+
+      - name: Write summary
+        if: always()
+        shell: bash
+        env:
+          TARGET_REF: ${{ steps.request.outputs.target_ref }}
+          CHECKPOINT_BRANCH: ${{ steps.request.outputs.checkpoint_branch }}
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+          CONTINUE: ${{ steps.materialize.outputs.CHECKPOINT_CONTINUE || '0' }}
+          COMPLETE: ${{ steps.materialize.outputs.CHECKPOINT_COMPLETE || '0' }}
+          UNITS_COMPLETED: ${{ steps.materialize.outputs.CHECKPOINT_UNITS_COMPLETED || '0' }}
+        run: |
+          {
+            echo '## GoAnime manga checkpoint recovery'
+            echo
+            echo "- target: \`${TARGET_REF:-unknown}\`"
+            echo "- source SHA: \`${SOURCE_SHA:-unknown}\`"
+            echo "- checkpoint: \`${CHECKPOINT_BRANCH:-unknown}\`"
+            echo "- durable units completed: \`${UNITS_COMPLETED:-0}\`"
+            echo "- continuation requested: \`${CONTINUE:-0}\`"
+            echo "- generation complete: \`${COMPLETE:-0}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/toolchains-root"
