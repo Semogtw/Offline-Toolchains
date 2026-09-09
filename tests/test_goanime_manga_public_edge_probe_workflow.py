@@ -54,6 +54,15 @@ class MangaPublicEdgeProbeWorkflowTest(unittest.TestCase):
         self.assertIn("--output /dev/null", workflow)
         self.assertNotIn("cat /tmp/goanime", workflow)
 
+    def test_probe_validates_manga_payload_semantics(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("Validate public Manga payload semantics", workflow)
+        self.assertIn(".data | type == \"array\"", workflow)
+        self.assertIn(".mal_id == 2", workflow)
+        self.assertIn("ascii_downcase | contains(\"berserk\")", workflow)
+        self.assertIn(".data.mal_id == 2", workflow)
+        self.assertIn("x-goanime-fallback", workflow.lower())
+
 
 if __name__ == "__main__":
     unittest.main()
