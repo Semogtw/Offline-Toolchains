@@ -140,7 +140,7 @@ jobs:
               ;;
           esac
 
-          for _ in $(seq 1 30); do
+          for _ in $(seq 1 90); do
             status="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SUPERSEDED_RUN_ID" --jq '.status')"
             [[ "$status" == completed ]] && exit 0
             sleep 2
