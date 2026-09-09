@@ -45,6 +45,15 @@ class MangaPublicEdgeProbeWorkflowTest(unittest.TestCase):
         self.assertIn("git diff-tree --no-commit-id --name-only -r HEAD^ HEAD", workflow)
         self.assertIn("--diff-filter=A", workflow)
 
+    def test_failure_diagnostics_are_logged_and_sanitized(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("tee -a \"$GITHUB_STEP_SUMMARY\"", workflow)
+        self.assertIn("x-goanime-origin", workflow.lower())
+        self.assertIn("x-goanime-fallback", workflow.lower())
+        self.assertIn("x-goanime-edge-cache", workflow.lower())
+        self.assertIn("--output /dev/null", workflow)
+        self.assertNotIn("cat /tmp/goanime", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
