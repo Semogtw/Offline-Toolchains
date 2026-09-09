@@ -92,6 +92,15 @@ class MangaPublicEdgeProbeWorkflowTest(unittest.TestCase):
         self.assertIn("grep -E", workflow)
         self.assertNotIn("cat \"$metrics\"", workflow)
 
+    def test_probe_samples_readiness_beyond_readiness_cache_window(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("Sample A71 readiness under current recovery load", workflow)
+        self.assertIn("for attempt in 1 2 3 4 5 6; do", workflow)
+        self.assertIn("readiness-sample=$attempt status=$status", workflow)
+        self.assertIn("sleep 6", workflow)
+        self.assertIn("readiness503=$readiness_503", workflow)
+        self.assertIn("goanime_metadata_jikan_circuit_state", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
