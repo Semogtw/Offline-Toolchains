@@ -78,6 +78,20 @@ class MangaPublicEdgeProbeWorkflowTest(unittest.TestCase):
         self.assertIn("sleep 2", workflow)
         self.assertIn("Semantic Manga stability: PASS (3/3 rounds)", workflow)
 
+    def test_failure_diagnostics_include_only_safe_readiness_metrics(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("### A71 readiness load metrics", workflow)
+        for metric in [
+            "goanime_metadata_jikan_active_requests",
+            "goanime_metadata_jikan_queued_requests",
+            "goanime_metadata_jikan_circuit_failures",
+            "goanime_metadata_jikan_circuit_retry_after_seconds",
+            "goanime_metadata_jikan_circuit_state",
+        ]:
+            self.assertIn(metric, workflow)
+        self.assertIn("grep -E", workflow)
+        self.assertNotIn("cat \"$metrics\"", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
