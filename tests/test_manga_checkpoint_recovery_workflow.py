@@ -5,6 +5,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "goanime-manga-checkpoint-recovery.yml"
 CANCEL_WORKFLOW = ROOT / ".github" / "workflows" / "cancel-goanime-manga-checkpoint-recovery.yml"
+APPLY_WORKFLOW = ROOT / ".github" / "workflows" / "apply-goanime-manga-metadata-pipelining.yml"
 
 
 class MangaCheckpointRecoveryWorkflowTest(unittest.TestCase):
@@ -77,6 +78,33 @@ class MangaCheckpointRecoveryWorkflowTest(unittest.TestCase):
             "Semogtw/goanime-mobile",
             "run_manga_checkpoint_budget_loop.sh",
             "manga-global-cache-checkpoint",
+        ]
+        for token in forbidden:
+            self.assertNotIn(token, workflow)
+
+    def test_pipelining_hotfix_validates_checkpoint_and_cherry_picks_verified_commits(self):
+        self.assertTrue(APPLY_WORKFLOW.is_file(), "pipelining apply workflow must exist")
+        workflow = APPLY_WORKFLOW.read_text(encoding="utf-8")
+        required = [
+            "triggers/goanime-manga-metadata-pipelining/*.request.json",
+            "checkpointBranch",
+            "sourceSha",
+            "expectedMetadataSearchOffset",
+            "Generation identity mismatch",
+            "Metadata cursor moved before hotfix",
+            "57a5b2e583322a0d12bc3eb94ff870b9786a4e02",
+            "4b4adfb3bd04521c7bbe7c845d1e686bcd8dcf04",
+            "10b9074201e3849a985b8ec5274618aa1a5fe908",
+            "f5cc8b78b6463c5e902dbcbcffaec8ca7b694d27",
+            "flutter test --no-pub",
+            "git push origin HEAD:\"$CHECKPOINT_BRANCH\"",
+        ]
+        for token in required:
+            self.assertIn(token, workflow)
+        forbidden = [
+            "replace_once",
+            "helper.write_text",
+            "git push --force",
         ]
         for token in forbidden:
             self.assertNotIn(token, workflow)
