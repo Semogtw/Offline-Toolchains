@@ -50,7 +50,7 @@ jobs:
           fi
           test -n "$ref"
           case "$ref" in
-            feat/manga-checkpoint-resume-20260908|feat/manga-catalog-canonicalization-v2-20260906|feat/manga-checkpoint-deferred-rebuild-20260908) ;;
+            feat/manga-checkpoint-resume-20260908|feat/manga-catalog-canonicalization-v2-20260906|feat/manga-checkpoint-deferred-rebuild-20260908|ci/manga-global-cache-f71a6d91cecc-34292292632) ;;
             *) echo "::error::Unexpected ref: $ref"; exit 1 ;;
           esac
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
@@ -88,6 +88,33 @@ jobs:
             python3 -m py_compile tools/manga/merge_manga_checkpoint_snapshots.py
           fi
           bash -n tools/manga/materialize_global_manga_availability_checkpointed_ci.sh
+
+      - name: Verify persisted checkpoint snapshots
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          state=.ci/manga-global-cache/state.json
+          if [[ ! -f "$state" ]]; then
+            echo 'No persisted generation on this verification ref; skipping production snapshot merge smoke.'
+            exit 0
+          fi
+          python3 tools/manga/merge_manga_checkpoint_snapshots.py \
+            --state "$state" \
+            --providers-dir .ci/manga-global-cache/providers \
+            --output "$RUNNER_TEMP/combined_checkpoint_snapshot.json"
+          python3 - "$state" "$RUNNER_TEMP/combined_checkpoint_snapshot.json" <<'PY'
+          import json
+          import sys
+          state = json.load(open(sys.argv[1], encoding='utf-8'))
+          merged = json.load(open(sys.argv[2], encoding='utf-8'))
+          expected = state['completedProviders']
+          providers = merged['providers']
+          actual = [row['sourceId'] for row in providers]
+          assert len(actual) == len(expected), (len(actual), len(expected))
+          assert set(actual) == set(expected), (actual, expected)
+          print(f'production checkpoint merge: {len(actual)} providers, {len(merged["occurrences"])} fresh occurrences')
+          PY
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
