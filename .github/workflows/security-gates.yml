@@ -50,5 +50,8 @@ jobs:
       - name: Validate metadata Cloudflare readiness workflow contract
         run: python3 tests/test_goanime_metadata_cloudflare_readiness_workflow.py
 
+      - name: Validate metadata D1 migration workflow contract
+        run: python3 tests/test_goanime_metadata_d1_migrate_workflow.py
+
       - name: Reject tracked private material
         run: bash scripts/check-no-private-material.sh
