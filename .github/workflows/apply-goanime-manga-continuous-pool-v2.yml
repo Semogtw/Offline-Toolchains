@@ -1,0 +1,217 @@
+name: Apply GoAnime Manga Continuous Metadata Pool V2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-continuous-pool-v2/*.request'
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_CHANNEL: stable
+  FLUTTER_VERSION: 3.44.1
+  SOURCE_BRANCH: feat/manga-metadata-continuous-pool-20260909
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Toolchains request
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Validate isolated request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-continuous-pool-v2/*.request' | head -n 1)"
+          test -n "$request"
+          test "$(tr -d '\r\n ' < "$request")" = "$SOURCE_BRANCH"
+
+      - name: Checkout isolated GoAnime branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.SOURCE_BRANCH }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Patch continuous worker pools
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_between(path, start_marker, end_marker, replacement, label):
+              text = path.read_text(encoding='utf-8')
+              if text.count(start_marker) != 1:
+                  raise SystemExit(f'{label} start marker count={text.count(start_marker)}')
+              start = text.index(start_marker)
+              end = text.find(end_marker, start)
+              if end < 0:
+                  raise SystemExit(f'{label} end marker missing')
+              path.write_text(text[:start] + replacement + text[end:], encoding='utf-8')
+
+          mangadex = Path('tools/manga/manga_mangadex_identity_resolver.dart')
+          replace_between(
+              mangadex,
+              "    for (\n      var start = 0;\n      start < fallback.length;",
+              "\n\n    return MangaJikanEnrichmentResult(",
+              '''    final outcomes = List<_SearchOutcome?>.filled(fallback.length, null);
+              var nextFallbackIndex = 0;
+
+              Future<void> searchWorker() async {
+                while (true) {
+                  final index = nextFallbackIndex;
+                  if (index >= fallback.length) return;
+                  nextFallbackIndex += 1;
+                  outcomes[index] = await _searchByTitle(fallback[index]);
+                }
+              }
+
+              final workerCount = fallback.length < maxConcurrentRequests
+                  ? fallback.length
+                  : maxConcurrentRequests;
+              await Future.wait<void>(
+                List<Future<void>>.generate(workerCount, (_) => searchWorker()),
+              );
+
+              for (var index = 0; index < fallback.length; index += 1) {
+                final target = fallback[index];
+                final outcome = outcomes[index]!;
+                requestsAttempted += outcome.requestsAttempted;
+                if (outcome.failed) {
+                  failed.add(target.workId);
+                } else if (outcome.ambiguous) {
+                  ambiguous.add(target.workId);
+                } else if (outcome.identity == null) {
+                  unmatched.add(target.workId);
+                } else {
+                  entries[target.workId] = _entry(
+                    target.workId,
+                    malId: outcome.identity!.malId,
+                    anilistId: outcome.identity!.anilistId ?? target.anilistId,
+                    source: 'mangadex',
+                  );
+                }
+              }''',
+              'MangaDex',
+          )
+
+          jikan = Path('tools/manga/manga_jikan_bulk_enricher.dart')
+          replace_between(
+              jikan,
+              "      if (knownMalId != null && knownMalId > 0) {\n",
+              "\n\n      targetIndex += 1;",
+              '''      if (knownMalId != null && knownMalId > 0) {
+                final detailTargets = <MangaMetadataWorkTarget>[];
+                while (targetIndex < orderedTargets.length) {
+                  final candidate = orderedTargets[targetIndex];
+                  final candidateMalId = candidate.malId;
+                  if (candidateMalId == null || candidateMalId <= 0) break;
+                  detailTargets.add(candidate);
+                  targetIndex += 1;
+                }
+
+                final details = List<_JikanMangaDetail?>.filled(
+                  detailTargets.length,
+                  null,
+                );
+                var nextDetailIndex = 0;
+
+                Future<void> detailWorker() async {
+                  while (true) {
+                    final index = nextDetailIndex;
+                    if (index >= detailTargets.length) return;
+                    nextDetailIndex += 1;
+                    details[index] = await _fetchFull(detailTargets[index].malId!);
+                  }
+                }
+
+                final workerCount = detailTargets.length < maxConcurrentDetails
+                    ? detailTargets.length
+                    : maxConcurrentDetails;
+                await Future.wait<void>(
+                  List<Future<void>>.generate(workerCount, (_) => detailWorker()),
+                );
+
+                for (var index = 0; index < detailTargets.length; index += 1) {
+                  final detailTarget = detailTargets[index];
+                  final detail = details[index];
+                  final expectedMalId = detailTarget.malId!;
+                  if (detail == null || detail.malId != expectedMalId) {
+                    failed.add(detailTarget.workId);
+                    continue;
+                  }
+                  entries[detailTarget.workId] = detail.toEntry(detailTarget.workId);
+                }
+                continue;
+              }''',
+              'Jikan',
+          )
+          PY
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Resolve dependencies and format
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get --enforce-lockfile >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+          dart format \
+            tools/manga/manga_mangadex_identity_resolver.dart \
+            tools/manga/manga_jikan_bulk_enricher.dart \
+            test/tools/manga_continuous_request_pool_test.dart
+          git diff --check
+
+      - name: Verify continuous pools
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter test --no-pub \
+            test/tools/manga_continuous_request_pool_test.dart \
+            test/tools/manga_mangadex_identity_resolver_test.dart \
+            test/tools/manga_jikan_private_detail_concurrency_test.dart \
+            test/tools/manga_metadata_refresh_test.dart \
+            test/tools/materialize_global_manga_checkpoint_resume_gate_test.dart
+          git diff --check
+
+      - name: Commit and push isolated optimization
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            tools/manga/manga_mangadex_identity_resolver.dart \
+            tools/manga/manga_jikan_bulk_enricher.dart \
+            test/tools/manga_continuous_request_pool_test.dart
+          git commit -m 'perf(manga): keep metadata request pools continuously busy'
+          git push origin HEAD:"$SOURCE_BRANCH"
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf private-source
