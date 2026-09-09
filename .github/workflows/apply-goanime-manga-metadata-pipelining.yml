@@ -2,9 +2,10 @@ name: Apply GoAnime Manga Metadata Pipelining
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
-      - 'triggers/goanime-manga-metadata-pipelining/*.request'
+      - 'triggers/goanime-manga-metadata-pipelining/*.request.json'
 
 permissions:
   contents: read
@@ -12,29 +13,70 @@ permissions:
 env:
   FLUTTER_CHANNEL: stable
   FLUTTER_VERSION: 3.44.1
-  GOANIME_BRANCH: feat/manga-metadata-pipelined-requests-20260909
+  PIPELINING_SOURCE_BRANCH: feat/manga-metadata-pipelined-requests-20260909
 
 jobs:
   apply:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - name: Checkout Toolchains
+      - name: Checkout Toolchains request
         uses: actions/checkout@v6
         with:
+          fetch-depth: 2
           persist-credentials: false
+
+      - name: Resolve hotfix request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(
+            git diff-tree --no-commit-id --name-only --diff-filter=AM -r HEAD^ HEAD -- \
+              'triggers/goanime-manga-metadata-pipelining/*.request.json' | sort | tail -n 1
+          )"
+          test -n "$request" || {
+            echo '::error::Pipelining push did not contain a request file.'
+            exit 1
+          }
+
+          checkpoint_branch="$(jq -er '.checkpointBranch | strings | select(length > 0)' "$request")"
+          source_sha="$(jq -er '.sourceSha | strings | select(length > 0)' "$request")"
+          expected_offset="$(jq -er '.expectedMetadataSearchOffset | numbers' "$request")"
+
+          [[ "$checkpoint_branch" =~ ^ci/manga-global-cache-[A-Za-z0-9._-]+$ ]] || {
+            echo '::error::Invalid checkpoint branch.'
+            exit 1
+          }
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo '::error::Invalid immutable source SHA.'
+            exit 1
+          }
+          [[ "$expected_offset" =~ ^[0-9]+$ ]] || {
+            echo '::error::expectedMetadataSearchOffset must be a non-negative integer.'
+            exit 1
+          }
+
+          echo "checkpoint_branch=$checkpoint_branch" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "expected_offset=$expected_offset" >> "$GITHUB_OUTPUT"
 
       - name: Require private write credential
         shell: bash
         env:
           WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
-        run: test -n "$WRITE_TOKEN"
+        run: |
+          set -euo pipefail
+          test -n "$WRITE_TOKEN" || {
+            echo '::error::GOANIME_CATALOG_WRITE_TOKEN is required for the checkpoint hotfix.'
+            exit 1
+          }
 
-      - name: Checkout isolated GoAnime branch
+      - name: Checkout exact checkpoint branch
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
-          ref: ${{ env.GOANIME_BRANCH }}
+          ref: ${{ steps.request.outputs.checkpoint_branch }}
           token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
           path: private-source
           fetch-depth: 0
@@ -43,243 +85,53 @@ jobs:
           submodules: false
           show-progress: false
 
-      - name: Apply start-rate-limited pipelining
+      - name: Validate generation identity and durable cursor
+        working-directory: private-source
+        shell: bash
+        env:
+          CHECKPOINT_BRANCH: ${{ steps.request.outputs.checkpoint_branch }}
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+          EXPECTED_OFFSET: ${{ steps.request.outputs.expected_offset }}
+        run: |
+          set -euo pipefail
+          state=.ci/manga-global-cache/state.json
+          test -f "$state" || {
+            echo '::error::Existing checkpoint has no state.json.'
+            exit 1
+          }
+
+          actual_checkpoint="$(jq -r '.checkpointBranch // ""' "$state")"
+          actual_source="$(jq -r '.sourceSha // ""' "$state")"
+          actual_offset="$(jq -r '.metadataSearchOffset // -1' "$state")"
+          if [[ "$actual_checkpoint" != "$CHECKPOINT_BRANCH" || "$actual_source" != "$SOURCE_SHA" ]]; then
+            echo '::error::Generation identity mismatch.'
+            echo "expected checkpoint=$CHECKPOINT_BRANCH source=$SOURCE_SHA"
+            echo "actual checkpoint=$actual_checkpoint source=$actual_source"
+            exit 1
+          fi
+          if [[ "$actual_offset" != "$EXPECTED_OFFSET" ]]; then
+            echo '::error::Metadata cursor moved before hotfix.'
+            echo "expected offset=$EXPECTED_OFFSET actual offset=$actual_offset"
+            exit 1
+          fi
+
+      - name: Cherry-pick verified pipelining commits
         working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          def replace_once(path: Path, old: str, new: str) -> None:
-              text = path.read_text(encoding='utf-8')
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'{path}: expected one replacement, found {count}')
-              path.write_text(text.replace(old, new, 1), encoding='utf-8')
-
-          helper = Path('tools/manga/manga_request_scheduler.dart')
-          helper.write_text(r'''import 'dart:async';
-
-
-typedef MangaRequestDelay = Future<void> Function(Duration duration);
-
-final class MangaRequestStartLimiter {
-  MangaRequestStartLimiter({
-    required this.interval,
-    required MangaRequestDelay delay,
-  }) : _delay = delay;
-
-  final Duration interval;
-  final MangaRequestDelay _delay;
-
-  Future<void> _tail = Future<void>.value();
-  bool _started = false;
-
-  Future<void> waitForTurn() {
-    final completer = Completer<void>();
-    _tail = _tail.then((_) async {
-      if (_started && interval > Duration.zero) {
-        await _delay(interval);
-      }
-      _started = true;
-      completer.complete();
-    }, onError: (Object error, StackTrace stackTrace) {
-      if (!completer.isCompleted) completer.completeError(error, stackTrace);
-    });
-    return completer.future;
-  }
-}
-
-Future<List<R>> mapConcurrentOrdered<T, R>(
-  List<T> items,
-  int maxConcurrent,
-  Future<R> Function(T item) operation,
-) async {
-  if (maxConcurrent <= 0) {
-    throw ArgumentError.value(maxConcurrent, 'maxConcurrent', 'must be positive');
-  }
-  if (items.isEmpty) return <R>[];
-
-  final results = <int, R>{};
-  var nextIndex = 0;
-  final workers = items.length < maxConcurrent ? items.length : maxConcurrent;
-
-  Future<void> worker() async {
-    while (true) {
-      final index = nextIndex;
-      if (index >= items.length) return;
-      nextIndex += 1;
-      results[index] = await operation(items[index]);
-    }
-  }
-
-  await Future.wait(List<Future<void>>.generate(workers, (_) => worker()));
-  return List<R>.generate(items.length, (index) => results[index] as R);
-}
-''', encoding='utf-8')
-
-          md = Path('tools/manga/manga_mangadex_identity_resolver.dart')
-          replace_once(md,
-              "import 'manga_metadata_enrichment_models.dart';\n",
-              "import 'manga_metadata_enrichment_models.dart';\nimport 'manga_request_scheduler.dart';\n")
-          replace_once(md,
-              "    this.maxAttempts = 3,\n    this.requestDelay = defaultMangaDexIdentityRequestDelay,",
-              "    this.maxAttempts = 3,\n    this.maxConcurrentRequests = 4,\n    this.requestDelay = defaultMangaDexIdentityRequestDelay,")
-          replace_once(md,
-              "    if (maxAttempts <= 0) {\n      throw ArgumentError.value(maxAttempts, 'maxAttempts', 'must be positive');\n    }\n",
-              "    if (maxAttempts <= 0) {\n      throw ArgumentError.value(maxAttempts, 'maxAttempts', 'must be positive');\n    }\n    if (maxConcurrentRequests <= 0) {\n      throw ArgumentError.value(\n        maxConcurrentRequests,\n        'maxConcurrentRequests',\n        'must be positive',\n      );\n    }\n")
-          replace_once(md,
-              "  final int maxAttempts;\n  final Duration requestDelay;",
-              "  final int maxAttempts;\n  final int maxConcurrentRequests;\n  final Duration requestDelay;")
-          replace_once(md,
-              "  bool _hasStartedRequest = false;\n",
-              "  MangaRequestStartLimiter? _requestStartLimiter;\n\n  MangaRequestStartLimiter get _limiter => _requestStartLimiter ??=\n      MangaRequestStartLimiter(interval: requestDelay, delay: _delay);\n")
-          old_fallback = '''    for (final target in fallback) {
-      final outcome = await _searchByTitle(target);
-      requestsAttempted += outcome.requestsAttempted;
-      if (outcome.failed) {
-        failed.add(target.workId);
-      } else if (outcome.ambiguous) {
-        ambiguous.add(target.workId);
-      } else if (outcome.identity == null) {
-        unmatched.add(target.workId);
-      } else {
-        entries[target.workId] = _entry(
-          target.workId,
-          malId: outcome.identity!.malId,
-          anilistId: outcome.identity!.anilistId ?? target.anilistId,
-          source: 'mangadex',
-        );
-      }
-    }
-'''
-          new_fallback = '''    final fallbackOutcomes = await mapConcurrentOrdered<MangaMetadataWorkTarget, _SearchOutcome>(
-      fallback,
-      maxConcurrentRequests,
-      _searchByTitle,
-    );
-    for (var index = 0; index < fallback.length; index += 1) {
-      final target = fallback[index];
-      final outcome = fallbackOutcomes[index];
-      requestsAttempted += outcome.requestsAttempted;
-      if (outcome.failed) {
-        failed.add(target.workId);
-      } else if (outcome.ambiguous) {
-        ambiguous.add(target.workId);
-      } else if (outcome.identity == null) {
-        unmatched.add(target.workId);
-      } else {
-        entries[target.workId] = _entry(
-          target.workId,
-          malId: outcome.identity!.malId,
-          anilistId: outcome.identity!.anilistId ?? target.anilistId,
-          source: 'mangadex',
-        );
-      }
-    }
-'''
-          replace_once(md, old_fallback, new_fallback)
-          replace_once(md,
-              "      if (_hasStartedRequest && requestDelay > Duration.zero) {\n        await _delay(requestDelay);\n      }\n      _hasStartedRequest = true;\n",
-              "      await _limiter.waitForTurn();\n")
-
-          jk = Path('tools/manga/manga_jikan_bulk_enricher.dart')
-          replace_once(jk,
-              "import 'manga_metadata_enrichment_models.dart';\n",
-              "import 'manga_metadata_enrichment_models.dart';\nimport 'manga_request_scheduler.dart';\n")
-          replace_once(jk,
-              "    this.maxAttempts = 3,\n    this.requestTimeout = const Duration(seconds: 15),",
-              "    this.maxAttempts = 3,\n    this.maxConcurrentDetails = 4,\n    this.requestTimeout = const Duration(seconds: 15),")
-          replace_once(jk,
-              "    if (maxAttempts <= 0) {\n      throw ArgumentError.value(maxAttempts, 'maxAttempts', 'must be positive');\n    }\n",
-              "    if (maxAttempts <= 0) {\n      throw ArgumentError.value(maxAttempts, 'maxAttempts', 'must be positive');\n    }\n    if (maxConcurrentDetails <= 0) {\n      throw ArgumentError.value(\n        maxConcurrentDetails,\n        'maxConcurrentDetails',\n        'must be positive',\n      );\n    }\n")
-          replace_once(jk,
-              "  final int maxAttempts;\n  final Duration requestTimeout;\n\n  bool _hasStartedSearchRequest = false;\n  bool _hasStartedDetailRequest = false;\n",
-              "  final int maxAttempts;\n  final int maxConcurrentDetails;\n  final Duration requestTimeout;\n\n  MangaRequestStartLimiter? _searchRequestLimiter;\n  MangaRequestStartLimiter? _detailRequestLimiter;\n\n  MangaRequestStartLimiter _limiterFor(\n    _JikanRequestLane lane,\n    JikanToolConfig config,\n  ) {\n    return switch (lane) {\n      _JikanRequestLane.search => _searchRequestLimiter ??=\n          MangaRequestStartLimiter(\n            interval: config.minimumRequestDelay,\n            delay: _delay,\n          ),\n      _JikanRequestLane.detail => _detailRequestLimiter ??=\n          MangaRequestStartLimiter(\n            interval: config.minimumRequestDelay,\n            delay: _delay,\n          ),\n    };\n  }\n")
-          replace_once(jk,
-              "    final entries = <String, MangaMetadataEnrichmentEntry>{};",
-              "    final targetList = targets.toList(growable: false);\n    if (maxSearches == 0) {\n      return _enrichKnownDetailsOnly(targetList);\n    }\n\n    final entries = <String, MangaMetadataEnrichmentEntry>{};")
-          replace_once(jk,
-              "    for (final target in targets) {",
-              "    for (final target in targetList) {")
-          marker = "  Future<_SearchOutcome> _search(\n"
-          method = '''  Future<MangaJikanEnrichmentResult> _enrichKnownDetailsOnly(
-    List<MangaMetadataWorkTarget> targets,
-  ) async {
-    final known = targets
-        .where((target) => target.malId != null && target.malId! > 0)
-        .toList(growable: false);
-    final skipped = targets
-        .where((target) => target.malId == null || target.malId! <= 0)
-        .map((target) => target.workId)
-        .toList(growable: false);
-    final detailResults = await mapConcurrentOrdered<
-        MangaMetadataWorkTarget,
-        ({MangaMetadataWorkTarget target, _JikanMangaDetail? detail})>(
-      known,
-      maxConcurrentDetails,
-      (target) async => (
-        target: target,
-        detail: await _fetchFull(target.malId!),
-      ),
-    );
-
-    final entries = <String, MangaMetadataEnrichmentEntry>{};
-    final failed = <String>[];
-    for (final result in detailResults) {
-      final detail = result.detail;
-      final malId = result.target.malId!;
-      if (detail == null || detail.malId != malId) {
-        failed.add(result.target.workId);
-        continue;
-      }
-      entries[result.target.workId] = detail.toEntry(result.target.workId);
-    }
-
-    return MangaJikanEnrichmentResult(
-      entriesByWorkId: entries,
-      searchesAttempted: 0,
-      searchTargetsAttempted: 0,
-      ambiguousWorkIds: const [],
-      unmatchedWorkIds: const [],
-      failedWorkIds: failed,
-      skippedWorkIds: skipped,
-    );
-  }
-
-'''
-          replace_once(jk, marker, method + marker)
-          replace_once(jk,
-              "      if (_hasStartedRequest(lane)) {\n        await _delay(config.minimumRequestDelay);\n      }\n      _markRequestStarted(lane, true);\n",
-              "      await _limiterFor(lane, config).waitForTurn();\n")
-          replace_once(jk,
-              "          await _delay(retryAfter);\n          _markRequestStarted(lane, false);\n",
-              "          await _delay(retryAfter);\n")
-          old_helpers = '''  bool _hasStartedRequest(_JikanRequestLane lane) => switch (lane) {
-    _JikanRequestLane.search => _hasStartedSearchRequest,
-    _JikanRequestLane.detail => _hasStartedDetailRequest,
-  };
-
-  void _markRequestStarted(_JikanRequestLane lane, bool value) {
-    switch (lane) {
-      case _JikanRequestLane.search:
-        _hasStartedSearchRequest = value;
-      case _JikanRequestLane.detail:
-        _hasStartedDetailRequest = value;
-    }
-  }
-
-'''
-          replace_once(jk, old_helpers, '')
-          PY
-
-          dart format \
-            tools/manga/manga_request_scheduler.dart \
-            tools/manga/manga_mangadex_identity_resolver.dart \
-            tools/manga/manga_jikan_bulk_enricher.dart \
-            test/tools/manga_mangadex_identity_resolver_test.dart \
-            test/tools/manga_jikan_private_detail_concurrency_test.dart
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch --no-tags origin \
+            "refs/heads/${PIPELINING_SOURCE_BRANCH}:refs/remotes/origin/manga-metadata-pipelining-source"
+          git merge-base --is-ancestor \
+            f5cc8b78b6463c5e902dbcbcffaec8ca7b694d27 \
+            refs/remotes/origin/manga-metadata-pipelining-source
+          git cherry-pick \
+            57a5b2e583322a0d12bc3eb94ff870b9786a4e02 \
+            4b4adfb3bd04521c7bbe7c845d1e686bcd8dcf04 \
+            10b9074201e3849a985b8ec5274618aa1a5fe908 \
+            f5cc8b78b6463c5e902dbcbcffaec8ca7b694d27
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -297,7 +149,7 @@ Future<List<R>> mapConcurrentOrdered<T, R>(
           flutter pub get --enforce-lockfile >/dev/null
           (cd packages/goanime_core && dart pub get >/dev/null)
 
-      - name: Verify pipelining GREEN
+      - name: Verify pipelining before checkpoint push
         working-directory: private-source
         shell: bash
         run: |
@@ -306,20 +158,18 @@ Future<List<R>> mapConcurrentOrdered<T, R>(
             test/tools/manga_mangadex_identity_resolver_test.dart \
             test/tools/manga_jikan_private_detail_concurrency_test.dart \
             test/tools/manga_metadata_refresh_test.dart
-          git diff --check
+          git diff --check HEAD~4 HEAD
 
-      - name: Commit isolated implementation
+      - name: Push checkpoint hotfix
         working-directory: private-source
         shell: bash
+        env:
+          CHECKPOINT_BRANCH: ${{ steps.request.outputs.checkpoint_branch }}
         run: |
           set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -- \
-            tools/manga/manga_request_scheduler.dart \
-            tools/manga/manga_mangadex_identity_resolver.dart \
-            tools/manga/manga_jikan_bulk_enricher.dart \
-            test/tools/manga_mangadex_identity_resolver_test.dart \
-            test/tools/manga_jikan_private_detail_concurrency_test.dart
-          git commit -m 'perf(manga): pipeline rate-limited metadata requests'
-          git push origin HEAD:${GOANIME_BRANCH}
+          git push origin HEAD:"$CHECKPOINT_BRANCH"
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf private-source
