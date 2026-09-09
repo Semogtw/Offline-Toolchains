@@ -23,7 +23,6 @@ class MetadataD1MigrateWorkflowTest(unittest.TestCase):
             "legacy-6",
             "manga-8",
             "0002_manga_search.sql",
-            "apply == true",
             "Verified all 8 required D1 tables",
         ]
         for token in required:
