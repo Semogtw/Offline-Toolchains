@@ -1,0 +1,3 @@
+target_branch=feat/metadata-refresh-pipeline-20260909
+source_hint=a0196c73abccd67a40da5efbf571d3d4fdd8c31f
+reason=regenerate-scorecard-after-metadata-refresh-workflow
