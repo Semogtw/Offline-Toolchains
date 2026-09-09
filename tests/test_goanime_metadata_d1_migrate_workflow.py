@@ -49,6 +49,19 @@ class MetadataD1MigrateWorkflowTest(unittest.TestCase):
         self.assertIn("steps.inspect.outputs.schema == 'manga-8'", workflow)
         self.assertIn("refusing to mutate", workflow)
 
+    def test_authorization_commit_is_request_only(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("Migration request commit must contain exactly one added request and no other changes", workflow)
+        self.assertIn("git diff-tree --no-commit-id --name-only -r HEAD^ HEAD", workflow)
+        self.assertIn("--diff-filter=A", workflow)
+
+    def test_schema_inventory_fails_closed_on_unknown_user_tables(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("name NOT LIKE 'sqlite_%'", workflow)
+        self.assertIn("name NOT LIKE '_cf_%'", workflow)
+        self.assertNotIn("name IN ('snapshot_versions'", workflow)
+        self.assertIn("Expected exactly one D1 database named", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
