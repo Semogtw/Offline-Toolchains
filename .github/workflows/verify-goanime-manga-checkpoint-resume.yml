@@ -7,8 +7,10 @@ on:
     paths:
       - '.github/workflows/verify-goanime-manga-checkpoint-resume.yml'
       - '.github/workflows/goanime-manga-global-cache.yml'
+      - '.github/workflows/goanime-manga-checkpoint-recovery.yml'
       - 'scripts/run_manga_checkpoint_budget_loop.sh'
       - 'tests/test_manga_global_cache_multi_unit_workflow.py'
+      - 'tests/test_manga_checkpoint_recovery_workflow.py'
       - 'triggers/goanime-manga-checkpoint-resume-verify/*.request'
 
 permissions:
@@ -35,7 +37,9 @@ jobs:
 
       - name: Verify Toolchains multi-unit checkpoint contract
         shell: bash
-        run: python3 tests/test_manga_global_cache_multi_unit_workflow.py
+        run: |
+          python3 tests/test_manga_global_cache_multi_unit_workflow.py
+          python3 tests/test_manga_checkpoint_recovery_workflow.py
 
       - name: Resolve requested GoAnime ref
         id: request
