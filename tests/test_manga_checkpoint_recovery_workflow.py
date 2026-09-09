@@ -4,6 +4,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "goanime-manga-checkpoint-recovery.yml"
+CANCEL_WORKFLOW = ROOT / ".github" / "workflows" / "cancel-goanime-manga-checkpoint-recovery.yml"
 
 
 class MangaCheckpointRecoveryWorkflowTest(unittest.TestCase):
@@ -57,17 +58,28 @@ class MangaCheckpointRecoveryWorkflowTest(unittest.TestCase):
         self.assertIn("--method POST", workflow)
         self.assertIn("seq 1 90", workflow)
 
-    def test_recovery_supports_cancel_only_without_starting_another_writer(self):
-        workflow = WORKFLOW.read_text(encoding="utf-8")
+    def test_isolated_cancel_workflow_never_starts_another_writer(self):
+        self.assertTrue(CANCEL_WORKFLOW.is_file(), "cancel-only workflow must exist")
+        workflow = CANCEL_WORKFLOW.read_text(encoding="utf-8")
         required = [
-            "cancel_only:",
-            "cancelOnly",
-            "cancel_only=$cancel_only",
-            "Cancel-only recovery requires superseded_run_id",
-            "steps.request.outputs.cancel_only != 'true'",
+            "workflow_dispatch:",
+            "triggers/goanime-manga-checkpoint-cancel/*.request.json",
+            "superseded_run_id:",
+            "Superseded run id must be numeric",
+            "actions/runs/$SUPERSEDED_RUN_ID/cancel",
+            "--method POST",
+            "seq 1 90",
         ]
         for token in required:
             self.assertIn(token, workflow)
+        forbidden = [
+            "GOANIME_CATALOG_WRITE_TOKEN",
+            "Semogtw/goanime-mobile",
+            "run_manga_checkpoint_budget_loop.sh",
+            "manga-global-cache-checkpoint",
+        ]
+        for token in forbidden:
+            self.assertNotIn(token, workflow)
 
     def test_recovery_uses_short_durable_metadata_units(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
