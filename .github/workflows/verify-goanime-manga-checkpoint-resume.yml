@@ -54,7 +54,7 @@ jobs:
           fi
           test -n "$ref"
           case "$ref" in
-            feat/manga-checkpoint-resume-20260908|feat/manga-catalog-canonicalization-v2-20260906|feat/manga-checkpoint-deferred-rebuild-20260908|feat/manga-metadata-checkpoint-cursor-20260909|ci/manga-global-cache-f71a6d91cecc-34292292632) ;;
+            feat/manga-checkpoint-resume-20260908|feat/manga-catalog-canonicalization-v2-20260906|feat/manga-checkpoint-deferred-rebuild-20260908|feat/manga-metadata-checkpoint-cursor-20260909|feat/manga-metadata-pipelined-requests-20260909|ci/manga-global-cache-f71a6d91cecc-34292292632) ;;
             *) echo "::error::Unexpected ref: $ref"; exit 1 ;;
           esac
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
@@ -153,7 +153,8 @@ jobs:
             test/tools/manga_metadata_checkpoint_guard_regression_test.dart \
             test/tools/manga_jikan_search_diagnostics_test.dart \
             test/tools/manga_anilist_title_resolver_test.dart \
-            test/tools/manga_mangadex_identity_resolver_test.dart; do
+            test/tools/manga_mangadex_identity_resolver_test.dart \
+            test/tools/manga_jikan_private_detail_concurrency_test.dart; do
             [[ -f "$optional" ]] && tests+=("$optional")
           done
           flutter test --no-pub "${tests[@]}"
