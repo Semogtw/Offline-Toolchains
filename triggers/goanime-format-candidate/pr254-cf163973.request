@@ -1,0 +1,3 @@
+target_branch=feat/metadata-refresh-pipeline-20260909
+source_hint=cf16397300bd3042896054488bdcc8867c7ed8e6
+reason=repo-wide-dart-format-gate-on-pr254
