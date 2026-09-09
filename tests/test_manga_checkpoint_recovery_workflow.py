@@ -56,6 +56,10 @@ class MangaCheckpointRecoveryWorkflowTest(unittest.TestCase):
         self.assertIn("actions/runs/$SUPERSEDED_RUN_ID/cancel", workflow)
         self.assertIn("--method POST", workflow)
 
+    def test_recovery_uses_short_durable_metadata_units(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("MANGA_METADATA_CHECKPOINT_JIKAN_SEARCHES: 512", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
