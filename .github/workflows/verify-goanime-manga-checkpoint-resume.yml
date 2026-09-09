@@ -50,7 +50,7 @@ jobs:
           fi
           test -n "$ref"
           case "$ref" in
-            feat/manga-checkpoint-resume-20260908|feat/manga-catalog-canonicalization-v2-20260906) ;;
+            feat/manga-checkpoint-resume-20260908|feat/manga-catalog-canonicalization-v2-20260906|feat/manga-checkpoint-deferred-rebuild-20260908) ;;
             *) echo "::error::Unexpected ref: $ref"; exit 1 ;;
           esac
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
@@ -80,7 +80,13 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m unittest tools.tests.test_manga_checkpoint_state
+          if [[ -f tools/tests/test_manga_checkpoint_snapshot_merge.py ]]; then
+            python3 -m unittest tools.tests.test_manga_checkpoint_snapshot_merge
+          fi
           python3 -m py_compile tools/manga/manga_checkpoint_state.py
+          if [[ -f tools/manga/merge_manga_checkpoint_snapshots.py ]]; then
+            python3 -m py_compile tools/manga/merge_manga_checkpoint_snapshots.py
+          fi
           bash -n tools/manga/materialize_global_manga_availability_checkpointed_ci.sh
 
       - name: Set up Flutter
