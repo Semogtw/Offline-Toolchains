@@ -152,7 +152,8 @@ jobs:
             test/tools/manga_jikan_title_fallback_regression_test.dart \
             test/tools/manga_metadata_checkpoint_guard_regression_test.dart \
             test/tools/manga_jikan_search_diagnostics_test.dart \
-            test/tools/manga_anilist_title_resolver_test.dart; do
+            test/tools/manga_anilist_title_resolver_test.dart \
+            test/tools/manga_mangadex_identity_resolver_test.dart; do
             [[ -f "$optional" ]] && tests+=("$optional")
           done
           flutter test --no-pub "${tests[@]}"
