@@ -55,6 +55,7 @@ class MangaCheckpointRecoveryWorkflowTest(unittest.TestCase):
         self.assertIn("Superseded run id must be numeric", workflow)
         self.assertIn("actions/runs/$SUPERSEDED_RUN_ID/cancel", workflow)
         self.assertIn("--method POST", workflow)
+        self.assertIn("seq 1 90", workflow)
 
     def test_recovery_uses_short_durable_metadata_units(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
