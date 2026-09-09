@@ -1,0 +1,50 @@
+import pathlib
+import unittest
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+WORKFLOW = ROOT / ".github" / "workflows" / "probe-goanime-manga-public-edge.yml"
+
+
+class MangaPublicEdgeProbeWorkflowTest(unittest.TestCase):
+    def test_probe_is_request_driven_read_only_and_pinned(self):
+        self.assertTrue(WORKFLOW.exists(), "public Manga edge probe workflow must exist")
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        required = [
+            "triggers/goanime-manga-public-edge/*.request.json",
+            "permissions:\n  contents: read",
+            "feat/manga-a71-indexing-supervisor",
+            "e84e231ac7b5b8777a70732045e07cff8591713d",
+            "${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}",
+            "persist-credentials: false",
+            "https://goanime-metadata-edge.arthurgva1602.workers.dev",
+            "/v4/manga?q=berserk&limit=5&sfw=true",
+            "/v4/manga/2/full",
+            "edge:smoke",
+            "--expect-origin a71",
+            "--cache-check 0",
+        ]
+        for token in required:
+            self.assertIn(token, workflow)
+
+        forbidden = [
+            "CLOUDFLARE_API_TOKEN",
+            "CF_API_TOKEN",
+            "wrangler deploy",
+            "d1 execute",
+            "d1 migrations apply",
+            "contents: write",
+            "git push",
+        ]
+        for token in forbidden:
+            self.assertNotIn(token, workflow)
+
+    def test_request_commit_must_be_isolated(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("Public edge probe request commit must contain exactly one added request and no other changes", workflow)
+        self.assertIn("git diff-tree --no-commit-id --name-only -r HEAD^ HEAD", workflow)
+        self.assertIn("--diff-filter=A", workflow)
+
+
+if __name__ == "__main__":
+    unittest.main()
