@@ -71,6 +71,13 @@ class MangaPublicEdgeProbeWorkflowTest(unittest.TestCase):
         self.assertIn("dataType", workflow)
         self.assertNotIn("jq -c '.' /tmp/goanime-manga", workflow)
 
+    def test_semantic_probe_repeats_three_authoritative_rounds(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("for attempt in 1 2 3; do", workflow)
+        self.assertIn("semantic-attempt=$attempt", workflow)
+        self.assertIn("sleep 2", workflow)
+        self.assertIn("Semantic Manga stability: PASS (3/3 rounds)", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
