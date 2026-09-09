@@ -123,7 +123,10 @@ jobs:
 
       - name: Verify Toolchains workflow contract
         shell: bash
-        run: python3 tests/test_goanime_manga_a71_d1_verify_workflow.py
+        run: |
+          set -euo pipefail
+          python3 tests/test_goanime_manga_a71_d1_verify_workflow.py
+          python3 tests/test_markdown_diff_whitespace.py
 
       - name: Run GoAnime metadata repository verification
         working-directory: private-source
@@ -140,7 +143,11 @@ jobs:
           BASE_SHA: ${{ steps.request.outputs.base_sha }}
         run: |
           set -euo pipefail
-          git diff --check "$BASE_SHA..$SOURCE_SHA"
+          git diff --check "$BASE_SHA..$SOURCE_SHA" -- . \
+            ':(exclude,glob)*.md' \
+            ':(exclude,glob)**/*.md'
+          git diff --unified=0 --no-color "$BASE_SHA..$SOURCE_SHA" -- '*.md' \
+            | python3 "$GITHUB_WORKSPACE/scripts/check_markdown_diff_whitespace.py"
           changed="$(git diff --name-only "$BASE_SHA..$SOURCE_SHA" | wc -l | tr -d ' ')"
           test "$changed" -gt 0
           echo "Verified $changed changed files from $BASE_SHA to $SOURCE_SHA." >> "$GITHUB_STEP_SUMMARY"
