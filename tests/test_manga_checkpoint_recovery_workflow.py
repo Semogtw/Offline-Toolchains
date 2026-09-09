@@ -57,6 +57,18 @@ class MangaCheckpointRecoveryWorkflowTest(unittest.TestCase):
         self.assertIn("--method POST", workflow)
         self.assertIn("seq 1 90", workflow)
 
+    def test_recovery_supports_cancel_only_without_starting_another_writer(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        required = [
+            "cancel_only:",
+            "cancelOnly",
+            "cancel_only=$cancel_only",
+            "Cancel-only recovery requires superseded_run_id",
+            "steps.request.outputs.cancel_only != 'true'",
+        ]
+        for token in required:
+            self.assertIn(token, workflow)
+
     def test_recovery_uses_short_durable_metadata_units(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("MANGA_METADATA_CHECKPOINT_JIKAN_SEARCHES: 512", workflow)
