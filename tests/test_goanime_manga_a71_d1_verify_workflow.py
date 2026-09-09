@@ -18,7 +18,8 @@ class GoAnimeMangaA71D1VerifyWorkflowTest(unittest.TestCase):
             "GOANIME_CATALOG_WRITE_TOKEN",
             "persist-credentials: false",
             "npm --prefix cloudflare/metadata-worker run repository:verify",
-            "git diff --check \"$BASE_SHA..$SOURCE_SHA\"",
+            "git diff --check \"$BASE_SHA..$SOURCE_SHA\" -- .",
+            "check_markdown_diff_whitespace.py",
             "Actions executed only in `Semogtw/Offline-Toolchains`.",
         ]
         for token in required:
@@ -55,6 +56,13 @@ class GoAnimeMangaA71D1VerifyWorkflowTest(unittest.TestCase):
         self.assertNotIn("actions: write", workflow)
         self.assertNotIn("git commit", workflow)
         self.assertNotIn("git cherry-pick", workflow)
+
+    def test_markdown_hard_breaks_are_checked_separately(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("':(exclude,glob)*.md'", workflow)
+        self.assertIn("':(exclude,glob)**/*.md'", workflow)
+        self.assertIn("git diff --unified=0 --no-color", workflow)
+        self.assertIn("python3 \"$GITHUB_WORKSPACE/scripts/check_markdown_diff_whitespace.py\"", workflow)
 
 
 if __name__ == "__main__":
