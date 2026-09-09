@@ -154,7 +154,7 @@ jobs:
           fi
           database_id="$(jq -r --arg name "$D1_DATABASE_NAME" '.result[] | select(.name == $name) | .uuid' <<<"$list_response")"
 
-          inspect_sql="SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name;"
+          inspect_sql="SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB 'd1_*' AND name NOT GLOB '_cf_*' ORDER BY name;"
           inspect_body="$(jq -n --arg sql "$inspect_sql" '{sql: $sql}')"
           inspect_response="$(curl --silent --show-error --fail-with-body \
             --request POST \
@@ -229,7 +229,7 @@ jobs:
           DATABASE_ID: ${{ steps.inspect.outputs.database_id }}
         run: |
           set -euo pipefail
-          verify_sql="SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name;"
+          verify_sql="SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB 'd1_*' AND name NOT GLOB '_cf_*' ORDER BY name;"
           verify_body="$(jq -n --arg sql "$verify_sql" '{sql: $sql}')"
           verify_response="$(curl --silent --show-error --fail-with-body \
             --request POST \
