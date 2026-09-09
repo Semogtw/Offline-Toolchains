@@ -52,7 +52,7 @@ jobs:
         shell: bash
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CF_API_TOKEN }}
           GOANIME_CATALOG_WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
         run: |
           set -euo pipefail
@@ -81,7 +81,7 @@ jobs:
         shell: bash
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CF_API_TOKEN }}
         run: |
           set -euo pipefail
           auth="Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"
