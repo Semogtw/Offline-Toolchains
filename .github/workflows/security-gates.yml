@@ -53,5 +53,8 @@ jobs:
       - name: Validate metadata D1 migration workflow contract
         run: python3 tests/test_goanime_metadata_d1_migrate_workflow.py
 
+      - name: Validate public Manga edge probe workflow contract
+        run: python3 tests/test_goanime_manga_public_edge_probe_workflow.py
+
       - name: Reject tracked private material
         run: bash scripts/check-no-private-material.sh
