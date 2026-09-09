@@ -1,0 +1,142 @@
+name: Apply GoAnime Manga Continuous Pool Checkpoint Hotfix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-continuous-pool-checkpoint/*.request.json'
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_CHANNEL: stable
+  FLUTTER_VERSION: 3.44.1
+  RED_COMMIT: f1689c1e72a0f725104dda21a6a5b872eee42471
+  GREEN_COMMIT: 3a253d9aa07aa842df2e99fdd4469b96ba4497b1
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Toolchains request
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve hotfix request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-continuous-pool-checkpoint/*.request.json' | head -n 1)"
+          test -n "$request"
+          checkpoint_branch="$(jq -er '.checkpointBranch | strings | select(length > 0)' "$request")"
+          source_sha="$(jq -er '.sourceSha | strings | select(length > 0)' "$request")"
+          expected_offset="$(jq -er '.expectedOffset | numbers' "$request")"
+          [[ "$checkpoint_branch" =~ ^ci/manga-global-cache-[A-Za-z0-9._-]+$ ]]
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$expected_offset" =~ ^[0-9]+$ ]]
+          echo "checkpoint_branch=$checkpoint_branch" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "expected_offset=$expected_offset" >> "$GITHUB_OUTPUT"
+
+      - name: Require private write credential
+        shell: bash
+        env:
+          WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: test -n "$WRITE_TOKEN"
+
+      - name: Checkout active checkpoint
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.checkpoint_branch }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: true
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Validate generation identity and durable cursor
+        working-directory: private-source
+        shell: bash
+        env:
+          EXPECTED_BRANCH: ${{ steps.request.outputs.checkpoint_branch }}
+          EXPECTED_SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+          EXPECTED_OFFSET: ${{ steps.request.outputs.expected_offset }}
+        run: |
+          set -euo pipefail
+          state=.ci/manga-global-cache/state.json
+          test -f "$state"
+          test "$(jq -r '.checkpointBranch' "$state")" = "$EXPECTED_BRANCH"
+          test "$(jq -r '.sourceSha' "$state")" = "$EXPECTED_SOURCE_SHA"
+          test "$(jq -r '.metadataSearchOffset' "$state")" = "$EXPECTED_OFFSET"
+          test "$(jq -r '.complete' "$state")" = false
+
+      - name: Cherry-pick verified continuous-pool commits
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch --no-tags origin \
+            "$RED_COMMIT" \
+            "$GREEN_COMMIT"
+          git cherry-pick "$RED_COMMIT"
+          git cherry-pick "$GREEN_COMMIT"
+          git diff --check HEAD~2 HEAD
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get --enforce-lockfile >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+
+      - name: Verify hotfixed checkpoint
+        working-directory: private-source
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+          EXPECTED_OFFSET: ${{ steps.request.outputs.expected_offset }}
+        run: |
+          set -euo pipefail
+          flutter test --no-pub \
+            test/tools/manga_continuous_request_pool_test.dart \
+            test/tools/manga_mangadex_identity_resolver_test.dart \
+            test/tools/manga_jikan_private_detail_concurrency_test.dart \
+            test/tools/manga_metadata_refresh_test.dart \
+            test/tools/materialize_global_manga_checkpoint_resume_gate_test.dart
+          state=.ci/manga-global-cache/state.json
+          test "$(jq -r '.sourceSha' "$state")" = "$EXPECTED_SOURCE_SHA"
+          test "$(jq -r '.metadataSearchOffset' "$state")" = "$EXPECTED_OFFSET"
+          git diff --check HEAD~2 HEAD
+
+      - name: Push checkpoint hotfix
+        working-directory: private-source
+        shell: bash
+        env:
+          CHECKPOINT_BRANCH: ${{ steps.request.outputs.checkpoint_branch }}
+        run: |
+          set -euo pipefail
+          git push origin HEAD:"$CHECKPOINT_BRANCH"
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf private-source
