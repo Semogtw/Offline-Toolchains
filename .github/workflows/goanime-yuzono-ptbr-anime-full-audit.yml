@@ -28,10 +28,14 @@ on:
         description: Previous run carrying sanitized continuation state
         required: false
         default: ''
+      continuation_index:
+        description: Automatic continuation depth
+        required: false
+        default: '0'
 
 permissions:
   contents: read
-  actions: read
+  actions: write
 
 concurrency:
   group: goanime-yuzono-full-audit-${{ github.event.inputs.generation_id || github.run_id }}
@@ -47,7 +51,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
-      source_sha: ${{ steps.source.outputs.sha }}
+      source_sha: ${{ steps.request.outputs.source_sha }}
+      generation_id: ${{ steps.request.outputs.generation_id }}
+      mode: ${{ steps.request.outputs.mode }}
+      parent_run_id: ${{ steps.request.outputs.parent_run_id }}
+      continuation_index: ${{ steps.request.outputs.continuation_index }}
     steps:
       - name: Checkout Toolchains request
         uses: actions/checkout@v6
@@ -55,22 +63,55 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
 
-      - name: Resolve immutable GoAnime source SHA
-        id: source
+      - name: Resolve immutable audit request
+        id: request
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
           DISPATCH_SHA: ${{ github.event.inputs.source_sha || '' }}
+          DISPATCH_GENERATION: ${{ github.event.inputs.generation_id || '' }}
+          DISPATCH_MODE: ${{ github.event.inputs.mode || '' }}
+          DISPATCH_PARENT: ${{ github.event.inputs.parent_run_id || '' }}
+          DISPATCH_INDEX: ${{ github.event.inputs.continuation_index || '0' }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message || '' }}
         run: |
           set -euo pipefail
-          sha="$DISPATCH_SHA"
+          source_sha="$DISPATCH_SHA"
+          generation_id="$DISPATCH_GENERATION"
+          mode="$DISPATCH_MODE"
+          parent_run_id="$DISPATCH_PARENT"
+          continuation_index="$DISPATCH_INDEX"
+
           if [[ "$EVENT_NAME" == push ]]; then
             request="$(git diff-tree --no-commit-id --name-only --diff-filter=AM -r HEAD^ HEAD -- 'triggers/goanime-yuzono-anime-full-audit/*.request' | sort | tail -n 1)"
             test -n "$request" || { echo '::error::No full-audit request in triggering commit'; exit 1; }
-            sha="$(tr -d ' \n\r' < "$request")"
+            source_sha="$(tr -d ' \n\r' < "$request")"
+            generation_id="audit-${GITHUB_RUN_ID}"
+            parent_run_id=""
+            continuation_index="0"
+            if [[ "$COMMIT_MESSAGE" == *"[full]"* ]]; then
+              mode="full"
+            elif [[ "$COMMIT_MESSAGE" == *"[canary]"* ]]; then
+              mode="canary"
+            else
+              mode="deterministic"
+            fi
           fi
-          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::source_sha must be an immutable git SHA'; exit 1; }
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::source_sha must be an immutable git SHA'; exit 1; }
+          [[ "$GOANIME_BASELINE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::baseline SHA is invalid'; exit 1; }
+          [[ "$YUZONO_REVISION" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::Yuzono SHA is invalid'; exit 1; }
+          [[ "$ANIKKU_REVISION" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::Anikku SHA is invalid'; exit 1; }
+          [[ "$generation_id" =~ ^[A-Za-z0-9._-]{1,100}$ ]] || { echo '::error::generation_id is invalid'; exit 1; }
+          [[ "$mode" =~ ^(deterministic|canary|full)$ ]] || { echo '::error::mode is invalid'; exit 1; }
+          [[ "$parent_run_id" =~ ^[0-9]*$ ]] || { echo '::error::parent_run_id is invalid'; exit 1; }
+          [[ "$continuation_index" =~ ^[0-9]+$ ]] || { echo '::error::continuation_index is invalid'; exit 1; }
+
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "generation_id=$generation_id" >> "$GITHUB_OUTPUT"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "parent_run_id=$parent_run_id" >> "$GITHUB_OUTPUT"
+          echo "continuation_index=$continuation_index" >> "$GITHUB_OUTPUT"
 
       - name: Require private source credential
         env:
@@ -81,47 +122,68 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
-          ref: ${{ steps.source.outputs.sha }}
+          ref: ${{ steps.request.outputs.source_sha }}
           token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
           path: private-source
           fetch-depth: 1
           persist-credentials: false
           show-progress: false
 
-      - name: Verify source and run deterministic gates
-        working-directory: private-source
-        env:
-          EXPECTED_SHA: ${{ steps.source.outputs.sha }}
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-          python -m unittest discover -s tools/yuzono_anime_probe/tests -p 'test_*.py' -v
+      - name: Checkout exact GoAnime baseline
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.GOANIME_BASELINE_SHA }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: baseline-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
 
-      - name: Verify pinned baseline exists and is immutable
+      - name: Verify identities and deterministic gates
         shell: bash
         env:
-          TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          EXPECTED_SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
         run: |
           set -euo pipefail
-          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)" \
-            ls-remote https://github.com/Semogtw/goanime-mobile.git "$GOANIME_BASELINE_SHA" >/dev/null || true
-          [[ "$GOANIME_BASELINE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git -C private-source rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          test "$(git -C baseline-source rev-parse HEAD)" = "$GOANIME_BASELINE_SHA"
+          test -f baseline-source/assets/data/anime_provider_catalogs.json
+          (cd private-source && python -m unittest discover -s tools/yuzono_anime_probe/tests -p 'test_*.py' -v)
 
-      - name: Remove private checkout
+      - name: Write deterministic receipt
         if: always()
-        run: rm -rf "$GITHUB_WORKSPACE/private-source"
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+          GENERATION_ID: ${{ steps.request.outputs.generation_id }}
+          MODE: ${{ steps.request.outputs.mode }}
+        run: |
+          {
+            echo '## Yuzono PT-BR full-audit identity'
+            echo
+            echo "- mode: \`$MODE\`"
+            echo "- generation: \`$GENERATION_ID\`"
+            echo "- probe source: \`$SOURCE_SHA\`"
+            echo "- GoAnime baseline: \`$GOANIME_BASELINE_SHA\`"
+            echo "- Yuzono: \`$YUZONO_REVISION\`"
+            echo "- Anikku: \`$ANIKKU_REVISION\`"
+            echo '- NSFW sources are outside audit scope'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove private checkouts
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/baseline-source"
 
   canary:
     name: Instrumented PT-BR canary
     needs: deterministic
-    if: >-
-      (github.event_name == 'push') ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'canary')
+    if: needs.deterministic.outputs.mode == 'canary'
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
       GOANIME_SOURCE_SHA: ${{ needs.deterministic.outputs.source_sha }}
-      GENERATION_ID: ${{ github.event.inputs.generation_id || format('full-audit-canary-{0}', github.run_id) }}
+      GENERATION_ID: ${{ needs.deterministic.outputs.generation_id }}
       MODULES: animefire,dattebayobr,animeito
       MAX_RETRIES: '1'
       MAX_PAGES: '3'
@@ -178,12 +240,8 @@ jobs:
           for attempt in 1 2 3; do
             echo "Anikku assemble attempt $attempt/3"
             args=( :app:assembleDebug --no-daemon --stacktrace )
-            if (( attempt > 1 )); then
-              args+=( --refresh-dependencies )
-            fi
-            if ./gradlew "${args[@]}"; then
-              exit 0
-            fi
+            if (( attempt > 1 )); then args+=( --refresh-dependencies ); fi
+            if ./gradlew "${args[@]}"; then exit 0; fi
             if (( attempt == 3 )); then
               echo '::error::Pinned Anikku failed after bounded dependency retries'
               exit 1
@@ -205,9 +263,7 @@ jobs:
               if ./gradlew "${args[@]}"; then ok=1; break; fi
               sleep 20
             done
-            if (( ok == 0 )); then
-              echo "::warning::$module did not build; runner will classify extension-build"
-            fi
+            if (( ok == 0 )); then echo "::warning::$module did not build; runner will classify extension-build"; fi
           done
 
       - name: Enable KVM
@@ -240,10 +296,9 @@ jobs:
           import json
           import os
           from pathlib import Path
-
           summary = Path(os.environ['GITHUB_STEP_SUMMARY'])
           providers = sorted(Path('probe-state/providers').glob('*.json'))
-          lines = ['', '## Yuzono full-audit canary', '', '| Provider | Status | Stage | Titles | Playback | Failure |', '|---|---|---|---:|---:|---|']
+          lines = ['', '## Instrumented PT-BR canary', '', '| Provider | Status | Stage | Titles | Playback | Failure |', '|---|---|---|---:|---:|---|']
           for path in providers:
               raw = json.loads(path.read_text(encoding='utf-8'))
               lines.append(f"| {raw.get('displayName', path.stem)} | {raw.get('status', 'unknown')} | {raw.get('stage', 'discovered')} | {len(raw.get('titles', []))} | {raw.get('playbackSampleCount', 0)} | {raw.get('failureKind') or ''} |")
@@ -265,3 +320,433 @@ jobs:
       - name: Remove transient trees
         if: always()
         run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/anikku" "$GITHUB_WORKSPACE/yuzono"
+
+  prepare-full:
+    name: Prepare resumable full-audit matrix
+    needs: deterministic
+    if: needs.deterministic.outputs.mode == 'full'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      has_pending: ${{ steps.plan.outputs.has_pending }}
+      pending_count: ${{ steps.plan.outputs.pending_count }}
+    env:
+      GOANIME_SOURCE_SHA: ${{ needs.deterministic.outputs.source_sha }}
+      GENERATION_ID: ${{ needs.deterministic.outputs.generation_id }}
+      PARENT_RUN_ID: ${{ needs.deterministic.outputs.parent_run_id }}
+    steps:
+      - name: Checkout exact GoAnime probe source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ needs.deterministic.outputs.source_sha }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Checkout pinned Yuzono inventory source
+        uses: actions/checkout@v6
+        with:
+          repository: yuzono/anime-extensions
+          ref: ${{ env.YUZONO_REVISION }}
+          path: yuzono
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Initialize audit plan and restore parent state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p audit-plan/resume-state/checkpoints audit-plan/resume-state/providers
+          if [[ -n "$PARENT_RUN_ID" ]]; then
+            mkdir -p inherited-download
+            gh run download "$PARENT_RUN_ID" \
+              --repo "$GITHUB_REPOSITORY" \
+              --name "yuzono-full-audit-consolidated-$GENERATION_ID" \
+              --dir inherited-download
+            if [[ -d inherited-download/consolidated-state ]]; then
+              cp -a inherited-download/consolidated-state/. audit-plan/resume-state/
+            else
+              echo '::error::Parent run artifact does not contain consolidated-state'
+              exit 1
+            fi
+          fi
+
+      - name: Discover inventory and pending providers
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/private-source"
+          python -m tools.yuzono_anime_probe.cli inventory \
+            --repo-root yuzono \
+            --revision "$YUZONO_REVISION" \
+            --output audit-plan/inventory.json
+          python -m tools.yuzono_anime_probe.cli pending \
+            --inventory audit-plan/inventory.json \
+            --checkpoint-dir audit-plan/resume-state/checkpoints \
+            --generation-id "$GENERATION_ID" \
+            --goanime-source-sha "$GOANIME_SOURCE_SHA" \
+            --goanime-baseline-sha "$GOANIME_BASELINE_SHA" \
+            --upstream-revision "$YUZONO_REVISION" \
+            --anikku-revision "$ANIKKU_REVISION" \
+            --output audit-plan/pending.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          inventory = json.loads(Path('audit-plan/inventory.json').read_text(encoding='utf-8'))
+          pending = set(json.loads(Path('audit-plan/pending.json').read_text(encoding='utf-8')))
+          scoped = [entry for entry in inventory if entry.get('module') in pending]
+          Path('audit-plan/pending-inventory.json').write_text(json.dumps(scoped, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          PY
+          python -m tools.yuzono_anime_probe.cli shard-plan \
+            --inventory audit-plan/pending-inventory.json \
+            --shards 4 \
+            --mode full \
+            --output audit-plan/matrix.json
+
+      - name: Export matrix
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          count="$(jq 'length' audit-plan/pending.json)"
+          matrix="$(jq -c . audit-plan/matrix.json)"
+          if (( count == 0 )); then
+            matrix='{"include":[{"shard":0,"modules":[]}]}'
+            echo 'has_pending=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'has_pending=true' >> "$GITHUB_OUTPUT"
+          fi
+          echo "pending_count=$count" >> "$GITHUB_OUTPUT"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "Pending non-NSFW providers: $count"
+          jq -r '.[]' audit-plan/pending.json
+
+      - name: Upload sanitized audit plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: yuzono-full-audit-plan-${{ github.run_id }}
+          path: audit-plan
+          retention-days: 7
+
+      - name: Remove transient source trees
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/yuzono" "$GITHUB_WORKSPACE/inherited-download"
+
+  full-shard:
+    name: Full audit shard ${{ matrix.shard }}
+    needs:
+      - deterministic
+      - prepare-full
+    if: needs.prepare-full.outputs.has_pending == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJson(needs.prepare-full.outputs.matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      GOANIME_SOURCE_SHA: ${{ needs.deterministic.outputs.source_sha }}
+      GENERATION_ID: ${{ needs.deterministic.outputs.generation_id }}
+      MODULES: ${{ join(matrix.modules, ',') }}
+      MAX_RETRIES: '2'
+      MAX_PAGES: '1000'
+      STAGE_TIMEOUT_SECONDS: '60'
+      SOFT_BUDGET_SECONDS: '18000'
+      CONTINUATION_RESERVE_SECONDS: '1800'
+      ESTIMATED_NEXT_SECONDS: '900'
+    steps:
+      - name: Checkout exact GoAnime probe source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ needs.deterministic.outputs.source_sha }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Checkout pinned Anikku runtime
+        uses: actions/checkout@v6
+        with:
+          repository: komikku-app/anikku
+          ref: ${{ env.ANIKKU_REVISION }}
+          path: anikku
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Checkout pinned Yuzono extensions
+        uses: actions/checkout@v6
+        with:
+          repository: yuzono/anime-extensions
+          ref: ${{ env.YUZONO_REVISION }}
+          path: yuzono
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Download audit plan and inherited state
+        uses: actions/download-artifact@v4
+        with:
+          name: yuzono-full-audit-plan-${{ github.run_id }}
+          path: audit-plan
+
+      - name: Initialize resumable shard state
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p probe-state/checkpoints probe-state/providers
+          if [[ -d audit-plan/resume-state ]]; then
+            cp -a audit-plan/resume-state/. probe-state/
+          fi
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Inject debug-only probe harness
+        run: python private-source/tools/yuzono_anime_probe/android_harness/inject_harness.py --anikku-root anikku
+
+      - name: Assemble pinned Anikku with bounded dependency retries
+        working-directory: anikku
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "Anikku assemble attempt $attempt/3"
+            args=( :app:assembleDebug --no-daemon --stacktrace )
+            if (( attempt > 1 )); then args+=( --refresh-dependencies ); fi
+            if ./gradlew "${args[@]}"; then exit 0; fi
+            if (( attempt == 3 )); then
+              echo '::error::Pinned Anikku failed after bounded dependency retries; providers remain pending'
+              exit 1
+            fi
+            sleep $((attempt * 30))
+          done
+
+      - name: Build pending extensions independently
+        working-directory: yuzono
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=',' read -r -a modules <<< "$MODULES"
+          for module in "${modules[@]}"; do
+            [[ "$module" =~ ^[a-z0-9._-]+$ ]] || { echo "invalid module $module"; exit 2; }
+            ok=0
+            for attempt in 1 2; do
+              echo "Building $module attempt $attempt/2"
+              args=( "src:pt:$module:assembleDebug" --no-daemon --stacktrace )
+              if (( attempt > 1 )); then args+=( --refresh-dependencies ); fi
+              if ./gradlew "${args[@]}"; then ok=1; break; fi
+              sleep 20
+            done
+            if (( ok == 0 )); then echo "::warning::$module did not build; provider result will record extension-build"; fi
+          done
+
+      - name: Enable KVM
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Execute shard in Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          cores: 2
+          ram-size: 4096M
+          heap-size: 512M
+          emulator-boot-timeout: 900
+          disable-animations: true
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash private-source/tools/yuzono_anime_probe/android_harness/run_emulator_probes.sh
+
+      - name: Upload sanitized shard checkpoint
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yuzono-full-audit-shard-${{ matrix.shard }}-${{ github.run_id }}
+          path: probe-state
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Remove transient trees
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/anikku" "$GITHUB_WORKSPACE/yuzono"
+
+  finalize-full:
+    name: Consolidate, deduplicate and continue
+    needs:
+      - deterministic
+      - prepare-full
+      - full-shard
+    if: always() && needs.prepare-full.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GOANIME_SOURCE_SHA: ${{ needs.deterministic.outputs.source_sha }}
+      GENERATION_ID: ${{ needs.deterministic.outputs.generation_id }}
+      CONTINUATION_INDEX: ${{ needs.deterministic.outputs.continuation_index }}
+    steps:
+      - name: Checkout exact GoAnime probe source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ needs.deterministic.outputs.source_sha }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Checkout exact GoAnime catalog baseline
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.GOANIME_BASELINE_SHA }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: baseline-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Download audit plan
+        uses: actions/download-artifact@v4
+        with:
+          name: yuzono-full-audit-plan-${{ github.run_id }}
+          path: audit-plan
+
+      - name: Download all current shard states
+        if: needs.prepare-full.outputs.has_pending == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: yuzono-full-audit-shard-*-${{ github.run_id }}
+          path: shard-download
+          merge-multiple: false
+
+      - name: Merge sanitized state
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/private-source"
+          mkdir -p empty-state/checkpoints empty-state/providers
+          args=( --state-dir empty-state )
+          if [[ -d audit-plan/resume-state/checkpoints ]]; then
+            args+=( --state-dir audit-plan/resume-state )
+          fi
+          if [[ -d shard-download ]]; then
+            while IFS= read -r state_dir; do
+              args+=( --state-dir "$state_dir" )
+            done < <(find shard-download -mindepth 1 -maxdepth 1 -type d | sort)
+          fi
+          python -m tools.yuzono_anime_probe.cli merge-state \
+            "${args[@]}" \
+            --output-dir consolidated-state \
+            --generation-id "$GENERATION_ID" \
+            --goanime-source-sha "$GOANIME_SOURCE_SHA" \
+            --goanime-baseline-sha "$GOANIME_BASELINE_SHA" \
+            --upstream-revision "$YUZONO_REVISION" \
+            --anikku-revision "$ANIKKU_REVISION"
+
+      - name: Aggregate catalog, deduplicate and compute promotion gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/private-source"
+          python -m tools.yuzono_anime_probe.cli aggregate \
+            --inventory audit-plan/inventory.json \
+            --provider-dir consolidated-state/providers \
+            --baseline baseline-source/assets/data/anime_provider_catalogs.json \
+            --output-dir audit-output
+          python -m tools.yuzono_anime_probe.cli pending \
+            --inventory audit-plan/inventory.json \
+            --checkpoint-dir consolidated-state/checkpoints \
+            --generation-id "$GENERATION_ID" \
+            --goanime-source-sha "$GOANIME_SOURCE_SHA" \
+            --goanime-baseline-sha "$GOANIME_BASELINE_SHA" \
+            --upstream-revision "$YUZONO_REVISION" \
+            --anikku-revision "$ANIKKU_REVISION" \
+            --output audit-output/pending.json
+
+      - name: Write full-audit summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat audit-output/report.md >> "$GITHUB_STEP_SUMMARY"
+          pending="$(jq 'length' audit-output/pending.json)"
+          {
+            echo
+            echo '## Generation receipt'
+            echo
+            echo "- generation: \`$GENERATION_ID\`"
+            echo "- continuation index: \`$CONTINUATION_INDEX\`"
+            echo "- pending providers: \`$pending\`"
+            echo "- GoAnime probe SHA: \`$GOANIME_SOURCE_SHA\`"
+            echo "- GoAnime baseline SHA: \`$GOANIME_BASELINE_SHA\`"
+            echo "- Yuzono SHA: \`$YUZONO_REVISION\`"
+            echo "- Anikku SHA: \`$ANIKKU_REVISION\`"
+            echo '- NSFW sources excluded from audit, metrics and promotion'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload consolidated sanitized checkpoint and report
+        uses: actions/upload-artifact@v4
+        with:
+          name: yuzono-full-audit-consolidated-${{ needs.deterministic.outputs.generation_id }}
+          path: |
+            consolidated-state
+            audit-output
+            audit-plan/inventory.json
+          retention-days: 14
+
+      - name: Schedule bounded automatic continuation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          pending="$(jq 'length' audit-output/pending.json)"
+          if (( pending == 0 )); then
+            echo 'Audit has no pending providers; no continuation needed.'
+            exit 0
+          fi
+          if (( CONTINUATION_INDEX >= 8 )); then
+            echo "::warning::Audit still has $pending pending providers but continuation cap 8 was reached"
+            exit 0
+          fi
+          if [[ "$REF_NAME" != "$DEFAULT_BRANCH" ]]; then
+            echo "Automatic continuation is armed but not dispatched from validation branch; promote workflow to $DEFAULT_BRANCH first."
+            exit 0
+          fi
+          next_index=$((CONTINUATION_INDEX + 1))
+          gh workflow run goanime-yuzono-ptbr-anime-full-audit.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$DEFAULT_BRANCH" \
+            -f source_sha="$GOANIME_SOURCE_SHA" \
+            -f generation_id="$GENERATION_ID" \
+            -f mode=full \
+            -f parent_run_id="$GITHUB_RUN_ID" \
+            -f continuation_index="$next_index"
+          echo "Scheduled continuation $next_index with $pending pending providers."
+
+      - name: Remove private checkouts
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/baseline-source"
