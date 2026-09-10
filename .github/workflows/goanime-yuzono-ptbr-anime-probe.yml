@@ -20,9 +20,18 @@ on:
           - deterministic
           - canary
           - full
+      generation_id:
+        description: Stable generation identifier for resumable runs
+        required: false
+        default: ''
+      parent_run_id:
+        description: Previous run carrying consolidated sanitized state
+        required: false
+        default: ''
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: goanime-yuzono-anime-probe-${{ github.event.inputs.generation_id || github.run_id }}
@@ -118,9 +127,7 @@ jobs:
   compile-harness:
     name: Compile pinned Anikku harness and AnimeFire extension
     needs: deterministic
-    if: >-
-      (github.event_name == 'push' && contains(github.event.head_commit.message, 'compile')) ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.mode != 'deterministic')
+    if: github.event_name == 'push' && contains(github.event.head_commit.message, 'compile')
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -210,6 +217,148 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove transient checkouts
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/anikku" "$GITHUB_WORKSPACE/yuzono"
+
+  canary:
+    name: Live PT-BR canary
+    needs: deterministic
+    if: >-
+      (github.event_name == 'push' && contains(github.event.head_commit.message, 'canary')) ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'canary')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      GOANIME_SOURCE_SHA: ${{ needs.deterministic.outputs.source_sha }}
+      GENERATION_ID: ${{ github.event.inputs.generation_id || format('canary-{0}', github.run_id) }}
+      MODULES: animefire,dattebayobr,animeito
+      MAX_RETRIES: '1'
+      MAX_PAGES: '3'
+      STAGE_TIMEOUT_SECONDS: '45'
+    steps:
+      - name: Checkout exact GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ needs.deterministic.outputs.source_sha }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Checkout pinned Anikku runtime
+        uses: actions/checkout@v6
+        with:
+          repository: komikku-app/anikku
+          ref: ${{ env.ANIKKU_REVISION }}
+          path: anikku
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+          show-progress: false
+
+      - name: Checkout pinned Yuzono extensions
+        uses: actions/checkout@v6
+        with:
+          repository: yuzono/anime-extensions
+          ref: ${{ env.YUZONO_REVISION }}
+          path: yuzono
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Inject debug-only probe harness
+        shell: bash
+        run: python private-source/tools/yuzono_anime_probe/android_harness/inject_harness.py --anikku-root anikku
+
+      - name: Assemble pinned Anikku debug APK
+        working-directory: anikku
+        shell: bash
+        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Build canary PT extensions independently
+        working-directory: yuzono
+        shell: bash
+        run: |
+          set +e
+          ./gradlew \
+            src:pt:animefire:assembleDebug \
+            src:pt:dattebayobr:assembleDebug \
+            src:pt:animeito:assembleDebug \
+            --continue --no-daemon --stacktrace
+          echo "Extension build exit code: $? (individual missing APKs are recorded by the harness runner)"
+          exit 0
+
+      - name: Enable KVM
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Execute canary providers in Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          cores: 2
+          ram-size: 4096M
+          heap-size: 512M
+          emulator-boot-timeout: 900
+          disable-animations: true
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash private-source/tools/yuzono_anime_probe/android_harness/run_emulator_probes.sh
+
+      - name: Write sanitized canary summary
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          lines = ["", "## Live PT-BR canary", "", "| Provider | Status | Stage | Mode | Titles | Playback | Failure |", "|---|---|---|---|---:|---:|---|"]
+          for path in sorted(Path("probe-state/providers").glob("*.json")):
+              raw = json.loads(path.read_text(encoding="utf-8"))
+              lines.append(
+                  f"| {raw.get('displayName', path.stem)} | {raw.get('status', 'unknown')} | "
+                  f"{raw.get('stage', 'discovered')} | {raw.get('languageMode', 'unknown')} | "
+                  f"{len(raw.get('titles', []))} | {raw.get('playbackSampleCount', 0)} | "
+                  f"{raw.get('failureKind') or ''} |"
+              )
+          if not list(Path("probe-state/providers").glob("*.json")):
+              lines.append("| no result | broken | discovered | unknown | 0 | 0 | structural-canary-failure |")
+          summary.write_text(summary.read_text(encoding="utf-8") + "\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload sanitized canary state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yuzono-canary-state-${{ github.run_id }}
+          path: probe-state
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Remove transient source and APK trees
         if: always()
         shell: bash
         run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/anikku" "$GITHUB_WORKSPACE/yuzono"
