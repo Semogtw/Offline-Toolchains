@@ -1,0 +1,130 @@
+name: Validate GoAnime Mihon runtime
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/validate-goanime-mihon-runtime.yml
+      - triggers/goanime-mihon-runtime/*.request
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_CHANNEL: stable
+  FLUTTER_VERSION: 3.44.1
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout trusted request
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: trusted-source
+          persist-credentials: false
+          fetch-depth: 2
+          sparse-checkout: |
+            triggers/goanime-mihon-runtime
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve exact GoAnime ref
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(git -C trusted-source diff-tree --no-commit-id --name-only -r HEAD^ HEAD | grep '^triggers/goanime-mihon-runtime/.*\.request$' || true)
+          if (( ${#changed[@]} > 1 )); then
+            echo 'Only one Mihon runtime request may change per push.' >&2
+            exit 2
+          fi
+          if (( ${#changed[@]} == 1 )); then
+            ref="$(tr -d '\r\n' < "trusted-source/${changed[0]}")"
+          else
+            ref='feat/manga-mihon-extension-runtime'
+          fi
+          test -n "$ref"
+          [[ "$ref" != *$'\n'* && "$ref" != *$'\r'* ]]
+          printf 'ref=%s\n' "$ref" >> "$GITHUB_OUTPUT"
+
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout GoAnime read-only
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          persist-credentials: false
+          fetch-depth: 2
+          lfs: false
+          submodules: false
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Expose Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: ''
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: false
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Run Mihon Android unit tests when present
+        working-directory: private-source/android
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest --tests '*Mihon*'
+
+      - name: Run focused Dart tests when present
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          files=(test/services/manga/mihon/**/*_test.dart test/architecture/mihon*_test.dart)
+          if (( ${#files[@]} > 0 )); then
+            flutter test --no-pub "${files[@]}"
+          else
+            echo 'No Mihon Dart tests yet.'
+          fi
+
+      - name: Analyze Flutter project
+        working-directory: private-source
+        run: flutter analyze --no-pub
+
+      - name: Compile Kotlin
+        working-directory: private-source/android
+        run: ./gradlew :app:compileDebugKotlin
+
+      - name: Build Android debug APK
+        working-directory: private-source
+        run: flutter build apk --debug --no-pub
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf private-source
