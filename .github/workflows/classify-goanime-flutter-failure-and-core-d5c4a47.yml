@@ -1,0 +1,171 @@
+name: Classify GoAnime Flutter failure and core d5c4a47
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/classify-goanime-flutter-failure-and-core-d5c4a47.yml
+
+permissions:
+  contents: read
+
+jobs:
+  focused-flutter:
+    name: Focused Flutter test (${{ matrix.label }})
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: feature-d5c4a47
+            sha: d5c4a47443653cac02e2e082ab686d388520669c
+          - label: base-e84e231
+            sha: e84e231ac7b5b8777a70732045e07cff8591713d
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout exact GoAnime SHA
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ matrix.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify exact checkout
+        working-directory: private-source
+        env:
+          EXPECTED_SHA: ${{ matrix.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Run exact first-failing Flutter test
+        id: focused
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          flutter test --no-pub -r expanded test/services/title_availability_database_service_test.dart 2>&1 | tee ../focused-${{ matrix.label }}.log
+          status=${PIPESTATUS[0]}
+          set -e
+          printf 'exit_code=%s\n' "$status" >> "$GITHUB_OUTPUT"
+          {
+            printf 'label=%s\n' '${{ matrix.label }}'
+            printf 'sha=%s\n' '${{ matrix.sha }}'
+            printf 'test=%s\n' 'test/services/title_availability_database_service_test.dart'
+            printf 'exit_code=%s\n' "$status"
+            grep -E -m 8 'bundled SQLite|Expected:|Actual:|Which:|\[E\]|Some tests failed|All tests passed' ../focused-${{ matrix.label }}.log || true
+          } > ../focused-${{ matrix.label }}.txt
+
+      - name: Upload focused receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: focused-${{ matrix.label }}
+          path: |
+            focused-${{ matrix.label }}.txt
+            focused-${{ matrix.label }}.log
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
+
+  core-feature:
+    name: Independent goanime_core tests (feature d5c4a47)
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout exact feature SHA
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: d5c4a47443653cac02e2e082ab686d388520669c
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify exact checkout
+        working-directory: private-source
+        run: test "$(git rev-parse HEAD)" = d5c4a47443653cac02e2e082ab686d388520669c
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve core dependencies
+        working-directory: private-source/packages/goanime_core
+        run: dart pub get >/dev/null 2>&1
+
+      - name: Run independent core suite
+        id: core
+        working-directory: private-source/packages/goanime_core
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          dart test -r compact 2>&1 | tee ../../../core-d5c4a47.log
+          status=${PIPESTATUS[0]}
+          set -e
+          printf 'exit_code=%s\n' "$status" >> "$GITHUB_OUTPUT"
+          {
+            printf 'sha=%s\n' 'd5c4a47443653cac02e2e082ab686d388520669c'
+            printf 'command=%s\n' 'dart test -r compact'
+            printf 'exit_code=%s\n' "$status"
+            tail -n 40 ../../../core-d5c4a47.log
+          } > ../../../core-d5c4a47.txt
+
+      - name: Upload core receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: goanime-core-d5c4a47
+          path: |
+            core-d5c4a47.txt
+            core-d5c4a47.log
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Enforce core success
+        if: always()
+        env:
+          CORE_EXIT: ${{ steps.core.outputs.exit_code }}
+        run: test "$CORE_EXIT" = 0
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
