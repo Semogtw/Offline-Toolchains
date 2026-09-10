@@ -28,10 +28,16 @@ concurrency:
   group: goanime-yuzono-anime-probe-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  YUZONO_REVISION: 36eda914cb77ca8e40552eb800eb07098852fc55
+  ANIKKU_REVISION: 41fefe566a00e8eb38dfa7f11802c8bfbe5c16e7
+
 jobs:
   deterministic:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
     steps:
       - name: Checkout Toolchains request
         uses: actions/checkout@v6
@@ -99,7 +105,8 @@ jobs:
             echo '## GoAnime Yuzono PT-BR anime probe'
             echo
             echo "- source SHA: \`${SOURCE_SHA:-unknown}\`"
-            echo "- mode: deterministic"
+            echo "- Yuzono revision: \`$YUZONO_REVISION\`"
+            echo "- Anikku revision: \`$ANIKKU_REVISION\`"
             echo '- private source is not uploaded'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -107,3 +114,102 @@ jobs:
         if: always()
         shell: bash
         run: rm -rf "$GITHUB_WORKSPACE/private-source"
+
+  compile-harness:
+    name: Compile pinned Anikku harness and AnimeFire extension
+    needs: deterministic
+    if: >-
+      (github.event_name == 'push' && contains(github.event.head_commit.message, 'compile')) ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.mode != 'deterministic')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout exact GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ needs.deterministic.outputs.source_sha }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Checkout pinned Anikku runtime
+        uses: actions/checkout@v6
+        with:
+          repository: komikku-app/anikku
+          ref: ${{ env.ANIKKU_REVISION }}
+          path: anikku
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+          show-progress: false
+
+      - name: Checkout pinned Yuzono extensions
+        uses: actions/checkout@v6
+        with:
+          repository: yuzono/anime-extensions
+          ref: ${{ env.YUZONO_REVISION }}
+          path: yuzono
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+          show-progress: false
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Inject debug-only GoAnime probe harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          python private-source/tools/yuzono_anime_probe/android_harness/inject_harness.py --anikku-root anikku
+          grep -q 'android:name=".GoAnimeYuzonoProbeActivity"' anikku/app/src/debug/AndroidManifest.xml
+          grep -q 'android:exported="false"' anikku/app/src/debug/AndroidManifest.xml
+
+      - name: Compile pinned Anikku debug Kotlin
+        working-directory: anikku
+        shell: bash
+        run: ./gradlew :app:compileDebugKotlin --no-daemon --stacktrace
+
+      - name: Build pinned AnimeFire PT extension
+        working-directory: yuzono
+        shell: bash
+        run: ./gradlew src:pt:animefire:assembleDebug --no-daemon --stacktrace
+
+      - name: Verify extension APK was produced
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="$(find yuzono/src/pt/animefire/build -type f -name '*.apk' -print -quit)"
+          test -n "$apk"
+          echo "Built AnimeFire extension APK: $(basename "$apk")"
+
+      - name: Write compile receipt
+        if: always()
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.deterministic.outputs.source_sha }}
+        run: |
+          {
+            echo '## Yuzono Android compile gate'
+            echo
+            echo "- GoAnime source: \`$SOURCE_SHA\`"
+            echo "- Yuzono: \`$YUZONO_REVISION\`"
+            echo "- Anikku: \`$ANIKKU_REVISION\`"
+            echo '- no APK or private checkout is uploaded'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove transient checkouts
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/anikku" "$GITHUB_WORKSPACE/yuzono"
