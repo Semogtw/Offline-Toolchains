@@ -1,0 +1,267 @@
+name: GoAnime Yuzono PT-BR Anime Full Audit
+
+on:
+  push:
+    branches:
+      - feat/yuzono-ptbr-anime-full-audit-20260910
+    paths:
+      - 'triggers/goanime-yuzono-anime-full-audit/**'
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Immutable GoAnime probe source SHA
+        required: true
+      generation_id:
+        description: Stable generation identifier
+        required: false
+        default: ''
+      mode:
+        description: Audit mode
+        required: true
+        default: canary
+        type: choice
+        options:
+          - deterministic
+          - canary
+          - full
+      parent_run_id:
+        description: Previous run carrying sanitized continuation state
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: goanime-yuzono-full-audit-${{ github.event.inputs.generation_id || github.run_id }}
+  cancel-in-progress: false
+
+env:
+  YUZONO_REVISION: 36eda914cb77ca8e40552eb800eb07098852fc55
+  ANIKKU_REVISION: 41fefe566a00e8eb38dfa7f11802c8bfbe5c16e7
+  GOANIME_BASELINE_SHA: f350111089aedf248033154e11779dc69fff8f7f
+
+jobs:
+  deterministic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - name: Checkout Toolchains request
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve immutable GoAnime source SHA
+        id: source
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_SHA: ${{ github.event.inputs.source_sha || '' }}
+        run: |
+          set -euo pipefail
+          sha="$DISPATCH_SHA"
+          if [[ "$EVENT_NAME" == push ]]; then
+            request="$(git diff-tree --no-commit-id --name-only --diff-filter=AM -r HEAD^ HEAD -- 'triggers/goanime-yuzono-anime-full-audit/*.request' | sort | tail -n 1)"
+            test -n "$request" || { echo '::error::No full-audit request in triggering commit'; exit 1; }
+            sha="$(tr -d ' \n\r' < "$request")"
+          fi
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::source_sha must be an immutable git SHA'; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Require private source credential
+        env:
+          TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: test -n "$TOKEN"
+
+      - name: Checkout exact GoAnime probe source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.source.outputs.sha }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify source and run deterministic gates
+        working-directory: private-source
+        env:
+          EXPECTED_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          python -m unittest discover -s tools/yuzono_anime_probe/tests -p 'test_*.py' -v
+
+      - name: Verify pinned baseline exists and is immutable
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)" \
+            ls-remote https://github.com/Semogtw/goanime-mobile.git "$GOANIME_BASELINE_SHA" >/dev/null || true
+          [[ "$GOANIME_BASELINE_SHA" =~ ^[0-9a-f]{40}$ ]]
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
+
+  canary:
+    name: Instrumented PT-BR canary
+    needs: deterministic
+    if: >-
+      (github.event_name == 'push') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'canary')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      GOANIME_SOURCE_SHA: ${{ needs.deterministic.outputs.source_sha }}
+      GENERATION_ID: ${{ github.event.inputs.generation_id || format('full-audit-canary-{0}', github.run_id) }}
+      MODULES: animefire,dattebayobr,animeito
+      MAX_RETRIES: '1'
+      MAX_PAGES: '3'
+      STAGE_TIMEOUT_SECONDS: '45'
+    steps:
+      - name: Checkout exact GoAnime probe source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ needs.deterministic.outputs.source_sha }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Checkout pinned Anikku runtime
+        uses: actions/checkout@v6
+        with:
+          repository: komikku-app/anikku
+          ref: ${{ env.ANIKKU_REVISION }}
+          path: anikku
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Checkout pinned Yuzono extensions
+        uses: actions/checkout@v6
+        with:
+          repository: yuzono/anime-extensions
+          ref: ${{ env.YUZONO_REVISION }}
+          path: yuzono
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Inject debug-only probe harness
+        run: python private-source/tools/yuzono_anime_probe/android_harness/inject_harness.py --anikku-root anikku
+
+      - name: Assemble pinned Anikku with bounded JitPack retries
+        working-directory: anikku
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "Anikku assemble attempt $attempt/3"
+            args=( :app:assembleDebug --no-daemon --stacktrace )
+            if (( attempt > 1 )); then
+              args+=( --refresh-dependencies )
+            fi
+            if ./gradlew "${args[@]}"; then
+              exit 0
+            fi
+            if (( attempt == 3 )); then
+              echo '::error::Pinned Anikku failed after bounded dependency retries'
+              exit 1
+            fi
+            sleep $((attempt * 30))
+          done
+
+      - name: Build canary PT extensions independently
+        working-directory: yuzono
+        shell: bash
+        run: |
+          set -euo pipefail
+          for module in animefire dattebayobr animeito; do
+            ok=0
+            for attempt in 1 2; do
+              echo "Building $module attempt $attempt/2"
+              args=( "src:pt:$module:assembleDebug" --no-daemon --stacktrace )
+              if (( attempt > 1 )); then args+=( --refresh-dependencies ); fi
+              if ./gradlew "${args[@]}"; then ok=1; break; fi
+              sleep 20
+            done
+            if (( ok == 0 )); then
+              echo "::warning::$module did not build; runner will classify extension-build"
+            fi
+          done
+
+      - name: Enable KVM
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Execute canary providers in Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          cores: 2
+          ram-size: 4096M
+          heap-size: 512M
+          emulator-boot-timeout: 900
+          disable-animations: true
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash private-source/tools/yuzono_anime_probe/android_harness/run_emulator_probes.sh
+
+      - name: Write sanitized canary summary
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          summary = Path(os.environ['GITHUB_STEP_SUMMARY'])
+          providers = sorted(Path('probe-state/providers').glob('*.json'))
+          lines = ['', '## Yuzono full-audit canary', '', '| Provider | Status | Stage | Titles | Playback | Failure |', '|---|---|---|---:|---:|---|']
+          for path in providers:
+              raw = json.loads(path.read_text(encoding='utf-8'))
+              lines.append(f"| {raw.get('displayName', path.stem)} | {raw.get('status', 'unknown')} | {raw.get('stage', 'discovered')} | {len(raw.get('titles', []))} | {raw.get('playbackSampleCount', 0)} | {raw.get('failureKind') or ''} |")
+          if not providers:
+              lines.append('| no result | broken | discovered | 0 | 0 | structural-canary-failure |')
+          with summary.open('a', encoding='utf-8') as handle:
+              handle.write('\n'.join(lines) + '\n')
+          PY
+
+      - name: Upload sanitized canary state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yuzono-full-audit-canary-${{ github.run_id }}
+          path: probe-state
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Remove transient trees
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/anikku" "$GITHUB_WORKSPACE/yuzono"
