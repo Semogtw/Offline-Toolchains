@@ -269,8 +269,15 @@ jobs:
               sleep 6
             fi
           done
+          if (( readiness_503 == 0 )); then
+            readiness_verdict=PASS
+          else
+            readiness_verdict=INCONCLUSIVE
+            echo "::warning::A71 readiness stability is inconclusive: ${readiness_503}/6 samples returned HTTP 503."
+          fi
+          echo "readiness-sample-verdict=$readiness_verdict"
           echo "readiness503=$readiness_503"
-          echo "- A71 readiness sampling under recovery load: ${readiness_503}/6 HTTP 503 responses." >> "$GITHUB_STEP_SUMMARY"
+          echo "- A71 readiness sampling under recovery load: verdict=${readiness_verdict}; ${readiness_503}/6 HTTP 503 responses (diagnostic only)." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Cleanup private checkout
         if: always()

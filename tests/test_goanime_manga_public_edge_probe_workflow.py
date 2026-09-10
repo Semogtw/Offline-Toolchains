@@ -115,6 +115,16 @@ class MangaPublicEdgeProbeWorkflowTest(unittest.TestCase):
         sample_block = workflow[sampling:cleanup]
         self.assertIn("        if: always()", sample_block)
 
+    def test_readiness_sampling_marks_503_as_inconclusive(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        sampling = workflow.index("      - name: Sample A71 readiness under current recovery load")
+        cleanup = workflow.index("      - name: Cleanup private checkout", sampling)
+        sample_block = workflow[sampling:cleanup]
+
+        self.assertIn("readiness_verdict=PASS", sample_block)
+        self.assertIn("readiness_verdict=INCONCLUSIVE", sample_block)
+        self.assertIn("readiness-sample-verdict=$readiness_verdict", sample_block)
+
 
 if __name__ == "__main__":
     unittest.main()
