@@ -1,0 +1,197 @@
+name: Validate GoAnime manga next source wave
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-next-source-wave/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-next-source-wave-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate Yomu Flower OneReader exact SHA
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout control request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-next-source-wave/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = goanime
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]
+          [[ "$branch" != /* ]]
+          [[ "$branch" != */ ]]
+          [[ "$branch" != *..* ]]
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify branch still points to reviewed SHA
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Check candidate formatting
+        working-directory: private-source
+        run: |
+          dart format --output=none --set-exit-if-changed \
+            lib/services/manga/providers/yomu_manga_provider.dart \
+            lib/services/manga/providers/flower_manga_manga_provider.dart \
+            lib/services/manga/providers/one_reader_manga_provider.dart \
+            lib/services/manga/providers/wave5_manga_providers.dart \
+            lib/services/manga/manga_provider_definitions_wave5.dart \
+            test/services/manga/providers/manga_next_source_wave_test.dart \
+            test/architecture/manga_next_source_wave_registry_test.dart
+
+      - name: Analyze candidate provider scope
+        working-directory: private-source
+        run: |
+          flutter analyze --no-pub \
+            lib/services/manga/providers/yomu_manga_provider.dart \
+            lib/services/manga/providers/flower_manga_manga_provider.dart \
+            lib/services/manga/providers/one_reader_manga_provider.dart \
+            lib/services/manga/providers/wave5_manga_providers.dart \
+            lib/services/manga/manga_provider_definitions.dart \
+            lib/services/manga/manga_provider_definitions_wave5.dart \
+            test/services/manga/providers/manga_next_source_wave_test.dart \
+            test/architecture/manga_next_source_wave_registry_test.dart
+
+      - name: Test candidate adapters and rollout boundary
+        working-directory: private-source
+        run: |
+          flutter test --no-pub \
+            test/services/manga/providers/manga_next_source_wave_test.dart \
+            test/architecture/manga_next_source_wave_registry_test.dart \
+            test/architecture/manga_planned_provider_definitions_test.dart \
+            test/architecture/manga_provider_registry_manifest_test.dart
+
+      - name: Add ephemeral host-only live diagnostics
+        working-directory: private-source
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tools/manga/audit_planned_provider_stage.dart')
+          text = path.read_text()
+          needle = """      manifestValidator.validate(\n        chapter: chapter,\n        manifest: manifest,\n        capabilities: provider.capabilities,\n        policy: httpClient.policy,\n      );\n      onStage?.call('content_$stage=success');\n"""
+          replacement = """      manifestValidator.validate(\n        chapter: chapter,\n        manifest: manifest,\n        capabilities: provider.capabilities,\n        policy: httpClient.policy,\n      );\n      final hosts = switch (manifest) {\n        ImageSequenceContentManifest(:final pages) =>\n          pages.map((page) => page.uri.host).where((host) => host.isNotEmpty).toSet().join(','),\n        PdfDocumentContentManifest(:final documentUri) => documentUri.host,\n        LocalPackageContentManifest() => '',\n      };\n      onStage?.call('content_${stage}_hosts=$hosts');\n      onStage?.call('content_$stage=success');\n"""
+          if needle not in text:
+              raise SystemExit('live diagnostic insertion point not found')
+          path.write_text(text.replace(needle, replacement, 1))
+          PY
+          dart format tools/manga/audit_planned_provider_stage.dart >/dev/null
+
+      - name: Probe live candidates through page bytes
+        id: live
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/manga-next-wave"
+          failed=0
+          for source in ptbr.yomu ptbr.flowermanga ptbr.onereader; do
+            raw="$RUNNER_TEMP/manga-next-wave/$source.raw"
+            safe="$RUNNER_TEMP/manga-next-wave/$source.safe"
+            set +e
+            timeout 240s dart run tools/manga/audit_planned_provider_stage.dart "$source" >"$raw" 2>&1
+            code=$?
+            set -e
+            grep -E '^(search_[0-9]+|search_[0-9]+_results|details|chapters|chapter_count|content_[0-9]+|content_[0-9]+_kind|content_[0-9]+_hosts|transport_[0-9]+|verifier|terminal|[a-z0-9_]+_(type|kind|status|host))=' "$raw" > "$safe" || true
+            printf 'exit=%s\n' "$code" >> "$safe"
+            echo "source=$source"
+            cat "$safe"
+            if [ "$code" -ne 0 ] || ! grep -q '^terminal=readable$' "$safe"; then
+              failed=1
+            fi
+          done
+          echo "failed=$failed" >> "$GITHUB_OUTPUT"
+          exit "$failed"
+
+      - name: Publish sanitized evidence
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          SHA: ${{ steps.request.outputs.sha }}
+          BRANCH: ${{ steps.request.outputs.branch }}
+          LIVE_RESULT: ${{ steps.live.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for source in ptbr.yomu ptbr.flowermanga ptbr.onereader; do
+            file="$RUNNER_TEMP/manga-next-wave/$source.safe"
+            test -f "$file" || printf 'probe=not_run\n' > "$file"
+          done
+          result="$(jq -cn \
+            --arg sha "$SHA" \
+            --arg branch "$BRANCH" \
+            --arg yomu "$(cat "$RUNNER_TEMP/manga-next-wave/ptbr.yomu.safe")" \
+            --arg flower "$(cat "$RUNNER_TEMP/manga-next-wave/ptbr.flowermanga.safe")" \
+            --arg oneReader "$(cat "$RUNNER_TEMP/manga-next-wave/ptbr.onereader.safe")" \
+            --arg liveResult "$LIVE_RESULT" \
+            '{schemaVersion:1,goanimeSha:$sha,branch:$branch,liveResult:$liveResult,yomu:$yomu,flowerManga:$flower,oneReader:$oneReader}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          path="results/goanime-manga-next-source-wave/$SHA.json"
+          existing="$(gh api "repos/$GITHUB_REPOSITORY/contents/$path" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): validate manga next wave ${SHA:0:8}" -f content="$encoded")
+          if [[ -n "$existing" ]]; then args+=(-f sha="$existing"); fi
+          gh api "${args[@]}" >/dev/null
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control" "$RUNNER_TEMP/manga-next-wave"
