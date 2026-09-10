@@ -14,6 +14,7 @@ permissions:
 env:
   FLUTTER_CHANNEL: stable
   FLUTTER_VERSION: 3.44.1
+  GRADLE_VERSION: '8.14'
 
 jobs:
   validate:
@@ -73,6 +74,12 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+          cache-disabled: true
+
       - name: Expose Android SDK
         uses: android-actions/setup-android@v3
         with:
@@ -85,13 +92,14 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: false
 
-      - name: Resolve dependencies
+      - name: Resolve dependencies and materialize local Gradle wrapper
         working-directory: private-source
         run: |
           set -euo pipefail
           flutter config --no-analytics
           flutter pub get
           (cd packages/goanime_core && dart pub get)
+          (cd android && gradle wrapper --gradle-version "$GRADLE_VERSION" --distribution-type all)
 
       - name: Run Mihon Android unit tests when present
         working-directory: private-source/android
