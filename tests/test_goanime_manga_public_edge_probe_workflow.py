@@ -96,9 +96,10 @@ class MangaPublicEdgeProbeWorkflowTest(unittest.TestCase):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("Sample A71 readiness under current recovery load", workflow)
         self.assertIn("for attempt in 1 2 3 4 5 6; do", workflow)
-        self.assertIn('readiness-sample=$attempt status=${status:-000}', workflow)
+        self.assertIn('readiness-sample=$attempt status=$sample_status', workflow)
         self.assertIn("sleep 6", workflow)
         self.assertIn("readiness503=$readiness_503", workflow)
+        self.assertIn("readinessFailures=$readiness_failures", workflow)
         self.assertIn("goanime_metadata_jikan_circuit_state", workflow)
 
     def test_readiness_sampling_cannot_poison_smoke_circuit(self):
@@ -115,12 +116,18 @@ class MangaPublicEdgeProbeWorkflowTest(unittest.TestCase):
         sample_block = workflow[sampling:cleanup]
         self.assertIn("        if: always()", sample_block)
 
-    def test_readiness_sampling_marks_503_as_inconclusive(self):
+    def test_readiness_sampling_requires_http_200_without_curl_errors(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         sampling = workflow.index("      - name: Sample A71 readiness under current recovery load")
         cleanup = workflow.index("      - name: Cleanup private checkout", sampling)
         sample_block = workflow[sampling:cleanup]
 
+        self.assertIn("readiness_failures=0", sample_block)
+        self.assertIn(
+            'if [[ "$curl_rc" -ne 0 || "$sample_status" != \'200\' ]]; then',
+            sample_block,
+        )
+        self.assertIn("if (( readiness_failures == 0 )); then", sample_block)
         self.assertIn("readiness_verdict=PASS", sample_block)
         self.assertIn("readiness_verdict=INCONCLUSIVE", sample_block)
         self.assertIn("readiness-sample-verdict=$readiness_verdict", sample_block)

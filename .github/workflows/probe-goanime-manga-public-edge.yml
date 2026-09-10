@@ -243,6 +243,7 @@ jobs:
         run: |
           set +e
           readiness_503=0
+          readiness_failures=0
           for attempt in 1 2 3 4 5 6; do
             status="$(curl --silent --show-error --max-time 30 \
               --header 'Cache-Control: no-cache' \
@@ -250,8 +251,12 @@ jobs:
               --write-out '%{http_code}' \
               "$EDGE_BASE_URL/readyz" 2>/dev/null)"
             curl_rc=$?
-            [[ "$status" == '503' ]] && readiness_503=$((readiness_503 + 1))
-            echo "readiness-sample=$attempt status=${status:-000} curl_rc=$curl_rc"
+            sample_status="${status:-000}"
+            [[ "$sample_status" == '503' ]] && readiness_503=$((readiness_503 + 1))
+            if [[ "$curl_rc" -ne 0 || "$sample_status" != '200' ]]; then
+              readiness_failures=$((readiness_failures + 1))
+            fi
+            echo "readiness-sample=$attempt status=$sample_status curl_rc=$curl_rc"
 
             metrics="/tmp/goanime-a71-readiness-sample-${attempt}.txt"
             if curl --silent --show-error --fail --max-time 30 \
@@ -269,15 +274,16 @@ jobs:
               sleep 6
             fi
           done
-          if (( readiness_503 == 0 )); then
+          if (( readiness_failures == 0 )); then
             readiness_verdict=PASS
           else
             readiness_verdict=INCONCLUSIVE
-            echo "::warning::A71 readiness stability is inconclusive: ${readiness_503}/6 samples returned HTTP 503."
+            echo "::warning::A71 readiness stability is inconclusive: ${readiness_failures}/6 samples were non-200 or had transport errors (${readiness_503} HTTP 503)."
           fi
           echo "readiness-sample-verdict=$readiness_verdict"
           echo "readiness503=$readiness_503"
-          echo "- A71 readiness sampling under recovery load: verdict=${readiness_verdict}; ${readiness_503}/6 HTTP 503 responses (diagnostic only)." >> "$GITHUB_STEP_SUMMARY"
+          echo "readinessFailures=$readiness_failures"
+          echo "- A71 readiness sampling under recovery load: verdict=${readiness_verdict}; ${readiness_failures}/6 non-200/error responses (${readiness_503} HTTP 503; diagnostic only)." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Cleanup private checkout
         if: always()
