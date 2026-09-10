@@ -83,6 +83,10 @@ jobs:
         working-directory: private-source
         run: flutter pub get >/dev/null 2>&1
 
+      - name: Resolve core package dependencies
+        working-directory: private-source/packages/goanime_core
+        run: dart pub get >/dev/null 2>&1
+
       - name: Full Flutter analyze
         id: analyze
         working-directory: private-source
