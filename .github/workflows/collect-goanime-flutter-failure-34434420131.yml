@@ -1,0 +1,103 @@
+name: Collect GoAnime Flutter failure evidence 34434420131
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/collect-goanime-flutter-failure-34434420131.yml
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SOURCE_RUN_ID: '34434420131'
+      SOURCE_JOB_ID: '102736426704'
+    steps:
+      - name: Download historical job log
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/jobs/${SOURCE_JOB_ID}/logs" \
+            --output historical-job.log
+          test -s historical-job.log
+
+      - name: Extract first Flutter failure evidence
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          raw = Path('historical-job.log').read_text(errors='replace').replace('\r', '\n')
+          # GitHub has already secret-masked Actions logs. Apply another conservative pass.
+          raw = re.sub(r'(?i)(authorization:\s*(?:bearer|token)\s+)\S+', r'\1***', raw)
+          raw = re.sub(r'(?i)(GH_TOKEN|GITHUB_TOKEN|TOKEN)=\S+', r'\1=***', raw)
+          lines = raw.splitlines()
+
+          # Locate the full Flutter-test step first so setup chatter cannot be mistaken for a test failure.
+          step_start = 0
+          for i, line in enumerate(lines):
+              if 'Full Flutter tests' in line and ('##[group]' in line or 'Run flutter test' in line):
+                  step_start = i
+                  break
+          scoped = lines[step_start:]
+
+          failure_patterns = [
+              re.compile(r'\[E\](?:\s|$)'),
+              re.compile(r'\bTestFailure\b'),
+              re.compile(r'^\s*Expected:', re.I),
+              re.compile(r'^\s*══╡ EXCEPTION', re.I),
+              re.compile(r'\bSome tests failed\b', re.I),
+          ]
+          hit = None
+          for i, line in enumerate(scoped):
+              if any(p.search(line) for p in failure_patterns):
+                  hit = i
+                  break
+          if hit is None:
+              raise SystemExit('Could not locate a Flutter test failure marker in historical log')
+
+          start = max(0, hit - 80)
+          end = min(len(scoped), hit + 180)
+          excerpt = scoped[start:end]
+
+          # Also capture candidate compact-reporter failing test lines and nearby Expected/Actual diagnostics.
+          candidates = []
+          for i, line in enumerate(scoped):
+              if '[E]' in line or re.search(r'\b(?:Expected|Actual):', line):
+                  lo, hi = max(0, i - 4), min(len(scoped), i + 12)
+                  candidates.extend(scoped[lo:hi])
+                  candidates.append('---')
+              if len(candidates) > 240:
+                  break
+
+          header = [
+              f'source_run_id={34434420131}',
+              f'source_job_id={102736426704}',
+              'source_gate_sha=d5c4a47443653cac02e2e082ab686d388520669c',
+              'note=historical log extraction only; gate was not rerun',
+              '',
+              '=== FIRST FAILURE EXCERPT ===',
+          ]
+          out = '\n'.join(header + excerpt + ['', '=== FAILURE CANDIDATES ==='] + candidates)
+          Path('first-flutter-failure.txt').write_text(out)
+          print(out[:12000])
+          PY
+
+      - name: Upload sanitized evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: goanime-flutter-failure-34434420131-102736426704
+          path: first-flutter-failure.txt
+          if-no-files-found: error
+          retention-days: 14
