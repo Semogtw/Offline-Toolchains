@@ -113,40 +113,6 @@ jobs:
           }
           JSON
 
-      - name: Sample A71 readiness under current recovery load
-        shell: bash
-        run: |
-          set +e
-          readiness_503=0
-          for attempt in 1 2 3 4 5 6; do
-            status="$(curl --silent --show-error --max-time 30 \
-              --header 'Cache-Control: no-cache' \
-              --output /dev/null \
-              --write-out '%{http_code}' \
-              "$EDGE_BASE_URL/readyz" 2>/dev/null)"
-            curl_rc=$?
-            [[ "$status" == '503' ]] && readiness_503=$((readiness_503 + 1))
-            echo "readiness-sample=$attempt status=${status:-000} curl_rc=$curl_rc"
-
-            metrics="/tmp/goanime-a71-readiness-sample-${attempt}.txt"
-            if curl --silent --show-error --fail --max-time 30 \
-              --header 'Accept: text/plain' \
-              --header 'Cache-Control: no-cache' \
-              --output "$metrics" \
-              "$EDGE_BASE_URL/metrics"; then
-              grep -E '^(goanime_metadata_jikan_active_requests|goanime_metadata_jikan_queued_requests|goanime_metadata_jikan_circuit_failures|goanime_metadata_jikan_circuit_retry_after_seconds)([[:space:]]|$)|^goanime_metadata_jikan_circuit_state\{' "$metrics" \
-                | sed "s/^/readiness-metric-$attempt /" || true
-            else
-              echo "readiness-metric-$attempt unavailable"
-            fi
-            rm -f "$metrics"
-            if [[ "$attempt" -lt 6 ]]; then
-              sleep 6
-            fi
-          done
-          echo "readiness503=$readiness_503"
-          echo "- A71 readiness sampling under recovery load: ${readiness_503}/6 HTTP 503 responses." >> "$GITHUB_STEP_SUMMARY"
-
       - name: Smoke public Manga routes through deployed Worker
         working-directory: private-source
         shell: bash
@@ -270,6 +236,41 @@ jobs:
             fi
             rm -f "$metrics"
           } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Sample A71 readiness under current recovery load
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          readiness_503=0
+          for attempt in 1 2 3 4 5 6; do
+            status="$(curl --silent --show-error --max-time 30 \
+              --header 'Cache-Control: no-cache' \
+              --output /dev/null \
+              --write-out '%{http_code}' \
+              "$EDGE_BASE_URL/readyz" 2>/dev/null)"
+            curl_rc=$?
+            [[ "$status" == '503' ]] && readiness_503=$((readiness_503 + 1))
+            echo "readiness-sample=$attempt status=${status:-000} curl_rc=$curl_rc"
+
+            metrics="/tmp/goanime-a71-readiness-sample-${attempt}.txt"
+            if curl --silent --show-error --fail --max-time 30 \
+              --header 'Accept: text/plain' \
+              --header 'Cache-Control: no-cache' \
+              --output "$metrics" \
+              "$EDGE_BASE_URL/metrics"; then
+              grep -E '^(goanime_metadata_jikan_active_requests|goanime_metadata_jikan_queued_requests|goanime_metadata_jikan_circuit_failures|goanime_metadata_jikan_circuit_retry_after_seconds)([[:space:]]|$)|^goanime_metadata_jikan_circuit_state\{' "$metrics" \
+                | sed "s/^/readiness-metric-$attempt /" || true
+            else
+              echo "readiness-metric-$attempt unavailable"
+            fi
+            rm -f "$metrics"
+            if [[ "$attempt" -lt 6 ]]; then
+              sleep 6
+            fi
+          done
+          echo "readiness503=$readiness_503"
+          echo "- A71 readiness sampling under recovery load: ${readiness_503}/6 HTTP 503 responses." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Cleanup private checkout
         if: always()

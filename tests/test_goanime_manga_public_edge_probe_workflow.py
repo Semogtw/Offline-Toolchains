@@ -101,6 +101,19 @@ class MangaPublicEdgeProbeWorkflowTest(unittest.TestCase):
         self.assertIn("readiness503=$readiness_503", workflow)
         self.assertIn("goanime_metadata_jikan_circuit_state", workflow)
 
+    def test_readiness_sampling_cannot_poison_smoke_circuit(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        smoke = workflow.index("      - name: Smoke public Manga routes through deployed Worker")
+        semantics = workflow.index("      - name: Validate public Manga payload semantics")
+        diagnostics = workflow.index("      - name: Record sanitized diagnostics on failure")
+        sampling = workflow.index("      - name: Sample A71 readiness under current recovery load")
+
+        self.assertLess(smoke, semantics)
+        self.assertLess(semantics, diagnostics)
+        self.assertLess(diagnostics, sampling)
+        sample_block = workflow[sampling:]
+        self.assertIn("        if: always()", sample_block)
+
 
 if __name__ == "__main__":
     unittest.main()
