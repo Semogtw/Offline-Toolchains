@@ -1,0 +1,109 @@
+name: GoAnime Yuzono PT-BR Anime Probe
+
+on:
+  push:
+    branches:
+      - feat/yuzono-ptbr-anime-probe-20260910
+    paths:
+      - 'triggers/goanime-yuzono-anime-probe/**'
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Immutable GoAnime source SHA
+        required: true
+      mode:
+        description: Probe mode
+        required: true
+        default: deterministic
+        type: choice
+        options:
+          - deterministic
+          - canary
+          - full
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-yuzono-anime-probe-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deterministic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Toolchains request
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve immutable GoAnime source SHA
+        id: source
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_SHA: ${{ github.event.inputs.source_sha || '' }}
+        run: |
+          set -euo pipefail
+          sha="$DISPATCH_SHA"
+          if [[ "$EVENT_NAME" == push ]]; then
+            request="$(git diff-tree --no-commit-id --name-only --diff-filter=AM -r HEAD^ HEAD -- 'triggers/goanime-yuzono-anime-probe/*.request' | sort | tail -n 1)"
+            test -n "$request" || { echo '::error::No Yuzono probe request in triggering commit'; exit 1; }
+            sha="$(tr -d ' \n\r' < "$request")"
+          fi
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::source_sha must be a 40-character lowercase git SHA'; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Require private source credential
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: test -n "$TOKEN"
+
+      - name: Checkout exact GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.source.outputs.sha }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify requested source identity
+        working-directory: private-source
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Run Yuzono probe deterministic tests
+        working-directory: private-source
+        shell: bash
+        run: python -m unittest discover -s tools/yuzono_anime_probe/tests -p 'test_*.py' -v
+
+      - name: Write summary
+        if: always()
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          {
+            echo '## GoAnime Yuzono PT-BR anime probe'
+            echo
+            echo "- source SHA: \`${SOURCE_SHA:-unknown}\`"
+            echo "- mode: deterministic"
+            echo '- private source is not uploaded'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/private-source"
