@@ -25,7 +25,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: goanime-yuzono-anime-probe-${{ github.ref }}
+  group: goanime-yuzono-anime-probe-${{ github.event.inputs.generation_id || github.run_id }}
   cancel-in-progress: false
 
 env:
