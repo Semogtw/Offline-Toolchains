@@ -90,12 +90,12 @@ jobs:
           core="$(cat evidence/core/core-d5c4a47.txt)"
           grep -F "sha=$REVIEWED_SHA" <<<"$feature"
           grep -F 'exit_code=1' <<<"$feature"
-          grep -F 'Expected: <9139>' <<<"$feature"
-          grep -F 'Actual: <6508>' <<<"$feature"
+          grep -F 'Expected: an object with length of <9139>' <<<"$feature"
+          grep -F 'Which: has length of <6508>' <<<"$feature"
           grep -F "sha=$BASE_SHA" <<<"$base"
           grep -F 'exit_code=1' <<<"$base"
-          grep -F 'Expected: <9139>' <<<"$base"
-          grep -F 'Actual: <6508>' <<<"$base"
+          grep -F 'Expected: an object with length of <9139>' <<<"$base"
+          grep -F 'Which: has length of <6508>' <<<"$base"
           grep -F "sha=$REVIEWED_SHA" <<<"$core"
           grep -F 'exit_code=0' <<<"$core"
           grep -F 'All tests passed!' <<<"$core"
@@ -261,13 +261,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$REVIEWED_SHA"
           git config user.name 'GoAnime Offline Toolchains'
           git config user.email 'goanime-offline-toolchains@users.noreply.github.com'
-          git add \
-            lib/services/manga/default_manga_source_providers.dart \
-            test/architecture/manga_next_source_wave_registry_test.dart \
-            docs/manga_sources_ptbr.json \
-            docs/manga_provider_expansion_audit_2026-09-09.md \
-            docs/manga_provider_rollout_status.md \
-            docs/manga_provider_expansion_receipt_2026-09-10.md
+          git add lib/services/manga/default_manga_source_providers.dart test/architecture/manga_next_source_wave_registry_test.dart docs/manga_sources_ptbr.json docs/manga_provider_expansion_audit_2026-09-09.md docs/manga_provider_rollout_status.md docs/manga_provider_expansion_receipt_2026-09-10.md
           git diff --cached --check
           git commit -m 'feat(manga): promote byte-certified OneReader'
           new_sha="$(git rev-parse HEAD)"
