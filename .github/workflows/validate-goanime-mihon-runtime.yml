@@ -78,7 +78,6 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: ${{ env.GRADLE_VERSION }}
-          cache-disabled: true
 
       - name: Expose Android SDK
         uses: android-actions/setup-android@v3
@@ -90,7 +89,7 @@ jobs:
         with:
           channel: ${{ env.FLUTTER_CHANNEL }}
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: false
+          cache: true
 
       - name: Resolve dependencies and materialize local Gradle wrapper
         working-directory: private-source
