@@ -1,0 +1,223 @@
+name: Diagnose GoAnime SlimeRead current
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-slimeread-current/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-slimeread-current
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    name: Probe current SlimeRead headless readability
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify explicit trigger
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-slimeread-current/*.request' | head -n 1)"
+          test -n "$request"
+          test "$(tr -d '\r\n' < "control/$request")" = 'slimeread.app'
+
+      - name: Probe catalog through image bytes
+        id: probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > "$RUNNER_TEMP/slimeread-current.json"
+          import json
+          from html.parser import HTMLParser
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          BASE = 'https://slimeread.app/'
+          UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/152.0.0.0 Safari/537.36'
+
+          def fetch(url, headers=None, limit=2 * 1024 * 1024):
+              req = urllib.request.Request(url, headers={
+                  'User-Agent': UA,
+                  'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
+                  **(headers or {}),
+              })
+              try:
+                  with urllib.request.urlopen(req, timeout=20) as response:
+                      return response.status, dict(response.headers), response.read(limit)
+              except urllib.error.HTTPError as exc:
+                  return exc.code, dict(exc.headers), exc.read(limit)
+              except Exception as exc:
+                  return None, {'exception': type(exc).__name__}, b''
+
+          class CatalogParser(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.manga_paths = []
+              def handle_starttag(self, tag, attrs):
+                  if tag != 'a':
+                      return
+                  data = dict(attrs)
+                  href = data.get('href', '')
+                  absolute = urllib.parse.urljoin(BASE, href)
+                  parsed = urllib.parse.urlparse(absolute)
+                  parts = [part for part in parsed.path.split('/') if part]
+                  if parsed.hostname == 'slimeread.app' and len(parts) >= 2 and parts[0] == 'manga':
+                      path = '/' + '/'.join(parts[:2])
+                      if path not in self.manga_paths:
+                          self.manga_paths.append(path)
+
+          class DetailParser(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.article_depth = 0
+                  self.in_chapter_article = False
+                  self.chapter_paths = []
+              def handle_starttag(self, tag, attrs):
+                  data = dict(attrs)
+                  if tag == 'article' and 'data-chapter-item' in data:
+                      self.in_chapter_article = True
+                      self.article_depth = 1
+                      return
+                  if self.in_chapter_article:
+                      self.article_depth += 1
+                      if tag == 'a':
+                          href = data.get('href', '')
+                          absolute = urllib.parse.urljoin(BASE, href)
+                          parsed = urllib.parse.urlparse(absolute)
+                          if parsed.hostname == 'slimeread.app' and parsed.path and parsed.path not in self.chapter_paths:
+                              self.chapter_paths.append(parsed.path)
+              def handle_endtag(self, tag):
+                  if not self.in_chapter_article:
+                      return
+                  self.article_depth -= 1
+                  if self.article_depth <= 0:
+                      self.in_chapter_article = False
+                      self.article_depth = 0
+
+          class ReaderParser(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.depth = 0
+                  self.reader_depth = None
+                  self.pages = []
+              def handle_starttag(self, tag, attrs):
+                  self.depth += 1
+                  data = dict(attrs)
+                  classes = set(data.get('class', '').split())
+                  if self.reader_depth is None and 'reader-content' in classes:
+                      self.reader_depth = self.depth
+                  if self.reader_depth is not None and tag == 'img':
+                      src = data.get('src') or data.get('data-src')
+                      if src:
+                          absolute = urllib.parse.urljoin(BASE, src)
+                          if absolute not in self.pages:
+                              self.pages.append(absolute)
+              def handle_endtag(self, tag):
+                  if self.reader_depth is not None and self.depth == self.reader_depth:
+                      self.reader_depth = None
+                  self.depth = max(0, self.depth - 1)
+
+          result = {'schemaVersion': 1, 'baseHost': 'slimeread.app'}
+          catalog_url = urllib.parse.urljoin(BASE, 'catalogo?page=1')
+          status, headers, body = fetch(catalog_url, {'Accept': 'text/html,*/*;q=0.8'})
+          result['catalogStatus'] = status
+          result['catalogContentType'] = headers.get('Content-Type', '').split(';', 1)[0].lower()
+          result['catalogServer'] = headers.get('Server', '')[:60]
+          result['catalogException'] = headers.get('exception')
+          if status != 200:
+              print(json.dumps(result, sort_keys=True))
+              raise SystemExit(1)
+
+          parser = CatalogParser()
+          parser.feed(body.decode('utf-8', 'replace'))
+          result['catalogMangaCount'] = len(parser.manga_paths)
+          if not parser.manga_paths:
+              print(json.dumps(result, sort_keys=True))
+              raise SystemExit(1)
+
+          manga_url = urllib.parse.urljoin(BASE, parser.manga_paths[0])
+          status, headers, body = fetch(manga_url, {'Accept': 'text/html,*/*;q=0.8', 'Referer': catalog_url})
+          result['detailsStatus'] = status
+          result['detailsContentType'] = headers.get('Content-Type', '').split(';', 1)[0].lower()
+          if status != 200:
+              print(json.dumps(result, sort_keys=True))
+              raise SystemExit(1)
+
+          detail = DetailParser()
+          detail.feed(body.decode('utf-8', 'replace'))
+          result['chapterCount'] = len(detail.chapter_paths)
+          if not detail.chapter_paths:
+              print(json.dumps(result, sort_keys=True))
+              raise SystemExit(1)
+
+          chapter_url = urllib.parse.urljoin(BASE, detail.chapter_paths[0])
+          status, headers, body = fetch(chapter_url, {'Accept': 'text/html,*/*;q=0.8', 'Referer': manga_url})
+          result['readerStatus'] = status
+          result['readerContentType'] = headers.get('Content-Type', '').split(';', 1)[0].lower()
+          if status != 200:
+              print(json.dumps(result, sort_keys=True))
+              raise SystemExit(1)
+
+          reader = ReaderParser()
+          reader.feed(body.decode('utf-8', 'replace'))
+          result['pageCount'] = len(reader.pages)
+          hosts = sorted({urllib.parse.urlparse(url).hostname for url in reader.pages if urllib.parse.urlparse(url).hostname})
+          result['pageHosts'] = hosts
+          if not reader.pages:
+              print(json.dumps(result, sort_keys=True))
+              raise SystemExit(1)
+
+          image_url = reader.pages[0]
+          status, headers, sample = fetch(
+              image_url,
+              {
+                  'Accept': 'image/avif,image/webp,image/*,*/*;q=0.8',
+                  'Referer': chapter_url,
+                  'Range': 'bytes=0-1023',
+              },
+              limit=1024,
+          )
+          result['imageStatus'] = status
+          result['imageContentType'] = headers.get('Content-Type', '').split(';', 1)[0].lower()
+          result['sampleBytes'] = len(sample)
+          result['readable'] = status in (200, 206) and len(sample) > 0 and result['imageContentType'].startswith('image/')
+          print(json.dumps(result, sort_keys=True))
+          if not result['readable']:
+              raise SystemExit(1)
+          PY
+          cat "$RUNNER_TEMP/slimeread-current.json"
+
+      - name: Publish sanitized diagnostic receipt
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/slimeread-current.json"
+          test -f "$file" || printf '%s\n' '{"schemaVersion":1,"probe":"not_run"}' > "$file"
+          encoded="$(base64 -w0 "$file")"
+          path="results/goanime-slimeread-current/${{ github.run_id }}.json"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" \
+            -f message="ci(result): record current SlimeRead diagnostic" \
+            -f content="$encoded" >/dev/null
+
+      - name: Remove diagnostic state
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/control" "$RUNNER_TEMP/slimeread-current.json"
