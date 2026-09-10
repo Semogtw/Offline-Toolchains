@@ -1,0 +1,186 @@
+name: Apply GoAnime OneReader live host policy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-onereader-live-host/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-onereader-live-host
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    name: Add exact observed OneReader image host
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted control request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact private revision
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-onereader-live-host/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha host < "control/$request"
+          test "$project" = goanime
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          test "$host" = 'b2.onereader.net'
+          printf 'branch=%s\nsha=%s\nhost=%s\n' "$branch" "$sha" "$host" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact GoAnime SHA
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify branch still points to exact SHA
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: flutter pub get >/dev/null 2>&1
+
+      - name: Apply observed host to policy and tests
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          definitions = Path('lib/services/manga/manga_provider_definitions_wave5.dart')
+          text = definitions.read_text()
+          old = """            'api.onereader.net',\n            'onereader.net',\n            'www.onereader.net',\n"""
+          new = """            'api.onereader.net',\n            'b2.onereader.net',\n            'onereader.net',\n            'www.onereader.net',\n"""
+          if text.count(old) != 1:
+              raise SystemExit('OneReader release policy insertion point drifted')
+          definitions.write_text(text.replace(old, new, 1))
+
+          tests = Path('test/services/manga/providers/manga_next_source_wave_test.dart')
+          text = tests.read_text()
+          # Make the fixture exercise the live-observed content host rather than merely adding a dead allowlist entry.
+          old_page = "'pages': <String>['/media/chapter-10/001.webp'],"
+          new_page = "'pages': <String>['https://b2.onereader.net/media/chapter-10/001.webp'],"
+          if text.count(old_page) != 1:
+              raise SystemExit('OneReader page fixture insertion point drifted')
+          text = text.replace(old_page, new_page, 1)
+          old_expect = "'https://api.onereader.net/media/chapter-10/001.webp',"
+          new_expect = "'https://b2.onereader.net/media/chapter-10/001.webp',"
+          if text.count(old_expect) != 1:
+              raise SystemExit('OneReader page expectation insertion point drifted')
+          text = text.replace(old_expect, new_expect, 1)
+          old_policy = """      'api.onereader.net',\n      'onereader.net',\n      'www.onereader.net',\n"""
+          new_policy = """      'api.onereader.net',\n      'b2.onereader.net',\n      'onereader.net',\n      'www.onereader.net',\n"""
+          if text.count(old_policy) != 1:
+              raise SystemExit('OneReader test policy insertion point drifted')
+          tests.write_text(text.replace(old_policy, new_policy, 1))
+
+          registry = Path('test/architecture/manga_next_source_wave_registry_test.dart')
+          text = registry.read_text()
+          needle = "expect(oneReader.policy.allowedContentHosts, contains('api.onereader.net'));"
+          replacement = """expect(oneReader.policy.allowedContentHosts, contains('api.onereader.net'));\n    expect(oneReader.policy.allowedContentHosts, contains('b2.onereader.net'));"""
+          if text.count(needle) != 1:
+              raise SystemExit('OneReader registry assertion insertion point drifted')
+          registry.write_text(text.replace(needle, replacement, 1))
+          PY
+
+          dart format \
+            lib/services/manga/manga_provider_definitions_wave5.dart \
+            test/services/manga/providers/manga_next_source_wave_test.dart \
+            test/architecture/manga_next_source_wave_registry_test.dart >/dev/null
+          git -c core.whitespace=cr-at-eol diff --check
+          printf '%s\n' \
+            lib/services/manga/manga_provider_definitions_wave5.dart \
+            test/architecture/manga_next_source_wave_registry_test.dart \
+            test/services/manga/providers/manga_next_source_wave_test.dart | sort > "$RUNNER_TEMP/expected"
+          git diff --name-only | sort > "$RUNNER_TEMP/actual"
+          diff -u "$RUNNER_TEMP/expected" "$RUNNER_TEMP/actual"
+
+      - name: Validate host policy change
+        working-directory: private-source
+        run: |
+          flutter analyze --no-pub \
+            lib/services/manga/providers/one_reader_manga_provider.dart \
+            lib/services/manga/manga_provider_definitions.dart \
+            lib/services/manga/manga_provider_definitions_wave5.dart \
+            test/services/manga/providers/manga_next_source_wave_test.dart \
+            test/architecture/manga_next_source_wave_registry_test.dart
+          flutter test --no-pub \
+            test/services/manga/providers/manga_next_source_wave_test.dart \
+            test/architecture/manga_next_source_wave_registry_test.dart \
+            test/architecture/manga_planned_provider_definitions_test.dart
+
+      - name: Commit and push exact policy correction
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git config user.name 'Arthur Almeida'
+          git config user.email 'arthurgva1602@gmail.com'
+          git add -- \
+            lib/services/manga/manga_provider_definitions_wave5.dart \
+            test/services/manga/providers/manga_next_source_wave_test.dart \
+            test/architecture/manga_next_source_wave_registry_test.dart
+          git diff --cached --quiet && { echo 'no host-policy change'; exit 1; }
+          git commit -m 'fix(manga): allow observed OneReader image host'
+          published_sha="$(git rev-parse HEAD)"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push -q https://github.com/Semogtw/goanime-mobile.git "HEAD:refs/heads/$TARGET_BRANCH"
+          echo "published_sha=$published_sha"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
