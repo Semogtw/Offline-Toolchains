@@ -173,6 +173,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/manga-next-wave"
           for source in ptbr.yomu ptbr.flowermanga ptbr.onereader; do
             file="$RUNNER_TEMP/manga-next-wave/$source.safe"
             test -f "$file" || printf 'probe=not_run\n' > "$file"
