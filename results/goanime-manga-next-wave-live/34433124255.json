@@ -1,0 +1,49 @@
+{
+  "flower": {
+    "contentType": "text/html",
+    "exception": null,
+    "hasCfRay": true,
+    "server": "cloudflare",
+    "status": 200
+  },
+  "oneReader": {
+    "chapterCount": 14,
+    "chaptersStatus": 200,
+    "pageCount": 11,
+    "pageHosts": [
+      "b2.onereader.net"
+    ],
+    "pageItemTypes": [
+      "str"
+    ],
+    "pageSchemes": [
+      "https"
+    ],
+    "pagesContentType": "application/json",
+    "pagesFieldType": "list",
+    "pagesKeys": [
+      "pages",
+      "protected"
+    ],
+    "pagesPayloadType": "dict",
+    "pagesStatus": 200,
+    "searchContentType": "application/json",
+    "searchCount": 24,
+    "searchKeys": [
+      "data",
+      "limit",
+      "order",
+      "page",
+      "total",
+      "totalPages"
+    ],
+    "searchStatus": 200
+  },
+  "schemaVersion": 1,
+  "yomu": {
+    "contentType": "application/json",
+    "exception": null,
+    "server": "cloudflare",
+    "status": 502
+  }
+}
