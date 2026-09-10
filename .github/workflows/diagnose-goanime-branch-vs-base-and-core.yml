@@ -1,0 +1,107 @@
+name: Diagnose GoAnime branch vs base and core
+
+on:
+  push:
+    paths:
+      - 'triggers/goanime-branch-vs-base-core/*.request'
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      HEAD_SHA: d5c4a47443653cac02e2e082ab686d388520669c
+      BASE_SHA: e84e231ac7b5b8777a70732045e07cff8591713d
+      TARGET_BRANCH: feat/manga-sources-yomu-flower-onereader-20260909
+      PRIVATE_REPO: Semogtw/goanime-mobile
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.1'
+          channel: stable
+          cache: true
+      - name: Prepare result file
+        run: |
+          mkdir -p results/goanime-branch-vs-base-core
+          cat > /tmp/result.json <<'JSON'
+          {"headFailingTest":"unknown","baseFailingTest":"unknown","coreTests":"unknown"}
+          JSON
+      - name: Checkout exact head
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PRIVATE_REPO }}
+          token: ${{ secrets.GOANIME_REPO_TOKEN }}
+          ref: ${{ env.HEAD_SHA }}
+          path: head-source
+      - name: Verify exact head and branch guard
+        working-directory: head-source
+        run: |
+          test "$(git rev-parse HEAD)" = "$HEAD_SHA"
+          git fetch origin "$TARGET_BRANCH" --quiet
+          test "$(git rev-parse FETCH_HEAD)" = "$HEAD_SHA"
+      - name: Run isolated failing Flutter test at head
+        id: head_test
+        working-directory: head-source
+        continue-on-error: true
+        run: |
+          flutter pub get >/dev/null 2>&1
+          flutter test --no-pub -r compact test/services/title_availability_database_service_test.dart
+      - name: Checkout exact base
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PRIVATE_REPO }}
+          token: ${{ secrets.GOANIME_REPO_TOKEN }}
+          ref: ${{ env.BASE_SHA }}
+          path: base-source
+      - name: Verify exact base
+        working-directory: base-source
+        run: test "$(git rev-parse HEAD)" = "$BASE_SHA"
+      - name: Run isolated failing Flutter test at base
+        id: base_test
+        working-directory: base-source
+        continue-on-error: true
+        run: |
+          flutter pub get >/dev/null 2>&1
+          flutter test --no-pub -r compact test/services/title_availability_database_service_test.dart
+      - name: Run goanime_core tests independently at exact head
+        id: core_test
+        working-directory: head-source/packages/goanime_core
+        continue-on-error: true
+        run: |
+          dart pub get >/dev/null 2>&1
+          dart test -r compact
+      - name: Write sanitized outcomes
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          data = {
+            "headSha": os.environ["HEAD_SHA"],
+            "baseSha": os.environ["BASE_SHA"],
+            "headFailingTest": "${{ steps.head_test.outcome }}",
+            "baseFailingTest": "${{ steps.base_test.outcome }}",
+            "coreTests": "${{ steps.core_test.outcome }}",
+            "failingTestPath": "test/services/title_availability_database_service_test.dart",
+            "note": "isolated comparison and independent core execution; no goanime-mobile Actions triggered"
+          }
+          out = f'results/goanime-branch-vs-base-core/{os.environ["HEAD_SHA"]}.json'
+          with open(out, 'w') as f:
+            json.dump(data, f, indent=2, sort_keys=True)
+            f.write('\n')
+          PY
+      - name: Commit sanitized receipt
+        if: always()
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add results/goanime-branch-vs-base-core/
+          if ! git diff --cached --quiet; then
+            git commit -m "ci: record GoAnime base comparison and core result"
+            git push
+          fi
