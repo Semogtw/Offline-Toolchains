@@ -1,0 +1,349 @@
+name: Promote GoAnime OneReader exact
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-onereader-promotion-exact/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-onereader-promotion-exact
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Promote byte-certified OneReader exact SHA
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Require private repository token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted control state
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+          show-progress: false
+
+      - name: Resolve exact target
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-onereader-promotion-exact/*.request' | head -n 1)"
+          test -n "$request"
+          read -r project branch sha < "control/$request"
+          test "$project" = goanime
+          [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]
+          [[ "$branch" != /* ]]
+          [[ "$branch" != */ ]]
+          [[ "$branch" != *..* ]]
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Require exact validation receipts
+        env:
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          live="control/results/goanime-manga-next-source-wave/$REVIEWED_SHA.json"
+          full="control/results/goanime-manga-full-flutter-exact/$REVIEWED_SHA.json"
+          test -f "$live"
+          test -f "$full"
+          jq -e '.goanimeSha == env.REVIEWED_SHA' "$live" >/dev/null
+          jq -e '.oneReader | contains("terminal=readable") and contains("transport_1=success") and contains("verifier=success")' "$live" >/dev/null
+          jq -e '.yomu | contains("status=502") and contains("terminal=no_search_result")' "$live" >/dev/null
+          jq -e '.flowerManga | contains("status=403") and contains("terminal=no_search_result")' "$live" >/dev/null
+          jq -e '.goanimeSha == env.REVIEWED_SHA and .flutterAnalyze == "success" and .flutterTests == "success" and .coreTests == "success"' "$full" >/dev/null
+
+      - name: Checkout exact private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify branch still points to reviewed SHA
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Apply reviewed OneReader rollout state
+        working-directory: private-source
+        env:
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+          FULL_GATE_RUN: '34434420131'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          reviewed_sha = os.environ['REVIEWED_SHA']
+          full_gate_run = os.environ['FULL_GATE_RUN']
+          verified_at = datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
+
+          manifest_path = Path('docs/manga_sources_ptbr.json')
+          manifest = json.loads(manifest_path.read_text())
+          records = manifest.get('providerRecords')
+          if not isinstance(records, list):
+              raise SystemExit('providerRecords is not a list')
+
+          by_id = {
+              record.get('goanimeSourceId'): record
+              for record in records
+              if isinstance(record, dict) and isinstance(record.get('goanimeSourceId'), str)
+          }
+
+          candidates = [
+              {
+                  'sourceName': 'Yomu Mangás',
+                  'goanimeSourceId': 'ptbr.yomu',
+                  'policyState': 'allowed',
+                  'implementationState': 'planned',
+                  'requiresAuth': False,
+                  'requiresBrowser': False,
+                  'supportedContentKinds': ['imageSequence'],
+                  'engine': 'headless_json_api',
+                  'sourceSafetyAudit': {
+                      'state': 'reviewed',
+                      'reviewedAt': '2026-09-09',
+                      'primaryPurposeExplicitAdult': False,
+                      'upstreamContentWarning': 'MIXED',
+                      'evidence': [
+                          'Current upstream exposes a headless JSON API without browser session or request signing.',
+                          'MIXED catalogs remain allowed by policy, but live readability is required before runtime authorization.'
+                      ],
+                  },
+                  'rolloutNotes': [
+                      'Adapter and deterministic provider/registry contracts are green on the reviewed source wave.',
+                      'Exact live validation on 2026-09-10 returned HTTP 502 from yomu.tauruus.com for all search attempts before any catalog result.',
+                      'Keep planned and outside defaultEnabledMangaSourceIds until a fresh exact-SHA search-to-bytes proof succeeds.'
+                  ],
+              },
+              {
+                  'sourceName': 'FlowerManga.net',
+                  'goanimeSourceId': 'ptbr.flowermanga',
+                  'policyState': 'allowed',
+                  'implementationState': 'planned',
+                  'requiresAuth': False,
+                  'requiresBrowser': False,
+                  'supportedContentKinds': ['imageSequence'],
+                  'engine': 'madara_html',
+                  'sourceSafetyAudit': {
+                      'state': 'reviewed',
+                      'reviewedAt': '2026-09-09',
+                      'primaryPurposeExplicitAdult': False,
+                      'upstreamContentWarning': 'MIXED',
+                      'evidence': [
+                          'Current upstream is a standard Madara source and the adapter reuses the shared headless parser.',
+                          'MIXED catalog classification is policy-allowed but does not waive live readability requirements.'
+                      ],
+                  },
+                  'rolloutNotes': [
+                      'Adapter and deterministic provider/registry contracts are green on the reviewed source wave.',
+                      'Exact live validation on 2026-09-10 returned HTTP 403 from flowermangas.net for all search attempts in the normal GoAnime HTTP client.',
+                      'Keep planned and outside defaultEnabledMangaSourceIds; do not add anti-bot bypasses merely to satisfy CI.'
+                  ],
+              },
+              {
+                  'sourceName': 'OneReader',
+                  'goanimeSourceId': 'ptbr.onereader',
+                  'policyState': 'allowed',
+                  'implementationState': 'enabled',
+                  'rolloutGates': {
+                      'fixtureContractPassed': True,
+                      'liveReadabilityPassed': True,
+                      'byteProbePassed': True,
+                      'verifiedAt': verified_at,
+                      'providerSetVersion': reviewed_sha,
+                  },
+                  'requiresAuth': False,
+                  'requiresBrowser': False,
+                  'supportedContentKinds': ['imageSequence'],
+                  'engine': 'headless_json_api',
+                  'sourceSafetyAudit': {
+                      'state': 'reviewed',
+                      'reviewedAt': '2026-09-09',
+                      'primaryPurposeExplicitAdult': False,
+                      'upstreamContentWarning': 'MIXED',
+                      'evidence': [
+                          'Search explicitly uses role=standard and the current API exposes search, metadata, chapters and page endpoints without WebView or signing.',
+                          'Exact live validation completed through a real imageSequence manifest and byte-readable content under the provider host policy.'
+                      ],
+                  },
+                  'rolloutNotes': [
+                      'Deterministic contracts and registry policy tests passed on the reviewed source wave.',
+                      'Exact live validation returned 24 search results, successful details, 14 chapters, b2.onereader.net page hosting, successful byte transport and verifier=success.',
+                      f'Full Flutter exact gate {full_gate_run} passed analyze, root Flutter tests and goanime_core tests for {reviewed_sha} before promotion.'
+                  ],
+              },
+          ]
+
+          for candidate in candidates:
+              source_id = candidate['goanimeSourceId']
+              existing = by_id.get(source_id)
+              if existing is None:
+                  records.append(candidate)
+                  by_id[source_id] = candidate
+              else:
+                  existing.clear()
+                  existing.update(candidate)
+
+          manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
+
+          defaults_path = Path('lib/services/manga/default_manga_source_providers.dart')
+          defaults = defaults_path.read_text()
+          source_line = "  'ptbr.onereader',\n"
+          if source_line in defaults:
+              raise SystemExit('OneReader is already default-enabled at reviewed SHA')
+          anchor = "  'ptbr.ninjascan',\n};\n"
+          if anchor not in defaults:
+              raise SystemExit('default provider anchor changed')
+          defaults_path.write_text(defaults.replace(anchor, "  'ptbr.ninjascan',\n" + source_line + "};\n", 1))
+
+          test_path = Path('test/architecture/manga_next_source_wave_registry_test.dart')
+          test_text = test_path.read_text()
+          old = """  test('next source wave is registered but not default-enabled', () {\n    final definitionIds = releaseCandidateMangaProviderDefinitions\n        .map((definition) => definition.sourceId)\n        .toSet();\n\n    expect(definitionIds, containsAll(candidateIds));\n    expect(defaultEnabledMangaSourceIds.intersection(candidateIds), isEmpty);\n  });\n"""
+          new = """  test('next source wave only authorizes byte-certified OneReader', () {\n    final definitionIds = releaseCandidateMangaProviderDefinitions\n        .map((definition) => definition.sourceId)\n        .toSet();\n\n    expect(definitionIds, containsAll(candidateIds));\n    expect(\n      defaultEnabledMangaSourceIds,\n      contains(OneReaderMangaProvider.sourceIdValue),\n    );\n    expect(\n      defaultEnabledMangaSourceIds.intersection(<String>{\n        YomuMangaProvider.sourceIdValue,\n        FlowerMangaMangaProvider.sourceIdValue,\n      }),\n      isEmpty,\n    );\n  });\n"""
+          if old not in test_text:
+              raise SystemExit('next-source-wave rollout test baseline changed')
+          test_path.write_text(test_text.replace(old, new, 1))
+
+          audit_path = Path('docs/manga_provider_expansion_audit_2026-09-09.md')
+          audit = audit_path.read_text()
+          marker = '## Validation checkpoint — 2026-09-10'
+          if marker in audit:
+              raise SystemExit('validation checkpoint already present')
+          audit += f"""\n\n{marker}\n\nThis checkpoint supersedes the earlier list of unexecuted promotion gates for the exact reviewed SHA `{reviewed_sha}`.\n\n- Focused formatter/analyzer/provider/registry gates passed.\n- OneReader live path completed search (24 results) -> details -> chapters (14) -> `imageSequence` -> real byte transport -> verifier, ending `terminal=readable`. The observed page host `b2.onereader.net` was added explicitly to policy and regression-tested.\n- Yomu returned HTTP 502 from `yomu.tauruus.com` on every search attempt and remains `planned`.\n- FlowerManga.net returned HTTP 403 from `flowermangas.net` on every search attempt in the normal GoAnime HTTP client and remains `planned`.\n- The corrected full Flutter exact gate run `{full_gate_run}` passed analyze, root Flutter tests and `packages/goanime_core` tests.\n- NoxManga remains deferred because current runner access is blocked by HTTP 403 before `/_nix/signer.js`/session establishment; reproducing the signer alone would not unlock the source.\n- SlimeRead remains deferred because the current runner could not establish transport to `slimeread.app` (`URLError`) before catalog parsing.\n\nFormal rollout decision: **promote only `ptbr.onereader`**. Yomu and Flower remain registered release candidates but outside `defaultEnabledMangaSourceIds`; NoxManga and SlimeRead remain pre-implementation blocked/deferred.\n"""
+          audit_path.write_text(audit)
+
+          rollout_path = Path('docs/manga_provider_rollout_status.md')
+          rollout = rollout_path.read_text()
+          checkpoint = f"""\n<!-- current-2026-09-10:start -->\n## Checkpoint mais recente — 2026-09-10\n\n- Branch: `feat/manga-sources-yomu-flower-onereader-20260909`.\n- Exact source SHA certificado antes da promoção: `{reviewed_sha}`.\n- Runtime proposto neste checkpoint: **19 providers habilitados**, adicionando somente `ptbr.onereader`.\n- OneReader: search 24 -> details -> 14 chapters -> imageSequence (`b2.onereader.net`) -> transport success -> verifier success -> `terminal=readable`.\n- Yomu: `planned`, bloqueado no live gate por HTTP 502 antes de search.\n- FlowerManga.net: `planned`, bloqueado no live gate por HTTP 403 antes de search.\n- NoxManga: deferred; HTTP 403 ocorre antes do signer/session.\n- SlimeRead: deferred; transporte para `slimeread.app` falhou no runner antes do catálogo.\n- Full Flutter exact gate: Offline-Toolchains run `{full_gate_run}`.\n\nEste bloco supersede os números operacionais de 2026-08-30 abaixo para autorização runtime; os receipts históricos continuam preservados.\n<!-- current-2026-09-10:end -->\n"""
+          heading = '# Manga provider rollout status\n'
+          if '<!-- current-2026-09-10:start -->' in rollout:
+              raise SystemExit('rollout checkpoint already present')
+          if not rollout.startswith(heading):
+              raise SystemExit('rollout status heading changed')
+          rollout_path.write_text(heading + checkpoint + rollout[len(heading):])
+
+          receipt_path = Path('docs/manga_provider_expansion_receipt_2026-09-10.md')
+          if receipt_path.exists():
+              raise SystemExit('expansion receipt already exists')
+          receipt_path.write_text(f"""# Manga provider expansion receipt — 2026-09-10\n\n- Branch: `feat/manga-sources-yomu-flower-onereader-20260909`\n- Reviewed source SHA: `{reviewed_sha}`\n- Protected historical source SHA: `f71a6d91ceccfa09addb84ed264a3bbee4c7f796` (unchanged)\n- Live receipt: `Semogtw/Offline-Toolchains/results/goanime-manga-next-source-wave/{reviewed_sha}.json`\n- Full Flutter receipt: `Semogtw/Offline-Toolchains/results/goanime-manga-full-flutter-exact/{reviewed_sha}.json`\n- Full Flutter run: `{full_gate_run}`\n\n## Decision matrix\n\n| Source | Deterministic gates | Live search | Manifest/bytes | Decision |\n| --- | --- | --- | --- | --- |\n| OneReader (`ptbr.onereader`) | pass | 24 results | transport + verifier success | **enable** |\n| Yomu (`ptbr.yomu`) | pass | HTTP 502 x3 | not reached | keep planned |\n| FlowerManga.net (`ptbr.flowermanga`) | pass | HTTP 403 x3 | not reached | keep planned |\n| NoxManga | signer research retained | HTTP 403 before signer/session | not reached | deferred/blocked |\n| SlimeRead | headless candidate only | transport `URLError` | not reached | deferred/blocked |\n\nOneReader is the only source in this wave with complete exact-SHA search -> details -> chapters -> manifest -> real bytes evidence. No anti-bot bypass was introduced for the blocked sources.\n""")
+          PY
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: |
+          flutter pub get >/dev/null 2>&1
+          (cd packages/goanime_core && dart pub get >/dev/null 2>&1)
+
+      - name: Format changed Dart
+        working-directory: private-source
+        run: dart format lib/services/manga/default_manga_source_providers.dart test/architecture/manga_next_source_wave_registry_test.dart
+
+      - name: Verify manifest and rollout boundary
+        working-directory: private-source
+        run: |
+          python3 -m json.tool docs/manga_sources_ptbr.json >/dev/null
+          flutter test --no-pub \
+            test/architecture/manga_provider_registry_manifest_test.dart \
+            test/architecture/manga_planned_provider_definitions_test.dart \
+            test/architecture/manga_next_source_wave_registry_test.dart \
+            test/services/manga/providers/manga_next_source_wave_test.dart
+
+      - name: Analyze promotion scope
+        working-directory: private-source
+        run: flutter analyze --no-pub lib/services/manga/default_manga_source_providers.dart lib/services/manga/manga_provider_definitions.dart lib/services/manga/manga_provider_definitions_wave5.dart test/architecture/manga_next_source_wave_registry_test.dart test/services/manga/providers/manga_next_source_wave_test.dart
+
+      - name: Commit reviewed promotion
+        id: commit
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            lib/services/manga/default_manga_source_providers.dart \
+            test/architecture/manga_next_source_wave_registry_test.dart \
+            docs/manga_sources_ptbr.json \
+            docs/manga_provider_expansion_audit_2026-09-09.md \
+            docs/manga_provider_rollout_status.md \
+            docs/manga_provider_expansion_receipt_2026-09-10.md
+          git diff --cached --check
+          git diff --cached --quiet && { echo 'no promotion diff'; exit 1; }
+          git commit -m 'feat(manga): promote OneReader after byte certification'
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Reverify branch and push fast-forward
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          remote_head="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_head" = "$EXPECTED_SHA"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push origin "HEAD:refs/heads/$TARGET_BRANCH"
+          promoted_sha="$(git rev-parse HEAD)"
+          remote_after="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          test "$remote_after" = "$promoted_sha"
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Publish sanitized promotion result
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          REVIEWED_SHA: ${{ steps.request.outputs.sha }}
+          PROMOTED_SHA: ${{ steps.commit.outputs.sha }}
+          TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          result="$(jq -cn --arg reviewed "$REVIEWED_SHA" --arg promoted "$PROMOTED_SHA" --arg branch "$TARGET_BRANCH" '{schemaVersion:1,reviewedSha:$reviewed,promotedSha:$promoted,branch:$branch,oneReader:"enabled",yomu:"planned_http_502",flowerManga:"planned_http_403",noxManga:"deferred_pre_signer_http_403",slimeRead:"deferred_transport_unavailable"}')"
+          encoded="$(printf '%s\n' "$result" | base64 -w0)"
+          path="results/goanime-onereader-promotion-exact/$REVIEWED_SHA.json"
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$path" -f message="ci(result): record OneReader promotion ${REVIEWED_SHA:0:8}" -f content="$encoded" >/dev/null
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
