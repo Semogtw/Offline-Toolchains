@@ -111,7 +111,8 @@ class MangaPublicEdgeProbeWorkflowTest(unittest.TestCase):
         self.assertLess(smoke, semantics)
         self.assertLess(semantics, diagnostics)
         self.assertLess(diagnostics, sampling)
-        sample_block = workflow[sampling:]
+        cleanup = workflow.index("      - name: Cleanup private checkout", sampling)
+        sample_block = workflow[sampling:cleanup]
         self.assertIn("        if: always()", sample_block)
 
 
