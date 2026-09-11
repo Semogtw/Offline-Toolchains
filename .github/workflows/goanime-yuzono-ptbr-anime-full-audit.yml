@@ -32,6 +32,11 @@ on:
         description: Automatic continuation depth
         required: false
         default: '0'
+      force_flexible_adapter_fallback:
+        description: Test-only exact-source FlexibleAdapter fallback mode
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -44,6 +49,7 @@ concurrency:
 env:
   YUZONO_REVISION: 36eda914cb77ca8e40552eb800eb07098852fc55
   ANIKKU_REVISION: 41fefe566a00e8eb38dfa7f11802c8bfbe5c16e7
+  FLEXIBLE_ADAPTER_SHA: c80135339bcff5f7f8c2c2380329dfc155b26232
   GOANIME_BASELINE_SHA: f350111089aedf248033154e11779dc69fff8f7f
 
 jobs:
@@ -56,6 +62,7 @@ jobs:
       mode: ${{ steps.request.outputs.mode }}
       parent_run_id: ${{ steps.request.outputs.parent_run_id }}
       continuation_index: ${{ steps.request.outputs.continuation_index }}
+      force_fallback: ${{ steps.request.outputs.force_fallback }}
     steps:
       - name: Checkout Toolchains request
         uses: actions/checkout@v6
@@ -73,6 +80,7 @@ jobs:
           DISPATCH_MODE: ${{ github.event.inputs.mode || '' }}
           DISPATCH_PARENT: ${{ github.event.inputs.parent_run_id || '' }}
           DISPATCH_INDEX: ${{ github.event.inputs.continuation_index || '0' }}
+          DISPATCH_FORCE_FALLBACK: ${{ github.event.inputs.force_flexible_adapter_fallback || 'false' }}
           COMMIT_MESSAGE: ${{ github.event.head_commit.message || '' }}
         run: |
           set -euo pipefail
@@ -81,6 +89,7 @@ jobs:
           mode="$DISPATCH_MODE"
           parent_run_id="$DISPATCH_PARENT"
           continuation_index="$DISPATCH_INDEX"
+          force_fallback="$DISPATCH_FORCE_FALLBACK"
 
           if [[ "$EVENT_NAME" == push ]]; then
             request="$(git diff-tree --no-commit-id --name-only --diff-filter=AM -r HEAD^ HEAD -- 'triggers/goanime-yuzono-anime-full-audit/*.request' | sort | tail -n 1)"
@@ -89,6 +98,7 @@ jobs:
             generation_id="audit-${GITHUB_RUN_ID}"
             parent_run_id=""
             continuation_index="0"
+            force_fallback="false"
             if [[ "$COMMIT_MESSAGE" == *"[full]"* ]]; then
               mode="full"
             elif [[ "$COMMIT_MESSAGE" == *"[canary]"* ]]; then
@@ -106,12 +116,14 @@ jobs:
           [[ "$mode" =~ ^(deterministic|canary|full)$ ]] || { echo '::error::mode is invalid'; exit 1; }
           [[ "$parent_run_id" =~ ^[0-9]*$ ]] || { echo '::error::parent_run_id is invalid'; exit 1; }
           [[ "$continuation_index" =~ ^[0-9]+$ ]] || { echo '::error::continuation_index is invalid'; exit 1; }
+          [[ "$force_fallback" =~ ^(true|false)$ ]] || { echo '::error::fallback mode is invalid'; exit 1; }
 
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
           echo "generation_id=$generation_id" >> "$GITHUB_OUTPUT"
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
           echo "parent_run_id=$parent_run_id" >> "$GITHUB_OUTPUT"
           echo "continuation_index=$continuation_index" >> "$GITHUB_OUTPUT"
+          echo "force_fallback=$force_fallback" >> "$GITHUB_OUTPUT"
 
       - name: Require private source credential
         env:
@@ -175,19 +187,15 @@ jobs:
         if: always()
         run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/baseline-source"
 
-  canary:
-    name: Instrumented PT-BR canary
+  reference-runtime:
+    name: Build immutable pinned Anikku reference runtime
     needs: deterministic
-    if: needs.deterministic.outputs.mode == 'canary'
+    if: needs.deterministic.outputs.mode != 'deterministic'
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
       GOANIME_SOURCE_SHA: ${{ needs.deterministic.outputs.source_sha }}
-      GENERATION_ID: ${{ needs.deterministic.outputs.generation_id }}
-      MODULES: animefire,dattebayobr,animeito
-      MAX_RETRIES: '1'
-      MAX_PAGES: '3'
-      STAGE_TIMEOUT_SECONDS: '45'
+      FORCE_FALLBACK: ${{ needs.deterministic.outputs.force_fallback }}
     steps:
       - name: Checkout exact GoAnime probe source
         uses: actions/checkout@v6
@@ -210,6 +218,84 @@ jobs:
           persist-credentials: false
           show-progress: false
 
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Build one immutable reference runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(
+            --anikku-root anikku
+            --goanime-source-root private-source
+            --harness-script private-source/tools/yuzono_anime_probe/android_harness/inject_harness.py
+            --output-dir reference-runtime
+            --goanime-source-sha "$GOANIME_SOURCE_SHA"
+            --anikku-sha "$ANIKKU_REVISION"
+            --flexible-adapter-sha "$FLEXIBLE_ADAPTER_SHA"
+            --jdk-major 17
+          )
+          if [[ "$FORCE_FALLBACK" == true ]]; then
+            args+=( --force-flexible-adapter-fallback )
+          fi
+          bash scripts/goanime_yuzono/build_reference_runtime.sh "${args[@]}"
+
+      - name: Verify reference runtime artifact shape
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find reference-runtime -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 3
+          test -z "$(find reference-runtime -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          test -f reference-runtime/anikku-app-debug.apk
+          test -f reference-runtime/anikku-app-debug-androidTest.apk
+          test -f reference-runtime/reference-runtime-manifest.json
+
+      - name: Upload immutable reference runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: yuzono-reference-runtime-${{ needs.deterministic.outputs.generation_id }}
+          path: reference-runtime
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Remove transient trees
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/anikku"
+
+  canary:
+    name: Instrumented PT-BR canary
+    needs:
+      - deterministic
+      - reference-runtime
+    if: needs.deterministic.outputs.mode == 'canary' && needs.reference-runtime.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      GOANIME_SOURCE_SHA: ${{ needs.deterministic.outputs.source_sha }}
+      GENERATION_ID: ${{ needs.deterministic.outputs.generation_id }}
+      MODULES: animefire,dattebayobr,animeito
+      MAX_RETRIES: '1'
+      MAX_PAGES: '3'
+      STAGE_TIMEOUT_SECONDS: '45'
+      ANIKKU_ROOT: reference-runtime-tree
+    steps:
+      - name: Checkout exact GoAnime probe source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ needs.deterministic.outputs.source_sha }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
       - name: Checkout pinned Yuzono extensions
         uses: actions/checkout@v6
         with:
@@ -220,6 +306,37 @@ jobs:
           persist-credentials: false
           show-progress: false
 
+      - name: Download and verify shared reference runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: yuzono-reference-runtime-${{ needs.deterministic.outputs.generation_id }}
+          path: reference-runtime
+
+      - name: Stage verified runtime for emulator harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find reference-runtime -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 3
+          test -z "$(find reference-runtime -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          test -f reference-runtime/anikku-app-debug.apk
+          test -f reference-runtime/anikku-app-debug-androidTest.apk
+          test -f reference-runtime/reference-runtime-manifest.json
+          python3 scripts/goanime_yuzono/verify_reference_manifest.py \
+            --manifest reference-runtime/reference-runtime-manifest.json \
+            --app-apk reference-runtime/anikku-app-debug.apk \
+            --test-apk reference-runtime/anikku-app-debug-androidTest.apk \
+            --goanime-source-sha "$GOANIME_SOURCE_SHA" \
+            --anikku-sha "$ANIKKU_REVISION" \
+            --flexible-adapter-sha "$FLEXIBLE_ADAPTER_SHA" \
+            --jdk-major 17
+          mkdir -p \
+            reference-runtime-tree/app/build/outputs/apk/debug \
+            reference-runtime-tree/app/build/outputs/apk/androidTest
+          cp reference-runtime/anikku-app-debug.apk \
+            reference-runtime-tree/app/build/outputs/apk/debug/anikku-app-debug.apk
+          cp reference-runtime/anikku-app-debug-androidTest.apk \
+            reference-runtime-tree/app/build/outputs/apk/androidTest/anikku-app-debug-androidTest.apk
+
       - name: Set up Temurin JDK 17
         uses: actions/setup-java@v5
         with:
@@ -228,26 +345,6 @@ jobs:
 
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v5
-
-      - name: Inject debug-only probe harness
-        run: python private-source/tools/yuzono_anime_probe/android_harness/inject_harness.py --anikku-root anikku
-
-      - name: Assemble pinned Anikku with bounded JitPack retries
-        working-directory: anikku
-        shell: bash
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3; do
-            echo "Anikku assemble attempt $attempt/3"
-            args=( :app:assembleDebug --no-daemon --stacktrace )
-            if (( attempt > 1 )); then args+=( --refresh-dependencies ); fi
-            if ./gradlew "${args[@]}"; then exit 0; fi
-            if (( attempt == 3 )); then
-              echo '::error::Pinned Anikku failed after bounded dependency retries'
-              exit 1
-            fi
-            sleep $((attempt * 30))
-          done
 
       - name: Build canary PT extensions independently
         working-directory: yuzono
@@ -319,7 +416,7 @@ jobs:
 
       - name: Remove transient trees
         if: always()
-        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/anikku" "$GITHUB_WORKSPACE/yuzono"
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/yuzono"
 
   prepare-full:
     name: Prepare resumable full-audit matrix
@@ -444,7 +541,8 @@ jobs:
     needs:
       - deterministic
       - prepare-full
-    if: needs.prepare-full.outputs.has_pending == 'true'
+      - reference-runtime
+    if: needs.prepare-full.outputs.has_pending == 'true' && needs.reference-runtime.result == 'success'
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -461,6 +559,7 @@ jobs:
       SOFT_BUDGET_SECONDS: '18000'
       CONTINUATION_RESERVE_SECONDS: '1800'
       ESTIMATED_NEXT_SECONDS: '900'
+      ANIKKU_ROOT: reference-runtime-tree
     steps:
       - name: Checkout exact GoAnime probe source
         uses: actions/checkout@v6
@@ -469,16 +568,6 @@ jobs:
           ref: ${{ needs.deterministic.outputs.source_sha }}
           token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
           path: private-source
-          fetch-depth: 1
-          persist-credentials: false
-          show-progress: false
-
-      - name: Checkout pinned Anikku runtime
-        uses: actions/checkout@v6
-        with:
-          repository: komikku-app/anikku
-          ref: ${{ env.ANIKKU_REVISION }}
-          path: anikku
           fetch-depth: 1
           persist-credentials: false
           show-progress: false
@@ -499,6 +588,36 @@ jobs:
           name: yuzono-full-audit-plan-${{ github.run_id }}
           path: audit-plan
 
+      - name: Download and verify shared reference runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: yuzono-reference-runtime-${{ needs.deterministic.outputs.generation_id }}
+          path: reference-runtime
+
+      - name: Stage verified runtime for emulator harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find reference-runtime -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 3
+          test -f reference-runtime/anikku-app-debug.apk
+          test -f reference-runtime/anikku-app-debug-androidTest.apk
+          test -f reference-runtime/reference-runtime-manifest.json
+          python3 scripts/goanime_yuzono/verify_reference_manifest.py \
+            --manifest reference-runtime/reference-runtime-manifest.json \
+            --app-apk reference-runtime/anikku-app-debug.apk \
+            --test-apk reference-runtime/anikku-app-debug-androidTest.apk \
+            --goanime-source-sha "$GOANIME_SOURCE_SHA" \
+            --anikku-sha "$ANIKKU_REVISION" \
+            --flexible-adapter-sha "$FLEXIBLE_ADAPTER_SHA" \
+            --jdk-major 17
+          mkdir -p \
+            reference-runtime-tree/app/build/outputs/apk/debug \
+            reference-runtime-tree/app/build/outputs/apk/androidTest
+          cp reference-runtime/anikku-app-debug.apk \
+            reference-runtime-tree/app/build/outputs/apk/debug/anikku-app-debug.apk
+          cp reference-runtime/anikku-app-debug-androidTest.apk \
+            reference-runtime-tree/app/build/outputs/apk/androidTest/anikku-app-debug-androidTest.apk
+
       - name: Initialize resumable shard state
         shell: bash
         run: |
@@ -516,26 +635,6 @@ jobs:
 
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v5
-
-      - name: Inject debug-only probe harness
-        run: python private-source/tools/yuzono_anime_probe/android_harness/inject_harness.py --anikku-root anikku
-
-      - name: Assemble pinned Anikku with bounded dependency retries
-        working-directory: anikku
-        shell: bash
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3; do
-            echo "Anikku assemble attempt $attempt/3"
-            args=( :app:assembleDebug --no-daemon --stacktrace )
-            if (( attempt > 1 )); then args+=( --refresh-dependencies ); fi
-            if ./gradlew "${args[@]}"; then exit 0; fi
-            if (( attempt == 3 )); then
-              echo '::error::Pinned Anikku failed after bounded dependency retries; providers remain pending'
-              exit 1
-            fi
-            sleep $((attempt * 30))
-          done
 
       - name: Build pending extensions independently
         working-directory: yuzono
@@ -589,7 +688,7 @@ jobs:
 
       - name: Remove transient trees
         if: always()
-        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/anikku" "$GITHUB_WORKSPACE/yuzono"
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/yuzono"
 
   finalize-full:
     name: Consolidate, deduplicate and continue
@@ -597,7 +696,8 @@ jobs:
       - deterministic
       - prepare-full
       - full-shard
-    if: always() && needs.prepare-full.result == 'success'
+      - reference-runtime
+    if: always() && needs.prepare-full.result == 'success' && needs.reference-runtime.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
