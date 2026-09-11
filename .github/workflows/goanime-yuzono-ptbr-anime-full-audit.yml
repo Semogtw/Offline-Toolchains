@@ -898,6 +898,12 @@ jobs:
           name: yuzono-full-audit-plan-${{ github.run_id }}
           path: audit-plan
 
+      - name: Download immutable reference runtime identity
+        uses: actions/download-artifact@v4
+        with:
+          name: yuzono-reference-runtime-${{ needs.deterministic.outputs.generation_id }}
+          path: reference-runtime
+
       - name: Download all current shard states
         if: needs.prepare-full.outputs.has_pending == 'true'
         uses: actions/download-artifact@v4
@@ -949,6 +955,30 @@ jobs:
             --upstream-revision "$YUZONO_REVISION" \
             --anikku-revision "$ANIKKU_REVISION" \
             --output audit-output/pending.json
+
+      - name: Gate independent generation integrity and completion
+        id: verify-generation
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/private-source"
+          python -m tools.yuzono_anime_probe.cli verify-state \
+            --inventory audit-plan/inventory.json \
+            --checkpoint-dir consolidated-state/checkpoints \
+            --provider-dir consolidated-state/providers \
+            --pending audit-output/pending.json \
+            --aggregate audit-output/results.json \
+            --generation-id "$GENERATION_ID" \
+            --goanime-source-sha "$GOANIME_SOURCE_SHA" \
+            --goanime-baseline-sha "$GOANIME_BASELINE_SHA" \
+            --upstream-revision "$YUZONO_REVISION" \
+            --anikku-revision "$ANIKKU_REVISION" \
+            --reference-runtime-dir reference-runtime \
+            --flexible-adapter-sha "$FLEXIBLE_ADAPTER_SHA" \
+            --jdk-major 17 \
+            --output audit-output/verification.json \
+            --require-complete
 
       - name: Gate consolidated outputs before summary and upload
         id: sanitize-final
@@ -1022,7 +1052,7 @@ jobs:
           retention-days: 14
 
       - name: Schedule bounded automatic continuation
-        if: always() && steps.sanitize-final.outcome == 'success' && steps.sanitize-summary.outcome == 'success'
+        if: always() && steps.verify-generation.outcome == 'success' && steps.sanitize-final.outcome == 'success' && steps.sanitize-summary.outcome == 'success'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1054,6 +1084,22 @@ jobs:
             -f continuation_index="$next_index" \
             -f reference_runtime_run_id="$REFERENCE_RUNTIME_RUN_ID"
           echo "Scheduled continuation $next_index with $pending pending providers."
+
+      - name: Enforce independent generation completeness
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s audit-output/verification.json
+          jq -e '
+            (.consistent == true) and
+            (.complete == true) and
+            (.pending_count == 0) and
+            (.blocker_count == 0) and
+            (.missing_result_count == 0) and
+            (.identity_mismatch_count == 0) and
+            (.accepted_terminal_count == .scoped_count)
+          ' audit-output/verification.json >/dev/null
 
       - name: Remove private checkouts
         if: always()

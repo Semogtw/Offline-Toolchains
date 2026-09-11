@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed allowlist gate for T02 uploads, summaries and runner logs.
+"""Fail-closed allowlist gate for T02/T03 uploads, summaries and runner logs.
 
 This gate validates the recursive trees that the audit workflow uploads. Raw
 instrumentation and Gradle output is read only from the runner temp directory;
@@ -113,6 +113,17 @@ AGGREGATE_FIELDS = {
     "promotionCandidates",
     "promotionRejected",
     "providers",
+}
+VERIFICATION_FIELDS = {
+    "consistent",
+    "complete",
+    "scoped_count",
+    "accepted_terminal_count",
+    "pending_count",
+    "blocker_count",
+    "missing_result_count",
+    "identity_mismatch_count",
+    "violations",
 }
 COMPARISON_FIELDS = {
     "baselineGoAnimeUniqueTitles",
@@ -371,6 +382,23 @@ def _validate_aggregate(value: Any, label: str) -> None:
         _validate_aggregate_provider(provider, f"{label}.providers[{index}]")
 
 
+def _validate_verification(value: Any, label: str) -> None:
+    payload = _field_object(value, VERIFICATION_FIELDS, label)
+    for key in ("consistent", "complete"):
+        if type(payload[key]) is not bool:
+            raise SanitizationError(f"{label}.{key}: expected boolean")
+    for key in (
+        "scoped_count",
+        "accepted_terminal_count",
+        "pending_count",
+        "blocker_count",
+        "missing_result_count",
+        "identity_mismatch_count",
+    ):
+        _nonnegative(payload[key], f"{label}.{key}")
+    _safe_list(payload["violations"], f"{label}.violations")
+
+
 def _validate_comparison(value: Any, label: str) -> None:
     payload = _field_object(value, COMPARISON_FIELDS, label)
     for key in COMPARISON_FIELDS - {"candidateExclusiveTitles"}:
@@ -529,6 +557,8 @@ def _validate_file(root_name: str, relative: Path, path: Path) -> None:
     if root_name == "audit-output":
         if path.name == "results.json" and relative == Path("results.json"):
             _validate_aggregate(_json(path), label)
+        elif path.name == "verification.json" and relative == Path("verification.json"):
+            _validate_verification(_json(path), label)
         elif path.name == "catalog-comparison.json" and relative == Path("catalog-comparison.json"):
             _validate_comparison(_json(path), label)
         elif path.name == "pending.json" and relative == Path("pending.json"):

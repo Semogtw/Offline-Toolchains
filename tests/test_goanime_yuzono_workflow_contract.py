@@ -463,6 +463,27 @@ class SanitizedOutputContractTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
 
+            verification_root = Path(temporary) / "audit-output"
+            verification_root.mkdir()
+            (verification_root / "verification.json").write_text(
+                json.dumps(
+                    {
+                        "consistent": True,
+                        "complete": False,
+                        "scoped_count": 23,
+                        "accepted_terminal_count": 7,
+                        "pending_count": 16,
+                        "blocker_count": 11,
+                        "missing_result_count": 11,
+                        "identity_mismatch_count": 0,
+                        "violations": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            verification = run_script(SANITIZE_SCRIPT, "--root", str(verification_root))
+            self.assertEqual(verification.returncode, 0, verification.stderr)
+
     def test_recursive_gate_rejects_unknown_fields_and_raw_transport_content(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "probe-state"
@@ -595,6 +616,11 @@ class SanitizedOutputContractTest(unittest.TestCase):
             self.assertIn("> \"$instrumentation_log\" 2>&1", body)
             self.assertLess(body.index("sanitize_audit_outputs.py"), body.index("actions/upload-artifact@"))
         finalizer = job_body(workflow, "finalize-full")
+        self.assertIn("verify-state", finalizer)
+        self.assertIn("--require-complete", finalizer)
+        self.assertIn("Enforce independent generation completeness", finalizer)
+        self.assertIn("steps.verify-generation.outcome == 'success'", finalizer)
+        self.assertIn("reference-runtime-${{ needs.deterministic.outputs.generation_id }}", finalizer)
         self.assertLess(finalizer.index("sanitize_audit_outputs.py"), finalizer.index("GITHUB_STEP_SUMMARY"))
         self.assertIn("Materialize full-audit summary", finalizer)
         self.assertIn("--summary-file", finalizer)
