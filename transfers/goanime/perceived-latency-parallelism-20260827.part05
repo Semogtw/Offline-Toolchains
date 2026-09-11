@@ -1,0 +1,157 @@
+condary],
++            policies: const {
++              'ptbr.a': primaryPolicy,
++              'ptbr.b': secondaryPolicy,
++            },
++          ),
++          scheduler: scheduler,
++          repository: repository,
++        ),
++      );
++      final initial = await source.loadInitial(availability);
++
++      final hydration = source.hydrate(availability, initial: initial);
++      await expectLater(
++        secondaryChaptersStarted.future.timeout(
++          const Duration(milliseconds: 250),
++        ),
++        completes,
++      );
++      expect(releaseCover.isCompleted, isFalse);
++
++      releaseCover.complete();
++      final snapshot = await hydration;
++      expect(snapshot.chapters, isNotEmpty);
++      expect(
++        snapshot.availability.work.coverUrl,
++        'https://covers.example.test/example.webp',
++      );
++    },
++  );
++
++  test(
+     'provider hydration failure returns a degraded non-destructive snapshot',
+     () async {
+       final provider = FakeMangaSourceProvider(
+@@ -273,3 +363,47 @@
+     ],
+   );
+ }
++
++MangaAvailabilityRecord _availabilityWithTwoSources() {
++  return MangaAvailabilityRecord(
++    work: const MangaWork(workId: 'mw_1', canonicalTitle: 'Example Work'),
++    sourceLinks: const [
++      MangaSourceLink(
++        workId: 'mw_1',
++        occurrence: MangaSourceOccurrence(
++          sourceId: 'ptbr.a',
++          mangaId: 'a-work',
++          title: 'Example Work',
++        ),
++        matchConfidence: 1,
++      ),
++      MangaSourceLink(
++        workId: 'mw_1',
++        occurrence: MangaSourceOccurrence(
++          sourceId: 'ptbr.b',
++          mangaId: 'b-work',
++          title: 'Example Work',
++        ),
++        matchConfidence: 1,
++      ),
++    ],
++    evidence: [
++      MangaReadabilityEvidence(
++        workId: 'mw_1',
++        sourceId: 'ptbr.a',
++        mangaId: 'a-work',
++        sampleChapterId: 'chapter-1',
++        contentKind: MangaContentKind.imageSequence,
++        verifiedAt: DateTime.utc(2026, 8, 10),
++      ),
++      MangaReadabilityEvidence(
++        workId: 'mw_1',
++        sourceId: 'ptbr.b',
++        mangaId: 'b-work',
++        sampleChapterId: 'chapter-1',
++        contentKind: MangaContentKind.imageSequence,
++        verifiedAt: DateTime.utc(2026, 8, 10),
++      ),
++    ],
++  );
++}
+diff --git a/test/services/manga/manga_repository_browse_data_source_test.dart b/test/services/manga/manga_repository_browse_data_source_test.dart
+--- a/test/services/manga/manga_repository_browse_data_source_test.dart
++++ b/test/services/manga/manga_repository_browse_data_source_test.dart
+@@ -3,6 +3,7 @@
+ import 'package:flutter_test/flutter_test.dart';
+ import 'package:goanime/services/manga/manga_availability_models.dart';
+ import 'package:goanime/services/manga/manga_availability_service.dart';
++import 'package:goanime/services/manga/manga_browse_data_source.dart';
+ import 'package:goanime/services/manga/manga_repository_browse_data_source.dart';
+ import 'package:goanime/services/manga/storage/manga_catalog_repository.dart';
+ import 'package:goanime/services/manga/storage/manga_database.dart';
+@@ -159,6 +160,28 @@
+     },
+   );
+ 
++  test('browse resolves catalog metadata in one bulk request', () async {
++    final resolver = _FakeBatchMetadataResolver({
++      'mw_a': const MangaBrowseMetadata(genres: ['Action']),
++      'mw_b': const MangaBrowseMetadata(genres: ['Drama']),
++    });
++    final source = MangaRepositoryBrowseDataSource(
++      availability: _FakeCatalogSource([
++        _record('mw_a', 'A Work'),
++        _record('mw_b', 'B Work'),
++      ]),
++      metadataResolver: resolver,
++      database: mangaDatabase,
++    );
++
++    final items = await source.loadCategories();
++
++    expect(resolver.batchCalls, 1);
++    expect(resolver.singleCalls, 0);
++    expect(items.first.metadata.genres, ['Action']);
++    expect(items.last.metadata.genres, ['Drama']);
++  });
++
+   test(
+     'browse restores persisted metadata for a sparse dynamic record',
+     () async {
+@@ -312,6 +335,33 @@
+   }) async {
+     readablePreviewCalls += 1;
+     return records.take(limit).toList(growable: false);
++  }
++}
++
++final class _FakeBatchMetadataResolver
++    implements MangaBrowseMetadataResolver, MangaBrowseMetadataBatchResolver {
++  _FakeBatchMetadataResolver(this.metadata);
++
++  final Map<String, MangaBrowseMetadata> metadata;
++  int batchCalls = 0;
++  int singleCalls = 0;
++
++  @override
++  Future<MangaBrowseMetadata> metadataForWork(String workId) async {
++    singleCalls += 1;
++    return metadata[workId] ?? const MangaBrowseMetadata();
++  }
++
++  @override
++  Future<Map<String, MangaBrowseMetadata>> metadataForWorks(
++    Iterable<String> workIds,
++  ) async {
++    batchCalls += 1;
++    final requested = workIds.toSet();
++    return {
++      for (final entry in metadata.entries)
++        if (requested.contains(entry.key)) entry.key: entry.value,
++    };
+   }
+ }
+ 
