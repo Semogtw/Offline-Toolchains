@@ -126,6 +126,11 @@ jobs:
           [[ "$reference_runtime_run_id" =~ ^[0-9]*$ ]] || { echo '::error::reference runtime run id is invalid'; exit 1; }
           [[ "$continuation_index" =~ ^[0-9]+$ ]] || { echo '::error::continuation_index is invalid'; exit 1; }
           [[ "$force_fallback" =~ ^(true|false)$ ]] || { echo '::error::fallback mode is invalid'; exit 1; }
+          test -f scripts/goanime_yuzono/validate_continuation_request.py
+          python3 scripts/goanime_yuzono/validate_continuation_request.py \
+            --parent-run-id "$parent_run_id" \
+            --reference-runtime-run-id "$reference_runtime_run_id" \
+            --continuation-index "$continuation_index"
           if [[ -n "$parent_run_id" && -z "$reference_runtime_run_id" ]]; then
             echo '::error::continuation must carry reference runtime origin run id'
             exit 1
@@ -276,7 +281,7 @@ jobs:
           run-id: ${{ needs.deterministic.outputs.reference_runtime_run_id }}
 
       - name: Build one immutable reference runtime
-        if: needs.deterministic.outputs.reference_runtime_run_id == ''
+        if: needs.deterministic.outputs.reference_runtime_run_id == '' && needs.deterministic.outputs.continuation_index == '0'
         shell: bash
         run: |
           set -euo pipefail
@@ -309,6 +314,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test -f scripts/goanime_yuzono/sanitize_audit_outputs.py
           python3 scripts/goanime_yuzono/verify_reference_manifest.py \
             --manifest reference-runtime/reference-runtime-manifest.json \
             --app-apk reference-runtime/anikku-app-debug.apk \
@@ -489,6 +495,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test -f scripts/goanime_yuzono/sanitize_audit_outputs.py
           python3 scripts/goanime_yuzono/sanitize_audit_outputs.py \
             --root probe-state \
             --logs-dir "${RUNNER_TEMP}/goanime-yuzono-canary-gradle" \
@@ -542,6 +549,13 @@ jobs:
       GENERATION_ID: ${{ needs.deterministic.outputs.generation_id }}
       PARENT_RUN_ID: ${{ needs.deterministic.outputs.parent_run_id }}
     steps:
+      - name: Checkout Toolchains workflow
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Checkout exact GoAnime probe source
         uses: actions/checkout@v6
         with:
@@ -639,6 +653,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test -f scripts/goanime_yuzono/sanitize_audit_outputs.py
           python3 scripts/goanime_yuzono/sanitize_audit_outputs.py --root audit-plan
 
       - name: Upload sanitized audit plan
@@ -813,6 +828,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test -f scripts/goanime_yuzono/sanitize_audit_outputs.py
           python3 scripts/goanime_yuzono/sanitize_audit_outputs.py \
             --root probe-state \
             --logs-dir "${RUNNER_TEMP}/goanime-yuzono-full-gradle-${{ matrix.shard }}" \
@@ -847,6 +863,13 @@ jobs:
       CONTINUATION_INDEX: ${{ needs.deterministic.outputs.continuation_index }}
       REFERENCE_RUNTIME_RUN_ID: ${{ needs.reference-runtime.outputs.reference_run_id }}
     steps:
+      - name: Checkout Toolchains workflow
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Checkout exact GoAnime probe source
         uses: actions/checkout@v6
         with:
@@ -933,17 +956,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test -f scripts/goanime_yuzono/sanitize_audit_outputs.py
           python3 scripts/goanime_yuzono/sanitize_audit_outputs.py \
             --root audit-plan \
             --root consolidated-state \
             --root audit-output
 
-      - name: Write full-audit summary
+      - name: Materialize full-audit summary
+        id: materialize-summary
         if: always() && steps.sanitize-final.outcome == 'success'
         shell: bash
+        env:
+          SUMMARY_FILE: ${{ runner.temp }}/goanime-yuzono-full-summary.md
         run: |
           set -euo pipefail
-          cat audit-output/report.md >> "$GITHUB_STEP_SUMMARY"
+          test -f scripts/goanime_yuzono/sanitize_audit_outputs.py
+          cat audit-output/report.md > "$SUMMARY_FILE"
           pending="$(jq 'length' audit-output/pending.json)"
           {
             echo
@@ -958,10 +986,32 @@ jobs:
             echo "- Yuzono SHA: \`$YUZONO_REVISION\`"
             echo "- Anikku SHA: \`$ANIKKU_REVISION\`"
             echo '- Scope: centralized module policy; isNsfw remains metadata and mixed-content anime modules remain candidates; current GoAnime PT production modules are canary/control-only; donghuanosekai, doramogo and muitohentai are excluded as non-conventional; audit-only, with no production registration'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } >> "$SUMMARY_FILE"
+          test -s "$SUMMARY_FILE"
+
+      - name: Gate materialized full-audit summary
+        id: sanitize-summary
+        if: always() && steps.materialize-summary.outcome == 'success'
+        shell: bash
+        env:
+          SUMMARY_FILE: ${{ runner.temp }}/goanime-yuzono-full-summary.md
+        run: |
+          set -euo pipefail
+          test -f scripts/goanime_yuzono/sanitize_audit_outputs.py
+          python3 scripts/goanime_yuzono/sanitize_audit_outputs.py \
+            --summary-file "$SUMMARY_FILE"
+
+      - name: Publish sanitized full-audit summary
+        if: always() && steps.sanitize-final.outcome == 'success' && steps.sanitize-summary.outcome == 'success'
+        shell: bash
+        env:
+          SUMMARY_FILE: ${{ runner.temp }}/goanime-yuzono-full-summary.md
+        run: |
+          set -euo pipefail
+          cat "$SUMMARY_FILE" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload consolidated sanitized checkpoint and report
-        if: always() && steps.sanitize-final.outcome == 'success'
+        if: always() && steps.sanitize-final.outcome == 'success' && steps.sanitize-summary.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: yuzono-full-audit-consolidated-${{ needs.deterministic.outputs.generation_id }}
@@ -972,6 +1022,7 @@ jobs:
           retention-days: 14
 
       - name: Schedule bounded automatic continuation
+        if: always() && steps.sanitize-final.outcome == 'success' && steps.sanitize-summary.outcome == 'success'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}

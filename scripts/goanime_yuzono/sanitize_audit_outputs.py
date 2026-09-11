@@ -141,8 +141,44 @@ REPORT_HEADINGS = {
     "## Promotion candidates",
     "## Audit blockers",
 }
-REPORT_TABLE_ROW = re.compile(r"^\| [^|\r\n]{0,200}(?: \| [^|\r\n]{0,200}){1,12} \|$")
 REPORT_ITEM = re.compile(r"^- yuzono\.pt\.[a-z0-9._-]{1,80}$")
+REPORT_METRICS = frozenset(
+    {
+        "Audit complete",
+        "Audit blockers",
+        "Promotion candidates",
+        "GoAnime baseline unique titles",
+        "Candidate raw occurrences",
+        "Candidate normalized occurrences",
+        "Candidate union unique titles",
+        "Cross-provider duplicate occurrences",
+        "Candidate exclusive titles",
+        "Combined unique titles",
+    }
+)
+SUMMARY_STATUS = frozenset(
+    {"ready", "partial", "blocked", "broken", "unsupported", "not-anime", "unknown"}
+)
+SUMMARY_STAGE = frozenset(
+    {"discovered", "reachable", "catalog", "identity", "episodes", "player", "stream", "classified"}
+)
+SUMMARY_LANGUAGE = frozenset({"sub", "dub", "mixed", "unknown"})
+SUMMARY_SCOPE_LINE = (
+    "- Scope: centralized module policy; isNsfw remains metadata and mixed-content "
+    "anime modules remain candidates; current GoAnime PT production modules are "
+    "canary/control-only; donghuanosekai, doramogo and muitohentai are excluded as "
+    "non-conventional; audit-only, with no production registration"
+)
+SUMMARY_GENERATION = re.compile(r"^- generation: `([A-Za-z0-9._-]{1,100})`$")
+SUMMARY_INDEX = re.compile(r"^- continuation index: `([0-9]+)`$")
+SUMMARY_RUN = re.compile(r"^- reference runtime origin run: `([1-9][0-9]*)`$")
+SUMMARY_PENDING = re.compile(r"^- pending providers: `([0-9]+)`$")
+SUMMARY_SHA = re.compile(r"^- (?:GoAnime probe|GoAnime baseline|Yuzono|Anikku) SHA: `([0-9a-f]{40})`$")
+CANARY_ROW = re.compile(
+    r"^\| (?P<name>[^|\r\n]{1,160}) \| (?P<status>[^|\r\n]+) \| "
+    r"(?P<stage>[^|\r\n]+) \| (?P<titles>[0-9]+) \| (?P<playback>[0-9]+) \| "
+    r"(?P<failure>[^|\r\n]{0,80}) \|$"
+)
 
 
 class SanitizationError(ValueError):
@@ -187,6 +223,8 @@ def _safe_string(value: Any, label: str, *, allow_empty: bool = True) -> None:
         raise SanitizationError(f"{label}: expected string")
     if "\x00" in value or "\n" in value or "\r" in value:
         raise SanitizationError(f"{label}: control character")
+    if "|" in value:
+        raise SanitizationError(f"{label}: table delimiter")
     if FORBIDDEN_TEXT.search(value):
         raise SanitizationError(f"{label}: forbidden content")
 
@@ -270,7 +308,11 @@ def _safe_module_list(value: Any, label: str) -> None:
 
 
 def _validate_checkpoint_or_provider_tree(relative: Path, path: Path, label: str) -> None:
-    if relative.parts[0] not in {"checkpoints", "providers"} or relative.suffix != ".json":
+    if (
+        len(relative.parts) != 2
+        or relative.parts[0] not in {"checkpoints", "providers"}
+        or relative.suffix != ".json"
+    ):
         raise SanitizationError(f"{label}: path is outside the allowlist")
     module = relative.stem
     if MODULE.fullmatch(module) is None:
@@ -350,19 +392,102 @@ def _validate_manifest(value: Any, label: str) -> None:
         raise SanitizationError(f"{label}.fallbackUsed: expected boolean")
 
 
+def _summary_text(value: str, label: str) -> None:
+    _safe_string(value, label, allow_empty=False)
+    if value.strip().lower() in {"raw", "payload", "html", "url", "token", "cookie"}:
+        raise SanitizationError(f"{label}: forbidden summary value")
+
+
+def _validate_report_line(line: str, label: str, index: int) -> None:
+    if not line or line in REPORT_HEADINGS or REPORT_ITEM.fullmatch(line):
+        return
+    if not line.startswith("| ") or not line.endswith(" |"):
+        raise SanitizationError(f"{label}:{index}: report line is outside the schema")
+    cells = line[2:-2].split(" | ")
+    if len(cells) == 2:
+        metric, value = cells
+        if metric not in REPORT_METRICS:
+            raise SanitizationError(f"{label}:{index}: report metric is not allowlisted")
+        if metric == "Audit complete":
+            if value not in {"yes", "no"}:
+                raise SanitizationError(f"{label}:{index}: report boolean is invalid")
+        elif re.fullmatch(r"[0-9]+", value) is None:
+            raise SanitizationError(f"{label}:{index}: report number is invalid")
+        return
+    if len(cells) != 11:
+        raise SanitizationError(f"{label}:{index}: report table shape is invalid")
+    name, status, stage, language, complete, *numeric, failure = cells
+    _summary_text(name, f"{label}:{index}.displayName")
+    if status not in SUMMARY_STATUS or stage not in SUMMARY_STAGE or language not in SUMMARY_LANGUAGE:
+        raise SanitizationError(f"{label}:{index}: report enum is invalid")
+    if complete not in {"yes", "no"} or any(re.fullmatch(r"[0-9]+", value) is None for value in numeric):
+        raise SanitizationError(f"{label}:{index}: report numeric field is invalid")
+    if failure != "-" and re.fullmatch(r"[a-z0-9._-]{1,80}", failure) is None:
+        raise SanitizationError(f"{label}:{index}: report failure is invalid")
+    _summary_text(failure, f"{label}:{index}.failure") if failure != "-" else None
+
+
 def _validate_report(path: Path, label: str) -> None:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError) as error:
         raise SanitizationError(f"{label}: invalid report text") from error
     for index, line in enumerate(lines, 1):
-        if FORBIDDEN_TEXT.search(line) or "\x00" in line:
+        if len(line) > 400 or "\x00" in line or FORBIDDEN_TEXT.search(line):
             raise SanitizationError(f"{label}:{index}: forbidden content")
-        if not line or line in REPORT_HEADINGS or REPORT_ITEM.fullmatch(line):
-            continue
-        if REPORT_TABLE_ROW.fullmatch(line):
-            continue
-        raise SanitizationError(f"{label}:{index}: report line is outside the schema")
+        _validate_report_line(line, label, index)
+
+
+def _validate_summary_line(line: str, label: str, index: int) -> None:
+    if not line:
+        return
+    if line in REPORT_HEADINGS or line in {
+        "## Instrumented PT-BR canary",
+        "## Generation receipt",
+        "| Provider | Status | Stage | Titles | Playback | Failure |",
+        "|---|---|---|---:|---:|---|",
+    }:
+        return
+    if line.startswith("|"):
+        try:
+            _validate_report_line(line, label, index)
+            return
+        except SanitizationError:
+            pass
+        match = CANARY_ROW.fullmatch(line)
+        if match is None:
+            raise SanitizationError(f"{label}:{index}: summary table is not allowlisted")
+        if match.group("status") not in SUMMARY_STATUS or match.group("stage") not in SUMMARY_STAGE:
+            raise SanitizationError(f"{label}:{index}: summary enum is invalid")
+        _summary_text(match.group("name"), f"{label}:{index}.displayName")
+        failure = match.group("failure")
+        if failure and failure != "-" and re.fullmatch(r"[a-z0-9._-]{1,80}", failure) is None:
+            raise SanitizationError(f"{label}:{index}: summary failure is invalid")
+        if failure and failure != "-":
+            _summary_text(failure, f"{label}:{index}.failure")
+        return
+    if REPORT_ITEM.fullmatch(line):
+        return
+    if line == SUMMARY_SCOPE_LINE:
+        return
+    if any(pattern.fullmatch(line) for pattern in (SUMMARY_GENERATION, SUMMARY_INDEX, SUMMARY_RUN, SUMMARY_PENDING, SUMMARY_SHA)):
+        return
+    raise SanitizationError(f"{label}:{index}: summary line is outside the schema")
+
+
+def _scan_summary(path: Path) -> None:
+    if path.is_symlink() or not path.is_file():
+        raise SanitizationError(f"{path}: non-regular summary")
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        raise SanitizationError(f"{path}: summary is not sanitized text") from error
+    if not lines:
+        raise SanitizationError(f"{path}: summary is empty")
+    for index, line in enumerate(lines, 1):
+        if len(line) > 400 or "\x00" in line or FORBIDDEN_TEXT.search(line):
+            raise SanitizationError(f"{path}:{index}: forbidden summary content")
+        _validate_summary_line(line, str(path), index)
 
 
 def _validate_file(root_name: str, relative: Path, path: Path) -> None:
@@ -500,7 +625,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Recursively verify allowlisted, sanitized audit outputs and runner logs."
     )
-    parser.add_argument("--root", action="append", type=Path, required=True, help="output root to scan")
+    parser.add_argument("--root", action="append", type=Path, default=[], help="output root to scan")
+    parser.add_argument("--summary-file", type=Path, help="materialized summary candidate to scan")
     parser.add_argument("--logs-dir", type=Path, help="runner-temp directory containing non-uploaded logs")
     parser.add_argument("--log", action="append", type=Path, default=[], help="individual runner log to scan")
     return parser.parse_args()
@@ -508,13 +634,23 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if not args.root and args.summary_file is None:
+        print("audit output sanitation failed: at least one root or summary is required", file=sys.stderr)
+        return 2
     try:
         output_files = sum(_scan_root(root) for root in args.root)
         log_files = _scan_logs(args.logs_dir, args.log)
+        summary_files = 0
+        if args.summary_file is not None:
+            _scan_summary(args.summary_file)
+            summary_files = 1
     except SanitizationError as error:
         print(f"audit output sanitation failed: {error}", file=sys.stderr)
         return 1
-    print(f"audit output sanitation passed: output_files={output_files} log_files={log_files}")
+    print(
+        "audit output sanitation passed: "
+        f"output_files={output_files} log_files={log_files} summary_files={summary_files}"
+    )
     return 0
 
 

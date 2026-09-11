@@ -18,6 +18,7 @@ BUILD_SCRIPT = ROOT / "scripts" / "goanime_yuzono" / "build_reference_runtime.sh
 WRITE_SCRIPT = ROOT / "scripts" / "goanime_yuzono" / "write_reference_manifest.py"
 VERIFY_SCRIPT = ROOT / "scripts" / "goanime_yuzono" / "verify_reference_manifest.py"
 SANITIZE_SCRIPT = ROOT / "scripts" / "goanime_yuzono" / "sanitize_audit_outputs.py"
+VALIDATE_CONTINUATION_SCRIPT = ROOT / "scripts" / "goanime_yuzono" / "validate_continuation_request.py"
 EXPECTED_FIELDS = {
     "schemaVersion",
     "goAnimeSourceSha",
@@ -101,6 +102,9 @@ class ReferenceRuntimeContractTest(unittest.TestCase):
         self.assertIn("reference runtime origin", reference.lower())
         self.assertIn("reference_run_id", reference)
         self.assertIn("verify_reference_manifest.py", reference)
+        self.assertIn("validate_continuation_request.py", deterministic)
+        self.assertIn("continuation_index > 0", VALIDATE_CONTINUATION_SCRIPT.read_text(encoding="utf-8"))
+        self.assertIn("continuation_index == '0'", reference)
 
     def test_continuation_without_origin_runtime_is_fail_closed(self) -> None:
         deterministic = job_body(WORKFLOW.read_text(encoding="utf-8"), "deterministic")
@@ -497,11 +501,93 @@ class SanitizedOutputContractTest(unittest.TestCase):
             self.assertNotEqual(transport.returncode, 0)
             self.assertIn("forbidden", (transport.stderr + transport.stdout).lower())
 
+    def test_recursive_gate_rejects_nested_provider_and_checkpoint_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "probe-state"
+            provider_dir = root / "providers" / "nested"
+            checkpoint_dir = root / "checkpoints" / "nested"
+            provider_dir.mkdir(parents=True)
+            checkpoint_dir.mkdir(parents=True)
+            provider = {
+                "sourceId": "yuzono.pt.animefire",
+                "module": "animefire",
+                "displayName": "AnimeFire",
+                "status": "partial",
+                "stage": "catalog",
+                "languageMode": "unknown",
+                "titles": [],
+                "pagesVisited": 0,
+                "catalogueComplete": False,
+                "catalogueTermination": "empty-catalog",
+                "rawTitleCount": 0,
+                "distinctRawTitleCount": 0,
+                "playbackSampleCount": 0,
+                "failureKind": "empty-catalog",
+            }
+            (provider_dir / "animefire.json").write_text(
+                json.dumps(provider), encoding="utf-8"
+            )
+            checkpoint = {
+                "schemaVersion": 2,
+                "generationId": "generation-1",
+                "goAnimeSourceSha": SOURCE_SHA,
+                "goAnimeBaselineSha": SOURCE_SHA,
+                "upstreamRevision": "d" * 40,
+                "anikkuRevision": ANIKKU_SHA,
+                "sourceId": "yuzono.pt.animefire",
+                "stage": "classified",
+                "status": "partial",
+                "retryCount": 0,
+                "titleCount": 0,
+                "playbackSampleCount": 0,
+                "failureKind": "empty-catalog",
+            }
+            (checkpoint_dir / "animefire.json").write_text(
+                json.dumps(checkpoint), encoding="utf-8"
+            )
+            result = run_script(SANITIZE_SCRIPT, "--root", str(root))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("path", (result.stderr + result.stdout).lower())
+
+    def test_materialized_summary_gate_rejects_malicious_state_without_echoing_payload(self) -> None:
+        safe_summary = "\n".join(
+            (
+                "## Generation receipt",
+                "",
+                "- generation: `generation-1`",
+                "- continuation index: `0`",
+                "- reference runtime origin run: `123`",
+                "- pending providers: `0`",
+                "- GoAnime probe SHA: `" + SOURCE_SHA + "`",
+                "- GoAnime baseline SHA: `" + SOURCE_SHA + "`",
+                "- Yuzono SHA: `" + "b" * 40 + "`",
+                "- Anikku SHA: `" + ANIKKU_SHA + "`",
+                "- Scope: centralized module policy; isNsfw remains metadata and mixed-content anime modules remain candidates; current GoAnime PT production modules are canary/control-only; donghuanosekai, doramogo and muitohentai are excluded as non-conventional; audit-only, with no production registration",
+                "",
+            )
+        )
+        malicious_payload = "https://secret.invalid/path?token=do-not-print"
+        with tempfile.TemporaryDirectory() as temporary:
+            summary = Path(temporary) / "summary.md"
+            summary.write_text(safe_summary, encoding="utf-8")
+            accepted = run_script(SANITIZE_SCRIPT, "--summary-file", str(summary))
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+
+            summary.write_text(
+                safe_summary + f"- raw: {malicious_payload}\n", encoding="utf-8"
+            )
+            rejected = run_script(SANITIZE_SCRIPT, "--summary-file", str(summary))
+            output = rejected.stderr + rejected.stdout
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertNotIn(malicious_payload, output)
+
     def test_workflow_gates_logs_and_outputs_before_upload_or_summary(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         for name in ("reference-runtime", "canary", "prepare-full", "full-shard", "finalize-full"):
             body = job_body(workflow, name)
             self.assertIn("sanitize_audit_outputs.py", body)
+            self.assertIn("Checkout Toolchains workflow", body)
+            self.assertIn("test -f scripts/goanime_yuzono/sanitize_audit_outputs.py", body)
         for name in ("canary", "full-shard"):
             body = job_body(workflow, name)
             self.assertIn("RUNNER_TEMP", body)
@@ -510,6 +596,37 @@ class SanitizedOutputContractTest(unittest.TestCase):
             self.assertLess(body.index("sanitize_audit_outputs.py"), body.index("actions/upload-artifact@"))
         finalizer = job_body(workflow, "finalize-full")
         self.assertLess(finalizer.index("sanitize_audit_outputs.py"), finalizer.index("GITHUB_STEP_SUMMARY"))
+        self.assertIn("Materialize full-audit summary", finalizer)
+        self.assertIn("--summary-file", finalizer)
+        self.assertIn("sanitize-summary", finalizer)
+        self.assertIn("steps.sanitize-summary.outcome == 'success'", finalizer)
+        self.assertLess(finalizer.index("--summary-file"), finalizer.index("GITHUB_STEP_SUMMARY"))
+
+
+class ContinuationRequestContractTest(unittest.TestCase):
+    def test_orphan_continuation_dispatch_is_rejected_but_origin_bound_dispatch_is_accepted(self) -> None:
+        valid = run_script(
+            VALIDATE_CONTINUATION_SCRIPT,
+            "--parent-run-id",
+            "123",
+            "--reference-runtime-run-id",
+            "456",
+            "--continuation-index",
+            "1",
+        )
+        self.assertEqual(valid.returncode, 0, valid.stderr)
+
+        orphan = run_script(
+            VALIDATE_CONTINUATION_SCRIPT,
+            "--parent-run-id",
+            "",
+            "--reference-runtime-run-id",
+            "",
+            "--continuation-index",
+            "1",
+        )
+        self.assertNotEqual(orphan.returncode, 0)
+        self.assertIn("continuation", (orphan.stderr + orphan.stdout).lower())
 
 
 class CanaryContractTest(unittest.TestCase):
