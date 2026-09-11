@@ -702,7 +702,7 @@ jobs:
             echo "- GoAnime baseline SHA: \`$GOANIME_BASELINE_SHA\`"
             echo "- Yuzono SHA: \`$YUZONO_REVISION\`"
             echo "- Anikku SHA: \`$ANIKKU_REVISION\`"
-            echo '- NSFW sources excluded from audit, metrics and promotion'
+            echo '- Scope: centralized module policy; isNsfw remains metadata and mixed-content anime modules remain candidates; current GoAnime PT production modules are canary/control-only; donghuanosekai, doramogo and muitohentai are excluded as non-conventional; audit-only, with no production registration'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload consolidated sanitized checkpoint and report
