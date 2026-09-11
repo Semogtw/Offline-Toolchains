@@ -28,6 +28,10 @@ on:
         description: Previous run carrying sanitized continuation state
         required: false
         default: ''
+      reference_runtime_run_id:
+        description: Origin run carrying the immutable runtime for this generation
+        required: false
+        default: ''
       continuation_index:
         description: Automatic continuation depth
         required: false
@@ -61,6 +65,7 @@ jobs:
       generation_id: ${{ steps.request.outputs.generation_id }}
       mode: ${{ steps.request.outputs.mode }}
       parent_run_id: ${{ steps.request.outputs.parent_run_id }}
+      reference_runtime_run_id: ${{ steps.request.outputs.reference_runtime_run_id }}
       continuation_index: ${{ steps.request.outputs.continuation_index }}
       force_fallback: ${{ steps.request.outputs.force_fallback }}
     steps:
@@ -79,6 +84,7 @@ jobs:
           DISPATCH_GENERATION: ${{ github.event.inputs.generation_id || '' }}
           DISPATCH_MODE: ${{ github.event.inputs.mode || '' }}
           DISPATCH_PARENT: ${{ github.event.inputs.parent_run_id || '' }}
+          DISPATCH_REFERENCE_RUNTIME_RUN_ID: ${{ github.event.inputs.reference_runtime_run_id || '' }}
           DISPATCH_INDEX: ${{ github.event.inputs.continuation_index || '0' }}
           DISPATCH_FORCE_FALLBACK: ${{ github.event.inputs.force_flexible_adapter_fallback || 'false' }}
           COMMIT_MESSAGE: ${{ github.event.head_commit.message || '' }}
@@ -88,6 +94,7 @@ jobs:
           generation_id="$DISPATCH_GENERATION"
           mode="$DISPATCH_MODE"
           parent_run_id="$DISPATCH_PARENT"
+          reference_runtime_run_id="$DISPATCH_REFERENCE_RUNTIME_RUN_ID"
           continuation_index="$DISPATCH_INDEX"
           force_fallback="$DISPATCH_FORCE_FALLBACK"
 
@@ -97,6 +104,7 @@ jobs:
             source_sha="$(tr -d ' \n\r' < "$request")"
             generation_id="audit-${GITHUB_RUN_ID}"
             parent_run_id=""
+            reference_runtime_run_id=""
             continuation_index="0"
             force_fallback="false"
             if [[ "$COMMIT_MESSAGE" == *"[full]"* ]]; then
@@ -115,13 +123,31 @@ jobs:
           [[ "$generation_id" =~ ^[A-Za-z0-9._-]{1,100}$ ]] || { echo '::error::generation_id is invalid'; exit 1; }
           [[ "$mode" =~ ^(deterministic|canary|full)$ ]] || { echo '::error::mode is invalid'; exit 1; }
           [[ "$parent_run_id" =~ ^[0-9]*$ ]] || { echo '::error::parent_run_id is invalid'; exit 1; }
+          [[ "$reference_runtime_run_id" =~ ^[0-9]*$ ]] || { echo '::error::reference runtime run id is invalid'; exit 1; }
           [[ "$continuation_index" =~ ^[0-9]+$ ]] || { echo '::error::continuation_index is invalid'; exit 1; }
           [[ "$force_fallback" =~ ^(true|false)$ ]] || { echo '::error::fallback mode is invalid'; exit 1; }
+          if [[ -n "$parent_run_id" && -z "$reference_runtime_run_id" ]]; then
+            echo '::error::continuation must carry reference runtime origin run id'
+            exit 1
+          fi
+          if [[ -z "$parent_run_id" && -n "$reference_runtime_run_id" ]]; then
+            echo '::error::reference runtime origin requires a parent continuation run'
+            exit 1
+          fi
+          if [[ "$mode" == deterministic && -n "$reference_runtime_run_id" ]]; then
+            echo '::error::deterministic mode cannot carry a reference runtime origin'
+            exit 1
+          fi
+          if [[ -n "$reference_runtime_run_id" && "$force_fallback" == true ]]; then
+            echo '::error::continuation cannot request FlexibleAdapter fallback'
+            exit 1
+          fi
 
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
           echo "generation_id=$generation_id" >> "$GITHUB_OUTPUT"
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
           echo "parent_run_id=$parent_run_id" >> "$GITHUB_OUTPUT"
+          echo "reference_runtime_run_id=$reference_runtime_run_id" >> "$GITHUB_OUTPUT"
           echo "continuation_index=$continuation_index" >> "$GITHUB_OUTPUT"
           echo "force_fallback=$force_fallback" >> "$GITHUB_OUTPUT"
 
@@ -191,11 +217,15 @@ jobs:
     name: Build immutable pinned Anikku reference runtime
     needs: deterministic
     if: needs.deterministic.outputs.mode != 'deterministic'
+    outputs:
+      reference_run_id: ${{ steps.runtime-identity.outputs.reference_run_id }}
+      reference_artifact_name: ${{ steps.runtime-identity.outputs.reference_artifact_name }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
       GOANIME_SOURCE_SHA: ${{ needs.deterministic.outputs.source_sha }}
       FORCE_FALLBACK: ${{ needs.deterministic.outputs.force_fallback }}
+      REFERENCE_RUNTIME_RUN_ID: ${{ needs.deterministic.outputs.reference_runtime_run_id }}
     steps:
       - name: Checkout Toolchains workflow
         uses: actions/checkout@v6
@@ -204,7 +234,8 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Checkout exact GoAnime probe source
+      - name: Checkout exact GoAnime probe source for first runtime only
+        if: needs.deterministic.outputs.reference_runtime_run_id == ''
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
@@ -215,7 +246,8 @@ jobs:
           persist-credentials: false
           show-progress: false
 
-      - name: Checkout pinned Anikku runtime
+      - name: Checkout pinned Anikku runtime for first runtime only
+        if: needs.deterministic.outputs.reference_runtime_run_id == ''
         uses: actions/checkout@v6
         with:
           repository: komikku-app/anikku
@@ -234,7 +266,17 @@ jobs:
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v5
 
+      - name: Reuse origin immutable reference runtime
+        if: needs.deterministic.outputs.reference_runtime_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: yuzono-reference-runtime-${{ needs.deterministic.outputs.generation_id }}
+          path: reference-runtime
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.deterministic.outputs.reference_runtime_run_id }}
+
       - name: Build one immutable reference runtime
+        if: needs.deterministic.outputs.reference_runtime_run_id == ''
         shell: bash
         run: |
           set -euo pipefail
@@ -262,6 +304,42 @@ jobs:
           test -f reference-runtime/anikku-app-debug.apk
           test -f reference-runtime/anikku-app-debug-androidTest.apk
           test -f reference-runtime/reference-runtime-manifest.json
+
+      - name: Verify reference runtime identity and sanitized artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/goanime_yuzono/verify_reference_manifest.py \
+            --manifest reference-runtime/reference-runtime-manifest.json \
+            --app-apk reference-runtime/anikku-app-debug.apk \
+            --test-apk reference-runtime/anikku-app-debug-androidTest.apk \
+            --goanime-source-sha "$GOANIME_SOURCE_SHA" \
+            --anikku-sha "$ANIKKU_REVISION" \
+            --flexible-adapter-sha "$FLEXIBLE_ADAPTER_SHA" \
+            --jdk-major 17
+          python3 scripts/goanime_yuzono/sanitize_audit_outputs.py \
+            --root reference-runtime
+
+      - name: Persist reference runtime origin identity
+        id: runtime-identity
+        shell: bash
+        env:
+          GENERATION_ID: ${{ needs.deterministic.outputs.generation_id }}
+        run: |
+          set -euo pipefail
+          origin_run_id="${REFERENCE_RUNTIME_RUN_ID:-$GITHUB_RUN_ID}"
+          [[ "$origin_run_id" =~ ^[1-9][0-9]*$ ]] || { echo '::error::reference runtime origin run id is invalid'; exit 1; }
+          artifact_name="yuzono-reference-runtime-$GENERATION_ID"
+          echo "reference_run_id=$origin_run_id" >> "$GITHUB_OUTPUT"
+          echo "reference_artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+          {
+            echo '## Reference runtime identity'
+            echo
+            echo "- origin run: \`$origin_run_id\`"
+            echo "- artifact: \`$artifact_name\`"
+            echo "- generation: \`$GENERATION_ID\`"
+            echo '- continuation policy: origin artifact is downloaded and verified; no rebuild is permitted'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload immutable reference runtime
         uses: actions/upload-artifact@v4
@@ -365,13 +443,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          log_dir="${RUNNER_TEMP}/goanime-yuzono-canary-gradle"
+          mkdir -p "$log_dir"
           for module in animefire dattebayobr animeito; do
             ok=0
             for attempt in 1 2; do
               echo "Building $module attempt $attempt/2"
               args=( "src:pt:$module:assembleDebug" --no-daemon --stacktrace )
               if (( attempt > 1 )); then args+=( --refresh-dependencies ); fi
-              if ./gradlew "${args[@]}"; then ok=1; break; fi
+              log_path="$log_dir/${module}-attempt-${attempt}.log"
+              if ./gradlew "${args[@]}" > "$log_path" 2>&1; then ok=1; break; fi
               sleep 20
             done
             if (( ok == 0 )); then echo "::warning::$module did not build; runner will classify extension-build"; fi
@@ -397,10 +478,24 @@ jobs:
           emulator-boot-timeout: 900
           disable-animations: true
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: bash private-source/tools/yuzono_anime_probe/android_harness/run_emulator_probes.sh
+          script: |
+            mkdir -p "${RUNNER_TEMP}/goanime-yuzono-canary-instrumentation"
+            instrumentation_log="${RUNNER_TEMP}/goanime-yuzono-canary-instrumentation/instrumentation.log"
+            bash private-source/tools/yuzono_anime_probe/android_harness/run_emulator_probes.sh > "$instrumentation_log" 2>&1
+
+      - name: Gate sanitized canary outputs and logs
+        id: sanitize-canary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/goanime_yuzono/sanitize_audit_outputs.py \
+            --root probe-state \
+            --logs-dir "${RUNNER_TEMP}/goanime-yuzono-canary-gradle" \
+            --log "${RUNNER_TEMP}/goanime-yuzono-canary-instrumentation/instrumentation.log"
 
       - name: Write sanitized canary summary
-        if: always()
+        if: always() && steps.sanitize-canary.outcome == 'success'
         shell: bash
         run: |
           python - <<'PY'
@@ -420,7 +515,7 @@ jobs:
           PY
 
       - name: Upload sanitized canary state
-        if: always()
+        if: always() && steps.sanitize-canary.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: yuzono-full-audit-canary-${{ github.run_id }}
@@ -539,7 +634,15 @@ jobs:
           echo "Pending centrally scoped providers: $count"
           jq -r '.[]' audit-plan/pending.json
 
+      - name: Gate sanitized audit plan before upload
+        id: sanitize-plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/goanime_yuzono/sanitize_audit_outputs.py --root audit-plan
+
       - name: Upload sanitized audit plan
+        if: steps.sanitize-plan.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: yuzono-full-audit-plan-${{ github.run_id }}
@@ -662,6 +765,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          log_dir="${RUNNER_TEMP}/goanime-yuzono-full-gradle-${{ matrix.shard }}"
+          mkdir -p "$log_dir"
           IFS=',' read -r -a modules <<< "$MODULES"
           for module in "${modules[@]}"; do
             [[ "$module" =~ ^[a-z0-9._-]+$ ]] || { echo "invalid module $module"; exit 2; }
@@ -670,7 +775,8 @@ jobs:
               echo "Building $module attempt $attempt/2"
               args=( "src:pt:$module:assembleDebug" --no-daemon --stacktrace )
               if (( attempt > 1 )); then args+=( --refresh-dependencies ); fi
-              if ./gradlew "${args[@]}"; then ok=1; break; fi
+              log_path="$log_dir/${module}-attempt-${attempt}.log"
+              if ./gradlew "${args[@]}" > "$log_path" 2>&1; then ok=1; break; fi
               sleep 20
             done
             if (( ok == 0 )); then echo "::warning::$module did not build; provider result will record extension-build"; fi
@@ -696,10 +802,24 @@ jobs:
           emulator-boot-timeout: 900
           disable-animations: true
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: bash private-source/tools/yuzono_anime_probe/android_harness/run_emulator_probes.sh
+          script: |
+            mkdir -p "${RUNNER_TEMP}/goanime-yuzono-full-instrumentation-${{ matrix.shard }}"
+            instrumentation_log="${RUNNER_TEMP}/goanime-yuzono-full-instrumentation-${{ matrix.shard }}/instrumentation.log"
+            bash private-source/tools/yuzono_anime_probe/android_harness/run_emulator_probes.sh > "$instrumentation_log" 2>&1
+
+      - name: Gate sanitized shard outputs and logs
+        id: sanitize-shard
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/goanime_yuzono/sanitize_audit_outputs.py \
+            --root probe-state \
+            --logs-dir "${RUNNER_TEMP}/goanime-yuzono-full-gradle-${{ matrix.shard }}" \
+            --log "${RUNNER_TEMP}/goanime-yuzono-full-instrumentation-${{ matrix.shard }}/instrumentation.log"
 
       - name: Upload sanitized shard checkpoint
-        if: always()
+        if: always() && steps.sanitize-shard.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: yuzono-full-audit-shard-${{ matrix.shard }}-${{ github.run_id }}
@@ -725,6 +845,7 @@ jobs:
       GOANIME_SOURCE_SHA: ${{ needs.deterministic.outputs.source_sha }}
       GENERATION_ID: ${{ needs.deterministic.outputs.generation_id }}
       CONTINUATION_INDEX: ${{ needs.deterministic.outputs.continuation_index }}
+      REFERENCE_RUNTIME_RUN_ID: ${{ needs.reference-runtime.outputs.reference_run_id }}
     steps:
       - name: Checkout exact GoAnime probe source
         uses: actions/checkout@v6
@@ -806,7 +927,19 @@ jobs:
             --anikku-revision "$ANIKKU_REVISION" \
             --output audit-output/pending.json
 
+      - name: Gate consolidated outputs before summary and upload
+        id: sanitize-final
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/goanime_yuzono/sanitize_audit_outputs.py \
+            --root audit-plan \
+            --root consolidated-state \
+            --root audit-output
+
       - name: Write full-audit summary
+        if: always() && steps.sanitize-final.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -818,6 +951,7 @@ jobs:
             echo
             echo "- generation: \`$GENERATION_ID\`"
             echo "- continuation index: \`$CONTINUATION_INDEX\`"
+            echo "- reference runtime origin run: \`$REFERENCE_RUNTIME_RUN_ID\`"
             echo "- pending providers: \`$pending\`"
             echo "- GoAnime probe SHA: \`$GOANIME_SOURCE_SHA\`"
             echo "- GoAnime baseline SHA: \`$GOANIME_BASELINE_SHA\`"
@@ -827,6 +961,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload consolidated sanitized checkpoint and report
+        if: always() && steps.sanitize-final.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: yuzono-full-audit-consolidated-${{ needs.deterministic.outputs.generation_id }}
@@ -865,7 +1000,8 @@ jobs:
             -f generation_id="$GENERATION_ID" \
             -f mode=full \
             -f parent_run_id="$GITHUB_RUN_ID" \
-            -f continuation_index="$next_index"
+            -f continuation_index="$next_index" \
+            -f reference_runtime_run_id="$REFERENCE_RUNTIME_RUN_ID"
           echo "Scheduled continuation $next_index with $pending pending providers."
 
       - name: Remove private checkouts

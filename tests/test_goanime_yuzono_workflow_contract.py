@@ -17,6 +17,7 @@ WORKFLOW = ROOT / ".github" / "workflows" / "goanime-yuzono-ptbr-anime-full-audi
 BUILD_SCRIPT = ROOT / "scripts" / "goanime_yuzono" / "build_reference_runtime.sh"
 WRITE_SCRIPT = ROOT / "scripts" / "goanime_yuzono" / "write_reference_manifest.py"
 VERIFY_SCRIPT = ROOT / "scripts" / "goanime_yuzono" / "verify_reference_manifest.py"
+SANITIZE_SCRIPT = ROOT / "scripts" / "goanime_yuzono" / "sanitize_audit_outputs.py"
 EXPECTED_FIELDS = {
     "schemaVersion",
     "goAnimeSourceSha",
@@ -82,6 +83,33 @@ class ReferenceRuntimeContractTest(unittest.TestCase):
             self.assertNotIn(":app:assembleDebug", execution_job)
             self.assertNotIn("Checkout pinned Anikku runtime", execution_job)
             self.assertNotIn("inject_harness.py", execution_job)
+
+    def test_continuations_reuse_the_origin_runtime_and_never_rebuild(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        deterministic = job_body(workflow, "deterministic")
+        reference = job_body(workflow, "reference-runtime")
+        finalizer = job_body(workflow, "finalize-full")
+
+        self.assertIn("reference_runtime_run_id", workflow)
+        self.assertIn("DISPATCH_REFERENCE_RUNTIME_RUN_ID", deterministic)
+        self.assertIn("reference_runtime_run_id:", deterministic)
+        self.assertIn("run-id: ${{ needs.deterministic.outputs.reference_runtime_run_id }}", reference)
+        self.assertIn("reference_runtime_run_id == ''", reference)
+        self.assertIn("reference_runtime_run_id != ''", reference)
+        self.assertIn("reference_runtime_run_id", finalizer)
+        self.assertIn("-f reference_runtime_run_id=", finalizer)
+        self.assertIn("reference runtime origin", reference.lower())
+        self.assertIn("reference_run_id", reference)
+        self.assertIn("verify_reference_manifest.py", reference)
+
+    def test_continuation_without_origin_runtime_is_fail_closed(self) -> None:
+        deterministic = job_body(WORKFLOW.read_text(encoding="utf-8"), "deterministic")
+        self.assertIn("parent_run_id", deterministic)
+        self.assertRegex(
+            deterministic,
+            r"parent_run_id.*reference_runtime_run_id|reference_runtime_run_id.*parent_run_id",
+        )
+        self.assertIn("must carry reference runtime", deterministic.lower())
 
     def test_reference_runtime_build_and_verification_are_bound_to_all_pins(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -270,11 +298,218 @@ class ManifestContractTest(unittest.TestCase):
             self.assertNotEqual(extra.returncode, 0)
             self.assertIn("fields", (extra.stderr + extra.stdout).lower())
 
+    def test_writer_requires_an_explicit_fallback_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            app, test, manifest = self.make_inputs(Path(temporary))
+            result = run_script(
+                WRITE_SCRIPT,
+                "--output",
+                str(manifest),
+                "--goanime-source-sha",
+                SOURCE_SHA,
+                "--anikku-sha",
+                ANIKKU_SHA,
+                "--flexible-adapter-sha",
+                FLEXIBLE_ADAPTER_SHA,
+                "--app-apk",
+                str(app),
+                "--test-apk",
+                str(test),
+                "--jdk-major",
+                "17",
+                "--build-attempt",
+                "1",
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(manifest.exists())
+
+    def test_writer_and_verifier_reject_an_arbitrary_flexible_adapter_pin(self) -> None:
+        arbitrary = "b" * 40
+        with tempfile.TemporaryDirectory() as temporary:
+            app, test, manifest = self.make_inputs(Path(temporary))
+            writer = run_script(
+                WRITE_SCRIPT,
+                "--output",
+                str(manifest),
+                "--goanime-source-sha",
+                SOURCE_SHA,
+                "--anikku-sha",
+                ANIKKU_SHA,
+                "--flexible-adapter-sha",
+                arbitrary,
+                "--app-apk",
+                str(app),
+                "--test-apk",
+                str(test),
+                "--jdk-major",
+                "17",
+                "--build-attempt",
+                "1",
+                "--no-fallback-used",
+            )
+            self.assertNotEqual(writer.returncode, 0)
+            self.assertFalse(manifest.exists())
+
+            valid = run_script(
+                WRITE_SCRIPT,
+                "--output",
+                str(manifest),
+                "--goanime-source-sha",
+                SOURCE_SHA,
+                "--anikku-sha",
+                ANIKKU_SHA,
+                "--flexible-adapter-sha",
+                FLEXIBLE_ADAPTER_SHA,
+                "--app-apk",
+                str(app),
+                "--test-apk",
+                str(test),
+                "--jdk-major",
+                "17",
+                "--build-attempt",
+                "1",
+                "--no-fallback-used",
+            )
+            self.assertEqual(valid.returncode, 0, valid.stderr)
+            verifier = run_script(
+                VERIFY_SCRIPT,
+                "--manifest",
+                str(manifest),
+                "--app-apk",
+                str(app),
+                "--test-apk",
+                str(test),
+                "--goanime-source-sha",
+                SOURCE_SHA,
+                "--anikku-sha",
+                ANIKKU_SHA,
+                "--flexible-adapter-sha",
+                arbitrary,
+                "--jdk-major",
+                "17",
+            )
+            self.assertNotEqual(verifier.returncode, 0)
+
     def test_cli_help_is_loadable(self) -> None:
-        for script in (WRITE_SCRIPT, VERIFY_SCRIPT):
+        for script in (WRITE_SCRIPT, VERIFY_SCRIPT, SANITIZE_SCRIPT):
             result = run_script(script, "--help")
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("usage:", result.stdout.lower())
+
+
+class SanitizedOutputContractTest(unittest.TestCase):
+    def test_recursive_sanitized_fixture_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "probe-state"
+            (root / "providers").mkdir(parents=True)
+            (root / "checkpoints").mkdir()
+            (root / "providers" / "animefire.json").write_text(
+                json.dumps(
+                    {
+                        "sourceId": "yuzono.pt.animefire",
+                        "module": "animefire",
+                        "displayName": "AnimeFire",
+                        "status": "partial",
+                        "stage": "catalog",
+                        "languageMode": "unknown",
+                        "titles": ["Título seguro"],
+                        "pagesVisited": 1,
+                        "catalogueComplete": False,
+                        "catalogueTermination": "safety-ceiling",
+                        "rawTitleCount": 1,
+                        "distinctRawTitleCount": 1,
+                        "playbackSampleCount": 0,
+                        "failureKind": "catalogue-truncated",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "checkpoints" / "animefire.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "generationId": "generation-1",
+                        "goAnimeSourceSha": SOURCE_SHA,
+                        "goAnimeBaselineSha": SOURCE_SHA,
+                        "upstreamRevision": "d" * 40,
+                        "anikkuRevision": ANIKKU_SHA,
+                        "sourceId": "yuzono.pt.animefire",
+                        "stage": "classified",
+                        "status": "partial",
+                        "retryCount": 0,
+                        "titleCount": 1,
+                        "playbackSampleCount": 0,
+                        "failureKind": "catalogue-truncated",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            log_dir = Path(temporary) / "logs"
+            log_dir.mkdir()
+            (log_dir / "instrumentation.log").write_text(
+                "INSTRUMENTATION_STATUS: id=AndroidJUnitRunner\nINSTRUMENTATION_CODE: 0\n",
+                encoding="utf-8",
+            )
+            result = run_script(
+                SANITIZE_SCRIPT,
+                "--root",
+                str(root),
+                "--logs-dir",
+                str(log_dir),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_recursive_gate_rejects_unknown_fields_and_raw_transport_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "probe-state"
+            provider_dir = root / "providers"
+            provider_dir.mkdir(parents=True)
+            (provider_dir / "animefire.json").write_text(
+                json.dumps({"sourceId": "yuzono.pt.animefire", "unknownField": "x"}),
+                encoding="utf-8",
+            )
+            unknown = run_script(SANITIZE_SCRIPT, "--root", str(root))
+            self.assertNotEqual(unknown.returncode, 0)
+            self.assertIn("schema", (unknown.stderr + unknown.stdout).lower())
+
+            (provider_dir / "animefire.json").write_text(
+                json.dumps(
+                    {
+                        "sourceId": "yuzono.pt.animefire",
+                        "module": "animefire",
+                        "displayName": "AnimeFire",
+                        "status": "broken",
+                        "stage": "discovered",
+                        "languageMode": "unknown",
+                        "titles": [],
+                        "pagesVisited": 0,
+                        "catalogueComplete": False,
+                        "catalogueTermination": "error",
+                        "rawTitleCount": 0,
+                        "distinctRawTitleCount": 0,
+                        "playbackSampleCount": 0,
+                        "failureKind": "https://secret.invalid/raw",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            transport = run_script(SANITIZE_SCRIPT, "--root", str(root))
+            self.assertNotEqual(transport.returncode, 0)
+            self.assertIn("forbidden", (transport.stderr + transport.stdout).lower())
+
+    def test_workflow_gates_logs_and_outputs_before_upload_or_summary(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        for name in ("reference-runtime", "canary", "prepare-full", "full-shard", "finalize-full"):
+            body = job_body(workflow, name)
+            self.assertIn("sanitize_audit_outputs.py", body)
+        for name in ("canary", "full-shard"):
+            body = job_body(workflow, name)
+            self.assertIn("RUNNER_TEMP", body)
+            self.assertIn("> \"$log_path\" 2>&1", body)
+            self.assertIn("> \"$instrumentation_log\" 2>&1", body)
+            self.assertLess(body.index("sanitize_audit_outputs.py"), body.index("actions/upload-artifact@"))
+        finalizer = job_body(workflow, "finalize-full")
+        self.assertLess(finalizer.index("sanitize_audit_outputs.py"), finalizer.index("GITHUB_STEP_SUMMARY"))
 
 
 class CanaryContractTest(unittest.TestCase):

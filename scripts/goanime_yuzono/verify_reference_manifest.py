@@ -13,6 +13,7 @@ from pathlib import Path
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+EXPECTED_FLEXIBLE_ADAPTER_SHA = "c80135339bcff5f7f8c2c2380329dfc155b26232"
 EXPECTED_FIELDS = frozenset(
     {
         "schemaVersion",
@@ -46,6 +47,13 @@ def require_sha(value: object, label: str) -> str:
     return value
 
 
+def require_flexible_adapter_sha(value: object, label: str = "FlexibleAdapter") -> str:
+    value = require_sha(value, label)
+    if value != EXPECTED_FLEXIBLE_ADAPTER_SHA:
+        raise ValueError(f"{label} identity is not the allowed full SHA")
+    return value
+
+
 def verify_manifest(
     *,
     manifest_path: Path,
@@ -60,8 +68,7 @@ def verify_manifest(
         raise ValueError("expected GoAnime source identity is invalid")
     if not SHA40.fullmatch(anikku_sha):
         raise ValueError("expected Anikku identity is invalid")
-    if not SHA40.fullmatch(flexible_adapter_sha):
-        raise ValueError("expected FlexibleAdapter identity is invalid")
+    require_flexible_adapter_sha(flexible_adapter_sha, "expected FlexibleAdapter")
     if jdk_major != 17:
         raise ValueError("expected JDK identity must be 17")
     if not manifest_path.is_file():
@@ -84,7 +91,7 @@ def verify_manifest(
         raise ValueError("FlexibleAdapter identity mismatch")
     require_sha(payload.get("goAnimeSourceSha"), "GoAnime source")
     require_sha(payload.get("anikkuSha"), "Anikku")
-    require_sha(payload.get("flexibleAdapterSha"), "FlexibleAdapter")
+    require_flexible_adapter_sha(payload.get("flexibleAdapterSha"))
     if not isinstance(payload.get("appApkSha256"), str) or not SHA256.fullmatch(payload["appApkSha256"]):
         raise ValueError("app APK digest is invalid")
     if not isinstance(payload.get("testApkSha256"), str) or not SHA256.fullmatch(payload["testApkSha256"]):
