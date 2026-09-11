@@ -1,0 +1,22 @@
+; Crownfall Arena — original mobile arena battler
+config_version=5
+
+[application]
+config/name="Crownfall Arena"
+run/main_scene="res://src/main.tscn"
+config/features=PackedStringArray("4.7", "Mobile")
+
+[display]
+window/size/viewport_width=1080
+window/size/viewport_height=2400
+window/size/window_width_override=450
+window/size/window_height_override=1000
+window/stretch/mode="canvas_items"
+window/handheld/orientation=1
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/default_filters/use_nearest_mipmap_filter=false
+
+environment/defaults/default_clear_color=Color(0.025, 0.035, 0.07, 1)
