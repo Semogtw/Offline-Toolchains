@@ -197,6 +197,13 @@ jobs:
       GOANIME_SOURCE_SHA: ${{ needs.deterministic.outputs.source_sha }}
       FORCE_FALLBACK: ${{ needs.deterministic.outputs.force_fallback }}
     steps:
+      - name: Checkout Toolchains workflow
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Checkout exact GoAnime probe source
         uses: actions/checkout@v6
         with:
@@ -285,6 +292,13 @@ jobs:
       STAGE_TIMEOUT_SECONDS: '45'
       ANIKKU_ROOT: reference-runtime-tree
     steps:
+      - name: Checkout Toolchains workflow
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Checkout exact GoAnime probe source
         uses: actions/checkout@v6
         with:
@@ -561,6 +575,13 @@ jobs:
       ESTIMATED_NEXT_SECONDS: '900'
       ANIKKU_ROOT: reference-runtime-tree
     steps:
+      - name: Checkout Toolchains workflow
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Checkout exact GoAnime probe source
         uses: actions/checkout@v6
         with:

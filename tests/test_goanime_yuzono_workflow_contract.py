@@ -62,6 +62,8 @@ class ReferenceRuntimeContractTest(unittest.TestCase):
         full_shard = job_body(workflow, "full-shard")
 
         self.assertEqual(workflow.count("\n  reference-runtime:\n"), 1)
+        for execution_job in (reference, canary, full_shard):
+            self.assertIn("Checkout Toolchains workflow", execution_job)
         self.assertEqual(reference.count("build_reference_runtime.sh"), 1)
         self.assertIn("actions/upload-artifact@", reference)
         self.assertIn("anikku-app-debug.apk", reference)
