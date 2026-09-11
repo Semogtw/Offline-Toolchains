@@ -168,7 +168,7 @@ jobs:
             echo "- GoAnime baseline: \`$GOANIME_BASELINE_SHA\`"
             echo "- Yuzono: \`$YUZONO_REVISION\`"
             echo "- Anikku: \`$ANIKKU_REVISION\`"
-            echo '- NSFW sources are outside audit scope'
+            echo '- Scope follows GoAnime centralized module policy; upstream isNsfw metadata is preserved without blanket exclusion'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove private checkouts
@@ -425,7 +425,7 @@ jobs:
           fi
           echo "pending_count=$count" >> "$GITHUB_OUTPUT"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-          echo "Pending non-NSFW providers: $count"
+          echo "Pending centrally scoped providers: $count"
           jq -r '.[]' audit-plan/pending.json
 
       - name: Upload sanitized audit plan
