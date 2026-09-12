@@ -486,8 +486,7 @@ jobs:
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
             mkdir -p "${RUNNER_TEMP}/goanime-yuzono-canary-instrumentation"
-            instrumentation_log="${RUNNER_TEMP}/goanime-yuzono-canary-instrumentation/instrumentation.log"
-            bash private-source/tools/yuzono_anime_probe/android_harness/run_emulator_probes.sh > "$instrumentation_log" 2>&1
+            bash private-source/tools/yuzono_anime_probe/android_harness/run_emulator_probes.sh > "${RUNNER_TEMP}/goanime-yuzono-canary-instrumentation/instrumentation.log" 2>&1
 
       - name: Gate sanitized canary outputs and logs
         id: sanitize-canary
@@ -819,8 +818,7 @@ jobs:
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
             mkdir -p "${RUNNER_TEMP}/goanime-yuzono-full-instrumentation-${{ matrix.shard }}"
-            instrumentation_log="${RUNNER_TEMP}/goanime-yuzono-full-instrumentation-${{ matrix.shard }}/instrumentation.log"
-            bash private-source/tools/yuzono_anime_probe/android_harness/run_emulator_probes.sh > "$instrumentation_log" 2>&1
+            bash private-source/tools/yuzono_anime_probe/android_harness/run_emulator_probes.sh > "${RUNNER_TEMP}/goanime-yuzono-full-instrumentation-${{ matrix.shard }}/instrumentation.log" 2>&1
 
       - name: Gate sanitized shard outputs and logs
         id: sanitize-shard

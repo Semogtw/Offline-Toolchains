@@ -613,7 +613,6 @@ class SanitizedOutputContractTest(unittest.TestCase):
             body = job_body(workflow, name)
             self.assertIn("RUNNER_TEMP", body)
             self.assertIn("> \"$log_path\" 2>&1", body)
-            self.assertIn("> \"$instrumentation_log\" 2>&1", body)
             self.assertLess(body.index("sanitize_audit_outputs.py"), body.index("actions/upload-artifact@"))
         finalizer = job_body(workflow, "finalize-full")
         self.assertIn("verify-state", finalizer)
@@ -627,6 +626,26 @@ class SanitizedOutputContractTest(unittest.TestCase):
         self.assertIn("sanitize-summary", finalizer)
         self.assertIn("steps.sanitize-summary.outcome == 'success'", finalizer)
         self.assertLess(finalizer.index("--summary-file"), finalizer.index("GITHUB_STEP_SUMMARY"))
+
+    def test_emulator_script_does_not_share_local_variables_between_action_shells(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        canary = job_body(workflow, "canary")
+        full_shard = job_body(workflow, "full-shard")
+
+        self.assertNotIn('instrumentation_log="${RUNNER_TEMP}', canary)
+        self.assertNotIn('instrumentation_log="${RUNNER_TEMP}', full_shard)
+        self.assertNotIn('> "$instrumentation_log" 2>&1', canary)
+        self.assertNotIn('> "$instrumentation_log" 2>&1', full_shard)
+        self.assertIn(
+            'bash private-source/tools/yuzono_anime_probe/android_harness/run_emulator_probes.sh > '
+            '"${RUNNER_TEMP}/goanime-yuzono-canary-instrumentation/instrumentation.log" 2>&1',
+            canary,
+        )
+        self.assertIn(
+            'bash private-source/tools/yuzono_anime_probe/android_harness/run_emulator_probes.sh > '
+            '"${RUNNER_TEMP}/goanime-yuzono-full-instrumentation-${{ matrix.shard }}/instrumentation.log" 2>&1',
+            full_shard,
+        )
 
 
 class ContinuationRequestContractTest(unittest.TestCase):
