@@ -598,6 +598,7 @@ def _log_line_allowed(line: str, kind: str) -> bool:
             r"^INSTRUMENTATION_STATUS: (?:class|current|id|numtests|stream)=[A-Za-z0-9_.:/=+\- ]{0,240}$",
             r"^INSTRUMENTATION_RESULT: stream=[A-Za-z0-9_.:/=+\- ]{0,240}$",
             r"^INSTRUMENTATION_CODE: -?[0-9]+$",
+            r"^remaining_soft_seconds=[0-9]+$",
             r"^(?:Instrumentation command failed|Instrumentation runner reported failure|Instrumentation completed but result file is missing) for [a-z0-9._-]{1,80}$",
             r"^Skipping terminal module [a-z0-9._-]{1,80}$",
             r"^Soft budget reached before [a-z0-9._-]{1,80}; leaving remaining modules pending$",

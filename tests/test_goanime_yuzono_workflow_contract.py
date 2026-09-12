@@ -463,7 +463,9 @@ class SanitizedOutputContractTest(unittest.TestCase):
             log_dir = Path(temporary) / "logs"
             log_dir.mkdir()
             (log_dir / "instrumentation.log").write_text(
-                "INSTRUMENTATION_STATUS: id=AndroidJUnitRunner\nINSTRUMENTATION_CODE: 0\n",
+                "remaining_soft_seconds=12345\n"
+                "INSTRUMENTATION_STATUS: id=AndroidJUnitRunner\n"
+                "INSTRUMENTATION_CODE: 0\n",
                 encoding="utf-8",
             )
             result = run_script(
