@@ -884,7 +884,7 @@ class CanaryContractTest(unittest.TestCase):
                     json.dumps(
                         checkpoint(
                             module,
-                            status="ready" if ready else "partial",
+                            status="ready" if ready else "pending",
                             playback=1 if ready else 0,
                         )
                     ),

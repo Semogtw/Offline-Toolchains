@@ -29,6 +29,7 @@ FLEXIBLE_ADAPTER_SHA = "c80135339bcff5f7f8c2c2380329dfc155b26232"
 STATUSES = frozenset(
     {"ready", "partial", "blocked", "broken", "unsupported", "not-anime", "unknown"}
 )
+CHECKPOINT_STATUSES = STATUSES | {"pending"}
 STAGES = frozenset(
     {"discovered", "reachable", "catalog", "identity", "episodes", "player", "stream", "classified"}
 )
@@ -219,7 +220,7 @@ def _validate_checkpoint(path: Path, module: str, expected: dict[str, str]) -> d
         or payload["sourceId"] != f"yuzono.pt.{module}"
     ):
         raise CanaryVerificationError(f"checkpoint {module}: identity mismatch")
-    if payload["stage"] not in STAGES or payload["status"] not in STATUSES:
+    if payload["stage"] not in STAGES or payload["status"] not in CHECKPOINT_STATUSES:
         raise CanaryVerificationError(f"checkpoint {module}: invalid state")
     for key in ("retryCount", "titleCount", "playbackSampleCount"):
         _number(payload[key], f"checkpoint {module}.{key}")
