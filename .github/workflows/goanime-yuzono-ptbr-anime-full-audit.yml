@@ -262,11 +262,23 @@ jobs:
           persist-credentials: false
           show-progress: false
 
+      - name: Set up Temurin JDK 8 for exact FlexibleAdapter fallback
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '8'
+
       - name: Set up Temurin JDK 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
+
+      - name: Verify JDK 8 for exact FlexibleAdapter fallback
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x "${JAVA_HOME_8_X64}/bin/java"
 
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v5

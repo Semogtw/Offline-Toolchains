@@ -143,6 +143,18 @@ class ReferenceRuntimeContractTest(unittest.TestCase):
         self.assertIn("fallbackUsed", script)
         self.assertIn("flexible_adapter_fallback_aar_sha256", script)
 
+    def test_flexible_adapter_fallback_bootstraps_missing_dependency_with_jdk8(self) -> None:
+        script = BUILD_SCRIPT.read_text(encoding="utf-8")
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("FLEXIBLE_ADAPTER_JAVA_HOME", script)
+        self.assertIn("java-ordered-properties/1.0.4", script)
+        self.assertIn("803766d9fecc4112c72b39951e60c2e60156c2b100c3aa11df98b27583ba3eb6", script)
+        self.assertIn("57c085b9815c56a501a40cfbfa2dbeb077f997bb3a6c92ac13c8bd05ef182c8c", script)
+        self.assertIn("dependencySubstitution", script)
+        self.assertIn("Set up Temurin JDK 8 for exact FlexibleAdapter fallback", workflow)
+        self.assertIn("JAVA_HOME_8_X64", workflow)
+
 
 class ManifestContractTest(unittest.TestCase):
     def make_inputs(self, directory: Path) -> tuple[Path, Path, Path]:

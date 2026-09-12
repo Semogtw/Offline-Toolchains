@@ -2,6 +2,10 @@
 set -euo pipefail
 
 EXPECTED_FLEXIBLE_ADAPTER_SHA="c80135339bcff5f7f8c2c2380329dfc155b26232"
+ORDERED_PROPERTIES_VERSION="1.0.4"
+ORDERED_PROPERTIES_BASE_URL="https://repo.maven.apache.org/maven2/nu/studer/java-ordered-properties/1.0.4"
+ORDERED_PROPERTIES_JAR_SHA256="803766d9fecc4112c72b39951e60c2e60156c2b100c3aa11df98b27583ba3eb6"
+ORDERED_PROPERTIES_POM_SHA256="57c085b9815c56a501a40cfbfa2dbeb077f997bb3a6c92ac13c8bd05ef182c8c"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
 usage() {
@@ -92,6 +96,19 @@ run_gradle() {
   return 1
 }
 
+download_verified() {
+  local url="$1"
+  local destination="$2"
+  local expected_sha256="$3"
+  local label="$4"
+
+  curl --fail --location --retry 3 --retry-delay 2 --silent --show-error \
+    "$url" --output "$destination" || die "$label download failed"
+  local actual_sha256
+  actual_sha256="$(sha256sum "$destination" | awk '{print $1}')"
+  [[ "$actual_sha256" == "$expected_sha256" ]] || die "$label digest mismatch"
+}
+
 python3 "$HARNESS_SCRIPT" --anikku-root "$ANIKKU_ROOT"
 
 build_attempt=0
@@ -123,7 +140,31 @@ if (( primary_succeeded == 0 )); then
   fallback_root="$temporary_root/flexible-adapter"
   fallback_checkout="$fallback_root/source"
   fallback_maven_repo="$fallback_root/maven-repository"
+  fallback_adapter_init_script="$fallback_root/flexible-adapter-fallback.init.gradle"
   fallback_init_script="$fallback_root/audit-fallback.init.gradle"
+  flexible_adapter_java_home="${FLEXIBLE_ADAPTER_JAVA_HOME:-${JAVA_HOME_8_X64:-}}"
+
+  [[ -n "$flexible_adapter_java_home" ]] || die "JDK 8 for FlexibleAdapter fallback is unavailable"
+  [[ -x "$flexible_adapter_java_home/bin/java" ]] || die "JDK 8 java executable is unavailable"
+  flexible_adapter_java_version="$("$flexible_adapter_java_home/bin/java" -version 2>&1 | sed -n 's/.*version "\([^"]*\)".*/\1/p' | head -n 1)"
+  [[ "$flexible_adapter_java_version" == 1.8* ]] || die "FlexibleAdapter fallback requires JDK 8"
+  echo "flexible_adapter_fallback_jdk_major=8"
+
+  ordered_properties_directory="$fallback_maven_repo/nu/studer/java-ordered-properties/$ORDERED_PROPERTIES_VERSION"
+  mkdir -p "$ordered_properties_directory"
+  download_verified \
+    "$ORDERED_PROPERTIES_BASE_URL/java-ordered-properties-$ORDERED_PROPERTIES_VERSION.jar" \
+    "$ordered_properties_directory/java-ordered-properties-$ORDERED_PROPERTIES_VERSION.jar" \
+    "$ORDERED_PROPERTIES_JAR_SHA256" \
+    "java-ordered-properties JAR"
+  download_verified \
+    "$ORDERED_PROPERTIES_BASE_URL/java-ordered-properties-$ORDERED_PROPERTIES_VERSION.pom" \
+    "$ordered_properties_directory/java-ordered-properties-$ORDERED_PROPERTIES_VERSION.pom" \
+    "$ORDERED_PROPERTIES_POM_SHA256" \
+    "java-ordered-properties POM"
+  echo "java_ordered_properties_version=$ORDERED_PROPERTIES_VERSION"
+  echo "java_ordered_properties_jar_sha256=$ORDERED_PROPERTIES_JAR_SHA256"
+  echo "java_ordered_properties_pom_sha256=$ORDERED_PROPERTIES_POM_SHA256"
 
   echo "preparing exact FlexibleAdapter fallback source"
   git clone --quiet --no-checkout --filter=blob:none https://github.com/arkon/FlexibleAdapter.git "$fallback_checkout" >/dev/null 2>&1 || die "FlexibleAdapter source checkout failed"
@@ -133,9 +174,59 @@ if (( primary_succeeded == 0 )); then
   [[ "$fallback_head" == "$FLEXIBLE_ADAPTER_SHA" ]] || die "FlexibleAdapter exact SHA verification failed"
   fallback_tree="$(git -C "$fallback_checkout" rev-parse HEAD^{tree} 2>/dev/null || true)"
 
+  GOANIME_AUDIT_BOOTSTRAP_REPO="$fallback_maven_repo" python3 - "$fallback_adapter_init_script" "$fallback_init_script" <<'PY'
+from pathlib import Path
+import sys
+
+adapter_script, app_script = map(Path, sys.argv[1:])
+adapter_script.write_text(
+    "gradle.beforeProject { project ->\n"
+    "    project.buildscript.repositories.maven {\n"
+    "        name = 'goanimeAuditBootstrapBuildscript'\n"
+    "        url = uri(System.getenv('GOANIME_AUDIT_BOOTSTRAP_REPO'))\n"
+    "    }\n"
+    "    project.buildscript.configurations.all { configuration ->\n"
+    "        configuration.resolutionStrategy.dependencySubstitution {\n"
+    "            substitute module('nu.studer:java-ordered-properties:1.0.1') using module('nu.studer:java-ordered-properties:1.0.4')\n"
+    "        }\n"
+    "    }\n"
+    "}\n",
+    encoding="utf-8",
+)
+app_script.write_text(
+    "gradle.beforeProject { project ->\n"
+    "    project.buildscript.repositories.maven {\n"
+    "        name = 'goanimeAuditBootstrapBuildscript'\n"
+    "        url = uri(System.getenv('GOANIME_AUDIT_BOOTSTRAP_REPO'))\n"
+    "    }\n"
+    "    project.buildscript.configurations.all { configuration ->\n"
+    "        configuration.resolutionStrategy.dependencySubstitution {\n"
+    "            substitute module('nu.studer:java-ordered-properties:1.0.1') using module('nu.studer:java-ordered-properties:1.0.4')\n"
+    "        }\n"
+    "    }\n"
+    "}\n"
+    "gradle.settingsEvaluated { settings ->\n"
+    "    def repositories = settings.dependencyResolutionManagement.repositories\n"
+    "    def localFallback = repositories.maven {\n"
+    "        name = 'goanimeAuditFlexibleAdapter'\n"
+    "        url = uri(System.getenv('GOANIME_AUDIT_BOOTSTRAP_REPO'))\n"
+    "    }\n"
+    "    repositories.remove(localFallback)\n"
+    "    repositories.addFirst(localFallback)\n"
+    "}\n",
+    encoding="utf-8",
+)
+PY
+
   echo "building exact FlexibleAdapter fallback library"
   fallback_gradle_args=( :flexible-adapter:assembleRelease --no-daemon --console=plain )
-  (cd "$fallback_checkout" && run_gradle ./gradlew "${fallback_gradle_args[@]}" ) || die "FlexibleAdapter fallback build failed"
+  (
+    cd "$fallback_checkout"
+    export GOANIME_AUDIT_BOOTSTRAP_REPO="$fallback_maven_repo"
+    export JAVA_HOME="$flexible_adapter_java_home"
+    export PATH="$flexible_adapter_java_home/bin:$PATH"
+    run_gradle ./gradlew "${fallback_gradle_args[@]}" --init-script "$fallback_adapter_init_script"
+  ) || die "FlexibleAdapter fallback build failed"
   fallback_aar="$(find "$fallback_checkout" -type f -path '*/build/outputs/aar/flexible-adapter*.aar' -print 2>/dev/null | sort | head -n 1)"
   [[ -n "$fallback_aar" ]] || die "FlexibleAdapter fallback AAR is missing"
   fallback_aar_sha="$(sha256sum "$fallback_aar" | awk '{print $1}')"
@@ -162,29 +253,16 @@ directory = Path(repository) / "com" / "github" / "arkon" / "FlexibleAdapter" / 
     encoding="utf-8",
 )
 PY
-  GOANIME_AUDIT_MAVEN_REPO="$fallback_maven_repo" python3 - "$fallback_init_script" <<'PY'
-from pathlib import Path
-import sys
-
-Path(sys.argv[1]).write_text(
-    "gradle.settingsEvaluated { settings ->\n"
-    "    def repositories = settings.dependencyResolutionManagement.repositories\n"
-    "    def localFallback = repositories.maven {\n"
-    "        name = 'goanimeAuditFlexibleAdapter'\n"
-    "        url = uri(System.getenv('GOANIME_AUDIT_MAVEN_REPO'))\n"
-    "    }\n"
-    "    repositories.remove(localFallback)\n"
-    "    repositories.addFirst(localFallback)\n"
-    "}\n",
-    encoding="utf-8",
-)
-PY
   echo "flexible_adapter_fallback_source_sha=$fallback_head"
   echo "flexible_adapter_fallback_source_tree=$fallback_tree"
   echo "flexible_adapter_fallback_aar_sha256=$fallback_aar_sha"
 
   fallback_gradle_args=( :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --console=plain --init-script "$fallback_init_script" )
-  (cd "$ANIKKU_ROOT" && run_gradle ./gradlew "${fallback_gradle_args[@]}" ) || die "Anikku exact-source fallback build failed"
+  (
+    cd "$ANIKKU_ROOT"
+    export GOANIME_AUDIT_BOOTSTRAP_REPO="$fallback_maven_repo"
+    run_gradle ./gradlew "${fallback_gradle_args[@]}"
+  ) || die "Anikku exact-source fallback build failed"
 fi
 
 echo "fallbackUsed=$fallback_used"
