@@ -470,7 +470,18 @@ jobs:
               args=( "src:pt:$module:assembleDebug" --no-daemon --stacktrace )
               if (( attempt > 1 )); then args+=( --refresh-dependencies ); fi
               log_path="$log_dir/${module}-attempt-${attempt}.log"
-              if ./gradlew "${args[@]}" > "$log_path" 2>&1; then ok=1; break; fi
+              raw_log="${RUNNER_TEMP}/goanime-yuzono-canary-${module}-attempt-${attempt}.raw.log"
+              started_at="$(date +%s)"
+              if ./gradlew "${args[@]}" > "$raw_log" 2>&1; then
+                elapsed_seconds=$(( $(date +%s) - started_at ))
+                printf 'BUILD SUCCESSFUL in %ss\n' "$elapsed_seconds" > "$log_path"
+                rm -f "$raw_log"
+                ok=1
+                break
+              fi
+              elapsed_seconds=$(( $(date +%s) - started_at ))
+              printf 'BUILD FAILED in %ss\n' "$elapsed_seconds" > "$log_path"
+              rm -f "$raw_log"
               sleep 20
             done
             if (( ok == 0 )); then echo "::warning::$module did not build; runner will classify extension-build"; fi
@@ -802,7 +813,18 @@ jobs:
               args=( "src:pt:$module:assembleDebug" --no-daemon --stacktrace )
               if (( attempt > 1 )); then args+=( --refresh-dependencies ); fi
               log_path="$log_dir/${module}-attempt-${attempt}.log"
-              if ./gradlew "${args[@]}" > "$log_path" 2>&1; then ok=1; break; fi
+              raw_log="${RUNNER_TEMP}/goanime-yuzono-full-${{ matrix.shard }}-${module}-attempt-${attempt}.raw.log"
+              started_at="$(date +%s)"
+              if ./gradlew "${args[@]}" > "$raw_log" 2>&1; then
+                elapsed_seconds=$(( $(date +%s) - started_at ))
+                printf 'BUILD SUCCESSFUL in %ss\n' "$elapsed_seconds" > "$log_path"
+                rm -f "$raw_log"
+                ok=1
+                break
+              fi
+              elapsed_seconds=$(( $(date +%s) - started_at ))
+              printf 'BUILD FAILED in %ss\n' "$elapsed_seconds" > "$log_path"
+              rm -f "$raw_log"
               sleep 20
             done
             if (( ok == 0 )); then echo "::warning::$module did not build; provider result will record extension-build"; fi

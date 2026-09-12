@@ -626,7 +626,7 @@ class SanitizedOutputContractTest(unittest.TestCase):
         for name in ("canary", "full-shard"):
             body = job_body(workflow, name)
             self.assertIn("RUNNER_TEMP", body)
-            self.assertIn("> \"$log_path\" 2>&1", body)
+            self.assertIn("> \"$raw_log\" 2>&1", body)
             self.assertLess(body.index("sanitize_audit_outputs.py"), body.index("actions/upload-artifact@"))
         finalizer = job_body(workflow, "finalize-full")
         self.assertIn("verify-state", finalizer)
@@ -640,6 +640,17 @@ class SanitizedOutputContractTest(unittest.TestCase):
         self.assertIn("sanitize-summary", finalizer)
         self.assertIn("steps.sanitize-summary.outcome == 'success'", finalizer)
         self.assertLess(finalizer.index("--summary-file"), finalizer.index("GITHUB_STEP_SUMMARY"))
+
+    def test_gradle_diagnostics_are_not_left_in_the_allowlisted_log_directory(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        for name in ("canary", "full-shard"):
+            body = job_body(workflow, name)
+            self.assertIn('raw_log="${RUNNER_TEMP}', body)
+            self.assertIn('> "$raw_log" 2>&1', body)
+            self.assertIn("BUILD SUCCESSFUL in", body)
+            self.assertIn("BUILD FAILED in", body)
+            self.assertIn('rm -f "$raw_log"', body)
+            self.assertNotIn('> "$log_path" 2>&1', body)
 
     def test_emulator_script_does_not_share_local_variables_between_action_shells(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
