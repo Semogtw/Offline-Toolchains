@@ -19,6 +19,7 @@ WRITE_SCRIPT = ROOT / "scripts" / "goanime_yuzono" / "write_reference_manifest.p
 VERIFY_SCRIPT = ROOT / "scripts" / "goanime_yuzono" / "verify_reference_manifest.py"
 SANITIZE_SCRIPT = ROOT / "scripts" / "goanime_yuzono" / "sanitize_audit_outputs.py"
 VALIDATE_CONTINUATION_SCRIPT = ROOT / "scripts" / "goanime_yuzono" / "validate_continuation_request.py"
+VERIFY_CANARY_SCRIPT = ROOT / "scripts" / "goanime_yuzono" / "verify_canary.py"
 EXPECTED_FIELDS = {
     "schemaVersion",
     "goAnimeSourceSha",
@@ -407,7 +408,7 @@ class ManifestContractTest(unittest.TestCase):
             self.assertNotEqual(verifier.returncode, 0)
 
     def test_cli_help_is_loadable(self) -> None:
-        for script in (WRITE_SCRIPT, VERIFY_SCRIPT, SANITIZE_SCRIPT):
+        for script in (WRITE_SCRIPT, VERIFY_SCRIPT, SANITIZE_SCRIPT, VERIFY_CANARY_SCRIPT):
             result = run_script(script, "--help")
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("usage:", result.stdout.lower())
@@ -497,6 +498,56 @@ class SanitizedOutputContractTest(unittest.TestCase):
             )
             verification = run_script(SANITIZE_SCRIPT, "--root", str(verification_root))
             self.assertEqual(verification.returncode, 0, verification.stderr)
+
+    def test_recursive_sanitized_fixture_accepts_v3_provider_identity_and_media_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "probe-state"
+            provider_dir = root / "providers"
+            provider_dir.mkdir(parents=True)
+            provider = {
+                "sourceId": "yuzono.pt.anikyuu",
+                "module": "anikyuu",
+                "displayName": "Anikyuu",
+                "status": "ready",
+                "stage": "stream",
+                "languageMode": "sub",
+                "titles": ["Synthetic title"],
+                "pagesVisited": 1,
+                "catalogueComplete": True,
+                "catalogueTermination": "natural-end",
+                "rawTitleCount": 1,
+                "distinctRawTitleCount": 1,
+                "playbackSampleCount": 1,
+                "failureKind": None,
+                "schemaVersion": 3,
+                "executionIdentity": {
+                    "extensionPackage": "safe.anikyuu",
+                    "extensionClass": "safe.anikyuu.Source",
+                    "extensionApkSha256": "a" * 64,
+                },
+                "sampleLineage": {
+                    "catalogueDigest": "b" * 64,
+                    "animeOrdinal": 0,
+                    "animeLabelHash": "c" * 64,
+                    "episodeOrdinal": 0,
+                    "episodeLabelHash": "d" * 64,
+                    "resolverMode": "direct",
+                },
+                "resolutionSampleCount": 1,
+                "mediaEvidence": {
+                    "transportObserved": True,
+                    "playerReadyObserved": True,
+                    "timeAdvancedObserved": True,
+                    "videoTrackObserved": True,
+                    "firstFrameObserved": True,
+                    "failureKind": None,
+                },
+            }
+            (provider_dir / "anikyuu.json").write_text(
+                json.dumps(provider), encoding="utf-8"
+            )
+            result = run_script(SANITIZE_SCRIPT, "--root", str(root))
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_recursive_gate_rejects_unknown_fields_and_raw_transport_content(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -710,6 +761,216 @@ class CanaryContractTest(unittest.TestCase):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         reference = job_body(workflow, "reference-runtime")
         self.assertRegex(reference, r"mode\s*!=\s*'deterministic'")
+
+    def test_full_execution_requires_an_accepted_canary_on_the_same_runtime(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        canary = job_body(workflow, "canary")
+        prepare_full = job_body(workflow, "prepare-full")
+        full_shard = job_body(workflow, "full-shard")
+        finalizer = job_body(workflow, "finalize-full")
+
+        self.assertTrue(VERIFY_CANARY_SCRIPT.is_file(), "canary verifier is missing")
+        self.assertIn("verify_canary.py", canary)
+        self.assertIn("canary-verification.json", canary)
+        self.assertIn("animefire,anikyuu,pifansubs", canary)
+        self.assertIn("--structural-module", canary)
+        self.assertIn("--candidate-modules", canary)
+        self.assertRegex(canary, r"mode\s*!=\s*'deterministic'")
+        self.assertIn("- canary", prepare_full)
+        self.assertIn("needs.canary.result == 'success'", prepare_full)
+        self.assertIn("- canary", full_shard)
+        self.assertIn("needs.canary.result == 'success'", full_shard)
+        self.assertIn("- canary", finalizer)
+        self.assertIn("needs.canary.result == 'success'", finalizer)
+        self.assertLess(canary.index("verify_canary.py"), canary.index("actions/upload-artifact@"))
+
+    def test_canary_verifier_accepts_identity_bound_control_and_terminal_candidate(self) -> None:
+        self.assertTrue(VERIFY_CANARY_SCRIPT.is_file(), "canary verifier is missing")
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            state = base / "probe-state"
+            providers = state / "providers"
+            checkpoints = state / "checkpoints"
+            providers.mkdir(parents=True)
+            checkpoints.mkdir()
+            runtime = base / "reference-runtime"
+            runtime.mkdir()
+            app = runtime / "anikku-app-debug.apk"
+            test_apk = runtime / "anikku-app-debug-androidTest.apk"
+            app.write_bytes(b"app")
+            test_apk.write_bytes(b"test")
+            manifest = {
+                "schemaVersion": 1,
+                "goAnimeSourceSha": SOURCE_SHA,
+                "anikkuSha": ANIKKU_SHA,
+                "flexibleAdapterSha": FLEXIBLE_ADAPTER_SHA,
+                "appApkSha256": hashlib.sha256(app.read_bytes()).hexdigest(),
+                "testApkSha256": hashlib.sha256(test_apk.read_bytes()).hexdigest(),
+                "jdkMajor": 17,
+                "buildAttempt": 1,
+                "fallbackUsed": False,
+            }
+            (runtime / "reference-runtime-manifest.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+
+            def provider(module: str, *, ready: bool) -> dict[str, object]:
+                return {
+                    "sourceId": f"yuzono.pt.{module}",
+                    "module": module,
+                    "displayName": module,
+                    "status": "ready" if ready else "partial",
+                    "stage": "stream" if ready else "catalog",
+                    "languageMode": "sub",
+                    "titles": ["Synthetic title"],
+                    "pagesVisited": 1,
+                    "catalogueComplete": True,
+                    "catalogueTermination": "natural-end",
+                    "rawTitleCount": 1,
+                    "distinctRawTitleCount": 1,
+                    "playbackSampleCount": 1 if ready else 0,
+                    "failureKind": None if ready else "media-unverified",
+                    "schemaVersion": 3,
+                    "executionIdentity": {
+                        "extensionPackage": f"safe.{module}",
+                        "extensionClass": f"safe.{module}.Source",
+                        "extensionApkSha256": "a" * 64,
+                    },
+                    "sampleLineage": {
+                        "catalogueDigest": "b" * 64,
+                        "animeOrdinal": 0,
+                        "animeLabelHash": "c" * 64,
+                        "episodeOrdinal": 0,
+                        "episodeLabelHash": "d" * 64,
+                        "resolverMode": "direct",
+                    } if ready else None,
+                    "resolutionSampleCount": 1 if ready else 0,
+                    "mediaEvidence": {
+                        "transportObserved": ready,
+                        "playerReadyObserved": ready,
+                        "timeAdvancedObserved": ready,
+                        "videoTrackObserved": ready,
+                        "firstFrameObserved": ready,
+                        "failureKind": None if ready else "media-unverified",
+                    },
+                }
+
+            def checkpoint(module: str, *, status: str, playback: int) -> dict[str, object]:
+                return {
+                    "schemaVersion": 2,
+                    "generationId": "canary-1",
+                    "goAnimeSourceSha": SOURCE_SHA,
+                    "goAnimeBaselineSha": "b" * 40,
+                    "upstreamRevision": "c" * 40,
+                    "anikkuRevision": ANIKKU_SHA,
+                    "sourceId": f"yuzono.pt.{module}",
+                    "stage": "classified",
+                    "status": status,
+                    "retryCount": 0,
+                    "titleCount": 1,
+                    "playbackSampleCount": playback,
+                    "failureKind": None if status == "ready" else "media-unverified",
+                }
+
+            for module, ready in (
+                ("animefire", False),
+                ("anikyuu", True),
+                ("pifansubs", False),
+            ):
+                (providers / f"{module}.json").write_text(
+                    json.dumps(provider(module, ready=ready)), encoding="utf-8"
+                )
+                (checkpoints / f"{module}.json").write_text(
+                    json.dumps(
+                        checkpoint(
+                            module,
+                            status="ready" if ready else "partial",
+                            playback=1 if ready else 0,
+                        )
+                    ),
+                    encoding="utf-8",
+                )
+
+            output = base / "canary-verification" / "canary-verification.json"
+            result = run_script(
+                VERIFY_CANARY_SCRIPT,
+                "--root",
+                str(state),
+                "--manifest",
+                str(runtime / "reference-runtime-manifest.json"),
+                "--modules",
+                "animefire,anikyuu,pifansubs",
+                "--structural-module",
+                "animefire",
+                "--candidate-modules",
+                "anikyuu,pifansubs",
+                "--generation-id",
+                "canary-1",
+                "--goanime-source-sha",
+                SOURCE_SHA,
+                "--goanime-baseline-sha",
+                "b" * 40,
+                "--upstream-revision",
+                "c" * 40,
+                "--anikku-sha",
+                ANIKKU_SHA,
+                "--output",
+                str(output),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            verification = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(verification["accepted"])
+            self.assertEqual(verification["terminalMediaModules"], ["anikyuu"])
+            self.assertEqual(verification["violations"], [])
+            sanitized = run_script(
+                SANITIZE_SCRIPT,
+                "--root",
+                str(output.parent),
+            )
+            self.assertEqual(sanitized.returncode, 0, sanitized.stderr)
+
+            legacy_provider = json.loads((providers / "pifansubs.json").read_text(encoding="utf-8"))
+            for field in (
+                "schemaVersion",
+                "executionIdentity",
+                "sampleLineage",
+                "resolutionSampleCount",
+                "mediaEvidence",
+            ):
+                legacy_provider.pop(field)
+            (providers / "pifansubs.json").write_text(
+                json.dumps(legacy_provider), encoding="utf-8"
+            )
+            rejected_output = base / "rejected-canary-verification" / "canary-verification.json"
+            rejected = run_script(
+                VERIFY_CANARY_SCRIPT,
+                "--root",
+                str(state),
+                "--manifest",
+                str(runtime / "reference-runtime-manifest.json"),
+                "--modules",
+                "animefire,anikyuu,pifansubs",
+                "--structural-module",
+                "animefire",
+                "--candidate-modules",
+                "anikyuu,pifansubs",
+                "--generation-id",
+                "canary-1",
+                "--goanime-source-sha",
+                SOURCE_SHA,
+                "--goanime-baseline-sha",
+                "b" * 40,
+                "--upstream-revision",
+                "c" * 40,
+                "--anikku-sha",
+                ANIKKU_SHA,
+                "--output",
+                str(rejected_output),
+            )
+            self.assertEqual(rejected.returncode, 1, rejected.stderr)
+            rejected_verification = json.loads(rejected_output.read_text(encoding="utf-8"))
+            self.assertFalse(rejected_verification["accepted"])
+            self.assertIn("path identity missing: pifansubs", rejected_verification["violations"])
 
 
 if __name__ == "__main__":

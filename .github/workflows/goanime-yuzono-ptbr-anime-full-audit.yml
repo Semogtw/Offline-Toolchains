@@ -376,13 +376,13 @@ jobs:
     needs:
       - deterministic
       - reference-runtime
-    if: needs.deterministic.outputs.mode == 'canary' && needs.reference-runtime.result == 'success'
+    if: needs.deterministic.outputs.mode != 'deterministic' && needs.reference-runtime.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
       GOANIME_SOURCE_SHA: ${{ needs.deterministic.outputs.source_sha }}
       GENERATION_ID: ${{ needs.deterministic.outputs.generation_id }}
-      MODULES: animefire,dattebayobr,animeito
+      MODULES: animefire,anikyuu,pifansubs
       MAX_RETRIES: '1'
       MAX_PAGES: '3'
       STAGE_TIMEOUT_SECONDS: '45'
@@ -463,7 +463,7 @@ jobs:
           set -euo pipefail
           log_dir="${RUNNER_TEMP}/goanime-yuzono-canary-gradle"
           mkdir -p "$log_dir"
-          for module in animefire dattebayobr animeito; do
+          for module in animefire anikyuu pifansubs; do
             ok=0
             for attempt in 1 2; do
               echo "Building $module attempt $attempt/2"
@@ -523,8 +523,37 @@ jobs:
             --logs-dir "${RUNNER_TEMP}/goanime-yuzono-canary-gradle" \
             --log "${RUNNER_TEMP}/goanime-yuzono-canary-instrumentation/instrumentation.log"
 
-      - name: Write sanitized canary summary
+      - name: Verify accepted canary boundary
+        id: verify-canary
         if: always() && steps.sanitize-canary.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/goanime_yuzono/verify_canary.py \
+            --root probe-state \
+            --manifest reference-runtime/reference-runtime-manifest.json \
+            --modules "$MODULES" \
+            --structural-module animefire \
+            --candidate-modules anikyuu,pifansubs \
+            --generation-id "$GENERATION_ID" \
+            --goanime-source-sha "$GOANIME_SOURCE_SHA" \
+            --goanime-baseline-sha "$GOANIME_BASELINE_SHA" \
+            --upstream-revision "$YUZONO_REVISION" \
+            --anikku-sha "$ANIKKU_REVISION" \
+            --output canary-verification/canary-verification.json
+
+      - name: Gate sanitized canary verification
+        id: sanitize-canary-verification
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f scripts/goanime_yuzono/sanitize_audit_outputs.py
+          python3 scripts/goanime_yuzono/sanitize_audit_outputs.py \
+            --root canary-verification
+
+      - name: Write sanitized canary summary
+        if: always() && steps.sanitize-canary.outcome == 'success' && steps.sanitize-canary-verification.outcome == 'success'
         shell: bash
         run: |
           python - <<'PY'
@@ -544,11 +573,13 @@ jobs:
           PY
 
       - name: Upload sanitized canary state
-        if: always() && steps.sanitize-canary.outcome == 'success'
+        if: always() && steps.sanitize-canary.outcome == 'success' && steps.sanitize-canary-verification.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: yuzono-full-audit-canary-${{ github.run_id }}
-          path: probe-state
+          path: |
+            probe-state
+            canary-verification
           if-no-files-found: warn
           retention-days: 7
 
@@ -558,8 +589,10 @@ jobs:
 
   prepare-full:
     name: Prepare resumable full-audit matrix
-    needs: deterministic
-    if: needs.deterministic.outputs.mode == 'full'
+    needs:
+      - deterministic
+      - canary
+    if: needs.deterministic.outputs.mode == 'full' && needs.canary.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     outputs:
@@ -694,9 +727,10 @@ jobs:
     name: Full audit shard ${{ matrix.shard }}
     needs:
       - deterministic
+      - canary
       - prepare-full
       - reference-runtime
-    if: needs.prepare-full.outputs.has_pending == 'true' && needs.reference-runtime.result == 'success'
+    if: needs.prepare-full.outputs.has_pending == 'true' && needs.reference-runtime.result == 'success' && needs.canary.result == 'success'
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -883,10 +917,11 @@ jobs:
     name: Consolidate, deduplicate and continue
     needs:
       - deterministic
+      - canary
       - prepare-full
       - full-shard
       - reference-runtime
-    if: always() && needs.prepare-full.result == 'success' && needs.reference-runtime.result == 'success'
+    if: always() && needs.prepare-full.result == 'success' && needs.reference-runtime.result == 'success' && needs.canary.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:

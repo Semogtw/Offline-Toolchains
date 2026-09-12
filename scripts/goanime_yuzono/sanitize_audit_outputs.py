@@ -60,6 +60,52 @@ PROBE_PROVIDER_FIELDS = {
     "playbackSampleCount",
     "failureKind",
 }
+PROBE_PROVIDER_V3_FIELDS = PROBE_PROVIDER_FIELDS | {
+    "schemaVersion",
+    "executionIdentity",
+    "sampleLineage",
+    "resolutionSampleCount",
+    "mediaEvidence",
+}
+EXECUTION_IDENTITY_FIELDS = {
+    "extensionPackage",
+    "extensionClass",
+    "extensionApkSha256",
+}
+SAMPLE_LINEAGE_FIELDS = {
+    "catalogueDigest",
+    "animeOrdinal",
+    "animeLabelHash",
+    "episodeOrdinal",
+    "episodeLabelHash",
+    "resolverMode",
+}
+MEDIA_EVIDENCE_FIELDS = {
+    "transportObserved",
+    "playerReadyObserved",
+    "timeAdvancedObserved",
+    "videoTrackObserved",
+    "firstFrameObserved",
+    "failureKind",
+}
+CANARY_VERIFICATION_FIELDS = {
+    "schemaVersion",
+    "generationId",
+    "goAnimeSourceSha",
+    "goAnimeBaselineSha",
+    "upstreamRevision",
+    "anikkuRevision",
+    "referenceRuntimeAppApkSha256",
+    "referenceRuntimeTestApkSha256",
+    "structuralModules",
+    "candidateModules",
+    "observedModules",
+    "pathIdentityModules",
+    "terminalMediaModules",
+    "playableModules",
+    "accepted",
+    "violations",
+}
 INVENTORY_FIELDS = {
     "sourceId",
     "module",
@@ -174,6 +220,9 @@ SUMMARY_STAGE = frozenset(
     {"discovered", "reachable", "catalog", "identity", "episodes", "player", "stream", "classified"}
 )
 SUMMARY_LANGUAGE = frozenset({"sub", "dub", "mixed", "unknown"})
+SUMMARY_CATALOGUE_TERMINATIONS = frozenset(
+    {"natural-end", "empty-page", "empty-catalog", "safety-ceiling", "error", "unknown"}
+)
 SUMMARY_SCOPE_LINE = (
     "- Scope: centralized module policy; isNsfw remains metadata and mixed-content "
     "anime modules remain candidates; current GoAnime PT production modules are "
@@ -267,21 +316,81 @@ def _validate_checkpoint(value: Any, label: str) -> None:
 
 
 def _validate_probe_provider(value: Any, label: str) -> None:
-    payload = _field_object(value, PROBE_PROVIDER_FIELDS, label)
+    if not isinstance(value, dict):
+        raise SanitizationError(f"{label}: schema root must be an object")
+    if "schemaVersion" in value:
+        if value.get("schemaVersion") != 3:
+            raise SanitizationError(f"{label}.schemaVersion: unsupported")
+        payload = _field_object(value, PROBE_PROVIDER_V3_FIELDS, label)
+    else:
+        payload = _field_object(value, PROBE_PROVIDER_FIELDS, label)
     _safe_string(payload["sourceId"], f"{label}.sourceId", allow_empty=False)
     _safe_string(payload["module"], f"{label}.module", allow_empty=False)
     if MODULE.fullmatch(payload["module"]) is None:
         raise SanitizationError(f"{label}.module: invalid module")
+    if payload["sourceId"] != f"yuzono.pt.{payload['module']}":
+        raise SanitizationError(f"{label}: source identity mismatch")
     _safe_string(payload["displayName"], f"{label}.displayName")
     for key in ("status", "stage", "languageMode", "catalogueTermination"):
         _safe_string(payload[key], f"{label}.{key}", allow_empty=False)
+    if payload["status"] not in SUMMARY_STATUS:
+        raise SanitizationError(f"{label}.status: unsupported")
+    if payload["stage"] not in SUMMARY_STAGE:
+        raise SanitizationError(f"{label}.stage: unsupported")
+    if payload["languageMode"] not in SUMMARY_LANGUAGE:
+        raise SanitizationError(f"{label}.languageMode: unsupported")
+    if payload["catalogueTermination"] not in SUMMARY_CATALOGUE_TERMINATIONS:
+        raise SanitizationError(f"{label}.catalogueTermination: unsupported")
     _safe_list(payload["titles"], f"{label}.titles")
     for key in ("pagesVisited", "rawTitleCount", "distinctRawTitleCount", "playbackSampleCount"):
         _nonnegative(payload[key], f"{label}.{key}")
     if type(payload["catalogueComplete"]) is not bool:
         raise SanitizationError(f"{label}.catalogueComplete: expected boolean")
+    if payload["distinctRawTitleCount"] > payload["rawTitleCount"]:
+        raise SanitizationError(f"{label}.distinctRawTitleCount: exceeds rawTitleCount")
     if payload["failureKind"] is not None:
         _safe_string(payload["failureKind"], f"{label}.failureKind")
+
+    if "schemaVersion" not in payload:
+        return
+
+    identity = _field_object(payload["executionIdentity"], EXECUTION_IDENTITY_FIELDS, f"{label}.executionIdentity")
+    _safe_string(identity["extensionPackage"], f"{label}.executionIdentity.extensionPackage", allow_empty=False)
+    _safe_string(identity["extensionClass"], f"{label}.executionIdentity.extensionClass", allow_empty=False)
+    if re.fullmatch(r"[A-Za-z0-9_.]{3,200}", identity["extensionPackage"]) is None:
+        raise SanitizationError(f"{label}.executionIdentity.extensionPackage: invalid")
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)+", identity["extensionClass"]) is None:
+        raise SanitizationError(f"{label}.executionIdentity.extensionClass: invalid")
+    _validate_sha(identity["extensionApkSha256"], f"{label}.executionIdentity.extensionApkSha256", SHA256)
+
+    lineage = payload["sampleLineage"]
+    if lineage is not None:
+        lineage = _field_object(lineage, SAMPLE_LINEAGE_FIELDS, f"{label}.sampleLineage")
+        for key in ("catalogueDigest", "animeLabelHash", "episodeLabelHash"):
+            _validate_sha(lineage[key], f"{label}.sampleLineage.{key}", SHA256)
+        for key in ("animeOrdinal", "episodeOrdinal"):
+            _nonnegative(lineage[key], f"{label}.sampleLineage.{key}")
+        if lineage["resolverMode"] not in {"direct", "hoster"}:
+            raise SanitizationError(f"{label}.sampleLineage.resolverMode: unsupported")
+
+    _nonnegative(payload["resolutionSampleCount"], f"{label}.resolutionSampleCount")
+    if payload["playbackSampleCount"] > payload["resolutionSampleCount"]:
+        raise SanitizationError(f"{label}.playbackSampleCount: exceeds resolutionSampleCount")
+    media = _field_object(payload["mediaEvidence"], MEDIA_EVIDENCE_FIELDS, f"{label}.mediaEvidence")
+    for key in MEDIA_EVIDENCE_FIELDS - {"failureKind"}:
+        if type(media[key]) is not bool:
+            raise SanitizationError(f"{label}.mediaEvidence.{key}: expected boolean")
+    if media["failureKind"] is not None:
+        _safe_string(media["failureKind"], f"{label}.mediaEvidence.failureKind")
+    terminal_media = lineage is not None and payload["playbackSampleCount"] > 0 and all(
+        media[key] is True for key in MEDIA_EVIDENCE_FIELDS - {"failureKind"}
+    )
+    if terminal_media and media["failureKind"] is not None:
+        raise SanitizationError(f"{label}.mediaEvidence.failureKind: terminal media cannot fail")
+    if payload["status"] == "ready" and (
+        payload["catalogueComplete"] is not True or not terminal_media
+    ):
+        raise SanitizationError(f"{label}: ready result lacks terminal media evidence")
 
 
 def _validate_inventory(value: Any, label: str) -> None:
@@ -418,6 +527,36 @@ def _validate_manifest(value: Any, label: str) -> None:
         raise SanitizationError(f"{label}.buildAttempt: invalid")
     if type(payload["fallbackUsed"]) is not bool:
         raise SanitizationError(f"{label}.fallbackUsed: expected boolean")
+
+
+def _validate_canary_verification(value: Any, label: str) -> None:
+    payload = _field_object(value, CANARY_VERIFICATION_FIELDS, label)
+    if payload["schemaVersion"] != 1:
+        raise SanitizationError(f"{label}.schemaVersion: unsupported")
+    _safe_string(payload["generationId"], f"{label}.generationId", allow_empty=False)
+    for key in (
+        "goAnimeSourceSha",
+        "goAnimeBaselineSha",
+        "upstreamRevision",
+        "anikkuRevision",
+    ):
+        _validate_sha(payload[key], f"{label}.{key}", SHA40)
+    for key in ("referenceRuntimeAppApkSha256", "referenceRuntimeTestApkSha256"):
+        _validate_sha(payload[key], f"{label}.{key}", SHA256)
+    for key in (
+        "structuralModules",
+        "candidateModules",
+        "observedModules",
+        "pathIdentityModules",
+        "terminalMediaModules",
+        "playableModules",
+    ):
+        _safe_module_list(payload[key], f"{label}.{key}")
+    if type(payload["accepted"]) is not bool:
+        raise SanitizationError(f"{label}.accepted: expected boolean")
+    _safe_list(payload["violations"], f"{label}.violations")
+    if payload["accepted"] and payload["violations"]:
+        raise SanitizationError(f"{label}: accepted verification contains violations")
 
 
 def _summary_text(value: str, label: str) -> None:
@@ -567,6 +706,12 @@ def _validate_file(root_name: str, relative: Path, path: Path) -> None:
             _validate_report(path, label)
         else:
             raise SanitizationError(f"{label}: path is outside the allowlist")
+        return
+
+    if root_name == "canary-verification":
+        if relative != Path("canary-verification.json"):
+            raise SanitizationError(f"{label}: path is outside the allowlist")
+        _validate_canary_verification(_json(path), label)
         return
 
     raise SanitizationError(f"{label}: unsupported output root")
