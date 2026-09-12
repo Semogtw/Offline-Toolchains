@@ -922,6 +922,45 @@ class CanaryContractTest(unittest.TestCase):
             self.assertTrue(verification["accepted"])
             self.assertEqual(verification["terminalMediaModules"], ["anikyuu"])
             self.assertEqual(verification["violations"], [])
+
+            for module in ("anikyuu", "pifansubs"):
+                (providers / f"{module}.json").write_text(
+                    json.dumps(provider(module, ready=False)), encoding="utf-8"
+                )
+                (checkpoints / f"{module}.json").write_text(
+                    json.dumps(checkpoint(module, status="pending", playback=0)),
+                    encoding="utf-8",
+                )
+            no_media_output = base / "rejected-no-media" / "canary-verification.json"
+            no_media = run_script(
+                VERIFY_CANARY_SCRIPT,
+                "--root",
+                str(state),
+                "--manifest",
+                str(runtime / "reference-runtime-manifest.json"),
+                "--modules",
+                "animefire,anikyuu,pifansubs",
+                "--structural-module",
+                "animefire",
+                "--candidate-modules",
+                "anikyuu,pifansubs",
+                "--generation-id",
+                "canary-1",
+                "--goanime-source-sha",
+                SOURCE_SHA,
+                "--goanime-baseline-sha",
+                "b" * 40,
+                "--upstream-revision",
+                "c" * 40,
+                "--anikku-sha",
+                ANIKKU_SHA,
+                "--output",
+                str(no_media_output),
+            )
+            self.assertEqual(no_media.returncode, 1, no_media.stderr)
+            no_media_verification = json.loads(no_media_output.read_text(encoding="utf-8"))
+            self.assertFalse(no_media_verification["accepted"])
+            self.assertIn("candidate provider lacks terminal media", no_media_verification["violations"])
             sanitized = run_script(
                 SANITIZE_SCRIPT,
                 "--root",

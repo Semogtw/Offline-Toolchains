@@ -3,8 +3,9 @@
 
 The canary is accepted only when the shared runtime identity is valid, every
 selected provider has an identity-bearing v3 receipt, the structural control
-reaches provider code, and at least one candidate reaches provider code. A
-provider marked ready must also carry all terminal-media observations.
+reaches provider code, and at least one candidate reaches provider code with
+terminal-media observations. A provider marked ready must also carry all
+terminal-media observations.
 """
 
 from __future__ import annotations
@@ -396,6 +397,9 @@ def verify_canary(
     candidate_observed = [module for module in candidate_modules if module in observed]
     if not candidate_observed:
         violations.append("candidate provider did not reach provider code")
+    candidate_terminal_media = [module for module in candidate_modules if module in terminal_media]
+    if not candidate_terminal_media:
+        violations.append("candidate provider lacks terminal media")
     if any(module not in terminal_media for module in playable):
         violations.append("playable provider lacks terminal media")
 
