@@ -984,7 +984,7 @@ jobs:
         run: |
           set -euo pipefail
           export PYTHONPATH="$GITHUB_WORKSPACE/private-source"
-          mkdir -p empty-state/checkpoints empty-state/providers
+          mkdir -p empty-state/checkpoints empty-state/providers empty-state/path-identity
           args=( --state-dir empty-state )
           if [[ -d audit-plan/resume-state/checkpoints ]]; then
             args+=( --state-dir audit-plan/resume-state )
@@ -1005,6 +1005,8 @@ jobs:
 
       - name: Aggregate catalog, deduplicate and compute promotion gate
         shell: bash
+        env:
+          FULL_SHARD_RESULT: ${{ needs.full-shard.result }}
         run: |
           set -euo pipefail
           export PYTHONPATH="$GITHUB_WORKSPACE/private-source"
@@ -1013,6 +1015,46 @@ jobs:
             --provider-dir consolidated-state/providers \
             --baseline baseline-source/assets/data/anime_provider_catalogs.json \
             --output-dir audit-output
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          matrix = json.loads(Path('audit-plan/matrix.json').read_text(encoding='utf-8'))
+          identity_dir = Path('consolidated-state/path-identity')
+          shards = []
+          for entry in matrix.get('include', []):
+              shard = entry.get('shard')
+              modules = entry.get('modules')
+              if not isinstance(shard, int) or not isinstance(modules, list) or not modules:
+                  continue
+              provider_execution_started = True
+              for module in modules:
+                  identity_path = identity_dir / f'{module}.json'
+                  try:
+                      identity = json.loads(identity_path.read_text(encoding='utf-8'))
+                  except (OSError, UnicodeError, json.JSONDecodeError):
+                      provider_execution_started = False
+                      continue
+                  if not isinstance(identity, dict) or identity.get('providerExecutionStarted') is not True:
+                      provider_execution_started = False
+              conclusion = os.environ['FULL_SHARD_RESULT']
+              shards.append({
+                  'shard': shard,
+                  'modules': modules,
+                  'jobConclusion': conclusion,
+                  'providerExecutionStarted': provider_execution_started,
+                  'aggregateConclusion': conclusion,
+              })
+          results_path = Path('audit-output/results.json')
+          results = json.loads(results_path.read_text(encoding='utf-8'))
+          results['workflowEvidence'] = {
+              'schemaVersion': 1,
+              'fullShardResult': os.environ['FULL_SHARD_RESULT'],
+              'shards': shards,
+          }
+          results_path.write_text(json.dumps(results, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          PY
           python -m tools.yuzono_anime_probe.cli pending \
             --inventory audit-plan/inventory.json \
             --checkpoint-dir consolidated-state/checkpoints \
@@ -1042,6 +1084,7 @@ jobs:
             --upstream-revision "$YUZONO_REVISION" \
             --anikku-revision "$ANIKKU_REVISION" \
             --reference-runtime-dir reference-runtime \
+            --path-identity-dir consolidated-state/path-identity \
             --flexible-adapter-sha "$FLEXIBLE_ADAPTER_SHA" \
             --jdk-major 17 \
             --output audit-output/verification.json \

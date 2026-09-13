@@ -147,6 +147,22 @@ AGGREGATE_PROVIDER_V3_FIELDS = AGGREGATE_PROVIDER_FIELDS | {
     "sampleLineage",
     "mediaEvidence",
 }
+PATH_IDENTITY_FIELDS = {
+    "schemaVersion",
+    "module",
+    "sourceId",
+    "extensionPackage",
+    "extensionApkSha256",
+    "providerExecutionStarted",
+}
+WORKFLOW_EVIDENCE_FIELDS = {"schemaVersion", "fullShardResult", "shards"}
+WORKFLOW_SHARD_FIELDS = {
+    "shard",
+    "modules",
+    "jobConclusion",
+    "providerExecutionStarted",
+    "aggregateConclusion",
+}
 AGGREGATE_FIELDS = {
     "providerCount",
     "statusCounts",
@@ -400,6 +416,56 @@ def _validate_probe_provider(value: Any, label: str) -> None:
         raise SanitizationError(f"{label}: ready result lacks terminal media evidence")
 
 
+def _validate_path_identity(value: Any, label: str, module: str) -> None:
+    payload = _field_object(value, PATH_IDENTITY_FIELDS, label)
+    if payload["schemaVersion"] != 1:
+        raise SanitizationError(f"{label}.schemaVersion: unsupported")
+    _safe_string(payload["module"], f"{label}.module", allow_empty=False)
+    if payload["module"] != module or MODULE.fullmatch(module) is None:
+        raise SanitizationError(f"{label}.module: source identity mismatch")
+    _safe_string(payload["sourceId"], f"{label}.sourceId", allow_empty=False)
+    if payload["sourceId"] != f"yuzono.pt.{module}":
+        raise SanitizationError(f"{label}: source identity mismatch")
+    _safe_string(payload["extensionPackage"], f"{label}.extensionPackage", allow_empty=False)
+    if re.fullmatch(r"[A-Za-z0-9_.]{3,200}", payload["extensionPackage"]) is None:
+        raise SanitizationError(f"{label}.extensionPackage: invalid")
+    _validate_sha(payload["extensionApkSha256"], f"{label}.extensionApkSha256", SHA256)
+    if type(payload["providerExecutionStarted"]) is not bool:
+        raise SanitizationError(f"{label}.providerExecutionStarted: expected boolean")
+
+
+def _validate_workflow_evidence(value: Any, label: str) -> None:
+    payload = _field_object(value, WORKFLOW_EVIDENCE_FIELDS, label)
+    if payload["schemaVersion"] != 1:
+        raise SanitizationError(f"{label}.schemaVersion: unsupported")
+    allowed_results = {"success", "failure", "cancelled", "skipped", "timed_out", "unknown"}
+    if payload["fullShardResult"] not in allowed_results:
+        raise SanitizationError(f"{label}.fullShardResult: unsupported")
+    shards = payload["shards"]
+    if not isinstance(shards, list):
+        raise SanitizationError(f"{label}.shards: expected list")
+    seen_shards: set[int] = set()
+    seen_modules: set[str] = set()
+    for index, value in enumerate(shards):
+        item = _field_object(value, WORKFLOW_SHARD_FIELDS, f"{label}.shards[{index}]")
+        _nonnegative(item["shard"], f"{label}.shards[{index}].shard")
+        if item["shard"] in seen_shards:
+            raise SanitizationError(f"{label}.shards[{index}].shard: duplicate")
+        seen_shards.add(item["shard"])
+        _safe_module_list(item["modules"], f"{label}.shards[{index}].modules")
+        for module in item["modules"]:
+            if module in seen_modules:
+                raise SanitizationError(f"{label}.shards[{index}].modules: duplicate module")
+            seen_modules.add(module)
+        if type(item["providerExecutionStarted"]) is not bool:
+            raise SanitizationError(
+                f"{label}.shards[{index}].providerExecutionStarted: expected boolean"
+            )
+        for key in ("jobConclusion", "aggregateConclusion"):
+            if item[key] not in allowed_results:
+                raise SanitizationError(f"{label}.shards[{index}].{key}: unsupported")
+
+
 def _validate_inventory(value: Any, label: str) -> None:
     if not isinstance(value, list):
         raise SanitizationError(f"{label}: expected list")
@@ -437,7 +503,7 @@ def _safe_module_list(value: Any, label: str) -> None:
 def _validate_checkpoint_or_provider_tree(relative: Path, path: Path, label: str) -> None:
     if (
         len(relative.parts) != 2
-        or relative.parts[0] not in {"checkpoints", "providers"}
+        or relative.parts[0] not in {"checkpoints", "providers", "path-identity"}
         or relative.suffix != ".json"
     ):
         raise SanitizationError(f"{label}: path is outside the allowlist")
@@ -447,8 +513,10 @@ def _validate_checkpoint_or_provider_tree(relative: Path, path: Path, label: str
     payload = _json(path)
     if relative.parts[0] == "checkpoints":
         _validate_checkpoint(payload, label)
-    else:
+    elif relative.parts[0] == "providers":
         _validate_probe_provider(payload, label)
+    else:
+        _validate_path_identity(payload, label, module)
 
 
 def _validate_aggregate_provider(value: Any, label: str) -> None:
@@ -518,7 +586,8 @@ def _validate_aggregate_provider(value: Any, label: str) -> None:
 
 
 def _validate_aggregate(value: Any, label: str) -> None:
-    payload = _field_object(value, AGGREGATE_FIELDS, label)
+    fields = AGGREGATE_FIELDS | ({"workflowEvidence"} if isinstance(value, dict) and "workflowEvidence" in value else set())
+    payload = _field_object(value, fields, label)
     for key in (
         "providerCount", "baselineGoAnimeUniqueTitles", "candidateRawOccurrences",
         "candidateNormalizedOccurrences", "candidateUnionUniqueTitles", "crossProviderDuplicateOccurrences",
@@ -544,6 +613,8 @@ def _validate_aggregate(value: Any, label: str) -> None:
         raise SanitizationError(f"{label}.providers: expected list")
     for index, provider in enumerate(payload["providers"]):
         _validate_aggregate_provider(provider, f"{label}.providers[{index}]")
+    if "workflowEvidence" in payload:
+        _validate_workflow_evidence(payload["workflowEvidence"], f"{label}.workflowEvidence")
 
 
 def _validate_verification(value: Any, label: str) -> None:

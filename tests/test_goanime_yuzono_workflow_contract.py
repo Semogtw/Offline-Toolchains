@@ -517,6 +517,19 @@ class SanitizedOutputContractTest(unittest.TestCase):
                         "auditBlockers": [],
                         "promotionCandidates": [],
                         "promotionRejected": {},
+                        "workflowEvidence": {
+                            "schemaVersion": 1,
+                            "fullShardResult": "success",
+                            "shards": [
+                                {
+                                    "shard": 0,
+                                    "modules": ["animefire"],
+                                    "jobConclusion": "success",
+                                    "providerExecutionStarted": True,
+                                    "aggregateConclusion": "success",
+                                }
+                            ],
+                        },
                         "providers": [
                             {
                                 "sourceId": "yuzono.pt.animefire",
@@ -569,6 +582,29 @@ class SanitizedOutputContractTest(unittest.TestCase):
             )
             result = run_script(SANITIZE_SCRIPT, "--root", str(output))
             self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_path_identity_manifest_is_allowlisted_and_strict(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "probe-state" / "path-identity"
+            root.mkdir(parents=True)
+            identity = {
+                "schemaVersion": 1,
+                "module": "animefire",
+                "sourceId": "yuzono.pt.animefire",
+                "extensionPackage": "safe.animefire",
+                "extensionApkSha256": "a" * 64,
+                "providerExecutionStarted": False,
+            }
+            path = root / "animefire.json"
+            path.write_text(json.dumps(identity), encoding="utf-8")
+            accepted = run_script(SANITIZE_SCRIPT, "--root", str(root.parent))
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+
+            identity["unexpected"] = "rejected"
+            path.write_text(json.dumps(identity), encoding="utf-8")
+            rejected = run_script(SANITIZE_SCRIPT, "--root", str(root.parent))
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("schema", (rejected.stderr + rejected.stdout).lower())
 
     def test_recursive_sanitized_fixture_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -837,6 +873,8 @@ class SanitizedOutputContractTest(unittest.TestCase):
         finalizer = job_body(workflow, "finalize-full")
         self.assertIn("verify-state", finalizer)
         self.assertIn("--require-complete", finalizer)
+        self.assertIn("--path-identity-dir consolidated-state/path-identity", finalizer)
+        self.assertIn("workflowEvidence", finalizer)
         self.assertIn("Enforce independent generation completeness", finalizer)
         self.assertIn("steps.verify-generation.outcome == 'success'", finalizer)
         self.assertIn("reference-runtime-${{ needs.deterministic.outputs.generation_id }}", finalizer)
