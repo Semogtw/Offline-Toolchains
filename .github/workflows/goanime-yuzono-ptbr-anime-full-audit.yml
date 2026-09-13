@@ -1102,6 +1102,19 @@ jobs:
             --root consolidated-state \
             --root audit-output
 
+      - name: Run anti-fake falsification review on candidate
+        id: falsification
+        if: always() && steps.sanitize-final.outcome == 'success' && steps.verify-generation.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/private-source"
+          review_root="${RUNNER_TEMP}/goanime-yuzono-falsification-candidate"
+          mkdir -p "$review_root"
+          cp -a audit-plan consolidated-state audit-output "$review_root/"
+          GOANIME_YUZONO_CANDIDATE_ARTIFACT="$review_root" \
+            python -m unittest tools.yuzono_anime_probe.tests.test_falsification -v
+
       - name: Materialize full-audit summary
         id: materialize-summary
         if: always() && steps.sanitize-final.outcome == 'success'
@@ -1162,7 +1175,7 @@ jobs:
           retention-days: 14
 
       - name: Schedule bounded automatic continuation
-        if: always() && steps.verify-generation.outcome == 'success' && steps.sanitize-final.outcome == 'success' && steps.sanitize-summary.outcome == 'success'
+        if: always() && steps.verify-generation.outcome == 'success' && steps.falsification.outcome == 'success' && steps.sanitize-final.outcome == 'success' && steps.sanitize-summary.outcome == 'success'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1198,8 +1211,11 @@ jobs:
       - name: Enforce independent generation completeness
         if: always()
         shell: bash
+        env:
+          FALSIFICATION_OUTCOME: ${{ steps.falsification.outcome }}
         run: |
           set -euo pipefail
+          test "$FALSIFICATION_OUTCOME" = success
           test -s audit-output/verification.json
           jq -e '
             (.consistent == true) and
