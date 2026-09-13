@@ -415,6 +415,84 @@ class ManifestContractTest(unittest.TestCase):
 
 
 class SanitizedOutputContractTest(unittest.TestCase):
+    def test_instrumentation_failure_result_lines_are_allowlisted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "audit-output"
+            output.mkdir()
+            (output / "verification.json").write_text(
+                json.dumps(
+                    {
+                        "consistent": True,
+                        "complete": False,
+                        "scoped_count": 0,
+                        "accepted_terminal_count": 0,
+                        "pending_count": 0,
+                        "blocker_count": 0,
+                        "missing_result_count": 0,
+                        "identity_mismatch_count": 0,
+                        "violations": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            log_dir = Path(temporary) / "logs"
+            log_dir.mkdir()
+            (log_dir / "instrumentation.log").write_text(
+                "GoAnime probe instrumentation registration:\n"
+                "instrumentation:eu.kanade.tachiyomi.GoAnimeYuzonoProbeInstrumentation (target=app.anikku.dev)\n"
+                "remaining_soft_seconds=12345\n"
+                "INSTRUMENTATION_RESULT: failure=IllegalStateException\n"
+                "INSTRUMENTATION_RESULT: probeResult=runner-instrumentation\n"
+                "INSTRUMENTATION_STATUS_CODE: -1\n"
+                "INSTRUMENTATION_CODE: -1\n",
+                encoding="utf-8",
+            )
+            result = run_script(
+                SANITIZE_SCRIPT,
+                "--root",
+                str(output),
+                "--logs-dir",
+                str(log_dir),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_current_v3_report_shape_is_allowlisted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "audit-output"
+            output.mkdir()
+            (output / "report.md").write_text(
+                "\n".join(
+                    (
+                        "# Yuzono PT-BR Anime Probe",
+                        "",
+                        "| Metric | Value |",
+                        "| --- | ---: |",
+                        "| Audit complete | no |",
+                        "| Audit blockers | 1 |",
+                        "| Promotion candidates | 0 |",
+                        "| GoAnime baseline unique titles | 10 |",
+                        "| Candidate raw occurrences | 2 |",
+                        "| Candidate normalized occurrences | 2 |",
+                        "| Candidate union unique titles | 2 |",
+                        "| Cross-provider duplicate occurrences | 0 |",
+                        "| Candidate exclusive titles | 2 |",
+                        "| Combined unique titles | 12 |",
+                        "",
+                        "| Provider | Status | Stage | Language | Catalog complete | Titles | Overlap | Exclusive | Incremental unique | Resolution samples | Playback samples | Evidence | Terminal media | Failure |",
+                        "| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |",
+                        "| AnimeFire | partial | catalog | sub | yes | 2 | 0 | 2 | 2 | 1 | 1 | E5 | yes | - |",
+                        "",
+                        "## Audit blockers",
+                        "",
+                        "- yuzono.pt.animefire",
+                        "",
+                    )
+                ),
+                encoding="utf-8",
+            )
+            result = run_script(SANITIZE_SCRIPT, "--root", str(output))
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_recursive_sanitized_fixture_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "probe-state"

@@ -193,8 +193,8 @@ REPORT_HEADINGS = {
     "# Yuzono PT-BR Anime Probe",
     "| Metric | Value |",
     "| --- | ---: |",
-    "| Provider | Status | Stage | Language | Catalog complete | Titles | Overlap | Exclusive | Incremental unique | Playback samples | Failure |",
-    "| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |",
+    "| Provider | Status | Stage | Language | Catalog complete | Titles | Overlap | Exclusive | Incremental unique | Resolution samples | Playback samples | Evidence | Terminal media | Failure |",
+    "| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |",
     "## Promotion candidates",
     "## Audit blockers",
 }
@@ -581,14 +581,18 @@ def _validate_report_line(line: str, label: str, index: int) -> None:
         elif re.fullmatch(r"[0-9]+", value) is None:
             raise SanitizationError(f"{label}:{index}: report number is invalid")
         return
-    if len(cells) != 11:
+    if len(cells) != 14:
         raise SanitizationError(f"{label}:{index}: report table shape is invalid")
-    name, status, stage, language, complete, *numeric, failure = cells
+    name, status, stage, language, complete, *table_fields = cells
+    numeric = table_fields[:6]
+    evidence, terminal, failure = table_fields[6:]
     _summary_text(name, f"{label}:{index}.displayName")
     if status not in SUMMARY_STATUS or stage not in SUMMARY_STAGE or language not in SUMMARY_LANGUAGE:
         raise SanitizationError(f"{label}:{index}: report enum is invalid")
     if complete not in {"yes", "no"} or any(re.fullmatch(r"[0-9]+", value) is None for value in numeric):
         raise SanitizationError(f"{label}:{index}: report numeric field is invalid")
+    if evidence not in {"E4", "E5"} or terminal not in {"yes", "no"}:
+        raise SanitizationError(f"{label}:{index}: report evidence field is invalid")
     if failure != "-" and re.fullmatch(r"[a-z0-9._-]{1,80}", failure) is None:
         raise SanitizationError(f"{label}:{index}: report failure is invalid")
     _summary_text(failure, f"{label}:{index}.failure") if failure != "-" else None
@@ -742,6 +746,8 @@ def _log_line_allowed(line: str, kind: str) -> bool:
             r"^instrumentation:[A-Za-z0-9_.:/()=+\- ]{1,240}$",
             r"^INSTRUMENTATION_STATUS: (?:class|current|id|numtests|stream)=[A-Za-z0-9_.:/=+\- ]{0,240}$",
             r"^INSTRUMENTATION_RESULT: stream=[A-Za-z0-9_.:/=+\- ]{0,240}$",
+            r"^INSTRUMENTATION_RESULT: (?:failure=[A-Za-z0-9_$.-]{1,64}|probeResult=runner-instrumentation)$",
+            r"^INSTRUMENTATION_STATUS_CODE: -?[0-9]+$",
             r"^INSTRUMENTATION_CODE: -?[0-9]+$",
             r"^remaining_soft_seconds=[0-9]+$",
             r"^(?:Instrumentation command failed|Instrumentation runner reported failure|Instrumentation completed but result file is missing) for [a-z0-9._-]{1,80}$",
