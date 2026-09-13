@@ -493,6 +493,83 @@ class SanitizedOutputContractTest(unittest.TestCase):
             result = run_script(SANITIZE_SCRIPT, "--root", str(output))
             self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_aggregate_v3_provider_evidence_is_allowlisted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "audit-output"
+            output.mkdir()
+            (output / "results.json").write_text(
+                json.dumps(
+                    {
+                        "providerCount": 1,
+                        "statusCounts": {"ready": 1},
+                        "baselineGoAnimeUniqueTitles": 0,
+                        "candidateRawOccurrences": 1,
+                        "candidateNormalizedOccurrences": 1,
+                        "candidateUnionUniqueTitles": 1,
+                        "crossProviderDuplicateOccurrences": 0,
+                        "candidateExclusiveUniqueTitles": 1,
+                        "combinedUniqueTitles": 1,
+                        "candidateExclusiveTitles": ["Título seguro"],
+                        "identityMappingMode": "normalized-title-only",
+                        "canonicalMatched": 0,
+                        "canonicalUnresolved": 1,
+                        "auditComplete": True,
+                        "auditBlockers": [],
+                        "promotionCandidates": [],
+                        "promotionRejected": {},
+                        "providers": [
+                            {
+                                "sourceId": "yuzono.pt.animefire",
+                                "module": "animefire",
+                                "displayName": "AnimeFire",
+                                "status": "ready",
+                                "stage": "stream",
+                                "languageMode": "sub",
+                                "pagesVisited": 1,
+                                "catalogueComplete": True,
+                                "catalogueTermination": "natural-end",
+                                "rawTitleCount": 1,
+                                "distinctRawTitleCount": 1,
+                                "normalizedTitleCount": 1,
+                                "overlapWithGoAnime": 0,
+                                "exclusiveVsGoAnime": 1,
+                                "normalizationCollisions": 0,
+                                "incrementalUniqueContribution": 1,
+                                "incrementalExclusiveContribution": 1,
+                                "playbackSampleCount": 1,
+                                "resolutionSampleCount": 1,
+                                "failureKind": None,
+                                "schemaVersion": 3,
+                                "executionIdentity": {
+                                    "extensionPackage": "safe.package",
+                                    "extensionClass": "safe.package.Source",
+                                    "extensionApkSha256": "a" * 64,
+                                },
+                                "sampleLineage": {
+                                    "catalogueDigest": "b" * 64,
+                                    "animeOrdinal": 0,
+                                    "animeLabelHash": "c" * 64,
+                                    "episodeOrdinal": 0,
+                                    "episodeLabelHash": "d" * 64,
+                                    "resolverMode": "direct",
+                                },
+                                "mediaEvidence": {
+                                    "transportObserved": True,
+                                    "playerReadyObserved": True,
+                                    "timeAdvancedObserved": True,
+                                    "videoTrackObserved": True,
+                                    "firstFrameObserved": True,
+                                    "failureKind": None,
+                                },
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = run_script(SANITIZE_SCRIPT, "--root", str(output))
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_recursive_sanitized_fixture_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "probe-state"

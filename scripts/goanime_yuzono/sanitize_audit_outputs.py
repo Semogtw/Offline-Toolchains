@@ -137,8 +137,15 @@ AGGREGATE_PROVIDER_FIELDS = {
     "normalizationCollisions",
     "incrementalUniqueContribution",
     "incrementalExclusiveContribution",
+    "resolutionSampleCount",
     "playbackSampleCount",
     "failureKind",
+}
+AGGREGATE_PROVIDER_V3_FIELDS = AGGREGATE_PROVIDER_FIELDS | {
+    "schemaVersion",
+    "executionIdentity",
+    "sampleLineage",
+    "mediaEvidence",
 }
 AGGREGATE_FIELDS = {
     "providerCount",
@@ -445,7 +452,14 @@ def _validate_checkpoint_or_provider_tree(relative: Path, path: Path, label: str
 
 
 def _validate_aggregate_provider(value: Any, label: str) -> None:
-    payload = _field_object(value, AGGREGATE_PROVIDER_FIELDS, label)
+    if not isinstance(value, dict):
+        raise SanitizationError(f"{label}: schema root must be an object")
+    if "schemaVersion" in value:
+        if value.get("schemaVersion") != 3:
+            raise SanitizationError(f"{label}.schemaVersion: unsupported")
+        payload = _field_object(value, AGGREGATE_PROVIDER_V3_FIELDS, label)
+    else:
+        payload = _field_object(value, AGGREGATE_PROVIDER_FIELDS, label)
     for key in ("sourceId", "module", "displayName", "status", "stage", "languageMode", "catalogueTermination"):
         _safe_string(payload[key], f"{label}.{key}")
     if MODULE.fullmatch(payload["module"]) is None:
@@ -453,13 +467,54 @@ def _validate_aggregate_provider(value: Any, label: str) -> None:
     for key in (
         "pagesVisited", "rawTitleCount", "distinctRawTitleCount", "normalizedTitleCount",
         "overlapWithGoAnime", "exclusiveVsGoAnime", "normalizationCollisions",
-        "incrementalUniqueContribution", "incrementalExclusiveContribution", "playbackSampleCount",
+        "incrementalUniqueContribution", "incrementalExclusiveContribution", "resolutionSampleCount",
+        "playbackSampleCount",
     ):
         _nonnegative(payload[key], f"{label}.{key}")
     if type(payload["catalogueComplete"]) is not bool and payload["catalogueComplete"] is not None:
         raise SanitizationError(f"{label}.catalogueComplete: expected boolean or null")
     if payload["failureKind"] is not None:
         _safe_string(payload["failureKind"], f"{label}.failureKind")
+
+    if "schemaVersion" not in payload:
+        return
+
+    identity = _field_object(payload["executionIdentity"], EXECUTION_IDENTITY_FIELDS, f"{label}.executionIdentity")
+    _safe_string(identity["extensionPackage"], f"{label}.executionIdentity.extensionPackage", allow_empty=False)
+    _safe_string(identity["extensionClass"], f"{label}.executionIdentity.extensionClass", allow_empty=False)
+    if re.fullmatch(r"[A-Za-z0-9_.]{3,200}", identity["extensionPackage"]) is None:
+        raise SanitizationError(f"{label}.executionIdentity.extensionPackage: invalid")
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)+", identity["extensionClass"]) is None:
+        raise SanitizationError(f"{label}.executionIdentity.extensionClass: invalid")
+    _validate_sha(identity["extensionApkSha256"], f"{label}.executionIdentity.extensionApkSha256", SHA256)
+
+    lineage = payload["sampleLineage"]
+    if lineage is not None:
+        lineage = _field_object(lineage, SAMPLE_LINEAGE_FIELDS, f"{label}.sampleLineage")
+        for key in ("catalogueDigest", "animeLabelHash", "episodeLabelHash"):
+            _validate_sha(lineage[key], f"{label}.sampleLineage.{key}", SHA256)
+        for key in ("animeOrdinal", "episodeOrdinal"):
+            _nonnegative(lineage[key], f"{label}.sampleLineage.{key}")
+        if lineage["resolverMode"] not in {"direct", "hoster"}:
+            raise SanitizationError(f"{label}.sampleLineage.resolverMode: unsupported")
+
+    if payload["playbackSampleCount"] > payload["resolutionSampleCount"]:
+        raise SanitizationError(f"{label}.playbackSampleCount: exceeds resolutionSampleCount")
+    media = _field_object(payload["mediaEvidence"], MEDIA_EVIDENCE_FIELDS, f"{label}.mediaEvidence")
+    for key in MEDIA_EVIDENCE_FIELDS - {"failureKind"}:
+        if type(media[key]) is not bool:
+            raise SanitizationError(f"{label}.mediaEvidence.{key}: expected boolean")
+    if media["failureKind"] is not None:
+        _safe_string(media["failureKind"], f"{label}.mediaEvidence.failureKind")
+    terminal_media = lineage is not None and payload["playbackSampleCount"] > 0 and all(
+        media[key] is True for key in MEDIA_EVIDENCE_FIELDS - {"failureKind"}
+    )
+    if terminal_media and media["failureKind"] is not None:
+        raise SanitizationError(f"{label}.mediaEvidence.failureKind: terminal media cannot fail")
+    if payload["status"] == "ready" and (
+        payload["catalogueComplete"] is not True or not terminal_media
+    ):
+        raise SanitizationError(f"{label}: ready result lacks terminal media evidence")
 
 
 def _validate_aggregate(value: Any, label: str) -> None:
