@@ -87,6 +87,8 @@ jobs:
 
       - name: Expose Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - name: Set up Flutter 3.44.1
         uses: subosito/flutter-action@v2
