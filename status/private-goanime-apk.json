@@ -1,11 +1,11 @@
 {
-  "conclusion": "failure",
-  "run_id": 34929485819,
-  "run_number": 28,
+  "conclusion": null,
+  "run_id": 34929706063,
+  "run_number": 29,
   "schema_version": 1,
   "source_ref": "31e54cc8540063c5d99132a8e82e55a68b54b9c6",
-  "status": "completed",
-  "trigger_sha": "ea444adf15bd7d05e5e73499fad807fa97d4887d",
-  "updated_at": "2026-09-15T04:38:14Z",
+  "status": "queued",
+  "trigger_sha": "83df7affa9d2962bb66f2f6d3c2ecbd7375ea25f",
+  "updated_at": "2026-09-15T04:40:04Z",
   "workflow": "Build encrypted private GoAnime APK"
 }
