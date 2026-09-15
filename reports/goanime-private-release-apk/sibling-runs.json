@@ -1,73 +1,73 @@
 {
   "schema_version": 1,
-  "trigger_run_id": 34929485947,
-  "head_sha": "ea444adf15bd7d05e5e73499fad807fa97d4887d",
+  "trigger_run_id": 34929706540,
+  "head_sha": "83df7affa9d2962bb66f2f6d3c2ecbd7375ea25f",
   "runs": [
     {
-      "id": 34929491686,
+      "id": 34929713204,
       "name": "Report private GoAnime workflow status",
-      "status": "queued",
+      "status": "in_progress",
       "conclusion": null,
       "event": "workflow_run",
-      "head_sha": "ea444adf15bd7d05e5e73499fad807fa97d4887d",
-      "created_at": "2026-09-15T04:36:36Z",
-      "updated_at": "2026-09-15T04:36:41Z",
-      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/34929491686"
+      "head_sha": "83df7affa9d2962bb66f2f6d3c2ecbd7375ea25f",
+      "created_at": "2026-09-15T04:40:10Z",
+      "updated_at": "2026-09-15T04:40:18Z",
+      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/34929713204"
     },
     {
-      "id": 34929487637,
+      "id": 34929708349,
       "name": "Report private GoAnime workflow status",
       "status": "completed",
       "conclusion": "success",
       "event": "workflow_run",
-      "head_sha": "ea444adf15bd7d05e5e73499fad807fa97d4887d",
-      "created_at": "2026-09-15T04:36:32Z",
-      "updated_at": "2026-09-15T04:36:41Z",
-      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/34929487637"
+      "head_sha": "83df7affa9d2962bb66f2f6d3c2ecbd7375ea25f",
+      "created_at": "2026-09-15T04:40:06Z",
+      "updated_at": "2026-09-15T04:40:16Z",
+      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/34929708349"
     },
     {
-      "id": 34929485775,
+      "id": 34929706791,
       "name": "Toolchain security gates",
-      "status": "in_progress",
-      "conclusion": null,
+      "status": "completed",
+      "conclusion": "success",
       "event": "push",
-      "head_sha": "ea444adf15bd7d05e5e73499fad807fa97d4887d",
-      "created_at": "2026-09-15T04:36:30Z",
-      "updated_at": "2026-09-15T04:36:33Z",
-      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/34929485775"
+      "head_sha": "83df7affa9d2962bb66f2f6d3c2ecbd7375ea25f",
+      "created_at": "2026-09-15T04:40:05Z",
+      "updated_at": "2026-09-15T04:40:13Z",
+      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/34929706791"
     },
     {
-      "id": 34929486140,
-      "name": "Build encrypted private GoAnime release APK",
-      "status": "in_progress",
-      "conclusion": null,
-      "event": "push",
-      "head_sha": "ea444adf15bd7d05e5e73499fad807fa97d4887d",
-      "created_at": "2026-09-15T04:36:30Z",
-      "updated_at": "2026-09-15T04:36:33Z",
-      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/34929486140"
-    },
-    {
-      "id": 34929485819,
+      "id": 34929706063,
       "name": "Build encrypted private GoAnime APK",
       "status": "in_progress",
       "conclusion": null,
       "event": "push",
-      "head_sha": "ea444adf15bd7d05e5e73499fad807fa97d4887d",
-      "created_at": "2026-09-15T04:36:30Z",
-      "updated_at": "2026-09-15T04:36:34Z",
-      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/34929485819"
+      "head_sha": "83df7affa9d2962bb66f2f6d3c2ecbd7375ea25f",
+      "created_at": "2026-09-15T04:40:04Z",
+      "updated_at": "2026-09-15T04:40:08Z",
+      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/34929706063"
     },
     {
-      "id": 34929485947,
+      "id": 34929706630,
+      "name": "Build encrypted private GoAnime release APK",
+      "status": "in_progress",
+      "conclusion": null,
+      "event": "push",
+      "head_sha": "83df7affa9d2962bb66f2f6d3c2ecbd7375ea25f",
+      "created_at": "2026-09-15T04:40:04Z",
+      "updated_at": "2026-09-15T04:40:08Z",
+      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/34929706630"
+    },
+    {
+      "id": 34929706540,
       "name": "Probe private GoAnime APK trigger",
       "status": "completed",
       "conclusion": "success",
       "event": "push",
-      "head_sha": "ea444adf15bd7d05e5e73499fad807fa97d4887d",
-      "created_at": "2026-09-15T04:36:30Z",
-      "updated_at": "2026-09-15T04:36:36Z",
-      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/34929485947"
+      "head_sha": "83df7affa9d2962bb66f2f6d3c2ecbd7375ea25f",
+      "created_at": "2026-09-15T04:40:04Z",
+      "updated_at": "2026-09-15T04:40:14Z",
+      "html_url": "https://github.com/Semogtw/Offline-Toolchains/actions/runs/34929706540"
     }
   ]
 }
