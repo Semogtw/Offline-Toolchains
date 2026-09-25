@@ -1,0 +1,11 @@
+{
+  "artifactId": "10868362434",
+  "artifactName": "goanime-super-animes-audit-36143861592",
+  "auditResult": "success",
+  "auditStatus": "partial",
+  "finishedAt": "2026-09-25T13:55:15.133770Z",
+  "resolveResult": "success",
+  "runId": 36143861592,
+  "schemaVersion": 2,
+  "toolchainsTriggerSha": "0bd0c89178fa6480837ee687b6f391c9fa638cbc"
+}
