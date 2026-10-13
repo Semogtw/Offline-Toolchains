@@ -1,0 +1,10 @@
+{
+  "event": "schedule",
+  "finishedAt": "2026-10-13T16:15:56.446537Z",
+  "normalizeResult": "success",
+  "runAttempt": 1,
+  "runId": 38428584769,
+  "schemaVersion": 1,
+  "toolchainsTriggerSha": "f3a9bf15889ae65d1aa9892a21f3548848ffa68a",
+  "verifyResult": "failure"
+}
