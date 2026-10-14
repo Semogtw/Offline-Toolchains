@@ -1,0 +1,132 @@
+name: Verify GoAnime manga SQLite PR262 exact SHA
+
+# Public toolchain only receives the encrypted output. The private GoAnime
+# checkout and unencrypted optimized SQLite are never uploaded.
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/validate-goanime-manga-sqlite-pr262-exact.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Offline query benchmarks, packaged candidate, and Flutter regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout trusted Toolchains files
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          persist-credentials: false
+
+      - name: Require private repository read token
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout exact private GoAnime PR commit
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: 07fd8ac021f3d96d084fa5f3f4170ba20c0c4d79
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify exact SHA
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "07fd8ac021f3d96d084fa5f3f4170ba20c0c4d79"
+          test -s assets/data/manga_availability.db
+          test -s assets/data/manga_recommendation_index.json
+
+      - name: Run Python SQLite regression tests
+        working-directory: private-source
+        run: |
+          python3 -m compileall -q tools/manga tools/tests
+          python3 -m unittest -v tools.tests.test_audit_manga_sqlite_queries tools.tests.test_benchmark_manga_sqlite_indexes tools.tests.test_stage_manga_sqlite_indexes
+
+      - name: Benchmark unchanged production SQLite
+        working-directory: private-source
+        run: |
+          mkdir -p .local/manga-sqlite-pr262
+          python3 -m tools.manga.audit_manga_sqlite_queries --database assets/data/manga_availability.db --runs 7 --report-json .local/manga-sqlite-pr262/baseline.json
+          python3 -m tools.manga.benchmark_manga_sqlite_indexes --database assets/data/manga_availability.db --runs 7 --report-json .local/manga-sqlite-pr262/index_ab.json
+
+      - name: Stage and audit the indexed source-identical SQLite
+        working-directory: private-source
+        run: |
+          python3 -m tools.manga.stage_manga_sqlite_indexes --output-dir .local/manga-sqlite-pr262/staged
+          python3 tools/manga/evaluate_manga_recommendation_index.py --catalog-db .local/manga-sqlite-pr262/staged/manga_availability.db --index .local/manga-sqlite-pr262/staged/manga_recommendation_index.json --report .local/manga-sqlite-pr262/evaluation.json
+
+      - name: Encrypt private candidate and reports
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_dir="$GITHUB_WORKSPACE/private-source/.local/manga-sqlite-pr262"
+          tar -C "$source_dir" -czf "$RUNNER_TEMP/goanime-manga-sqlite-pr262.tar.gz" staged baseline.json index_ab.json evaluation.json
+          export GNUPGHOME="$RUNNER_TEMP/goanime-manga-sqlite-gpg"
+          mkdir -p "$GNUPGHOME" "$RUNNER_TEMP/manga-sqlite-encrypted"
+          chmod 700 "$GNUPGHOME"
+          gpg --batch --import "$GITHUB_WORKSPACE/trusted-source/keys/source-bundles-public.asc"
+          fingerprint="2DE29DC31427CF0A911AB96175679291435059B0"
+          gpg --batch --with-colons --fingerprint "$fingerprint" | grep -F "$fingerprint" >/dev/null
+          gpg --batch --yes --trust-model always --recipient "$fingerprint" --output "$RUNNER_TEMP/manga-sqlite-encrypted/goanime-manga-sqlite-pr262.tar.gz.gpg" --encrypt "$RUNNER_TEMP/goanime-manga-sqlite-pr262.tar.gz"
+          rm -f "$RUNNER_TEMP/goanime-manga-sqlite-pr262.tar.gz"
+          test -s "$RUNNER_TEMP/manga-sqlite-encrypted/goanime-manga-sqlite-pr262.tar.gz.gpg"
+          echo "artifact_dir=$RUNNER_TEMP/manga-sqlite-encrypted" >> "$GITHUB_OUTPUT"
+
+      - name: Upload encrypted private SQLite candidate
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-pr262-manga-indexed-sqlite-encrypted
+          path: ${{ steps.package.outputs.artifact_dir }}
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.44.1'
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: private-source
+        run: |
+          flutter config --no-analytics
+          flutter pub get --enforce-lockfile
+          (cd packages/goanime_core && dart pub get --enforce-lockfile)
+
+      - name: Check changed Dart formatting
+        working-directory: private-source
+        run: |
+          dart format --output=none --set-exit-if-changed lib/app/bootstrap.dart lib/services/runtime_database_update_service.dart lib/services/manga/manga_bundled_catalog_source.dart lib/services/manga/manga_runtime_database_catalog_source.dart lib/services/manga/storage/manga_bundled_recommendation_index.dart tools/manga/build_global_manga_availability.dart test/services/manga/manga_bundled_catalog_source_test.dart test/tools/manga_metadata_only_finalizer_test.dart test/services/manga/storage/manga_bundled_recommendation_index_test.dart test/services/runtime_database_update_recovery_test.dart
+
+      - name: Analyze touched Dart code
+        working-directory: private-source
+        run: |
+          flutter analyze --no-pub lib/services/manga/manga_bundled_catalog_source.dart lib/services/manga/manga_runtime_database_catalog_source.dart lib/services/manga/storage/manga_bundled_recommendation_index.dart tools/manga/build_global_manga_availability.dart
+
+      - name: Run focused Flutter regressions
+        working-directory: private-source
+        run: |
+          flutter test --no-pub --concurrency=1 test/services/manga/manga_bundled_catalog_source_test.dart test/tools/manga_metadata_only_finalizer_test.dart test/services/manga/storage/manga_bundled_recommendation_index_test.dart test/services/runtime_database_update_recovery_test.dart
+
+      - name: Remove temporary private source
+        if: always()
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source"
+          rm -rf "$RUNNER_TEMP/goanime-manga-sqlite-gpg"
