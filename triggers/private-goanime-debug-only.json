@@ -1,6 +1,7 @@
 {
   "project": "goanime",
-  "ref": "31e54cc8540063c5d99132a8e82e55a68b54b9c6",
+  "ref": "0fa25fd77476b2d14b3336244daeba0d23fccf13",
   "requested_by": "chatgpt",
-  "requested_at": "2026-09-15T04:45:00Z"
+  "purpose": "APK testing PR #267 aesthetic UI branch",
+  "requested_at": "2026-10-14T12:16:00Z"
 }
