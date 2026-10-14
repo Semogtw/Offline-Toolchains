@@ -1,0 +1,61 @@
+name: Diagnose GoAnime PR262 adapter contract expectations
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/diagnose-goanime-pr262-manhastro-expectations.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  adapter:
+    name: Isolated recommendation adapter regression
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact private GoAnime commit
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: 88e39d3e5d948016c2b96254197e08f77e9c8335
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.44.1'
+          cache: true
+
+      - name: Run isolated adapter tests and publish assertion-only diagnostics
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter pub get --enforce-lockfile >/dev/null
+          set +e
+          flutter test --no-pub --reporter expanded test/services/manga/manhastro_recommendations_adapter_test.dart > "$RUNNER_TEMP/adapter-test.log" 2>&1
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo 'Adapter assertions (synthetic test fixtures only):'
+            grep -E '^([0-9]+:[0-9]+ .*\[E\]| *Expected:| *Actual:| *Which:| *TestFailure| *Some tests failed| *Expected .*but)' "$RUNNER_TEMP/adapter-test.log" | tail -60 || true
+          else
+            echo 'All adapter regression tests passed'
+          fi
+          rm -f "$RUNNER_TEMP/adapter-test.log"
+          exit "$status"
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$RUNNER_TEMP/adapter-test.log"
