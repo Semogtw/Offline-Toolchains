@@ -33,7 +33,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
-          ref: 3e19b4d366db5b8d4009bc804a90165470809a83
+          ref: 1d15d22e443439c4222a9f40aa6ab5859fdfd379
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
           fetch-depth: 1
@@ -47,7 +47,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "3e19b4d366db5b8d4009bc804a90165470809a83"
+          test "$(git rev-parse HEAD)" = "1d15d22e443439c4222a9f40aa6ab5859fdfd379"
           test -s assets/data/manga_availability.db
           test -s assets/data/manga_recommendation_index.json
 
@@ -124,6 +124,58 @@ jobs:
         working-directory: private-source
         run: |
           flutter test --no-pub --concurrency=1 test/services/manga/manga_bundled_catalog_source_test.dart test/tools/manga_metadata_only_finalizer_test.dart test/services/manga/storage/manga_bundled_recommendation_index_test.dart test/services/runtime_database_update_recovery_test.dart
+
+      - name: Promote validated index-only catalog and Dart format to PR262
+        working-directory: private-source
+        shell: bash
+        env:
+          GOANIME_WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          source_sha="1d15d22e443439c4222a9f40aa6ab5859fdfd379"
+          branch="feat/manga-recommendation-offline-index-20261013"
+          test "$(git rev-parse HEAD)" = "$source_sha"
+          staged=".local/manga-sqlite-pr262/staged"
+          test -s "$staged/manga_availability.db"
+          test -s "$staged/manga_availability.db.version"
+          test -s "$staged/manga_recommendation_index.json"
+          cp "$staged/manga_availability.db" assets/data/manga_availability.db
+          cp "$staged/manga_availability.db.version" assets/data/manga_availability.db.version
+          cp "$staged/manga_recommendation_index.json" assets/data/manga_recommendation_index.json
+          python3 tools/manga/evaluate_manga_recommendation_index.py --catalog-db assets/data/manga_availability.db --index assets/data/manga_recommendation_index.json --report .local/manga-sqlite-pr262/promoted-check.json
+          git add -- assets/data/manga_availability.db assets/data/manga_availability.db.version assets/data/manga_recommendation_index.json
+          git add -- lib/app/bootstrap.dart lib/services/runtime_database_update_service.dart lib/services/manga/manga_bundled_catalog_source.dart lib/services/manga/manga_runtime_database_catalog_source.dart lib/services/manga/storage/manga_bundled_recommendation_index.dart tools/manga/build_global_manga_availability.dart test/services/manga/manga_bundled_catalog_source_test.dart test/tools/manga_metadata_only_finalizer_test.dart test/services/manga/storage/manga_bundled_recommendation_index_test.dart test/services/runtime_database_update_recovery_test.dart
+          git diff --cached --quiet && { echo 'No changes to promote'; exit 0; }
+          git config user.name "goanime-toolchains[bot]"
+          git config user.email "goanime-toolchains@users.noreply.github.com"
+          git commit -m "perf(manga): ship verified indexed catalog and format tested Dart"
+          export PUBLISH_TOKEN="$GOANIME_WRITE_TOKEN"
+          if [ -z "$PUBLISH_TOKEN" ]; then export PUBLISH_TOKEN="$PRIVATE_REPOSITORIES_TOKEN"; fi
+          test -n "$PUBLISH_TOKEN" || { echo 'Missing private repo push token'; exit 1; }
+          askpass="$RUNNER_TEMP/goanime-pr262-git-askpass.sh"
+          cat > "$askpass" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' 'x-access-token' ;;
+            *Password*) printf '%s\n' "$PUBLISH_TOKEN" ;;
+          esac
+          SH
+          chmod 700 "$askpass"
+          export GIT_ASKPASS="$askpass"
+          export GIT_TERMINAL_PROMPT=0
+          remote="https://github.com/Semogtw/goanime-mobile.git"
+          remote_head="$(git ls-remote "$remote" "refs/heads/$branch" | cut -f1)"
+          test -n "$remote_head"
+          if [ "$remote_head" != "$source_sha" ]; then
+            git fetch --no-tags "$remote" "refs/heads/$branch"
+            overlap="$(git diff --name-only "$source_sha" "$remote_head" -- assets/data/manga_availability.db assets/data/manga_availability.db.version assets/data/manga_recommendation_index.json lib/app/bootstrap.dart lib/services/runtime_database_update_service.dart lib/services/manga/manga_bundled_catalog_source.dart lib/services/manga/manga_runtime_database_catalog_source.dart lib/services/manga/storage/manga_bundled_recommendation_index.dart tools/manga/build_global_manga_availability.dart test/services/manga/manga_bundled_catalog_source_test.dart test/tools/manga_metadata_only_finalizer_test.dart test/services/manga/storage/manga_bundled_recommendation_index_test.dart test/services/runtime_database_update_recovery_test.dart)"
+            test -z "$overlap" || { echo 'Branch changed tested paths; refusing rebase'; exit 1; }
+            git rebase --onto "$remote_head" "$source_sha" HEAD
+          fi
+          git push "$remote" "HEAD:refs/heads/$branch"
+          echo "Validated indexed SQLite promoted to private GoAnime PR branch: $(git rev-parse HEAD)"
+          rm -f "$askpass"
 
       - name: Remove temporary private source
         if: always()
