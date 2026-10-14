@@ -1,0 +1,125 @@
+name: GoAnime PR262 extended offline regression checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/validate-goanime-pr262-extended-20261014.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regressions:
+    name: Expanded Python, Flutter, and manga services suite
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - name: Checkout trusted Toolchains files
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          persist-credentials: false
+
+      - name: Checkout exact private GoAnime revision
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: 078124ef9d50882693d777ed38b7992fa3c59267
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Assert tested source SHA and packaged SQLite version
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "078124ef9d50882693d777ed38b7992fa3c59267"
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, json
+          p = Path("assets/data")
+          digest = hashlib.sha256((p / "manga_availability.db").read_bytes()).hexdigest()
+          assert digest == (p / "manga_availability.db.version").read_text().strip()
+          assert digest == json.loads((p / "manga_recommendation_index.json").read_text())["catalogSha256"]
+          print("Source database, digest and recommendation sidecar: coherent")
+          PY
+
+      - name: Python manga tool and repository guard suite
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          python3 -m compileall -q tools/manga tools/tests
+          python3 -m unittest discover -s tools/tests -p 'test_*.py'
+          python3 tools/manga/evaluate_manga_recommendation_index.py --catalog-db assets/data/manga_availability.db --index assets/data/manga_recommendation_index.json
+          python3 tools/validate_repository_guards.py
+          bash ./tools/validate_project_health.sh
+
+      - name: Set up pinned Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.44.1'
+          cache: true
+
+      - name: Resolve locked dependencies
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get --enforce-lockfile
+          (cd packages/goanime_core && dart pub get --enforce-lockfile)
+          bash ./tools/validate_ci_lockfiles.sh
+
+      - name: Full-project static analysis
+        working-directory: private-source
+        run: flutter analyze --no-pub
+
+      - name: Expanded manga and recommendation service regressions
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=(
+            test/services/manga/manga_availability_service_test.dart
+            test/services/manga/manga_runtime_database_catalog_source_test.dart
+            test/services/manga/manga_search_coordinator_test.dart
+            test/services/manga/manga_recommendation_service_test.dart
+            test/services/manga/manga_runtime_availability_source_test.dart
+            test/services/manga/manga_readable_search_adapter_test.dart
+            test/services/manga/manga_search_cache_policy_test.dart
+            test/services/manga/manga_search_catalog_persistence_test.dart
+            test/services/manga/manga_catalog_availability_service_test.dart
+            test/services/manga/manhastro_recommendations_adapter_test.dart
+            test/services/manga/manga_availability_production_asset_validation_test.dart
+            test/services/manga/manga_bundled_catalog_source_test.dart
+          )
+          # Independent invocations isolate shared fakes and global sqflite
+          # state, as recommended by GoAnime's own PR-fast test script.
+          for suite in "${tests[@]}"; do
+            test -f "$suite"
+            echo "Checking $(basename "$suite")"
+            if flutter test --no-pub --concurrency=1 "$suite" >"$RUNNER_TEMP/goanime-test.log" 2>&1; then
+              echo "PASS $(basename "$suite")"
+            else
+              echo "::error::Failed $(basename "$suite"); detailed private test output withheld from public logs"
+              exit 1
+            fi
+          done
+
+      - name: GoAnime core unit tests
+        working-directory: private-source/packages/goanime_core
+        run: dart test
+
+      - name: Remove private checkout and transient files
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source" "$RUNNER_TEMP/goanime-test.log"
