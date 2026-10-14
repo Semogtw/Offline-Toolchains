@@ -1,0 +1,146 @@
+name: GoAnime optimized manga SQLite APK certification
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/verify-goanime-manga-sqlite-shipped-20261014.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  certify:
+    name: Validate shipped SQLite and Android APK from exact GoAnime commit
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout trusted source
+        uses: actions/checkout@v6
+        with:
+          path: trusted-source
+          persist-credentials: false
+
+      - name: Checkout exact private optimized GoAnime commit
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: a968ac0f73f62d3f3bf309a7c46311b0f96e7bcb
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify exact source, catalog digest and recommendation references
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "a968ac0f73f62d3f3bf309a7c46311b0f96e7bcb"
+          python3 -m unittest -v tools.tests.test_audit_manga_sqlite_queries tools.tests.test_benchmark_manga_sqlite_indexes tools.tests.test_stage_manga_sqlite_indexes
+          python3 tools/manga/evaluate_manga_recommendation_index.py --catalog-db assets/data/manga_availability.db --index assets/data/manga_recommendation_index.json
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          root = Path("assets/data")
+          content = (root / "manga_availability.db").read_bytes()
+          digest = hashlib.sha256(content).hexdigest()
+          assert digest == (root / "manga_availability.db.version").read_text().strip()
+          assert digest == json.loads((root / "manga_recommendation_index.json").read_text())["catalogSha256"]
+          assert digest == "76cc6a17ee663a7dd7955e238509a0061d3ad18a3c43d7dca76f1085a203b65e"
+          print("Validated packaged source catalog SHA256:", digest)
+          PY
+
+      - name: Configure Java 17 and Android SDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.44.1'
+          cache: true
+
+      - name: Resolve GoAnime Flutter dependencies
+        working-directory: private-source
+        run: |
+          flutter config --no-analytics
+          flutter pub get --enforce-lockfile
+          (cd packages/goanime_core && dart pub get --enforce-lockfile)
+
+      - name: Validate committed Dart formatting and analyzer
+        working-directory: private-source
+        run: |
+          dart format --output=none --set-exit-if-changed lib/app/bootstrap.dart lib/services/runtime_database_update_service.dart lib/services/manga/manga_bundled_catalog_source.dart lib/services/manga/manga_runtime_database_catalog_source.dart lib/services/manga/storage/manga_bundled_recommendation_index.dart tools/manga/build_global_manga_availability.dart test/services/manga/manga_bundled_catalog_source_test.dart test/tools/manga_metadata_only_finalizer_test.dart test/services/manga/storage/manga_bundled_recommendation_index_test.dart test/services/runtime_database_update_recovery_test.dart
+          flutter analyze --no-pub lib/services/manga/manga_bundled_catalog_source.dart lib/services/manga/manga_runtime_database_catalog_source.dart lib/services/manga/storage/manga_bundled_recommendation_index.dart tools/manga/build_global_manga_availability.dart
+
+      - name: Test real production SQLite and other manga regressions
+        working-directory: private-source
+        run: |
+          flutter test --no-pub --concurrency=1 test/services/manga/manga_availability_production_asset_validation_test.dart test/services/manga/manga_bundled_catalog_source_test.dart test/tools/manga_metadata_only_finalizer_test.dart test/services/manga/storage/manga_bundled_recommendation_index_test.dart test/services/runtime_database_update_recovery_test.dart
+
+      - name: Build Android arm64 APK
+        working-directory: private-source
+        run: flutter build apk --debug --no-pub --target-platform=android-arm64
+
+      - name: Verify real DB SHA and recommendation index INSIDE APK
+        working-directory: private-source
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, zipfile
+          from pathlib import Path
+          apk = Path("build/app/outputs/flutter-apk/app-debug.apk")
+          assert apk.is_file() and apk.stat().st_size > 1000000
+          with zipfile.ZipFile(apk) as reader:
+              names = reader.namelist()
+              def asset(suffix):
+                  matches = [name for name in names if name.endswith("/assets/data/" + suffix)]
+                  assert len(matches) == 1, (suffix, matches)
+                  return reader.read(matches[0])
+              digest = hashlib.sha256(asset("manga_availability.db")).hexdigest()
+              version = asset("manga_availability.db.version").decode().strip()
+              linked = json.loads(asset("manga_recommendation_index.json"))["catalogSha256"]
+              assert digest == version == linked
+              assert digest == "76cc6a17ee663a7dd7955e238509a0061d3ad18a3c43d7dca76f1085a203b65e"
+              print(json.dumps({"apkBytes": apk.stat().st_size, "assetBytes": len(asset("manga_availability.db")), "catalogSha256": digest}, indent=2))
+          PY
+
+      - name: Encrypt private debug APK
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GNUPGHOME="$RUNNER_TEMP/goanime-sqlite-cert-gpg"
+          mkdir -p "$GNUPGHOME" "$RUNNER_TEMP/goanime-sqlite-cert-encrypted"
+          chmod 700 "$GNUPGHOME"
+          gpg --batch --import "$GITHUB_WORKSPACE/trusted-source/keys/source-bundles-public.asc"
+          fingerprint="2DE29DC31427CF0A911AB96175679291435059B0"
+          gpg --batch --yes --trust-model always --recipient "$fingerprint" --output "$RUNNER_TEMP/goanime-sqlite-cert-encrypted/GoAnime-optimized-manga-pr262-debug-arm64.apk.gpg" --encrypt "$GITHUB_WORKSPACE/private-source/build/app/outputs/flutter-apk/app-debug.apk"
+          test -s "$RUNNER_TEMP/goanime-sqlite-cert-encrypted/GoAnime-optimized-manga-pr262-debug-arm64.apk.gpg"
+          echo "out=$RUNNER_TEMP/goanime-sqlite-cert-encrypted" >> "$GITHUB_OUTPUT"
+
+      - name: Upload encrypted private APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-optimized-manga-pr262-debug-arm64-encrypted
+          path: ${{ steps.pack.outputs.out }}
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Remove temporary private source
+        if: always()
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source"
+          rm -rf "$RUNNER_TEMP/goanime-sqlite-cert-gpg"
