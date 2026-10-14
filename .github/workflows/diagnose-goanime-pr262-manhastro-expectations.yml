@@ -49,7 +49,9 @@ jobs:
           set -e
           if [ "$status" -ne 0 ]; then
             echo 'Adapter assertions (synthetic test fixtures only):'
-            grep -E '^([0-9]+:[0-9]+ .*\[E\]| *Expected:| *Actual:| *Which:| *TestFailure| *Some tests failed| *Expected .*but)' "$RUNNER_TEMP/adapter-test.log" | tail -60 || true
+            # Only the synthetic failing assertion block, not private source.
+            awk '/draws genuinely new genres from a wider candidate pool \[E\]/{flag=1; count=0} flag && count++<28{print} flag && count>=28{exit}' "$RUNNER_TEMP/adapter-test.log" || true
+            grep -E '^([0-9]+:[0-9]+ .*\[E\]| *Expected:| *Actual:| *Which:)' "$RUNNER_TEMP/adapter-test.log" | tail -30 || true
           else
             echo 'All adapter regression tests passed'
           fi
