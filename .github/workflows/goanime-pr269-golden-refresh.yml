@@ -1,0 +1,126 @@
+name: GoAnime PR269 bounded golden refresh
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-pr269-golden-refresh/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-pr269-golden-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout trusted toolchain control
+        uses: actions/checkout@v6
+        with:
+          path: control
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Resolve the exact PR head
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-pr269-golden-refresh/*.request' | head -n1)"
+          test -n "$request"
+          read -r project sha < "control/$request"
+          test "$project" = 'goanime-pr269'
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout precise private GoAnime source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.target.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Configure pinned Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Generate actual goldens using canonical Flutter renderer
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter pub get >/dev/null
+          flutter test --no-pub --update-goldens \
+            test/widgets/visual_golden_test.dart \
+            test/widgets/visual_screen_golden_test.dart
+
+      - name: Compare with original pixel baselines before promotion
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet Pillow==11.3.0
+          python3 - <<'PY'
+          import io
+          import subprocess
+          from PIL import Image, ImageChops
+
+          allowed = {
+              "test/widgets/goldens/goanime_hero_banner_compact.png",
+              "test/widgets/goldens/goanime_player_error.png",
+              "test/widgets/goldens/goanime_home_desktop.png",
+          }
+          modified = set(subprocess.check_output(
+              ["git", "diff", "--name-only", "--", "test/widgets/goldens"],
+              text=True,
+          ).splitlines())
+          if modified != allowed:
+              raise SystemExit(f"Unexpected golden changes: {sorted(modified)}; expected: {sorted(allowed)}")
+          for path in sorted(allowed):
+              original = Image.open(io.BytesIO(subprocess.check_output(
+                  ["git", "show", f"HEAD:{path}"],
+              ))).convert("RGBA")
+              current = Image.open(path).convert("RGBA")
+              if original.size != current.size:
+                  raise SystemExit(f"{path}: changed image dimensions {original.size} -> {current.size}")
+              diff = ImageChops.difference(original, current)
+              pixels = sum(1 for pixel in diff.getdata() if any(pixel))
+              ratio = pixels / (current.width * current.height)
+              print(f"{path}: {pixels} changed pixels / {current.width * current.height} = {ratio:.4%}")
+              if ratio > 0.025:
+                  raise SystemExit(f"{path}: visual delta above limited 2.5% review threshold")
+          PY
+
+      - name: Push only validated golden baselines to the exact PR branch
+        working-directory: source
+        shell: bash
+        env:
+          PRIVATE_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          EXPECTED_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_TOKEN"
+          branch='feat/manga-progressive-local-first-ui-20261015'
+          header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$PRIVATE_TOKEN" | base64 -w0)"
+          remote='https://github.com/Semogtw/goanime-mobile.git'
+          remote_sha="$(git -c "http.extraheader=$header" ls-remote "$remote" "refs/heads/$branch" | cut -f1)"
+          test "$remote_sha" = "$EXPECTED_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- \
+            test/widgets/goldens/goanime_hero_banner_compact.png \
+            test/widgets/goldens/goanime_player_error.png \
+            test/widgets/goldens/goanime_home_desktop.png
+          git commit -m 'test(golden): rebaseline three changed visuals on pinned Flutter 3.44.1'
+          git -c "http.extraheader=$header" push "$remote" "HEAD:refs/heads/$branch"
