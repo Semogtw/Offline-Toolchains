@@ -66,8 +66,11 @@ jobs:
             tools/manga/manga_reference_resolver.dart \
             tools/manga/manga_reference_index.dart \
             tools/manga/manga_metadata_refresh.dart \
+            tools/manga/manga_reference_resolution_checkpoint.dart \
+            tools/manga/refresh_manga_metadata_cache.dart \
             test/tools/manga_reference_resolver_test.dart \
             test/tools/manga_reference_index_test.dart \
+            test/tools/manga_reference_resolution_checkpoint_test.dart \
             test/tools/manga_reference_resolution_integration_test.dart \
             test/tools/manga/manga_metadata_identity_reconciler_test.dart
           git diff --check
@@ -94,8 +97,11 @@ jobs:
             tools/manga/manga_reference_resolver.dart \
             tools/manga/manga_reference_index.dart \
             tools/manga/manga_metadata_refresh.dart \
+            tools/manga/manga_reference_resolution_checkpoint.dart \
+            tools/manga/refresh_manga_metadata_cache.dart \
             test/tools/manga_reference_resolver_test.dart \
             test/tools/manga_reference_index_test.dart \
+            test/tools/manga_reference_resolution_checkpoint_test.dart \
             test/tools/manga_reference_resolution_integration_test.dart \
             test/tools/manga/manga_metadata_identity_reconciler_test.dart
 
@@ -114,8 +120,11 @@ jobs:
             tools/manga/manga_reference_resolver.dart \
             tools/manga/manga_reference_index.dart \
             tools/manga/manga_metadata_refresh.dart \
+            tools/manga/manga_reference_resolution_checkpoint.dart \
+            tools/manga/refresh_manga_metadata_cache.dart \
             test/tools/manga_reference_resolver_test.dart \
             test/tools/manga_reference_index_test.dart \
+            test/tools/manga_reference_resolution_checkpoint_test.dart \
             test/tools/manga_reference_resolution_integration_test.dart \
             test/tools/manga/manga_metadata_identity_reconciler_test.dart
           if git diff --cached --quiet; then
