@@ -1,0 +1,112 @@
+name: Validate GoAnime PR 271 complete runtime
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - triggers/goanime-manga-home/extended-pr271.request
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-pr271-complete-runtime
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Exact-SHA complete Flutter tests and Android build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout trusted exact-SHA request
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: trusted
+          persist-credentials: false
+          sparse-checkout: |
+            triggers/goanime-manga-home/extended-pr271.request
+          sparse-checkout-cone-mode: false
+
+      - name: Validate exact commit SHA
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+          sha = pathlib.Path('trusted/triggers/goanime-manga-home/extended-pr271.request').read_text(encoding='utf-8').strip()
+          if re.fullmatch(r'[0-9a-f]{40}', sha) is None:
+              raise SystemExit('Exact GoAnime commit SHA required')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as stream:
+              stream.write(f'ref={sha}\n')
+          PY
+
+      - name: Checkout GoAnime source read-only
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify exact private commit
+        run: test "$(git -C source rev-parse HEAD)" = '${{ steps.request.outputs.ref }}'
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Expose Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: ''
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: false
+
+      - name: Resolve app and core dependencies
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Full Flutter test suite
+        working-directory: source
+        run: flutter test --no-pub
+
+      - name: Core package tests
+        if: ${{ !cancelled() && steps.request.conclusion == 'success' }}
+        working-directory: source/packages/goanime_core
+        run: dart test
+
+      - name: Validate release workflow invariants
+        if: ${{ !cancelled() && steps.request.conclusion == 'success' }}
+        working-directory: source
+        run: bash ./tools/validate_release_workflows.sh
+
+      - name: Build Android debug APK
+        if: ${{ !cancelled() && steps.request.conclusion == 'success' }}
+        working-directory: source
+        run: flutter build apk --debug --no-pub
+
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf source
