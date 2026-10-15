@@ -49,6 +49,13 @@ jobs:
       - name: Resolve dependencies
         working-directory: source
         run: flutter pub get >/dev/null
+      - name: Verify updated regression tests are Dart-formatted
+        working-directory: source
+        run: |
+          dart format --output=none --set-exit-if-changed \
+            test/golden/manga_manhastro/shell_test.dart \
+            test/architecture/manhastro_excluded_features_test.dart \
+            test/widgets/manga_manhastro/library_history_interaction_test.dart
       - name: Focused historical regression cases
         working-directory: source
         shell: bash
@@ -56,6 +63,9 @@ jobs:
           set -euo pipefail
           timeout 480 flutter test --no-pub --concurrency=1 \
             test/golden/manga_manhastro/history_test.dart \
+            test/golden/manga_manhastro/shell_test.dart \
+            test/architecture/manhastro_excluded_features_test.dart \
+            test/widgets/manga_manhastro/favorites_features_test.dart \
             test/widgets/manga_manhastro/history_features_test.dart \
             test/widgets/manga_manhastro/library_history_interaction_test.dart \
             test/widgets/manga_manhastro/chapter_list_swipe_test.dart \
