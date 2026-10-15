@@ -1,0 +1,41 @@
+name: GoAnime sync PR262 policy into PR268 experiment
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/goanime-sync-pr262-to-pr268.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout PR268 exact commit
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: 4f353ca5b440ce955c034d3aa49519d4164db99d
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          persist-credentials: true
+          fetch-depth: 30
+          lfs: false
+      - name: Merge only verified PR262 head
+        working-directory: source
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "4f353ca5b440ce955c034d3aa49519d4164db99d"
+          git fetch --no-tags origin +refs/heads/feat/manga-recommendation-offline-index-20261013:refs/remotes/origin/pr262
+          test "$(git rev-parse refs/remotes/origin/pr262)" = "5a9a0cf8bd6782e5e6c306aa50a827d7fe58f865"
+          git config user.name "GoAnime PR262 sync"
+          git config user.email "goanime-ci@users.noreply.github.com"
+          git merge --no-edit --no-ff refs/remotes/origin/pr262 -m "chore(manga): synchronize PR262 adult safety policy and catalog into PR268"
+          # Preserve PR268 changes; push is strictly fast-forward, never force.
+          git push origin HEAD:refs/heads/feat/manga-personalization-multi-interest-20261015
+          echo "PR268 merged PR262 5a9a0cf8bd6782e5e6c306aa50a827d7fe58f865" >> "$GITHUB_STEP_SUMMARY"
