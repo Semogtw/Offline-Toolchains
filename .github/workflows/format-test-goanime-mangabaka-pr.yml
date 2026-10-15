@@ -1,0 +1,128 @@
+name: Format and test GoAnime MangaBaka PR exact SHA
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-mangabaka-format/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  format-test-publish:
+    name: Guarded exact-SHA formatting and deterministic validation
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout trusted trigger
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve exact target revision
+        id: ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-mangabaka-format/*.request' | head -n 1)"
+          test -n "$request"
+          sha="$(tr -d '[:space:]' < "control/$request")"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact source with publishing credential
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.ref.outputs.sha }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          persist-credentials: true
+          fetch-depth: 1
+          lfs: false
+          submodules: false
+
+      - name: Set up pinned Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve locked dependencies
+        working-directory: private-source
+        run: |
+          flutter pub get --enforce-lockfile
+          (cd packages/goanime_core && dart pub get --enforce-lockfile)
+
+      - name: Format exact touched Dart files without changing semantics
+        working-directory: private-source
+        run: |
+          dart format --output=write \
+            tools/manga/manga_reference_resolver.dart \
+            tools/manga/manga_reference_index.dart \
+            tools/manga/manga_metadata_refresh.dart \
+            test/tools/manga_reference_resolver_test.dart \
+            test/tools/manga_reference_index_test.dart
+          git diff --check
+          bash -n tools/manga/materialize_global_manga_availability_ci.sh
+
+      - name: Validate Python recommendation index and seed mappings
+        working-directory: private-source
+        run: python3 -m unittest -v tools.tests.test_manga_recommendation_index
+
+      - name: Validate Dart resolver, checkpoint and identity reconciliation
+        working-directory: private-source
+        run: |
+          flutter test --no-pub --concurrency=1 \
+            test/tools/manga_reference_index_test.dart \
+            test/tools/manga_reference_resolver_test.dart \
+            test/tools/manga_reference_resolution_checkpoint_test.dart \
+            test/tools/manga_reference_resolution_integration_test.dart \
+            test/tools/manga/manga_metadata_identity_reconciler_test.dart
+
+      - name: Analyze modified Dart code
+        working-directory: private-source
+        run: |
+          flutter analyze --no-pub \
+            tools/manga/manga_reference_resolver.dart \
+            tools/manga/manga_reference_index.dart \
+            tools/manga/manga_metadata_refresh.dart \
+            test/tools/manga_reference_resolver_test.dart \
+            test/tools/manga_reference_index_test.dart
+
+      - name: Fast-forward only the expected PR branch with format-only changes
+        working-directory: private-source
+        shell: bash
+        env:
+          EXPECTED: ${{ steps.ref.outputs.sha }}
+          PUSH_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$PUSH_TOKEN"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- \
+            tools/manga/manga_reference_resolver.dart \
+            tools/manga/manga_reference_index.dart \
+            tools/manga/manga_metadata_refresh.dart \
+            test/tools/manga_reference_resolver_test.dart \
+            test/tools/manga_reference_index_test.dart
+          if git diff --cached --quiet; then
+            echo 'Formatting already matches the pinned Dart version'
+            exit 0
+          fi
+          git commit -m 'style(manga): apply pinned Dart formatter to MangaBaka identity changes'
+          remote="https://x-access-token:${PUSH_TOKEN}@github.com/Semogtw/goanime-mobile.git"
+          actual="$(git ls-remote "$remote" refs/heads/fix/mangabaka-shared-identity-reconciliation-20261015 | cut -f1)"
+          test "$actual" = "$EXPECTED" || { echo 'Target PR advanced; refusing stale push'; exit 1; }
+          git -c credential.helper= push "$remote" HEAD:refs/heads/fix/mangabaka-shared-identity-reconciliation-20261015
+          echo "Formatted and validated commit: $(git rev-parse HEAD)"
+
+      - name: Remove source and transient credentials
+        if: always()
+        run: rm -rf private-source control
