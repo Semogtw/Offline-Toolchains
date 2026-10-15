@@ -1,0 +1,123 @@
+name: Validate GoAnime Manga Home
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - triggers/goanime-manga-home/current.request
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-home-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Manga Home focused tests and analysis
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Checkout trusted test request
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: trusted
+          persist-credentials: false
+          sparse-checkout: |
+            triggers/goanime-manga-home/current.request
+          sparse-checkout-cone-mode: false
+
+      - name: Parse exact source SHA
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib
+          import re
+          import os
+          sha = pathlib.Path('trusted/triggers/goanime-manga-home/current.request').read_text(encoding='utf-8').strip()
+          if re.fullmatch(r'[0-9a-f]{40}', sha) is None:
+              raise SystemExit('Manga Home request must be an exact lowercase commit SHA')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as stream:
+              stream.write(f'ref={sha}\n')
+          PY
+
+      - name: Checkout private GoAnime source read-only
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          persist-credentials: false
+          fetch-depth: 1
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify exact source commit
+        shell: bash
+        run: test "$(git -C source rev-parse HEAD)" = '${{ steps.request.outputs.ref }}'
+
+      - name: Set up pinned Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: false
+
+      - name: Resolve dependencies
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Run Manga Home focused Flutter tests
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in \
+            test/services/manga/metadata/manga_relevance_service_test.dart \
+            test/services/manga/manga_repository_browse_data_source_test.dart \
+            test/services/manga/manga_home_parallel_loading_test.dart \
+            test/widgets/manga_manhastro/home_interaction_test.dart \
+            test/widgets/manga_manhastro/home_snapshot_cache_test.dart \
+            test/widgets/manga/manga_home_relevance_test.dart; do
+            echo "::group::Manga Home test: $file"
+            flutter test --no-pub "$file"
+            echo '::endgroup::'
+          done
+
+      - name: Analyze Flutter project
+        working-directory: source
+        run: flutter analyze --no-pub
+
+      - name: Check formatting of touched Manga Home files
+        working-directory: source
+        shell: bash
+        run: |
+          dart format --output=none --set-exit-if-changed \
+            lib/manga_manhastro/cache/manhastro_home_snapshot_cache.dart \
+            lib/manga_manhastro/screens/manhastro_home_source_screen.dart \
+            lib/screens/manga/manga_home_screen.dart \
+            lib/services/manga/manga_browse_data_source.dart \
+            lib/services/manga/manga_repository_browse_data_source.dart \
+            lib/services/manga/metadata/manga_relevance_service.dart \
+            test/services/manga/manga_repository_browse_data_source_test.dart \
+            test/services/manga/metadata/manga_relevance_service_test.dart \
+            test/widgets/manga/manga_home_relevance_test.dart \
+            test/widgets/manga_manhastro/home_interaction_test.dart \
+            test/widgets/manga_manhastro/home_snapshot_cache_test.dart \
+            test/widgets/navigation/flutter_test_config.dart
+
+      - name: Clean private checkout
+        if: always()
+        shell: bash
+        run: rm -rf source
