@@ -1,0 +1,91 @@
+name: GoAnime PR262 vs PR268 catalog metadata coverage
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/goanime-compare-pr262-pr268-catalog.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - name: Checkout PR262 latest catalog
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: 5a9a0cf8bd6782e5e6c306aa50a827d7fe58f865
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: pr262
+          persist-credentials: false
+          lfs: false
+      - name: Checkout PR268 experimental catalog
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: 4f353ca5b440ce955c034d3aa49519d4164db99d
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: pr268
+          persist-credentials: false
+          lfs: false
+      - name: Compare SQLite works and rich metadata coverage
+        env:
+          PR262_SHA: 5a9a0cf8bd6782e5e6c306aa50a827d7fe58f865
+          PR268_SHA: 4f353ca5b440ce955c034d3aa49519d4164db99d
+        run: |
+          python3 - <<'PY'
+          import collections,hashlib,json,os,sqlite3,pathlib
+          def present(v):
+              if v is None or not str(v).strip():return False
+              val=str(v).strip()
+              if val.casefold() in ("null","[]","{}","false","\"\""):return False
+              try:
+                  p=json.loads(val)
+                  if isinstance(p,(list,dict)):return bool(p)
+                  if isinstance(p,str):return bool(p.strip())
+              except (ValueError,TypeError):pass
+              return True
+          def data(label):
+              db=pathlib.Path(label)/"assets/data/manga_availability.db"
+              c=sqlite3.connect("file:"+str(db.resolve())+"?mode=ro",uri=True)
+              cols=[x[1] for x in c.execute("PRAGMA table_info(works)")]
+              interest=("genresJson","artistsJson","tagsV2Json","synopsis","metadataSourcesJson","safetyEvidenceJson","hasAdultContent","canonicalTitle","score")
+              selected=[x for x in interest if x in cols]
+              q="SELECT "+",".join('"'+x+'"' for x in selected)+" FROM works"
+              counts=collections.Counter()
+              for row in c.execute(q):
+                  counts["totalWorks"]+=1
+                  info=dict(zip(selected,row))
+                  for key in selected:
+                      if present(info[key]):counts[key+"Present"]+=1
+                  if len(str(info.get("synopsis") or "").strip())>=120:counts["synopsisLong120"]+=1
+                  if info.get("hasAdultContent") not in (None,0,False):counts["hasAdultContentTrue"]+=1
+              counts["sourceLinks"]=c.execute("SELECT COUNT(*) FROM source_links").fetchone()[0]
+              meta={x[0]:x[1] for x in c.execute("SELECT key,value FROM metadata WHERE key IN ('schemaVersion','builderVersion','adultContentPolicyVersion')")}
+              c.close()
+              cache=pathlib.Path(label)/"assets/data/manga_metadata_cache.json"
+              sample={"bytes":cache.stat().st_size,"sha256":hashlib.sha256(cache.read_bytes()).hexdigest()}
+              report={"sqliteBytes":db.stat().st_size,"sqliteSha256":hashlib.sha256(db.read_bytes()).hexdigest(),"works":dict(counts),"columns":selected,"metadata":meta,"metadataCache":sample}
+              return report
+          report={"pr262":{"commit":os.environ["PR262_SHA"],**data("pr262")},"pr268":{"commit":os.environ["PR268_SHA"],**data("pr268")}}
+          print("GOANIME_METADATA_COVERAGE="+json.dumps(report,sort_keys=True))
+          with open("catalog-coverage-262-vs-268.json","w") as f:json.dump(report,f,indent=2,sort_keys=True)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as f:
+              f.write("## PR262 versus PR268: direct SQLite metadata coverage\n\n")
+              f.write("| Metric | PR262 | PR268 |\n|---|---:|---:|\n")
+              for metric in ("totalWorks","synopsisPresent","synopsisLong120","genresJsonPresent","tagsV2JsonPresent","artistsJsonPresent","hasAdultContentTrue"):
+                  f.write("| "+metric+" | "+str(report["pr262"]["works"].get(metric,0))+" | "+str(report["pr268"]["works"].get(metric,0))+" |\n")
+              f.write("\nSame original cache SHA: "+str(report["pr262"]["metadataCache"]["sha256"]==report["pr268"]["metadataCache"]["sha256"])+"\n")
+          PY
+      - name: Publish machine-readable report
+        uses: actions/upload-artifact@v4
+        with:
+          name: goanime-catalog-coverage-pr262-pr268
+          path: catalog-coverage-262-vs-268.json
+          retention-days: 7
