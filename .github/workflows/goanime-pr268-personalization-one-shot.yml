@@ -1,0 +1,111 @@
+name: GoAnime PR268 personalization one-shot CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/goanime-pr268-personalization-one-shot.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    name: Flutter analysis, tests and deterministic ranking diagnostic
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Require private repo access
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout exact experiment SHA
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ee7d5a023823f9f9b43fbf862b44d020c984e6f9
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          persist-credentials: false
+          lfs: false
+          submodules: false
+
+      - name: Verify exact source
+        working-directory: source
+        run: test "$(git rev-parse HEAD)" = "ee7d5a023823f9f9b43fbf862b44d020c984e6f9"
+
+      - name: Flutter stable 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Dependencies
+        working-directory: source
+        run: |
+          flutter config --no-analytics
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+
+      - name: Focused static analysis
+        id: analysis
+        continue-on-error: true
+        working-directory: source
+        run: |
+          flutter analyze --no-pub \
+            lib/services/manga/manga_multi_interest_profile.dart \
+            lib/services/manga/manga_recommendation_diversifier.dart \
+            lib/services/manga/manga_recommendation_service.dart \
+            lib/manga_manhastro/adapters/manhastro_recommendations_adapter.dart
+
+      - name: Focused service regression and 32-case benchmark
+        id: service
+        continue-on-error: true
+        working-directory: source
+        run: flutter test --no-pub test/services/manga/manga_recommendation_service_test.dart
+
+      - name: Focused recommendations adapter regression
+        id: adapter
+        continue-on-error: true
+        working-directory: source
+        run: flutter test --no-pub test/services/manga/manhastro_recommendations_adapter_test.dart
+
+      - name: Source formatting
+        id: format
+        continue-on-error: true
+        working-directory: source
+        run: |
+          dart format --output=none --set-exit-if-changed \
+            lib/services/manga/manga_multi_interest_profile.dart \
+            lib/services/manga/manga_recommendation_diversifier.dart \
+            lib/services/manga/manga_recommendation_service.dart \
+            lib/manga_manhastro/adapters/manhastro_recommendations_adapter.dart \
+            test/services/manga/manga_recommendation_service_test.dart \
+            test/services/manga/manhastro_recommendations_adapter_test.dart
+
+      - name: Machine-readable results
+        if: always()
+        env:
+          A: ${{ steps.analysis.outcome }}
+          S: ${{ steps.service.outcome }}
+          R: ${{ steps.adapter.outcome }}
+          F: ${{ steps.format.outcome }}
+        run: |
+          printf 'ANALYSIS=%s\nSERVICE=%s\nADAPTER=%s\nFORMAT=%s\n' "$A" "$S" "$R" "$F"
+          {
+            echo '### PR268 exact-SHA independent automated checks'
+            echo '- Commit: ee7d5a023823f9f9b43fbf862b44d020c984e6f9'
+            echo "- Analyzer: $A"
+            echo "- Unit + 32-case structural benchmark: $S"
+            echo "- Adapter integration: $R"
+            echo "- Dart formatting: $F"
+            echo '- No manual or longitudinal tests; structural metrics are not user satisfaction.'
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "$A" = success
+          test "$S" = success
+          test "$R" = success
+          test "$F" = success
