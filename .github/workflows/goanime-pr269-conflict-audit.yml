@@ -1,0 +1,67 @@
+name: GoAnime PR269 exact merge conflict audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-pr269-conflict-audit/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Checkout trusted request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Validate exact target SHA
+        id: input
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-pr269-conflict-audit/*.request' | head -n1)"
+          test -n "$request"
+          read -r project sha < "control/$request"
+          test "$project" = goanime-pr269
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Checkout source without committing changes
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.input.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Audit mergeability against latest main without pushing
+        working-directory: source
+        env:
+          PRIVATE_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_SHA: ${{ steps.input.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_TOKEN" | base64 -w0)"
+          git -c "http.extraheader=AUTHORIZATION: basic $auth" fetch --no-tags origin main
+          unset auth PRIVATE_TOKEN
+          set +e
+          git -c user.name=ci-audit -c user.email=ci-audit@example.com merge --no-commit --no-ff FETCH_HEAD >/dev/null 2>&1
+          code=$?
+          set -e
+          echo "Git merge exit code: $code"
+          if [[ "$code" == 0 ]]; then
+            echo "Clean automatic merge against current main"
+          else
+            echo "Unmerged conflict paths:"
+            git diff --name-only --diff-filter=U
+          fi
+          git merge --abort >/dev/null 2>&1 || true
