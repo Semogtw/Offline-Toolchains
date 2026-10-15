@@ -68,6 +68,7 @@ jobs:
             tools/manga/manga_metadata_refresh.dart \
             tools/manga/manga_reference_resolution_checkpoint.dart \
             tools/manga/refresh_manga_metadata_cache.dart \
+            tools/manga/apply_mangabaka_replay_metadata.dart \
             test/tools/manga_reference_resolver_test.dart \
             test/tools/manga_reference_index_test.dart \
             test/tools/manga_reference_resolution_checkpoint_test.dart \
@@ -75,10 +76,11 @@ jobs:
             test/tools/manga/manga_metadata_identity_reconciler_test.dart
           git diff --check
           bash -n tools/manga/materialize_global_manga_availability_ci.sh
+          bash -n tools/manga/run_mangabaka_reference_replay.sh
 
       - name: Validate Python recommendation index and seed mappings
         working-directory: private-source
-        run: python3 -m unittest -v tools.tests.test_manga_recommendation_index
+        run: python3 -m unittest -v tools.tests.test_manga_recommendation_index tools.tests.test_mangabaka_offline_replay
 
       - name: Validate Dart resolver, checkpoint and identity reconciliation
         working-directory: private-source
@@ -99,6 +101,7 @@ jobs:
             tools/manga/manga_metadata_refresh.dart \
             tools/manga/manga_reference_resolution_checkpoint.dart \
             tools/manga/refresh_manga_metadata_cache.dart \
+            tools/manga/apply_mangabaka_replay_metadata.dart \
             test/tools/manga_reference_resolver_test.dart \
             test/tools/manga_reference_index_test.dart \
             test/tools/manga_reference_resolution_checkpoint_test.dart \
@@ -122,6 +125,7 @@ jobs:
             tools/manga/manga_metadata_refresh.dart \
             tools/manga/manga_reference_resolution_checkpoint.dart \
             tools/manga/refresh_manga_metadata_cache.dart \
+            tools/manga/apply_mangabaka_replay_metadata.dart \
             test/tools/manga_reference_resolver_test.dart \
             test/tools/manga_reference_index_test.dart \
             test/tools/manga_reference_resolution_checkpoint_test.dart \
