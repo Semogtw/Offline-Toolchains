@@ -170,10 +170,10 @@ jobs:
           ref: ${{ needs.normalize.outputs.ref }}
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
-          # Project health scans 20 recent commits and needs the parent of the
-          # oldest scanned commit so a shallow boundary is never treated as a
-          # root commit. Keep this at scan window + 1.
-          fetch-depth: 21
+          # Mihon evidence receipts verify historical SHA existence and
+          # ancestry; a shallow checkout makes valid receipts appear missing.
+          # Project health also examines recent parent commits.
+          fetch-depth: 0
           persist-credentials: false
           lfs: false
           submodules: false
