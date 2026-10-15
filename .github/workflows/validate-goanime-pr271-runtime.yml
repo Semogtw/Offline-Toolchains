@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: goanime-pr271-complete-runtime
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   validate:
