@@ -1,0 +1,67 @@
+name: GoAnime PR269 focused regressions
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-pr269-focused/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout trusted request
+        uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Resolve exact SHA
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-pr269-focused/*.request' | head -n1)"
+          test -n "$request"
+          read -r project sha < "control/$request"
+          test "$project" = goanime-pr269
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Checkout private source read-only
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.target.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - name: Resolve dependencies
+        working-directory: source
+        run: flutter pub get >/dev/null
+      - name: Focused historical regression cases
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 480 flutter test --no-pub --concurrency=1 \
+            test/golden/manga_manhastro/history_test.dart \
+            test/widgets/manga_manhastro/history_features_test.dart \
+            test/widgets/manga_manhastro/library_history_interaction_test.dart \
+            test/widgets/manga_manhastro/chapter_list_swipe_test.dart \
+            test/widgets/manga_manhastro/manhastro_hero_press_surface_test.dart \
+            test/architecture/mihon_pigeon_drift_test.dart \
+            test/architecture/manga_cloudflare_network_contract_test.dart \
+            test/architecture/manhastro_search_chrome_source_contract_test.dart \
+            test/widgets/visual_golden_test.dart \
+            test/widgets/visual_screen_golden_test.dart
