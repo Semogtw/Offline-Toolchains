@@ -1,0 +1,121 @@
+name: Format GoAnime PR 271 Manga Home files
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - triggers/goanime-manga-home/format-pr271.request
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-pr271-scoped-format
+  cancel-in-progress: false
+
+jobs:
+  format:
+    name: Format scoped PR 271 files at verified SHA
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout trusted request
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: trusted
+          persist-credentials: false
+          sparse-checkout: |
+            triggers/goanime-manga-home/format-pr271.request
+          sparse-checkout-cone-mode: false
+
+      - name: Validate exact approved GoAnime SHA
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+          sha = pathlib.Path('trusted/triggers/goanime-manga-home/format-pr271.request').read_text(encoding='utf-8').strip()
+          if not re.fullmatch('[0-9a-f]{40}', sha):
+              raise SystemExit('expected exact lowercase SHA')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
+              out.write('sha=' + sha + '\n')
+          PY
+
+      - name: Require private repository token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout private source at exact SHA
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact source identity
+        shell: bash
+        run: test "$(git -C source rev-parse HEAD)" = '${{ steps.request.outputs.sha }}'
+
+      - name: Set up pinned Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.1
+          channel: stable
+          cache: false
+
+      - name: Format only five changed files
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format --output=write \
+            lib/manga_manhastro/screens/manhastro_home_source_screen.dart \
+            lib/screens/manga/manga_home_screen.dart \
+            lib/services/manga/manga_repository_browse_data_source.dart \
+            test/services/manga/manga_repository_browse_data_source_test.dart \
+            test/widgets/manga_manhastro/home_interaction_test.dart
+          echo 'Files formatted (names only):'
+          git diff --name-only
+          if git diff --name-only | grep -v -E '^(lib/manga_manhastro/screens/manhastro_home_source_screen.dart|lib/screens/manga/manga_home_screen.dart|lib/services/manga/manga_repository_browse_data_source.dart|test/services/manga/manga_repository_browse_data_source_test.dart|test/widgets/manga_manhastro/home_interaction_test.dart)$'; then
+            echo 'Unexpected changed file' >&2
+            exit 1
+          fi
+
+      - name: Commit and push scoped formatted changes
+        working-directory: source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          target=fix/manga-home-curated-hero-no-daily-duplicates
+          if git diff --quiet; then
+            echo 'No formatting changes necessary'
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- \
+            lib/manga_manhastro/screens/manhastro_home_source_screen.dart \
+            lib/screens/manga/manga_home_screen.dart \
+            lib/services/manga/manga_repository_browse_data_source.dart \
+            test/services/manga/manga_repository_browse_data_source_test.dart \
+            test/widgets/manga_manhastro/home_interaction_test.dart
+          git commit -m "style(manga): format PR 271 touched files"
+          git remote set-url origin "https://x-access-token:${PRIVATE_REPOSITORIES_TOKEN}@github.com/Semogtw/goanime-mobile.git"
+          git push origin "HEAD:refs/heads/${target}"
+          git remote set-url origin "https://github.com/Semogtw/goanime-mobile.git"
+
+      - name: Remove private checkout
+        if: always()
+        shell: bash
+        run: rm -rf source
