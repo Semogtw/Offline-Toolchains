@@ -87,7 +87,10 @@ jobs:
             test/widgets/manga_manhastro/search_interaction_test.dart \
             test/widgets/manga_manhastro/shell_interaction_test.dart \
             test/widgets/media_mode_navigation_test.dart \
-            test/services/manga/manga_availability_service_test.dart
+            test/services/manga/manga_availability_service_test.dart \
+            test/services/manga/manga_bundled_catalog_source_test.dart \
+            test/services/manga/manga_runtime_availability_source_test.dart \
+            test/widgets/manga_manhastro/presentation_adapter_test.dart
       - name: Commit and publish only formatting delta with CAS
         working-directory: source
         shell: bash
