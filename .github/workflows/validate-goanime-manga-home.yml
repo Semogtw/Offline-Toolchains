@@ -96,10 +96,12 @@ jobs:
           done
 
       - name: Analyze Flutter project
+        if: ${{ !cancelled() && steps.request.conclusion == 'success' }}
         working-directory: source
         run: flutter analyze --no-pub
 
       - name: Check formatting of touched Manga Home files
+        if: ${{ !cancelled() && steps.request.conclusion == 'success' }}
         working-directory: source
         shell: bash
         run: |
