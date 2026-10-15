@@ -1,0 +1,94 @@
+name: Reconcile GoAnime PR269 with main after gate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-pr269-main-reconcile/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: control
+          fetch-depth: 2
+          persist-credentials: false
+      - id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-pr269-main-reconcile/*.request' | head -n1)"
+          test -n "$request"
+          read -r marker sha < "control/$request"
+          test "$marker" = goanime-pr269
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.target.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Merge main safely while preserving latest main in conflicts
+        working-directory: source
+        env:
+          PRIVATE_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_TOKEN" | base64 -w0)"
+          git -c "http.extraheader=AUTHORIZATION: basic $auth" fetch --no-tags origin main
+          unset auth PRIVATE_TOKEN
+          git merge --no-ff -X theirs -m 'merge: reconcile PR269 with newer main while preserving main-side conflicts' FETCH_HEAD
+          test -z "$(git ls-files -u)"
+          git diff --check HEAD^ HEAD
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - name: Resolve dependencies
+        working-directory: source
+        run: |
+          flutter pub get >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+      - name: Formatting, analyzer, and merged-navigation contracts
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart format --output=none --set-exit-if-changed lib test packages tools
+          flutter analyze --no-pub
+          flutter test --no-pub --concurrency=1 \
+            test/widgets/manga_manhastro/search_interaction_test.dart \
+            test/widgets/manga_manhastro/shell_interaction_test.dart \
+            test/widgets/manga_manhastro/favorites_features_test.dart \
+            test/widgets/media_mode_navigation_test.dart \
+            test/architecture/manhastro_search_chrome_source_contract_test.dart
+      - name: Push only if the branch still equals the tested SHA
+        working-directory: source
+        env:
+          PRIVATE_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch='feat/manga-progressive-local-first-ui-20261015'
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_TOKEN" | base64 -w0)"
+          remote='https://github.com/Semogtw/goanime-mobile.git'
+          current="$(git -c "http.extraheader=AUTHORIZATION: basic $auth" ls-remote "$remote" "refs/heads/$branch" | cut -f1)"
+          test "$current" = "$TARGET_SHA"
+          git -c "http.extraheader=AUTHORIZATION: basic $auth" push "$remote" "HEAD:refs/heads/$branch"
