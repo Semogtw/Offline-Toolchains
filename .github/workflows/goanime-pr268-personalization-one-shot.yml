@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: goanime-pr268-focused
+  cancel-in-progress: true
+
 jobs:
   focused:
     name: Flutter analysis, tests and deterministic ranking diagnostic
@@ -260,7 +264,7 @@ jobs:
               ],
           }
           path.write_text(
-              json.dumps(report, indent=2, sort_keys=True) + '\\n',
+              json.dumps(report, indent=2, sort_keys=True) + '\n',
               encoding='utf-8',
           )
           PY
