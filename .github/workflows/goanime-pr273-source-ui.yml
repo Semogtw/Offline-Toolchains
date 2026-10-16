@@ -1,0 +1,69 @@
+name: GoAnime PR273 one-tap sources focused verification
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/goanime-pr273-source-ui.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out exact GoAnime candidate
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: 83d7ac214e85c32e85ecf613744692590f29df88
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          persist-credentials: false
+          path: source
+          fetch-depth: 1
+      - name: Assert immutable candidate
+        working-directory: source
+        run: test "$(git rev-parse HEAD)" = "83d7ac214e85c32e85ecf613744692590f29df88"
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.1'
+          channel: stable
+          cache: true
+      - name: Resolve dependencies
+        working-directory: source
+        run: |
+          flutter pub get
+          (cd packages/goanime_core && dart pub get)
+      - name: Analyze source setup UI and widget tests
+        working-directory: source
+        continue-on-error: true
+        run: |
+          flutter analyze --no-pub \
+            lib/screens/manga/manga_extensions_screen.dart \
+            lib/screens/manga/manga_home_screen.dart \
+            lib/screens/manga/manga_search_screen.dart \
+            lib/screens/manga/manga_details_screen.dart \
+            lib/screens/manga/manga_reader_screen.dart \
+            lib/manga_manhastro/screens/manhastro_home_source_screen.dart \
+            lib/manga_manhastro/screens/manhastro_details_screen.dart \
+            lib/manga_manhastro/navigation/manhastro_manga_shell.dart \
+            test/screens/manga/manga_extensions_screen_test.dart \
+            test/widgets/manga_manhastro/details_interaction_test.dart
+      - name: Bulk source download and settings widget tests
+        working-directory: source
+        run: |
+          flutter test --no-pub --concurrency=1 \
+            test/screens/manga/manga_extensions_screen_test.dart \
+            test/l10n/ui_settings_localizations_test.dart \
+            test/widgets/settings_manga_source_entry_test.dart
+      - name: Active Details source-selection regression
+        working-directory: source
+        run: flutter test --no-pub --concurrency=1 test/widgets/manga_manhastro/details_interaction_test.dart
+      - name: Navigation/details integration
+        working-directory: source
+        continue-on-error: true
+        run: flutter test --no-pub --concurrency=1 test/widgets/manga_manhastro/details_production_integration_test.dart
+      - name: Remove private checkout
+        if: always()
+        run: rm -rf source
