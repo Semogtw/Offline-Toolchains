@@ -30,7 +30,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
-          ref: 1f6678301eaad115946c8b0267d1f1c523bd3d99
+          ref: 6b80d9f2f9607112728a44aa9b9c023e8670d548
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: source
           persist-credentials: true
@@ -39,7 +39,7 @@ jobs:
 
       - name: Verify exact source
         working-directory: source
-        run: test "$(git rev-parse HEAD)" = "1f6678301eaad115946c8b0267d1f1c523bd3d99"
+        run: test "$(git rev-parse HEAD)" = "6b80d9f2f9607112728a44aa9b9c023e8670d548"
 
       - name: Flutter stable 3.44.1
         uses: subosito/flutter-action@v2
@@ -225,7 +225,7 @@ jobs:
           printf 'ANALYSIS=%s\nSERVICE=%s\nADAPTER=%s\nRETRIEVAL=%s\nEXPLORER=%s\nABLATION=%s\nEQUIVALENCE=%s\nBLIND=%s\nEVALUATOR=%s\nFORMAT=%s\nPUBLISH=%s\n' "$A" "$S" "$R" "$E" "$X" "$B" "$V" "$Q" "$J" "$F" "$P"
           {
             echo '### PR268 exact-SHA independent automated checks'
-            echo '- Commit: 1f6678301eaad115946c8b0267d1f1c523bd3d99'
+            echo '- Commit: 6b80d9f2f9607112728a44aa9b9c023e8670d548'
             echo "- Analyzer: $A"
             echo "- Unit + 32-case structural benchmark: $S"
             echo "- Adapter integration: $R"
@@ -255,7 +255,7 @@ jobs:
         if: success()
         working-directory: source
         env:
-          PINNED_SHA: 1f6678301eaad115946c8b0267d1f1c523bd3d99
+          PINNED_SHA: 6b80d9f2f9607112728a44aa9b9c023e8670d548
         run: |
           set -euo pipefail
           branch=feat/manga-personalization-multi-interest-20261015
