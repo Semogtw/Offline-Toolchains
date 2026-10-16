@@ -109,12 +109,25 @@ jobs:
             test/services/manga/manga_recommendation_diversifier_equivalence_test.dart \
             test/services/manga/manga_recommendation_explorer_equivalence_test.dart
 
-      - name: Real catalog two-taste blind packet generation
+      - name: Real catalog two-taste blind packet preflight (redacted)
         id: blind_packet
         continue-on-error: true
         working-directory: source
         timeout-minutes: 12
-        run: flutter test --no-pub --reporter expanded test/services/manga/manga_recommendation_blind_quality_packet_test.dart
+        run: |
+          set -euo pipefail
+          # Real catalog titles, synopses and the unblinding key are sensitive.
+          # GitHub Action job logs for this public runner must not contain them.
+          scratch="$(mktemp)"
+          trap 'rm -f "$scratch"' EXIT
+          if flutter test --no-pub --reporter expanded \
+            test/services/manga/manga_recommendation_blind_quality_packet_test.dart \
+            >"$scratch" 2>&1; then
+            echo "PR268_BLIND_PREFLIGHT=success; raw private-catalog packet withheld"
+          else
+            echo "::error::PR268 blind preflight failed; raw metadata logs intentionally withheld"
+            exit 1
+          fi
 
       - name: Deterministic synthetic-personalization blind evaluator tests
         id: personalized_evaluator
