@@ -30,7 +30,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
-          ref: 6b80d9f2f9607112728a44aa9b9c023e8670d548
+          ref: 09416f39be33930848f1851ff7be2146878f38aa
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: source
           persist-credentials: true
@@ -39,7 +39,7 @@ jobs:
 
       - name: Verify exact source
         working-directory: source
-        run: test "$(git rev-parse HEAD)" = "6b80d9f2f9607112728a44aa9b9c023e8670d548"
+        run: test "$(git rev-parse HEAD)" = "09416f39be33930848f1851ff7be2146878f38aa"
 
       - name: Flutter stable 3.44.1
         uses: subosito/flutter-action@v2
@@ -109,6 +109,12 @@ jobs:
             test/services/manga/manga_recommendation_diversifier_equivalence_test.dart \
             test/services/manga/manga_recommendation_explorer_equivalence_test.dart
 
+      - name: Catalog portability and listed-only contract regressions
+        id: portability
+        continue-on-error: true
+        working-directory: source
+        run: flutter test --no-pub test/services/manga/manga_recommendation_catalog_contract_test.dart
+
       - name: Real catalog two-taste blind packet preflight (redacted)
         id: blind_packet
         continue-on-error: true
@@ -156,6 +162,7 @@ jobs:
             test/services/manga/manga_recommendation_r7_ablation_test.dart \
             test/services/manga/manga_recommendation_diversifier_equivalence_test.dart \
             test/services/manga/manga_recommendation_explorer_equivalence_test.dart \
+            test/services/manga/manga_recommendation_catalog_contract_test.dart \
             test/services/manga/manga_recommendation_blind_quality_packet_test.dart
           git diff --check
 
@@ -181,6 +188,7 @@ jobs:
             test/services/manga/manga_recommendation_r7_ablation_test.dart \
             test/services/manga/manga_recommendation_diversifier_equivalence_test.dart \
             test/services/manga/manga_recommendation_explorer_equivalence_test.dart \
+            test/services/manga/manga_recommendation_catalog_contract_test.dart \
             test/services/manga/manga_recommendation_blind_quality_packet_test.dart; then
             echo "No formatting changes needed"
             exit 0
@@ -202,6 +210,7 @@ jobs:
             test/services/manga/manga_recommendation_r7_ablation_test.dart \
             test/services/manga/manga_recommendation_diversifier_equivalence_test.dart \
             test/services/manga/manga_recommendation_explorer_equivalence_test.dart \
+            test/services/manga/manga_recommendation_catalog_contract_test.dart \
             test/services/manga/manga_recommendation_blind_quality_packet_test.dart
           git commit -m "style(manga): format experimental recommendation code"
           # Fast-forward only. Never overwrite another agent's newer commit.
@@ -217,15 +226,16 @@ jobs:
           X: ${{ steps.exploration.outcome }}
           B: ${{ steps.ablation.outcome }}
           V: ${{ steps.equivalence.outcome }}
+          C: ${{ steps.portability.outcome }}
           Q: ${{ steps.blind_packet.outcome }}
           J: ${{ steps.personalized_evaluator.outcome }}
           F: ${{ steps.format.outcome }}
           P: ${{ steps.publish_format.outcome }}
         run: |
-          printf 'ANALYSIS=%s\nSERVICE=%s\nADAPTER=%s\nRETRIEVAL=%s\nEXPLORER=%s\nABLATION=%s\nEQUIVALENCE=%s\nBLIND=%s\nEVALUATOR=%s\nFORMAT=%s\nPUBLISH=%s\n' "$A" "$S" "$R" "$E" "$X" "$B" "$V" "$Q" "$J" "$F" "$P"
+          printf 'ANALYSIS=%s\nSERVICE=%s\nADAPTER=%s\nRETRIEVAL=%s\nEXPLORER=%s\nABLATION=%s\nEQUIVALENCE=%s\nCATALOG_CONTRACT=%s\nBLIND=%s\nEVALUATOR=%s\nFORMAT=%s\nPUBLISH=%s\n' "$A" "$S" "$R" "$E" "$X" "$B" "$V" "$C" "$Q" "$J" "$F" "$P"
           {
             echo '### PR268 exact-SHA independent automated checks'
-            echo '- Commit: 6b80d9f2f9607112728a44aa9b9c023e8670d548'
+            echo '- Commit: 09416f39be33930848f1851ff7be2146878f38aa'
             echo "- Analyzer: $A"
             echo "- Unit + 32-case structural benchmark: $S"
             echo "- Adapter integration: $R"
@@ -233,6 +243,7 @@ jobs:
             echo "- Soft-interest exploration: $X"
             echo "- 32-profile structural ablation: $B"
             echo "- Frozen greedy equivalence: $V"
+            echo "- Catalog portability contract: $C"
             echo "- Blind real-catalog metadata preflight: $Q"
             echo "- Deterministic grader tests: $J"
             echo "- Dart formatting: $F"
@@ -246,6 +257,7 @@ jobs:
           test "$X" = success
           test "$B" = success
           test "$V" = success
+          test "$C" = success
           test "$Q" = success
           test "$J" = success
           test "$F" = success
@@ -255,7 +267,7 @@ jobs:
         if: success()
         working-directory: source
         env:
-          PINNED_SHA: 6b80d9f2f9607112728a44aa9b9c023e8670d548
+          PINNED_SHA: 09416f39be33930848f1851ff7be2146878f38aa
         run: |
           set -euo pipefail
           branch=feat/manga-personalization-multi-interest-20261015
@@ -284,6 +296,7 @@ jobs:
                   'exploration',
                   'structural_ablation_32_profiles',
                   'greedy_equivalence_264_cases',
+                  'catalog_portability_contract',
                   'real_catalog_blind_preflight',
                   'personalized_blind_evaluator',
                   'dart_format',
