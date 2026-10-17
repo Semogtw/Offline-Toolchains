@@ -31,11 +31,19 @@ jobs:
           set -euo pipefail
           version="$(python3 - <<'PY'
           import json, pathlib, re
-          requests = list(pathlib.Path('requests/goanime-release').glob('*.json'))
-          if len(requests) != 1:
-              raise SystemExit('Expected exactly one release request file')
-          payload = json.loads(requests[0].read_text(encoding='utf-8'))
+          requests = list(pathlib.Path('requests/goanime-release').glob('v*.json'))
+          if not requests:
+              raise SystemExit('No release request file found')
+          def version_of(request):
+              text = request.stem.removeprefix('v')
+              if not re.fullmatch(r'[0-9]+\\.[0-9]+\\.[0-9]+', text):
+                  raise SystemExit('Invalid request filename')
+              return tuple(int(part) for part in text.split('.'))
+          latest = max(requests, key=version_of)
+          payload = json.loads(latest.read_text(encoding='utf-8'))
           version = payload.get('version')
+          if version != latest.stem.removeprefix('v'):
+              raise SystemExit('Request filename and version disagree')
           if not isinstance(version, str) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
               raise SystemExit('Invalid version')
           print(version)
