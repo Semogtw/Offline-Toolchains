@@ -29,7 +29,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY' >> "$GITHUB_ENV"
+          version="$(python3 - <<'PY'
           import json, pathlib, re
           requests = list(pathlib.Path('requests/goanime-release').glob('*.json'))
           if len(requests) != 1:
@@ -38,11 +38,12 @@ jobs:
           version = payload.get('version')
           if not isinstance(version, str) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
               raise SystemExit('Invalid version')
-          print('GOANIME_REQUEST_VERSION=' + version)
+          print(version)
           PY
+          )"
           gh workflow run release-goanime.yml \
             --ref main \
             -f source_ref=main \
-            -f version="$GOANIME_REQUEST_VERSION" \
+            -f version="$version" \
             -f platforms=android,windows,linux \
-            -f release_notes="GoAnime v$GOANIME_REQUEST_VERSION: atualizações de desempenho, navegação, leitor e catálogo integradas à main."
+            -f release_notes="GoAnime v$version: atualizações de desempenho, navegação, leitor e catálogo integradas à main."
