@@ -1,0 +1,48 @@
+name: Dispatch requested GoAnime release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'requests/goanime-release/*.json'
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: goanime-release-request
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    if: github.repository == 'Semogtw/Offline-Toolchains'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout request
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Validate release request and dispatch canonical workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import json, pathlib, re
+          requests = list(pathlib.Path('requests/goanime-release').glob('*.json'))
+          if len(requests) != 1:
+              raise SystemExit('Expected exactly one release request file')
+          payload = json.loads(requests[0].read_text(encoding='utf-8'))
+          version = payload.get('version')
+          if not isinstance(version, str) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
+              raise SystemExit('Invalid version')
+          print('GOANIME_REQUEST_VERSION=' + version)
+          PY
+          gh workflow run release-goanime.yml \
+            --ref main \
+            -f source_ref=main \
+            -f version="$GOANIME_REQUEST_VERSION" \
+            -f platforms=android,windows,linux \
+            -f release_notes="GoAnime v$GOANIME_REQUEST_VERSION: atualizações de desempenho, navegação, leitor e catálogo integradas à main."
