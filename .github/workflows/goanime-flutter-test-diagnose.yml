@@ -253,8 +253,10 @@ jobs:
                               'error': str(event.get('error') or '')[:4000],
                               'stackTrace': str(event.get('stackTrace') or '')[:6000],
                           })
-                  elif etype == 'testDone' and event.get('result') not in (None, 'success', 'skipped'):
-                      failed_ids.add(event.get('testID'))
+                  elif etype == 'testDone':
+                      completed_ids.add(event.get('testID'))
+                      if event.get('result') not in (None, 'success', 'skipped'):
+                          failed_ids.add(event.get('testID'))
 
           failures = []
           for tid in sorted(failed_ids, key=lambda value: str(value)):
