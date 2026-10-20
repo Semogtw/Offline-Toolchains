@@ -1,0 +1,1 @@
+Assemble the reviewed personal MangaBaka top-10 index from the 10 SHA-pinned chunks already staged in the private GoAnime branch fe6421d6324f7222af1b2eaff37c1c04726cdd00. Do not query MangaBaka API. Expected output SHA-256: 88ef0094ccea57f1a21e2a7c2f51a321d6be27d8853bb3c066042b1a37bbab6f.
