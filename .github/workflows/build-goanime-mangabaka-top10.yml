@@ -1,0 +1,249 @@
+name: Stage GoAnime MangaBaka authority top-10 SQLite
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/build-goanime-mangabaka-top10.yml'
+      - 'tests/test_goanime_mangabaka_top10_workflow.py'
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-mangabaka-authority-top10/*.request'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-mangabaka-authority-top10
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    name: Check fixed hashes and encrypted-only delivery
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run workflow security contract tests
+        run: python3 -m unittest discover -s tests -p test_goanime_mangabaka_top10_workflow.py -v
+
+  prepare:
+    name: Generate authority top10 with private source and trusted collector
+    if: github.event_name != 'pull_request' && github.actor == github.repository_owner
+    needs: contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - name: Checkout trusted workflow and public encryption key
+        uses: actions/checkout@v4
+        with:
+          path: control
+          persist-credentials: false
+
+      - name: Require configured private read-only checkout token
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout pinned private GoAnime builder and catalog
+        id: source
+        uses: actions/checkout@v4
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: 2036ff98eb01029cef24caada410723af2e0587b
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Checkout separately pinned collector from reviewed PR 303
+        uses: actions/checkout@v4
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: b550ad4d8617381ebc87c81fc6a56e5d800875b1
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: collector
+          persist-credentials: false
+          sparse-checkout: |
+            tools/manga/collect_mangabaka_reader_overlap.py
+            tools/tests/test_collect_mangabaka_reader_overlap.py
+          sparse-checkout-cone-mode: false
+          show-progress: false
+
+      - name: Verify immutable reviewed code before executing
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C private-source hash-object tools/manga/build_mangabaka_authority_similar_sql.py)" = '25a970f766088f31c39fbe452c58e958afa0e356'
+          test "$(git -C private-source hash-object tools/manga/project_mangabaka_reader_overlap_compact.py)" = '3fff99e93cf94bb6d4d82537522c5ed655173634'
+          test "$(git -C private-source hash-object tools/tests/test_build_mangabaka_authority_similar_sql.py)" = '9bfde60ce2f0c5fc0b8fae14fad50b0d04726cf4'
+          test "$(git -C private-source hash-object tools/tests/test_project_mangabaka_reader_overlap_compact.py)" = 'c0b58a961907d2d734ae3d3eb46a92006f83ecb4'
+          test "$(git -C collector hash-object tools/manga/collect_mangabaka_reader_overlap.py)" = 'e709d2fdfac1f78fdb2a7041df4435975ec66913'
+          test "$(git -C collector hash-object tools/tests/test_collect_mangabaka_reader_overlap.py)" = '5c0249c918f38b69e0e8bf5c8e6c107674809e64'
+          echo 'Pinned reviewed source code hashes verified'
+
+      - name: Run all focused offline Python tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s private-source/tools/tests -p 'test_build_mangabaka_authority_similar_sql.py' -v
+          python3 -m unittest discover -s private-source/tools/tests -p 'test_project_mangabaka_reader_overlap_compact.py' -v
+          python3 -m unittest discover -s collector/tools/tests -p 'test_collect_mangabaka_reader_overlap.py' -v
+
+      - name: Check fixed catalog and existing indexed similarity source
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,sqlite3
+          from pathlib import Path
+          catalog=Path('assets/data/manga_availability.db')
+          version=Path('assets/data/manga_availability.db.version').read_text().strip()
+          with catalog.open('rb') as handle:
+              digest=hashlib.file_digest(handle,'sha256').hexdigest()
+          if digest!=version:
+              raise SystemExit('Catalog digest mismatch')
+          with sqlite3.connect('assets/data/manga_similar_works.db') as db:
+              m=dict(db.execute('SELECT key,value FROM index_metadata'))
+              if m.get('catalogSha256')!=digest or m.get('schemaVersion')!='1':
+                  raise SystemExit('The existing offline Similar Works source is not SHA-bound to the catalog')
+              if db.execute('PRAGMA quick_check').fetchone()[0]!='ok':
+                  raise SystemExit('The existing offline Similar Works index is invalid')
+          with sqlite3.connect(catalog) as db:
+              if db.execute('PRAGMA quick_check').fetchone()[0]!='ok':
+                  raise SystemExit('The availability catalog is invalid')
+          print('SHA-bound catalog and offline fallback SQL verified')
+          PY
+
+      - name: Collect scored co-reading checkpoint from MangaBaka API
+        id: collect
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/goanime-mangabaka-top10"
+          mkdir -p "$work"
+          # Sequential requests, bounded to 120/min. Raw responses remain only
+          # in transient private runner storage and the final encrypted archive.
+          timeout --signal=TERM --kill-after=30s 250m \
+            python3 collector/tools/manga/collect_mangabaka_reader_overlap.py \
+              --catalog-db private-source/assets/data/manga_availability.db \
+              --output-db "$work/reader_overlap.sqlite" \
+              --rate-per-minute 120 --report-every 200 2>&1 |
+            sed -u -E 's/MangaBaka ID [0-9]+/MangaBaka ID [redacted]/g; s/for ID [0-9]+/for ID [redacted]/g; s/catalog_sha256=[a-f0-9]{64}/catalog_sha256=[redacted]/g'
+
+      - name: Project numeric affinities, build indexed top10, validate
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/goanime-mangabaka-top10"
+          python3 private-source/tools/manga/project_mangabaka_reader_overlap_compact.py \
+            --source "$work/reader_overlap.sqlite" \
+            --output "$work/mangabaka_overlap_compact.sqlite" > "$work/projection-results.json"
+          python3 private-source/tools/manga/build_mangabaka_authority_similar_sql.py \
+            --catalog private-source/assets/data/manga_availability.db \
+            --catalog-version private-source/assets/data/manga_availability.db.version \
+            --base-index private-source/assets/data/manga_similar_works.db \
+            --mangabaka-overlap "$work/mangabaka_overlap_compact.sqlite" \
+            --redirects private-source/assets/data/manga_work_redirects.json \
+            --min-mangabaka-roots 2000 \
+            --output "$work/manga_similar_works_mangabaka_top10.db" > "$work/builder-results.json"
+          python3 - "$work" <<'PY'
+          import json,sqlite3,sys
+          from pathlib import Path
+          root=Path(sys.argv[1]); measured=json.loads((root/'builder-results.json').read_text())
+          converted=json.loads((root/'projection-results.json').read_text())
+          if converted['seeds'] < 4000 or converted['edges'] < 15000:
+              raise SystemExit('Incomplete affinity collection')
+          if measured['mangabakaSourceRoots'] < 2000:
+              raise SystemExit('Insufficient resolved MangaBaka-root coverage')
+          path=root/'manga_similar_works_mangabaka_top10.db'
+          with sqlite3.connect(path) as db:
+              if db.execute('PRAGMA integrity_check').fetchone()[0]!='ok':
+                  raise SystemExit('Final SQL integrity failed')
+              if db.execute('PRAGMA foreign_key_check').fetchall():
+                  raise SystemExit('Final SQL foreign keys invalid')
+              largest=db.execute('SELECT max(n) FROM (SELECT count(*) AS n FROM manga_similar_works GROUP BY sourceId)').fetchone()[0]
+              if largest is None or largest>10: raise SystemExit('Top-10 SQL cardinality violated')
+              meta=dict(db.execute('SELECT key,value FROM index_metadata'))
+              if meta.get('rankingPolicy')!='mangabaka_api_score_desc_top10_proprietary_fallback_v1':
+                  raise SystemExit('Unexpected ranking policy')
+              if int(meta.get('mangabakaSourceRoots',0))!=measured['mangabakaSourceRoots']:
+                  raise SystemExit('Source receipt mismatch')
+          print('Collector projection + catalog mapping + index: PASS')
+          print('Mapped MangaBaka roots:', measured['mangabakaSourceRoots'])
+          print('Mapped MangaBaka edges:', measured['mangabakaEdgeCount'])
+          print('Proprietary fallback edges:', measured['fallbackEdgeCount'])
+          print('Final offline edges:', measured['edgeCount'])
+          PY
+
+      - name: Encrypt candidate or recoverable raw checkpoint
+        id: encrypted
+        if: always()
+        shell: bash
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          COLLECT_OUTCOME: ${{ steps.collect.outcome }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/goanime-mangabaka-top10"
+          if [[ ! -s "$work/reader_overlap.sqlite" ]]; then
+            echo 'No collection checkpoint to package'
+            exit 0
+          fi
+          mkdir -p "$work/transfer" "$work/gpg"
+          chmod 700 "$work/gpg"
+          export GNUPGHOME="$work/gpg"
+          python3 - "$work" "$BUILD_OUTCOME" "$COLLECT_OUTCOME" <<'PY'
+          import json,sys
+          from pathlib import Path
+          work=Path(sys.argv[1]); outcome=sys.argv[2]; collection=sys.argv[3]
+          manifest={
+            'schemaVersion':1,
+            'type':'goanime_mangabaka_authority_top10_candidate',
+            'sourceCommit':'2036ff98eb01029cef24caada410723af2e0587b',
+            'collectorCommit':'b550ad4d8617381ebc87c81fc6a56e5d800875b1',
+            'collectionOutcome':collection,
+            'candidateOutcome':outcome,
+            'releaseStatus':'staging-only; requires redistribution and attribution review',
+          }
+          for name,path in [('projection','projection-results.json'),('candidate','builder-results.json')]:
+              file=work/path
+              if file.is_file(): manifest[name]=json.loads(file.read_text())
+          (work/'receipt.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
+          PY
+          package=(reader_overlap.sqlite receipt.json)
+          if [[ -s "$work/mangabaka_overlap_compact.sqlite" ]]; then package+=(mangabaka_overlap_compact.sqlite); fi
+          if [[ -s "$work/manga_similar_works_mangabaka_top10.db" ]]; then package+=(manga_similar_works_mangabaka_top10.db); fi
+          tar -C "$work" -I 'zstd -T0 -6' -cf "$work/package.tar.zst" "${package[@]}"
+          gpg --batch --import control/keys/source-bundles-public.asc >/dev/null 2>&1
+          recipient='2DE29DC31427CF0A911AB96175679291435059B0'
+          fingerprint="$(gpg --batch --with-colons --fingerprint "$recipient" | awk -F: '$1=="fpr"{print $10;exit}')"
+          test "$fingerprint" = "$recipient"
+          gpg --batch --yes --trust-model always --recipient "$recipient" \
+            --output "$work/transfer/goanime-mangabaka-top10-private.tar.zst.gpg" \
+            --encrypt "$work/package.tar.zst"
+          echo 'available=true' >> "$GITHUB_OUTPUT"
+
+      - name: Upload ciphertext only
+        if: always() && steps.encrypted.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: goanime-mangabaka-top10-encrypted
+          path: ${{ runner.temp }}/goanime-mangabaka-top10/transfer/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Destroy transient private source and plaintext
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/collector" "$GITHUB_WORKSPACE/control" "$RUNNER_TEMP/goanime-mangabaka-top10"
