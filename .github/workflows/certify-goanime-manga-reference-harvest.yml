@@ -65,7 +65,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m unittest -v tools.tests.test_stage_mihon_harvest_archive tools.tests.test_manga_reference_snapshot_acquisition
+          python3 -m unittest -v tools.tests.test_stage_mihon_harvest_archive tools.tests.test_manga_reference_snapshot_acquisition tools.tests.test_validate_manga_cover_candidate_sidecar
           python3 tools/manga/stage_mihon_harvest_archive.py \
             --archive manga_harvest-20261020T051910Z-1-001.zip \
             --output-dir "$RUNNER_TEMP/goanime-master-harvest" \
