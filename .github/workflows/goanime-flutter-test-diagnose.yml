@@ -127,7 +127,12 @@ jobs:
               test/services/manga/manga_repository_browse_data_source_test.dart \
               > "$RUNNER_TEMP/flutter-tests.jsonl" 2> "$RUNNER_TEMP/flutter-tests.stderr"
           elif [[ '${{ steps.focus.outputs.source_aware_task6 }}' == 'true' ]]; then
-            python3 -m unittest tools.tests.test_manga_safe_distribution -v \
+            python3 -m py_compile \
+              tools/manga/build_manga_safe_distribution.py \
+              tools/manga/check_manga_safe_release_bundle.py
+            python3 -m unittest \
+              tools.tests.test_manga_safe_distribution \
+              tools.tests.test_manga_safe_release_bundle -v \
               > "$RUNNER_TEMP/flutter-tests.jsonl" 2> "$RUNNER_TEMP/flutter-tests.stderr"
           else
             flutter test --no-pub --reporter=json > "$RUNNER_TEMP/flutter-tests.jsonl" 2> "$RUNNER_TEMP/flutter-tests.stderr"
