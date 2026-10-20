@@ -20,7 +20,9 @@ jobs:
       - name: Checkout trusted Toolchains source
         uses: actions/checkout@v6
         with:
-          ref: main
+          # Pin the triggering request commit: simultaneous PR/toolchain pushes
+          # must not move HEAD away from the requested immutable source.
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
