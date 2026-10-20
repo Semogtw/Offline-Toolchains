@@ -32,6 +32,18 @@ jobs:
           --request-dir triggers/goanime-flutter-test-diagnose
           --workspace .
 
+      - name: Select source-aware catalog focus
+        id: focus
+        shell: bash
+        run: |
+          set -euo pipefail
+          request_file="$(git diff --name-only HEAD^ HEAD -- 'triggers/goanime-flutter-test-diagnose/*.request')"
+          if [[ -f "$request_file" ]] && grep -Fxq 'reason=source-aware-task1' "$request_file"; then
+            echo 'source_aware_task1=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'source_aware_task1=false' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout exact GoAnime source
         uses: actions/checkout@v6
         with:
@@ -73,7 +85,14 @@ jobs:
         shell: bash
         run: |
           set +e
-          flutter test --no-pub --reporter=json > "$RUNNER_TEMP/flutter-tests.jsonl" 2> "$RUNNER_TEMP/flutter-tests.stderr"
+          if [[ '${{ steps.focus.outputs.source_aware_task1 }}' == 'true' ]]; then
+            flutter test --no-pub --reporter=json \
+              test/tools/manga_availability_v3_builder_test.dart \
+              test/tools/build_global_manga_availability_test.dart \
+              > "$RUNNER_TEMP/flutter-tests.jsonl" 2> "$RUNNER_TEMP/flutter-tests.stderr"
+          else
+            flutter test --no-pub --reporter=json > "$RUNNER_TEMP/flutter-tests.jsonl" 2> "$RUNNER_TEMP/flutter-tests.stderr"
+          fi
           status=$?
           echo "exit_code=$status" >> "$GITHUB_OUTPUT"
           exit 0
