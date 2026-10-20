@@ -1,0 +1,264 @@
+name: Collect GoAnime MangaBaka reader overlap
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/collect-goanime-mangabaka-reader-overlap.yml'
+      - 'tests/test_goanime_mangabaka_reader_overlap_workflow.py'
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-mangabaka-reader-overlap/*.request'
+  workflow_dispatch:
+    inputs:
+      private_ref:
+        description: 'Reviewed GoAnime source branch (main or reader-overlap feature)'
+        type: string
+        required: true
+        default: feat/mangabaka-reader-overlap-harvest-20261020
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-mangabaka-reader-overlap
+  cancel-in-progress: false
+
+jobs:
+  public-contract:
+    name: Validate public workflow security contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run workflow contract tests
+        run: python3 -m unittest discover -s tests -p 'test_goanime_mangabaka_reader_overlap_workflow.py' -v
+
+  harvest:
+    name: Collect from reviewed GoAnime source
+    if: github.event_name != 'pull_request' && github.actor == github.repository_owner
+    needs: public-contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - name: Checkout public workflow and encryption recipient
+        uses: actions/checkout@v4
+        with:
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Select allowed GoAnime source ref
+        id: request
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_REF: ${{ inputs.private_ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            source_ref="$DISPATCH_REF"
+          else
+            mapfile -t changed < <(git -C control diff --name-only --diff-filter=AM "$PUSH_BEFORE" "$PUSH_AFTER" -- ':(glob)triggers/goanime-mangabaka-reader-overlap/*.request')
+            if (( ${#changed[@]} != 1 )); then
+              echo "::error::Exactly one new or modified collection request is required"
+              exit 1
+            fi
+            source_ref="$(tr -d '\r\n ' < "control/${changed[0]}")"
+          fi
+          case "$source_ref" in
+            main|feat/mangabaka-reader-overlap-harvest-20261020) ;;
+            *) echo "::error::Unapproved GoAnime source ref"; exit 1 ;;
+          esac
+          echo "ref=$source_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Require configured private source access
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout the reviewed private GoAnime source
+        id: checkout_private
+        uses: actions/checkout@v4
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.ref }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify reviewed private collector blobs
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Pin executable collector/test content without exposing a private commit ref.
+          test "$(git hash-object tools/manga/collect_mangabaka_reader_overlap.py)" = "e709d2fdfac1f78fdb2a7041df4435975ec66913"
+          test "$(git hash-object tools/tests/test_collect_mangabaka_reader_overlap.py)" = "5c0249c918f38b69e0e8bf5c8e6c107674809e64"
+          echo 'Reviewed private collector blobs verified'
+
+      - name: Run offline Python collector tests
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile tools/manga/collect_mangabaka_reader_overlap.py
+          python3 -m unittest discover -s tools/tests -p 'test_collect_mangabaka_reader_overlap.py' -v
+
+      - name: Verify enriched catalog identity coverage
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import sqlite3
+          catalog = Path('assets/data/manga_availability.db')
+          if not catalog.is_file():
+              raise SystemExit('The verified enriched GoAnime availability SQLite is missing')
+          with sqlite3.connect(catalog.resolve().as_uri() + '?mode=ro', uri=True) as db:
+              checked = db.execute('PRAGMA quick_check').fetchone()[0]
+              if checked != 'ok':
+                  raise SystemExit(f'Input catalog integrity failed: {checked}')
+              count = db.execute("""
+                  SELECT COUNT(DISTINCT e.externalId)
+                  FROM external_ids e
+                  JOIN works w ON w.workId=e.workId
+                  WHERE lower(trim(e.namespace))='mangabaka'
+                    AND EXISTS (SELECT 1 FROM source_links s WHERE s.workId=w.workId)
+              """).fetchone()[0]
+          print(f'trusted_source_backed_mangabaka_ids={count}', flush=True)
+          if count < 5000:
+              raise SystemExit(
+                  'Insufficient trusted MangaBaka IDs: require an enriched '
+                  'GoAnime catalog (>=5000) before mass collection'
+              )
+          PY
+          python3 tools/manga/collect_mangabaka_reader_overlap.py \
+            --catalog-db assets/data/manga_availability.db \
+            --output-db "$RUNNER_TEMP/goanime-mangabaka-reader-overlap/reader_overlap.sqlite" \
+            --dry-run 2>&1 | sed -u -E 's/catalog_sha256=[a-f0-9]{64}/catalog_sha256=[redacted]/g'
+
+      - name: Smoke live API with three trusted MangaBaka IDs
+        id: smoke
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/manga/collect_mangabaka_reader_overlap.py \
+            --catalog-db assets/data/manga_availability.db \
+            --output-db "$RUNNER_TEMP/goanime-mangabaka-reader-overlap/reader_overlap.sqlite" \
+            --max-requests 3 --rate-per-minute 120 --report-every 1 2>&1 |
+            sed -u -E 's/MangaBaka ID [0-9]+/MangaBaka ID [redacted]/g; s/for ID [0-9]+/for ID [redacted]/g'
+          python3 - "$RUNNER_TEMP/goanime-mangabaka-reader-overlap/reader_overlap.sqlite" <<'PY'
+          import sqlite3,sys
+          with sqlite3.connect(sys.argv[1]) as db:
+              successes=db.execute('SELECT COUNT(*) FROM reader_overlap_responses').fetchone()[0]
+              unknown=db.execute("SELECT COUNT(*) FROM reader_overlap_responses WHERE parse_status='unrecognized'").fetchone()[0]
+              missing=db.execute('SELECT COUNT(*) FROM reader_overlap_failures WHERE http_status=404').fetchone()[0]
+          print(f'smoke_saved={successes} smoke_404={missing} smoke_unrecognized={unknown}')
+          if unknown or not successes:
+              raise SystemExit('Live API schema/coverage smoke failed; full harvest is blocked')
+          PY
+
+      - name: Collect remaining trusted IDs at 120 requests per minute
+        id: collect
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A bounded collector step leaves time for always() encryption and upload.
+          # SQLite saves results incrementally so termination keeps a usable checkpoint.
+          timeout --signal=TERM --kill-after=30s 270m \
+            python3 tools/manga/collect_mangabaka_reader_overlap.py \
+              --catalog-db assets/data/manga_availability.db \
+              --output-db "$RUNNER_TEMP/goanime-mangabaka-reader-overlap/reader_overlap.sqlite" \
+              --rate-per-minute 120 --report-every 100 2>&1 |
+            sed -u -E 's/MangaBaka ID [0-9]+/MangaBaka ID [redacted]/g; s/for ID [0-9]+/for ID [redacted]/g'
+
+      - name: Verify complete sidecar SQLite
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/goanime-mangabaka-reader-overlap/reader_overlap.sqlite" <<'PY'
+          import sqlite3,sys
+          with sqlite3.connect(sys.argv[1]) as db:
+              integrity=db.execute('PRAGMA quick_check').fetchone()[0]
+              responses=db.execute('SELECT COUNT(*) FROM reader_overlap_responses').fetchone()[0]
+              edges=db.execute('SELECT COUNT(*) FROM reader_overlap_relations').fetchone()[0]
+              unknown=db.execute("SELECT COUNT(*) FROM reader_overlap_responses WHERE parse_status='unrecognized'").fetchone()[0]
+              missing=db.execute('SELECT COUNT(*) FROM reader_overlap_failures WHERE http_status=404').fetchone()[0]
+              errors=db.execute('SELECT COUNT(*) FROM reader_overlap_failures WHERE http_status IS NULL OR http_status!=404').fetchone()[0]
+          print(f'integrity={integrity} responses={responses} edges={edges} 404={missing} transient_errors={errors}')
+          if integrity!='ok' or unknown or errors or responses==0:
+              raise SystemExit('Sidecar validation did not pass')
+          PY
+
+      - name: Encrypt completed or recoverable partial checkpoint
+        id: encrypt
+        if: always()
+        shell: bash
+        env:
+          WORK: ${{ runner.temp }}/goanime-mangabaka-reader-overlap
+          SOURCE_OUTCOME: ${{ steps.checkout_private.outcome }}
+          COLLECT_OUTCOME: ${{ steps.collect.outcome }}
+        run: |
+          set -euo pipefail
+          if [[ "$SOURCE_OUTCOME" != success || ! -s "$WORK/reader_overlap.sqlite" ]]; then
+            echo 'No sidecar exists to package'
+            exit 0
+          fi
+          mkdir -p "$WORK/transfer" "$WORK/gpg"
+          chmod 700 "$WORK/gpg"
+          export GNUPGHOME="$WORK/gpg"
+          python3 - "$WORK/reader_overlap.sqlite" "$WORK/receipt.json" "$COLLECT_OUTCOME" <<'PY'
+          from datetime import datetime,timezone
+          import json,sqlite3,sys
+          path,receipt,outcome=sys.argv[1:]
+          with sqlite3.connect(path) as db:
+              db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+              values={
+                'responses':db.execute('SELECT COUNT(*) FROM reader_overlap_responses').fetchone()[0],
+                'relations':db.execute('SELECT COUNT(*) FROM reader_overlap_relations').fetchone()[0],
+                'notFound':db.execute('SELECT COUNT(*) FROM reader_overlap_failures WHERE http_status=404').fetchone()[0],
+                'errors':db.execute('SELECT COUNT(*) FROM reader_overlap_failures WHERE http_status IS NULL OR http_status!=404').fetchone()[0],
+              }
+          receipt_data={'schemaVersion':1,'type':'mangabaka_reader_overlap','collectedAt':datetime.now(timezone.utc).isoformat(),'collectionOutcome':outcome,'counts':values}
+          with open(receipt,'w',encoding='utf-8') as fh:
+              json.dump(receipt_data,fh,indent=2)
+          PY
+          tar -C "$WORK" -I 'zstd -T0 -6' -cf "$WORK/reader-overlap.tar.zst" reader_overlap.sqlite receipt.json
+          gpg --batch --import control/keys/source-bundles-public.asc >/dev/null 2>&1
+          expected='2DE29DC31427CF0A911AB96175679291435059B0'
+          actual="$(gpg --batch --with-colons --fingerprint "$expected" | awk -F: '$1=="fpr"{print $10;exit}')"
+          test "$actual" = "$expected"
+          gpg --batch --yes --trust-model always --recipient "$expected" \
+            --output "$WORK/transfer/goanime-mangabaka-reader-overlap.tar.zst.gpg" \
+            --encrypt "$WORK/reader-overlap.tar.zst"
+          echo "available=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload ciphertext-only SQLite artifact
+        if: always() && steps.encrypt.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: goanime-mangabaka-reader-overlap-encrypted
+          path: ${{ runner.temp }}/goanime-mangabaka-reader-overlap/transfer/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Purge transient private files
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control" "$RUNNER_TEMP/goanime-mangabaka-reader-overlap"
