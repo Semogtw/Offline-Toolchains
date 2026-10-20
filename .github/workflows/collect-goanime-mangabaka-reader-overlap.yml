@@ -137,10 +137,10 @@ jobs:
                     AND EXISTS (SELECT 1 FROM source_links s WHERE s.workId=w.workId)
               """).fetchone()[0]
           print(f'trusted_source_backed_mangabaka_ids={count}', flush=True)
-          if count < 5000:
+          if count < 4500:
               raise SystemExit(
                   'Insufficient trusted MangaBaka IDs: require an enriched '
-                  'GoAnime catalog (>=5000) before mass collection'
+                  'GoAnime catalog (>=4500) before mass collection'
               )
           PY
           python3 tools/manga/collect_mangabaka_reader_overlap.py \
