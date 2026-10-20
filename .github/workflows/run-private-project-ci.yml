@@ -160,7 +160,7 @@ jobs:
           ref: ${{ needs.normalize.outputs.ref }}
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
-          fetch-depth: 1
+          fetch-depth: 21
           persist-credentials: false
           lfs: false
           submodules: false
