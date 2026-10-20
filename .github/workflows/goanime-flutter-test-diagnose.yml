@@ -179,7 +179,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: goanime-flutter-diagnostics-${{ github.run_id }}
-          path: reports/goanime-flutter-test-diagnostics/*.json
+          path: reports/goanime-flutter-test-diagnostics/${{ steps.request.outputs.source_hint }}-${{ github.run_id }}.json
           retention-days: 3
           if-no-files-found: error
 
@@ -187,17 +187,22 @@ jobs:
         shell: bash
         env:
           TEST_EXIT_CODE: ${{ steps.tests.outputs.exit_code }}
+          SOURCE_SHA: ${{ steps.request.outputs.source_hint }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import glob
           import json
+          import os
           from pathlib import Path
 
-          files = sorted(glob.glob('reports/goanime-flutter-test-diagnostics/*.json'))
-          if len(files) != 1:
-              raise SystemExit('expected exactly one Flutter diagnostic receipt')
-          data = json.loads(Path(files[0]).read_text(encoding='utf-8'))
+          receipt_path = Path(
+              'reports/goanime-flutter-test-diagnostics/'
+              + os.environ['SOURCE_SHA']
+              + '-'
+              + os.environ['GITHUB_RUN_ID']
+              + '.json'
+          )
+          data = json.loads(receipt_path.read_text(encoding='utf-8'))
           print(json.dumps({
               'sourceSha': data['sourceSha'],
               'exitCode': data['exitCode'],
