@@ -1,4 +1,4 @@
-name: Apply GoAnime manga next-wave formatting
+name: Format GoAnime PR changed Dart files
 
 on:
   push:
@@ -15,17 +15,17 @@ concurrency:
 
 jobs:
   apply:
-    name: Format exact GoAnime manga source-wave SHA
+    name: Format reviewed GoAnime PR branch
     if: github.actor == github.repository_owner
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Require private repository token
         env:
           PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
         run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
 
-      - name: Checkout trusted control request
+      - name: Checkout trusted formatter request
         uses: actions/checkout@v6
         with:
           path: control
@@ -33,93 +33,92 @@ jobs:
           persist-credentials: false
           show-progress: false
 
-      - name: Resolve exact private revision
+      - name: Resolve allowlisted private branch
         id: request
         shell: bash
         run: |
           set -euo pipefail
           request="$(git -C control diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-manga-next-wave-format/*.request' | head -n 1)"
           test -n "$request"
-          read -r project branch sha < "control/$request"
+          read -r project branch < "control/$request"
           test "$project" = goanime
-          [[ "$branch" =~ ^[A-Za-z0-9._/-]{1,200}$ ]]
-          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
-          printf 'branch=%s\nsha=%s\n' "$branch" "$sha" >> "$GITHUB_OUTPUT"
+          [[ "$branch" =~ ^fix/[A-Za-z0-9._/-]+$ ]]
+          case "$branch" in *..*|*//*) exit 2 ;; esac
+          printf 'branch=%s\n' "$branch" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout exact GoAnime SHA
+      - name: Checkout exact current private branch
         uses: actions/checkout@v6
         with:
           repository: Semogtw/goanime-mobile
-          ref: ${{ steps.request.outputs.sha }}
+          ref: ${{ steps.request.outputs.branch }}
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
           lfs: false
           submodules: false
           show-progress: false
 
-      - name: Verify branch still points to exact SHA
+      - name: Verify exact branch head and establish compare-and-swap lease
+        id: lease
         working-directory: private-source
         shell: bash
         env:
           PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           TARGET_BRANCH: ${{ steps.request.outputs.branch }}
-          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          sha="$(git rev-parse HEAD)"
           auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
           remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
-          test "$remote" = "$EXPECTED_SHA"
+          test "$remote" = "$sha"
+          printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"
           unset auth PRIVATE_REPOSITORIES_TOKEN
 
-      - name: Set up Flutter 3.44.1
+      - name: Set up pinned Flutter formatter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           flutter-version: 3.44.1
-          cache: true
+          cache: false
 
-      - name: Format only validated source-wave files
+      - name: Format only Dart files changed against private main
         working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
-          files=(
-            lib/services/manga/providers/yomu_manga_provider.dart
-            lib/services/manga/providers/one_reader_manga_provider.dart
-            test/services/manga/providers/manga_next_source_wave_test.dart
-          )
+          mapfile -d '' candidates < <(git diff --name-only -z --diff-filter=ACMRT origin/main...HEAD -- lib test packages tools)
+          files=()
+          for path in "${candidates[@]}"; do
+            if [[ "$path" == *.dart ]]; then files+=("$path"); fi
+          done
+          echo "PR Dart files checked: ${#files[@]}"
+          if (( ${#files[@]} == 0 )); then exit 0; fi
           dart format "${files[@]}" >/dev/null
-          git -c core.whitespace=cr-at-eol diff --check
-          printf '%s\n' "${files[@]}" | sort > "$RUNNER_TEMP/expected-files"
-          git diff --name-only | sort > "$RUNNER_TEMP/actual-files"
-          diff -u "$RUNNER_TEMP/expected-files" "$RUNNER_TEMP/actual-files"
+          git diff --check
+          dart format --output=none --set-exit-if-changed "${files[@]}"
 
-      - name: Commit and push formatting to reviewed branch
+      - name: Commit formatted changes with lease verification
         working-directory: private-source
         shell: bash
         env:
           PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           TARGET_BRANCH: ${{ steps.request.outputs.branch }}
-          EXPECTED_SHA: ${{ steps.request.outputs.sha }}
+          EXPECTED_SHA: ${{ steps.lease.outputs.sha }}
         run: |
           set -euo pipefail
-          git config user.name 'Arthur Almeida'
-          git config user.email 'arthurgva1602@gmail.com'
-          git add -- \
-            lib/services/manga/providers/yomu_manga_provider.dart \
-            lib/services/manga/providers/one_reader_manga_provider.dart \
-            test/services/manga/providers/manga_next_source_wave_test.dart
-          git diff --cached --quiet && { echo 'formatting produced no changes'; exit 1; }
-          git commit -m 'style(manga): format next source wave'
-          published_sha="$(git rev-parse HEAD)"
+          git add -u -- lib test packages tools
+          if git diff --cached --quiet; then
+            echo 'PR Dart files were already formatted'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'style(manga): format PR chapter coverage changes'
           auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
           remote="$(git -c http.extraheader="AUTHORIZATION: basic $auth" ls-remote https://github.com/Semogtw/goanime-mobile.git "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
           test "$remote" = "$EXPECTED_SHA"
           git -c http.extraheader="AUTHORIZATION: basic $auth" push -q https://github.com/Semogtw/goanime-mobile.git "HEAD:refs/heads/$TARGET_BRANCH"
-          echo "published_sha=$published_sha"
           unset auth PRIVATE_REPOSITORIES_TOKEN
 
       - name: Remove private checkout
