@@ -323,6 +323,7 @@ jobs:
               'sourceSha': data['sourceSha'],
               'exitCode': data['exitCode'],
               'failureCount': data['failureCount'],
+              'unfinishedTests': data.get('unfinishedTests', []),
               'failedTests': [
                   {'name': case.get('name'), 'error': (case.get('errors') or [{}])[0].get('error', '')[:1200], 'stack': (case.get('errors') or [{}])[0].get('stackTrace', '')[:1700], 'prints': case.get('diagnosticPrints', [])[-3:]}
                   for case in data.get('failures', [])
