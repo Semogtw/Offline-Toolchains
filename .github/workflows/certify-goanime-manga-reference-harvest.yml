@@ -1,0 +1,215 @@
+name: Certify GoAnime manga catalog from immutable harvest and official MangaBaka
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-reference-recertification/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-manga-reference-recertification
+  cancel-in-progress: false
+
+jobs:
+  recertify:
+    name: Offline private catalog recertification (no publication)
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Require private checkout access
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout trusted public toolchain
+        uses: actions/checkout@v6
+        with:
+          path: control
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Checkout requested private source branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: codex/manga-provider-adult-provenance-20261020
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify immutable input is present
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git status --porcelain)" = ""
+          test -s manga_harvest-20261020T051910Z-1-001.zip
+          test -s assets/data/manga_mihon_source_identity_manifest.json
+          test -s tools/manga/acquire_manga_reference_snapshot.py
+          bash -n tools/manga/materialize_global_manga_availability_ci.sh
+          echo "Committed harvest and reference toolchain present"
+
+      - name: Stage committed Mihon harvest without untrusted archive extraction
+        id: harvest
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest -v tools.tests.test_stage_mihon_harvest_archive tools.tests.test_manga_reference_snapshot_acquisition
+          python3 tools/manga/stage_mihon_harvest_archive.py \
+            --archive manga_harvest-20261020T051910Z-1-001.zip \
+            --output-dir "$RUNNER_TEMP/goanime-master-harvest" \
+            --receipt "$RUNNER_TEMP/manga-harvest-stage-receipt.json"
+          python3 - "$RUNNER_TEMP/manga-harvest-stage-receipt.json" "$GITHUB_OUTPUT" <<'PY'
+          import json,sys
+          data=json.load(open(sys.argv[1],encoding='utf-8'))
+          with open(sys.argv[2],'a',encoding='utf-8') as out:
+              out.write('harvest_dir='+data['harvestDirectory']+'\n')
+              out.write('collected_sha='+data['collectedGoAnimeSha']+'\n')
+          print('Mihon ZIP archive safely staged; collection provenance retained')
+          PY
+
+      - name: Set up Flutter toolchain
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Install locked Dart dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter pub get --enforce-lockfile
+          (cd packages/goanime_core && dart pub get --enforce-lockfile)
+
+      - name: Validate Mihon archive against pinned source identities
+        working-directory: private-source
+        shell: bash
+        env:
+          STAGED_HARVEST: ${{ steps.harvest.outputs.harvest_dir }}
+          COLLECTED_SHA: ${{ steps.harvest.outputs.collected_sha }}
+        run: |
+          set -euo pipefail
+          dart run tools/manga/mihon_harvest_snapshot.dart \
+            --harvest-dir "$STAGED_HARVEST" \
+            --source-manifest assets/data/manga_mihon_source_identity_manifest.json \
+            --output-dir "$RUNNER_TEMP/goanime-mihon-preflight" \
+            --expected-goanime-sha "$COLLECTED_SHA"
+          test -s "$RUNNER_TEMP/goanime-mihon-preflight/manga_catalog_inventory.json"
+          flutter test --no-pub --concurrency=1 test/tools/materialize_global_manga_availability_gate_test.dart
+          python3 tools/manga/validate_manga_reference_release_assets.py
+          echo "Collection and source manifest validated without rewriting provenance"
+
+      - name: Check free staging space
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h "$RUNNER_TEMP"
+          free_kib="$(df -Pk "$RUNNER_TEMP" | awk 'NR==2 {print $4}')"
+          if (( free_kib < 11534336 )); then
+            echo "::error::At least 11 GiB free staging space is required for the full MangaBaka SQLite snapshot."
+            exit 1
+          fi
+
+      - name: Materialize and recertify from official verified MangaBaka SQLite
+        working-directory: private-source
+        timeout-minutes: 310
+        shell: bash
+        env:
+          TARGET_BRANCH: HEAD
+          MANGA_MIHON_HARVEST_PATH: ${{ steps.harvest.outputs.harvest_dir }}
+          MANGA_MIHON_EXPECTED_GOANIME_SHA: ${{ steps.harvest.outputs.collected_sha }}
+          MANGA_REFERENCE_MODE: authoritative-safe
+          MANGA_REFERENCE_PROVIDER: mangabaka
+          MANGA_REFERENCE_DOWNLOAD_OFFICIAL: 'true'
+          MANGA_REFERENCE_CHECKPOINT_PATH: ${{ runner.temp }}/goanime-manga-reference-checkpoint.json
+          MANGA_METADATA_MAX_JIKAN_SEARCHES: '0'
+          MANGA_METADATA_MAX_ANILIST_TITLE_TARGETS: '0'
+          MANGA_REFERENCE_MAX_SCORED_TARGETS: '32768'
+          MANGA_REFERENCE_DISTRIBUTION_APPROVED: 'false'
+        run: |
+          set -euo pipefail
+          bash tools/manga/materialize_global_manga_availability_ci.sh
+          echo "Offline materialization passed all catalog checks; no branch was published"
+
+      - name: Confirm recertified SQLite remains usable
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sqlite3
+          database=sqlite3.connect('file:assets/data/manga_availability.db?mode=ro',uri=True)
+          try:
+              assert database.execute('PRAGMA quick_check').fetchone()[0]=='ok'
+              count=database.execute('SELECT COUNT(*) FROM manga_works').fetchone()[0]
+              assert count >= 1000, count
+              print('Recertified SQLite quick_check=ok; usable canonical works='+str(count))
+          finally:
+              database.close()
+          PY
+
+      - name: Encrypt candidate for private offline review
+        id: encrypt
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GNUPGHOME="$RUNNER_TEMP/goanime-manga-recertification-gpg"
+          mkdir -p "$GNUPGHOME" "$RUNNER_TEMP/goanime-manga-recertification-transfer"
+          chmod 700 "$GNUPGHOME"
+          gpg --batch --import "$GITHUB_WORKSPACE/control/keys/source-bundles-public.asc" >/dev/null 2>&1
+          expected='2DE29DC31427CF0A911AB96175679291435059B0'
+          actual="$(gpg --batch --with-colons --fingerprint "$expected" | awk -F: '$1=="fpr" {print $10; exit}')"
+          test "$actual" = "$expected"
+          tar -I 'zstd -T0 -6' -cf "$RUNNER_TEMP/goanime-manga-recertification.tar.zst" \
+            assets/data/manga_availability.db \
+            assets/data/manga_availability.db.version \
+            assets/data/manga_recommendation_index.json \
+            assets/data/manga_metadata_cache.json \
+            assets/data/manga_mal_crosswalk.json \
+            assets/data/manga_mal_crosswalk_checkpoint.json \
+            assets/data/manga_a71_mal_reindex_queue.json
+          gpg --batch --yes --trust-model always --recipient "$expected" \
+            --output "$RUNNER_TEMP/goanime-manga-recertification-transfer/catalog.tar.zst.gpg" \
+            --encrypt "$RUNNER_TEMP/goanime-manga-recertification.tar.zst"
+          sha256sum "$RUNNER_TEMP/goanime-manga-recertification-transfer/catalog.tar.zst.gpg" \
+            > "$RUNNER_TEMP/goanime-manga-recertification-transfer/SHA256SUMS"
+          test -s "$RUNNER_TEMP/goanime-manga-recertification-transfer/catalog.tar.zst.gpg"
+          echo "Candidate encrypted for private review; raw assets were not published"
+
+      - name: Upload encrypted candidate only
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-manga-recertified-candidate-encrypted
+          path: ${{ runner.temp }}/goanime-manga-recertification-transfer
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Remove private source and reference data
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/private-source"
+          rm -rf "$GITHUB_WORKSPACE/control"
+          rm -rf "$RUNNER_TEMP/goanime-master-harvest"
+          rm -rf "$RUNNER_TEMP/goanime-mihon-preflight"
+          rm -rf "$RUNNER_TEMP/goanime-manga-recertification-gpg"
+          rm -rf "$RUNNER_TEMP/goanime-manga-recertification-transfer"
+          rm -f "$RUNNER_TEMP/manga-harvest-stage-receipt.json"
+          rm -f "$RUNNER_TEMP/goanime-manga-recertification.tar.zst"
+          rm -f "$RUNNER_TEMP/goanime-manga-reference-checkpoint.json"
