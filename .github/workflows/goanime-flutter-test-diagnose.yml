@@ -9,8 +9,8 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: goanime-flutter-test-diagnose
-  cancel-in-progress: true
+  group: goanime-flutter-test-diagnose-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   diagnose:
@@ -40,6 +40,11 @@ jobs:
         run: |
           set -euo pipefail
           request_file="$(git diff --name-only HEAD^ HEAD -- 'triggers/goanime-flutter-test-diagnose/*.request')"
+          if [[ -f "$request_file" ]] && grep -Fxq 'reason=pr301-chapter-pagination' "$request_file"; then
+            echo 'pagination_pr301=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'pagination_pr301=false' >> "$GITHUB_OUTPUT"
+          fi
           if [[ -f "$request_file" ]] && grep -Fxq 'reason=source-aware-task1' "$request_file"; then
             echo 'source_aware_task1=true' >> "$GITHUB_OUTPUT"
           else
@@ -107,7 +112,12 @@ jobs:
         shell: bash
         run: |
           set +e
-          if [[ '${{ steps.focus.outputs.source_aware_task1 }}' == 'true' ]]; then
+          if [[ '${{ steps.focus.outputs.pagination_pr301 }}' == 'true' ]]; then
+            flutter test --no-pub --reporter=json \
+              test/widgets/manga_manhastro/chapter_number_order_test.dart \
+              test/widgets/manga_manhastro/details_interaction_test.dart \
+              > "$RUNNER_TEMP/flutter-tests.jsonl" 2> "$RUNNER_TEMP/flutter-tests.stderr"
+          elif [[ '${{ steps.focus.outputs.source_aware_task1 }}' == 'true' ]]; then
             flutter test --no-pub --reporter=json \
               test/tools/manga_availability_v3_builder_test.dart \
               test/tools/build_global_manga_availability_test.dart \
