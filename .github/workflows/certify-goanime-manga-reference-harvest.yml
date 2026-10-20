@@ -232,7 +232,7 @@ jobs:
         with:
           name: goanime-manga-recertified-candidate-encrypted
           path: ${{ runner.temp }}/goanime-manga-recertification-transfer
-          retention-days: 7
+          retention-days: 1
           compression-level: 0
           if-no-files-found: error
 
