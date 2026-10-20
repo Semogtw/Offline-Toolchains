@@ -1,0 +1,3 @@
+target_branch=chore/goanime-dart-format-ci-20261020
+source_hint=cb859cb8223841cd456e31ce9a8ad3682dde7a36
+reason=cleanup baseline formatter debt for reader PR validation
