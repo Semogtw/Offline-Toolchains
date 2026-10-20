@@ -1,0 +1,182 @@
+name: Assemble GoAnime private MangaBaka top10 SQL
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/assemble-goanime-personal-mangabaka-top10.yml'
+      - 'tests/test_goanime_personal_mangabaka_top10_workflow.py'
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-personal-mangabaka-top10/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-private-mangabaka-top10
+  cancel-in-progress: false
+
+jobs:
+  public-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate owner-only offline rebuild policy
+        run: python3 -m unittest discover -s tests -p 'test_goanime_personal_mangabaka_top10_workflow.py' -v
+
+  assemble:
+    if: github.event_name == 'push' && github.actor == github.repository_owner
+    needs: public-contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    steps:
+      - name: Checkout trusted public workflow
+        uses: actions/checkout@v4
+        with:
+          path: control
+          persist-credentials: false
+
+      - name: Require personal private checkout credential
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: test -n "$PRIVATE_REPOSITORIES_TOKEN"
+
+      - name: Checkout pinned private GoAnime staged source
+        uses: actions/checkout@v4
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: fe6421d6324f7222af1b2eaff37c1c04726cdd00
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          persist-credentials: false
+          fetch-depth: 1
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Verify SHA-pinned private source and binary parts
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = fe6421d6324f7222af1b2eaff37c1c04726cdd00
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          known=['f0d5a18c12c8c90c12837e7dfdc5c92c598ee862','f75abf5da4be3590104a1be1e6ebd1d193466360','ec644e38656cdf39d57c9b552b8fdfb0356233f4','1fdf36398aae839ee2783d5dd653d695f8f2b6b9','10b2f0f630b7cad1c1e31632720bec6e5c2dfe08','c23342febc1e892a32948a876f037c0c90c30304','94dcb1fc993b9f8a3b6c004fca018dcb13e637bf','d7ae50af5b4ef1bf21587cf85e6957732f4a8918','ea0e25424ad62903d957110ac36630edf2359191','3c1537d3ba639c6915bc2d856566b1d4f927f621']
+          for i,digest in enumerate(known):
+              file=Path('tools/manga/.staged-mangabaka-top10') / f'part_{i:02d}.bin'
+              actual=subprocess.check_output(['git','hash-object',str(file)],text=True).strip()
+              if actual!=digest: raise SystemExit('Private chunk hash mismatch')
+          print('All 10 private blobs verified')
+          PY
+
+      - name: Assemble and validate immutable offline index
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib,sqlite3
+          root=Path('tools/manga/.staged-mangabaka-top10')
+          parts=sorted(root.glob('part_*.bin'))
+          if len(parts)!=10: raise SystemExit('Missing binary parts')
+          output=Path('assets/data/manga_similar_works.db')
+          with output.open('wb') as out:
+              for i,p in enumerate(parts):
+                  expected_len=480000 if i<9 else 263424
+                  b=p.read_bytes()
+                  if len(b)!=expected_len: raise SystemExit('Wrong chunk byte length')
+                  out.write(b)
+          expected_sha='88ef0094ccea57f1a21e2a7c2f51a321d6be27d8853bb3c066042b1a37bbab6f'
+          if hashlib.sha256(output.read_bytes()).hexdigest()!=expected_sha:
+              raise SystemExit('Reassembled SQLite digest mismatch')
+          catalog_sha=hashlib.sha256(Path('assets/data/manga_availability.db').read_bytes()).hexdigest()
+          expected_catalog='6ccd62179452655e5e6f3429607a99c0f6b9a6bda158220cffea7e0625f67df8'
+          if catalog_sha!=expected_catalog or Path('assets/data/manga_availability.db.version').read_text().strip()!=catalog_sha:
+              raise SystemExit('Catalog and precomputed index versions mismatch')
+          with sqlite3.connect(output.resolve().as_uri()+'?mode=ro',uri=True) as db:
+              if db.execute('PRAGMA integrity_check').fetchone()[0]!='ok' or db.execute('PRAGMA foreign_key_check').fetchall():
+                  raise SystemExit('Invalid SQLite')
+              meta=dict(db.execute('SELECT key,value FROM index_metadata'))
+              if meta.get('schemaVersion')!='1' or meta.get('catalogSha256')!=catalog_sha or meta.get('rankingPolicy')!='mangabaka_api_score_desc_top10_proprietary_fallback_v1':
+                  raise SystemExit('Unexpected schema/catalog/ranking policy')
+              edges,roots,maximum,invalid=db.execute('''
+                  SELECT COUNT(*),COUNT(DISTINCT sourceId), MAX(rankPosition),
+                  SUM(CASE WHEN rankPosition NOT BETWEEN 1 AND 10 OR score<=0 OR score>1 OR sourceId=targetId THEN 1 ELSE 0 END)
+                  FROM manga_similar_works
+              ''').fetchone()
+              if (edges,roots,maximum,invalid)!=(110149,11064,10,0):
+                  raise SystemExit('Top10 edge invariants not met')
+              print(f'GoAnime top10: {edges} edges, {roots} roots, 17,790 MangaBaka authority edges')
+          PY
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve lockfile dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          flutter pub get --enforce-lockfile
+          (cd packages/goanime_core && dart pub get --enforce-lockfile)
+
+      - name: Run focused offline Similar Works regression tests
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter test --no-pub --concurrency=1 test/services/manga/storage/manga_bundled_similar_sql_index_test.dart
+          flutter test --no-pub --concurrency=1 test/services/manga/manga_similar_bounded_lookup_test.dart
+          flutter test --no-pub --concurrency=1 test/services/manga/manhastro_recommendations_adapter_test.dart --plain-name 'Because You Read uses bounded offline neighbor hydration'
+          flutter test --no-pub --concurrency=1 test/services/manga/storage/manga_bundled_recommendation_index_test.dart
+
+      - name: Verify private Android debug APK embeds exact authority DB
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter build apk --debug --no-pub --target-platform android-arm64
+          python3 - <<'PY'
+          import zipfile,hashlib
+          with zipfile.ZipFile('build/app/outputs/flutter-apk/app-debug.apk') as apk:
+              paths=[p for p in apk.namelist() if p.endswith('assets/data/manga_similar_works.db')]
+              if len(paths)!=1: raise SystemExit('Wrong SQL sidecar count in APK')
+              actual=hashlib.sha256(apk.read(paths[0])).hexdigest()
+          if actual!='88ef0094ccea57f1a21e2a7c2f51a321d6be27d8853bb3c066042b1a37bbab6f':
+              raise SystemExit('APK Similar Works asset hash mismatch')
+          print('Private debug APK contains correct MangaBaka authority SQLite')
+          PY
+
+      - name: Promote validated index only into private GoAnime feature branch
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPOSITORIES_TOKEN"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -r tools/manga/.staged-mangabaka-top10
+          git rm .github/workflows/assemble-private-mangabaka-top10.yml
+          git add assets/data/manga_similar_works.db
+          git diff --cached --check
+          git commit -m 'feat(manga): bundle personal MangaBaka-authority top10 index'
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push origin \
+            HEAD:refs/heads/feat/manga-personal-mangabaka-top10-20261020
+          unset auth PRIVATE_REPOSITORIES_TOKEN
+
+      - name: Remove private worktree and transient bytes
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/private-source" "$GITHUB_WORKSPACE/control"
