@@ -143,6 +143,7 @@ jobs:
             --expected-goanime-sha "$COLLECTED_SHA"
           test -s "$RUNNER_TEMP/goanime-mihon-preflight/manga_catalog_inventory.json"
           flutter test --no-pub --concurrency=1 test/tools/materialize_global_manga_availability_gate_test.dart
+          flutter test --no-pub --concurrency=1 test/tools/build_global_manga_availability_test.dart --plain-name 'existing v4 master retains work IDs and source history'
           python3 tools/manga/validate_manga_reference_release_assets.py
           echo "Collection and source manifest validated without rewriting provenance"
 
