@@ -77,6 +77,13 @@ jobs:
             echo 'manga_stabilization=false' >> "$GITHUB_OUTPUT"
           fi
 
+          if [[ -f "$request_file" ]] && grep -Fxq 'reason=manga-reader-only' "$request_file"; then
+            echo 'manga_reader_only=true' >> "$GITHUB_OUTPUT"
+          fi
+          if [[ -f "$request_file" ]] && grep -Fxq 'reason=manga-other-only' "$request_file"; then
+            echo 'manga_other_only=true' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout exact GoAnime source
         uses: actions/checkout@v6
         with:
