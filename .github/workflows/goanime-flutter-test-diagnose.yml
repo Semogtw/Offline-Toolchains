@@ -223,6 +223,7 @@ jobs:
           errors = {}
           print_messages = {}
           failed_ids = set()
+          completed_ids = set()
           suite_paths = {}
 
           if events_path.exists():
