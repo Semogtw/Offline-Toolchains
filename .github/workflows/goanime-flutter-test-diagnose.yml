@@ -134,6 +134,18 @@ jobs:
           set +e
           if [[ '${{ steps.focus.outputs.manga_reader_only }}' == 'true' ]]; then
             flutter test --no-pub --reporter=json test/widgets/manga/manga_reader_screen_test.dart > "$RUNNER_TEMP/flutter-tests.jsonl" 2> "$RUNNER_TEMP/flutter-tests.stderr"
+          elif [[ '${{ steps.focus.outputs.manga_other_only }}' == 'true' ]]; then
+            flutter test --no-pub --reporter=json \
+              test/services/manga/storage/manga_catalog_repository_test.dart \
+              test/services/manga/manga_chapter_hydrator_test.dart \
+              test/services/manga/sync/manga_sync_local_store_test.dart \
+              test/services/manga/manga_availability_service_test.dart \
+              test/services/manga/manhastro_recommendations_adapter_test.dart \
+              test/widgets/manga_manhastro/search_interaction_test.dart \
+              test/widgets/manga_manhastro/search_chapter_range_adapter_test.dart \
+              test/widgets/manga_manhastro/home_interaction_test.dart \
+              test/widgets/manga_manhastro/favorites_features_test.dart \
+              > "$RUNNER_TEMP/flutter-tests.jsonl" 2> "$RUNNER_TEMP/flutter-tests.stderr"
           elif [[ '${{ steps.focus.outputs.manga_stabilization }}' == 'true' ]]; then
             flutter test --no-pub --reporter=json \
               test/services/manga/storage/manga_catalog_repository_test.dart \
