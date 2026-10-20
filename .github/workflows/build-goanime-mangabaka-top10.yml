@@ -5,17 +5,19 @@ on:
     paths:
       - '.github/workflows/build-goanime-mangabaka-top10.yml'
       - 'tests/test_goanime_mangabaka_top10_workflow.py'
-  push:
-    branches: [main]
-    paths:
-      - 'triggers/goanime-mangabaka-authority-top10/*.request'
   workflow_dispatch:
+    inputs:
+      confirm_new_api_harvest:
+        description: 'Explicitly opt in to a NEW MangaBaka API collection; use the existing offline SQLite for ordinary builds'
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: goanime-mangabaka-authority-top10
+  group: goanime-mangabaka-authority-top10-${{ github.event_name == 'pull_request' && github.event.pull_request.number || 'fresh-collection' }}
   cancel-in-progress: false
 
 jobs:
@@ -32,7 +34,7 @@ jobs:
 
   prepare:
     name: Generate authority top10 with private source and trusted collector
-    if: github.event_name != 'pull_request' && github.actor == github.repository_owner
+    if: github.event_name == 'workflow_dispatch' && inputs.confirm_new_api_harvest == true && github.actor == github.repository_owner
     needs: contract
     runs-on: ubuntu-24.04
     timeout-minutes: 330
