@@ -289,7 +289,7 @@ jobs:
               'exitCode': data['exitCode'],
               'failureCount': data['failureCount'],
               'failedTests': [
-                  {'name': case.get('name'), 'error': (case.get('errors') or [{}])[0].get('error', '')[:1000]}
+                  {'name': case.get('name'), 'error': (case.get('errors') or [{}])[0].get('error', '')[:1200], 'stack': (case.get('errors') or [{}])[0].get('stackTrace', '')[:1700], 'prints': case.get('diagnosticPrints', [])[-3:]}
                   for case in data.get('failures', [])
               ],
           }, ensure_ascii=False))
