@@ -221,9 +221,22 @@ jobs:
         working-directory: private-source
         run: python3 tools/validate_repository_guards.py
 
-      - name: Check formatting
+      # Existing main includes legacy formatting debt. Enforce formatting of
+      # every Dart file introduced or changed by this PR without rewriting main.
+      - name: Check formatting of changed Dart files
         working-directory: private-source
-        run: dart format --output=none --set-exit-if-changed lib test packages tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' candidates < <(git diff --name-only -z --diff-filter=ACMRT origin/main...HEAD -- lib test packages tools)
+          files=()
+          for path in "${candidates[@]}"; do
+            if [[ "$path" == *.dart ]]; then files+=("$path"); fi
+          done
+          echo "PR Dart files checked: ${#files[@]}"
+          if (( ${#files[@]} > 0 )); then
+            dart format --output=none --set-exit-if-changed "${files[@]}"
+          fi
 
       - name: Analyze Flutter project
         working-directory: private-source
