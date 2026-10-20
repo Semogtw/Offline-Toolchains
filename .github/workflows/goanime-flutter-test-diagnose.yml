@@ -48,6 +48,11 @@ jobs:
           else
             echo 'source_aware_task2=false' >> "$GITHUB_OUTPUT"
           fi
+          if [[ -f "$request_file" ]] && grep -Fxq 'reason=source-aware-task3' "$request_file"; then
+            echo 'source_aware_task3=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'source_aware_task3=false' >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Checkout exact GoAnime source
         uses: actions/checkout@v6
@@ -100,6 +105,10 @@ jobs:
               test/services/manga/manga_source_content_decision_test.dart \
               test/services/manga/manga_content_policy_sql_test.dart \
               test/tools/manga_content_safety_evidence_test.dart \
+              > "$RUNNER_TEMP/flutter-tests.jsonl" 2> "$RUNNER_TEMP/flutter-tests.stderr"
+          elif [[ '${{ steps.focus.outputs.source_aware_task3 }}' == 'true' ]]; then
+            flutter test --no-pub --reporter=json \
+              test/tools/manga_source_aware_flags_materialization_test.dart \
               > "$RUNNER_TEMP/flutter-tests.jsonl" 2> "$RUNNER_TEMP/flutter-tests.stderr"
           else
             flutter test --no-pub --reporter=json > "$RUNNER_TEMP/flutter-tests.jsonl" 2> "$RUNNER_TEMP/flutter-tests.stderr"
