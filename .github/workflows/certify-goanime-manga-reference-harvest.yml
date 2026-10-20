@@ -188,7 +188,7 @@ jobs:
           database=sqlite3.connect('file:assets/data/manga_availability.db?mode=ro',uri=True)
           try:
               assert database.execute('PRAGMA quick_check').fetchone()[0]=='ok'
-              count=database.execute('SELECT COUNT(*) FROM manga_works').fetchone()[0]
+              count=database.execute('SELECT COUNT(*) FROM works').fetchone()[0]
               assert count >= 1000, count
               print('Recertified SQLite quick_check=ok; usable canonical works='+str(count))
           finally:
