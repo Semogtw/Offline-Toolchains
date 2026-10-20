@@ -1,3 +1,3 @@
 target_branch=codex/manga-reader-progress-coalesce-20261020
-source_hint=daafb6f8a3e5cf937db94e1367a58210c498912b
-reason=manga-reader-progress
+source_hint=d5190f7298fb03df5ae305f5ec8791082ce14c89
+reason=manga-stabilization-full-flutter-tests
