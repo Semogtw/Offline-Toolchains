@@ -132,7 +132,9 @@ jobs:
         shell: bash
         run: |
           set +e
-          if [[ '${{ steps.focus.outputs.manga_stabilization }}' == 'true' ]]; then
+          if [[ '${{ steps.focus.outputs.manga_reader_only }}' == 'true' ]]; then
+            flutter test --no-pub --reporter=json test/widgets/manga/manga_reader_screen_test.dart > "$RUNNER_TEMP/flutter-tests.jsonl" 2> "$RUNNER_TEMP/flutter-tests.stderr"
+          elif [[ '${{ steps.focus.outputs.manga_stabilization }}' == 'true' ]]; then
             flutter test --no-pub --reporter=json \
               test/services/manga/storage/manga_catalog_repository_test.dart \
               test/services/manga/manga_chapter_hydrator_test.dart \
