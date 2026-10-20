@@ -9,8 +9,14 @@ class SecurityContract(unittest.TestCase):
     def setUpClass(cls):
         cls.s=W.read_text(encoding='utf-8')
 
+    def test_api_harvest_requires_manual_explicit_opt_in(self):
+        self.assertNotIn('triggers/goanime-mangabaka-authority-top10/*.request', self.s)
+        self.assertIn('confirm_new_api_harvest:', self.s)
+        self.assertIn('default: false', self.s)
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.confirm_new_api_harvest == true", self.s)
+
     def test_private_access_is_gated_and_pinned(self):
-        self.assertIn("github.event_name != 'pull_request' && github.actor == github.repository_owner",self.s)
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.confirm_new_api_harvest == true && github.actor == github.repository_owner",self.s)
         self.assertIn('ref: 9be9c7d670c16c8e8fde191616b0a0dcd8c975ef',self.s)
         self.assertIn('ref: b550ad4d8617381ebc87c81fc6a56e5d800875b1',self.s)
         self.assertIn('secrets.PRIVATE_REPOSITORIES_TOKEN',self.s)
