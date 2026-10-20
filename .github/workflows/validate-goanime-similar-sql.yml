@@ -73,6 +73,10 @@ jobs:
         working-directory: private-source
         run: flutter test --no-pub --concurrency=1 test/services/manga/storage/manga_bundled_similar_sql_index_test.dart
 
+      - name: Validate retained JSON index compatibility
+        working-directory: private-source
+        run: flutter test --no-pub --concurrency=1 test/services/manga/storage/manga_bundled_recommendation_index_test.dart
+
       - name: Validate offline SQL importer tests
         working-directory: private-source
         run: python3 -m unittest -v tools.tests.test_build_manga_similar_works_sql
@@ -87,6 +91,39 @@ jobs:
             --catalog-version assets/data/manga_availability.db.version \
             --output "$RUNNER_TEMP/manga_similar_works.db"
 
+      - name: Validate shipped SQLite asset against reproducible output
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          if test -f assets/data/manga_similar_works.db; then
+            cmp assets/data/manga_similar_works.db "$RUNNER_TEMP/manga_similar_works.db"
+            echo "Shipped SQL sidecar matches reproducible offline build."
+          fi
+
+      - name: Validate asset is packaged into a Flutter APK
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          flutter build apk --debug --no-pub --target-platform android-arm64
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          import zipfile
+
+          apk = Path('build/app/outputs/flutter-apk/app-debug.apk')
+          assert apk.is_file(), 'Flutter APK missing'
+          bundled = Path('assets/data/manga_similar_works.db')
+          assert bundled.is_file(), 'Committed SQL sidecar missing'
+          with zipfile.ZipFile(apk) as archive:
+              names = [name for name in archive.namelist()
+                       if name.endswith('assets/data/manga_similar_works.db')]
+              assert len(names) == 1, f'Expected one SQL asset, found {names}'
+              actual = hashlib.sha256(archive.read(names[0])).hexdigest()
+          expected = hashlib.sha256(bundled.read_bytes()).hexdigest()
+          assert actual == expected, f'APK SQL hash mismatch: {actual} != {expected}'
+          print(f'Flutter APK contains matching SQL index: {actual}')
+          PY
+
       - name: Publish verified binary into private GoAnime artifact branch
         working-directory: private-source
         shell: bash
@@ -95,6 +132,11 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$PRIVATE_REPOSITORIES_TOKEN"
+          if test -f assets/data/manga_similar_works.db; then
+            cmp assets/data/manga_similar_works.db "$RUNNER_TEMP/manga_similar_works.db"
+            echo "Verified committed SQLite matches reproducible builder output."
+            exit 0
+          fi
           install -m 0644 "$RUNNER_TEMP/manga_similar_works.db" assets/data/manga_similar_works.db
           sha256sum assets/data/manga_similar_works.db
           git config user.name 'github-actions[bot]'
