@@ -175,19 +175,37 @@ jobs:
           print(json.dumps({'exitCode': payload['exitCode'], 'failureCount': payload['failureCount']}))
           PY
 
-      - name: Publish sanitized diagnostic receipt
+      - name: Preserve sanitized diagnostic artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: goanime-flutter-diagnostics-${{ github.run_id }}
+          path: reports/goanime-flutter-test-diagnostics/*.json
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: Report Flutter test result
         shell: bash
         env:
-          GIT_CONFIG_COUNT: 1
-          GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
-          GIT_CONFIG_VALUE_0: 'AUTHORIZATION: bearer ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}'
+          TEST_EXIT_CODE: ${{ steps.tests.outputs.exit_code }}
         run: |
           set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add reports/goanime-flutter-test-diagnostics
-          if git diff --cached --quiet; then exit 0; fi
-          git commit -m "ci(goanime): record Flutter test diagnostics $GITHUB_RUN_ID"
-          git fetch origin main
-          git rebase origin/main
-          git push origin HEAD:main
+          python3 - <<'PY'
+          import glob
+          import json
+          from pathlib import Path
+
+          files = sorted(glob.glob('reports/goanime-flutter-test-diagnostics/*.json'))
+          if len(files) != 1:
+              raise SystemExit('expected exactly one Flutter diagnostic receipt')
+          data = json.loads(Path(files[0]).read_text(encoding='utf-8'))
+          print(json.dumps({
+              'sourceSha': data['sourceSha'],
+              'exitCode': data['exitCode'],
+              'failureCount': data['failureCount'],
+              'failedTests': [
+                  {'name': case.get('name'), 'error': (case.get('errors') or [{}])[0].get('error', '')[:1000]}
+                  for case in data.get('failures', [])
+              ],
+          }, ensure_ascii=False))
+          PY
+          test "$TEST_EXIT_CODE" = '0'
