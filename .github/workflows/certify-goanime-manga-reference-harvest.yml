@@ -94,6 +94,40 @@ jobs:
           flutter pub get --enforce-lockfile
           (cd packages/goanime_core && dart pub get --enforce-lockfile)
 
+      - name: Normalize existing Dart formatting on isolated private branch
+        working-directory: private-source
+        shell: bash
+        env:
+          CATALOG_WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import subprocess
+          source=Path('tools/manga/materialize_global_manga_availability_ci.sh').read_text(encoding='utf-8')
+          match=re.search(r'^files=\(\n(.*?)^\)\n\ndart format',source,flags=re.M|re.S)
+          if not match: raise SystemExit('Materializer format file manifest not found')
+          files=[line.strip() for line in match.group(1).splitlines() if line.strip()]
+          subprocess.run(['dart','format',*files],check=True)
+          PY
+          git diff --check
+          if ! git diff --quiet; then
+            test -n "$CATALOG_WRITE_TOKEN" || {
+              echo "::error::Formatting debt requires configured private write token."
+              exit 1
+            }
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add -- lib packages tools test integration_test
+            git commit -m 'style(manga): normalize materialization formatter baseline'
+            auth="$(printf 'x-access-token:%s' "$CATALOG_WRITE_TOKEN" | base64 -w0)"
+            git -c "http.extraheader=AUTHORIZATION: basic $auth" \
+              push origin HEAD:refs/heads/codex/manga-provider-adult-provenance-20261020
+            echo "::error::Formatting debt was fixed on the private branch. Re-run recertification at its updated revision."
+            exit 1
+          fi
+
       - name: Validate Mihon archive against pinned source identities
         working-directory: private-source
         shell: bash
