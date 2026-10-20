@@ -35,6 +35,7 @@ class ReaderOverlapWorkflowContract(unittest.TestCase):
         self.assertIn("timeout-minutes: 330", self.source)
         self.assertIn("test_collect_mangabaka_reader_overlap.py", self.source)
         self.assertIn("--dry-run", self.source)
+        self.assertIn("if count < 4500:", self.source)
         self.assertIn("--max-requests 3", self.source)
         self.assertIn("--rate-per-minute 120", self.source)
         self.assertIn("timeout --signal=TERM --kill-after=30s 270m", self.source)
