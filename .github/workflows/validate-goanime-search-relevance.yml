@@ -1,0 +1,78 @@
+name: Validate GoAnime manga Search relevance
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/validate-goanime-search-relevance.yml'
+      - 'triggers/goanime-search-relevance/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-search-relevance-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout trusted workflow
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve exact GoAnime commit
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t paths < <(git diff-tree --no-commit-id --name-only -r HEAD^ HEAD -- 'triggers/goanime-search-relevance/*.request')
+          test "${#paths[@]}" -eq 1
+          sha="$(tr -d '\r\n' < "${paths[0]}")"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private GoAnime commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          persist-credentials: false
+          fetch-depth: 1
+          lfs: false
+          submodules: false
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Install exact dependencies
+        working-directory: private-source
+        run: |
+          flutter pub get --enforce-lockfile
+          (cd packages/goanime_core && dart pub get --enforce-lockfile)
+
+      - name: Validate Search adapter pagination
+        working-directory: private-source
+        run: flutter test --no-pub --concurrency=1 test/widgets/manga_manhastro/presentation_adapter_test.dart
+
+      - name: Validate runtime title word boundaries
+        working-directory: private-source
+        run: flutter test --no-pub --concurrency=1 test/services/manga/manga_runtime_availability_source_test.dart
+
+      - name: Validate bundled catalog title boundaries
+        working-directory: private-source
+        run: flutter test --no-pub --concurrency=1 test/services/manga/manga_bundled_catalog_source_test.dart
+
+      - name: Sanitize private checkout
+        if: always()
+        run: rm -rf private-source
