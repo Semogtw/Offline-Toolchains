@@ -75,6 +75,7 @@ jobs:
           python3 tools/manga/build_manga_similar_works_sql.py \
             --catalog assets/data/manga_availability.db \
             --recommendations assets/data/manga_recommendation_index.json \
+            --redirects assets/data/manga_work_redirects.json \
             --catalog-version assets/data/manga_availability.db.version \
             --output "$RUNNER_TEMP/manga_similar_works.db"
 
