@@ -210,6 +210,9 @@ jobs:
         working-directory: private-source
         run: bash ./tools/validate_project_health.sh
 
+      - name: Install Python test dependencies
+        run: python3 -m pip install --disable-pip-version-check "numpy==2.2.6"
+
       - name: Test Python tooling
         working-directory: private-source
         run: python3 -m unittest discover -s tools/tests -p 'test_*.py'
