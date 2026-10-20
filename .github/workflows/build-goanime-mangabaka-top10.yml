@@ -54,7 +54,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Semogtw/goanime-mobile
-          ref: 2036ff98eb01029cef24caada410723af2e0587b
+          ref: 9be9c7d670c16c8e8fde191616b0a0dcd8c975ef
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
           persist-credentials: false
@@ -81,7 +81,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git -C private-source hash-object tools/manga/build_mangabaka_authority_similar_sql.py)" = '25a970f766088f31c39fbe452c58e958afa0e356'
-          test "$(git -C private-source hash-object tools/manga/project_mangabaka_reader_overlap_compact.py)" = '3fff99e93cf94bb6d4d82537522c5ed655173634'
+          test "$(git -C private-source hash-object tools/manga/project_mangabaka_reader_overlap_compact.py)" = '0dd18fb3be93bf422352b3d9cc645ff5b01e88c0'
           test "$(git -C private-source hash-object tools/tests/test_build_mangabaka_authority_similar_sql.py)" = '9bfde60ce2f0c5fc0b8fae14fad50b0d04726cf4'
           test "$(git -C private-source hash-object tools/tests/test_project_mangabaka_reader_overlap_compact.py)" = 'c0b58a961907d2d734ae3d3eb46a92006f83ecb4'
           test "$(git -C collector hash-object tools/manga/collect_mangabaka_reader_overlap.py)" = 'e709d2fdfac1f78fdb2a7041df4435975ec66913'
@@ -208,7 +208,7 @@ jobs:
           manifest={
             'schemaVersion':1,
             'type':'goanime_mangabaka_authority_top10_candidate',
-            'sourceCommit':'2036ff98eb01029cef24caada410723af2e0587b',
+            'sourceCommit':'9be9c7d670c16c8e8fde191616b0a0dcd8c975ef',
             'collectorCommit':'b550ad4d8617381ebc87c81fc6a56e5d800875b1',
             'collectionOutcome':collection,
             'candidateOutcome':outcome,
