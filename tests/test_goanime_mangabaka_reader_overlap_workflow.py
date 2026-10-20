@@ -20,13 +20,14 @@ class ReaderOverlapWorkflowContract(unittest.TestCase):
         self.assertIn("pull_request:", self.source)
         self.assertIn("workflow_dispatch:", self.source)
         self.assertIn("triggers/goanime-mangabaka-reader-overlap/*.request", self.source)
-        self.assertIn("github.event_name != 'pull_request'", self.source)
+        self.assertIn("github.event_name != 'pull_request' && github.actor == github.repository_owner", self.source)
 
     def test_private_checkout_has_no_persisted_credentials(self):
         self.assertIn("repository: Semogtw/goanime-mobile", self.source)
         self.assertIn("persist-credentials: false", self.source)
         self.assertIn("token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}", self.source)
         self.assertIn("fetch-depth: 1", self.source)
+        self.assertIn("fetch-depth: 0", self.source)
 
     def test_run_is_bounded_and_validates_real_payload_first(self):
         self.assertIn("timeout-minutes: 330", self.source)
@@ -34,6 +35,12 @@ class ReaderOverlapWorkflowContract(unittest.TestCase):
         self.assertIn("--dry-run", self.source)
         self.assertIn("--max-requests 3", self.source)
         self.assertIn("--rate-per-minute 120", self.source)
+        self.assertIn("timeout --signal=TERM --kill-after=30s 270m", self.source)
+        self.assertIn("git -C control diff --name-only --diff-filter=AM", self.source)
+        self.assertIn("Exactly one new or modified collection request", self.source)
+        self.assertIn("MangaBaka ID [redacted]", self.source)
+        self.assertIn("catalog_sha256=[redacted]", self.source)
+        self.assertNotIn("SHA256SUMS", self.source)
         self.assertIn("parse_status='unrecognized'", self.source)
 
     def test_release_artifact_is_ciphertext_only_and_restored_on_failure(self):
@@ -42,8 +49,9 @@ class ReaderOverlapWorkflowContract(unittest.TestCase):
         self.assertIn("actions/upload-artifact@", self.source)
         self.assertIn("if: always()", self.source)
         self.assertIn("*.tar.zst.gpg", self.source)
-        self.assertIn("retention-days: 7", self.source)
-        self.assertNotIn("path: ${{ runner.temp }}/goanime-mangabaka-reader-overlap", self.source)
+        self.assertIn("retention-days: 1", self.source)
+        self.assertIn("path: ${{ runner.temp }}/goanime-mangabaka-reader-overlap/transfer/", self.source)
+        self.assertNotIn("path: ${{ runner.temp }}/goanime-mangabaka-reader-overlap/reader_overlap.sqlite", self.source)
 
     def test_does_not_modify_the_private_catalog(self):
         self.assertNotIn("git push", self.source)
