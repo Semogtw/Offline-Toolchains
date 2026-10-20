@@ -71,6 +71,12 @@ jobs:
             echo 'source_aware_task6=false' >> "$GITHUB_OUTPUT"
           fi
 
+          if [[ -f "$request_file" ]] && grep -Fxq 'reason=manga-six-front-focused' "$request_file"; then
+            echo 'manga_stabilization=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'manga_stabilization=false' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout exact GoAnime source
         uses: actions/checkout@v6
         with:
@@ -112,7 +118,20 @@ jobs:
         shell: bash
         run: |
           set +e
-          if [[ '${{ steps.focus.outputs.pagination_pr301 }}' == 'true' ]]; then
+          if [[ '${{ steps.focus.outputs.manga_stabilization }}' == 'true' ]]; then
+            flutter test --no-pub --reporter=json \
+              test/services/manga/storage/manga_catalog_repository_test.dart \
+              test/services/manga/manga_chapter_hydrator_test.dart \
+              test/services/manga/sync/manga_sync_local_store_test.dart \
+              test/services/manga/manga_availability_service_test.dart \
+              test/services/manga/manhastro_recommendations_adapter_test.dart \
+              test/widgets/manga/manga_reader_screen_test.dart \
+              test/widgets/manga_manhastro/search_interaction_test.dart \
+              test/widgets/manga_manhastro/search_chapter_range_adapter_test.dart \
+              test/widgets/manga_manhastro/home_interaction_test.dart \
+              test/widgets/manga_manhastro/favorites_features_test.dart \
+              > "$RUNNER_TEMP/flutter-tests.jsonl" 2> "$RUNNER_TEMP/flutter-tests.stderr"
+          elif [[ '${{ steps.focus.outputs.pagination_pr301 }}' == 'true' ]]; then
             flutter test --no-pub --reporter=json \
               test/widgets/manga_manhastro/chapter_number_order_test.dart \
               test/widgets/manga_manhastro/details_interaction_test.dart \
