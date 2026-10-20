@@ -96,6 +96,16 @@ jobs:
           submodules: false
           show-progress: false
 
+      - name: Verify reviewed private collector blobs
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Pin executable collector/test content without exposing a private commit ref.
+          test "$(git hash-object tools/manga/collect_mangabaka_reader_overlap.py)" = "e709d2fdfac1f78fdb2a7041df4435975ec66913"
+          test "$(git hash-object tools/tests/test_collect_mangabaka_reader_overlap.py)" = "5c0249c918f38b69e0e8bf5c8e6c107674809e64"
+          echo 'Reviewed private collector blobs verified'
+
       - name: Run offline Python collector tests
         working-directory: private-source
         shell: bash
