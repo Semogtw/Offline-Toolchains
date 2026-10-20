@@ -118,6 +118,8 @@ jobs:
           elif [[ '${{ steps.focus.outputs.source_aware_task4 }}' == 'true' ]]; then
             flutter test --no-pub --reporter=json \
               test/services/manga/manga_home_visibility_paging_test.dart \
+              test/services/manga/manga_availability_service_test.dart \
+              test/services/manga/manga_repository_browse_data_source_test.dart \
               > "$RUNNER_TEMP/flutter-tests.jsonl" 2> "$RUNNER_TEMP/flutter-tests.stderr"
           else
             flutter test --no-pub --reporter=json > "$RUNNER_TEMP/flutter-tests.jsonl" 2> "$RUNNER_TEMP/flutter-tests.stderr"
