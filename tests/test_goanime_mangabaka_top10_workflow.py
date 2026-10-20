@@ -11,14 +11,14 @@ class SecurityContract(unittest.TestCase):
 
     def test_private_access_is_gated_and_pinned(self):
         self.assertIn("github.event_name != 'pull_request' && github.actor == github.repository_owner",self.s)
-        self.assertIn('ref: 2036ff98eb01029cef24caada410723af2e0587b',self.s)
+        self.assertIn('ref: 9be9c7d670c16c8e8fde191616b0a0dcd8c975ef',self.s)
         self.assertIn('ref: b550ad4d8617381ebc87c81fc6a56e5d800875b1',self.s)
         self.assertIn('secrets.PRIVATE_REPOSITORIES_TOKEN',self.s)
         self.assertIn('persist-credentials: false',self.s)
         self.assertIn('permissions:\n  contents: read',self.s)
 
     def test_executable_blobs_are_verified(self):
-        for sha in ('25a970f766088f31c39fbe452c58e958afa0e356','3fff99e93cf94bb6d4d82537522c5ed655173634','e709d2fdfac1f78fdb2a7041df4435975ec66913'):
+        for sha in ('25a970f766088f31c39fbe452c58e958afa0e356','0dd18fb3be93bf422352b3d9cc645ff5b01e88c0','e709d2fdfac1f78fdb2a7041df4435975ec66913'):
             self.assertIn(sha,self.s)
         self.assertIn('Run all focused offline Python tests',self.s)
 
