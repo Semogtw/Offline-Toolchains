@@ -28,6 +28,8 @@ class ReaderOverlapWorkflowContract(unittest.TestCase):
         self.assertIn("token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}", self.source)
         self.assertIn("fetch-depth: 1", self.source)
         self.assertIn("fetch-depth: 0", self.source)
+        self.assertIn("git hash-object tools/manga/collect_mangabaka_reader_overlap.py", self.source)
+        self.assertIn("git hash-object tools/tests/test_collect_mangabaka_reader_overlap.py", self.source)
 
     def test_run_is_bounded_and_validates_real_payload_first(self):
         self.assertIn("timeout-minutes: 330", self.source)
@@ -48,7 +50,7 @@ class ReaderOverlapWorkflowContract(unittest.TestCase):
         self.assertIn("gpg --batch --yes --trust-model always", self.source)
         self.assertIn("actions/upload-artifact@", self.source)
         self.assertIn("if: always()", self.source)
-        self.assertIn("*.tar.zst.gpg", self.source)
+        self.assertIn("reader-overlap.tar.zst.gpg", self.source)
         self.assertIn("retention-days: 1", self.source)
         self.assertIn("path: ${{ runner.temp }}/goanime-mangabaka-reader-overlap/transfer/", self.source)
         self.assertNotIn("path: ${{ runner.temp }}/goanime-mangabaka-reader-overlap/reader_overlap.sqlite", self.source)
