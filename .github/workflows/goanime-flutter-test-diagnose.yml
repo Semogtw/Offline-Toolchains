@@ -14,10 +14,6 @@ concurrency:
 
 jobs:
   diagnose:
-    env:
-      GIT_CONFIG_COUNT: 1
-      GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
-      GIT_CONFIG_VALUE_0: 'AUTHORIZATION: bearer ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -162,6 +158,10 @@ jobs:
 
       - name: Publish sanitized diagnostic receipt
         shell: bash
+        env:
+          GIT_CONFIG_COUNT: 1
+          GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
+          GIT_CONFIG_VALUE_0: 'AUTHORIZATION: bearer ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}'
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
