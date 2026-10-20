@@ -1,3 +1,3 @@
 target_branch=codex/manga-sync-cache-20261020
-source_hint=a36c8550b8665dda6669d82c863f976ed91f8e5d
-reason=manga-sync-refresh
+source_hint=7e114991d25bbf4a551292b708a6dee8c5df4276
+reason=manga-stabilization-full-flutter-tests
