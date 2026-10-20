@@ -1,0 +1,3 @@
+target_branch=feat/manga-chapters-ascending-pages-20261020
+source_hint=5f15976c166c00e01ca2bd4b5d873fb885cdca71
+reason=pr301-chapter-pagination-full-flutter-tests
