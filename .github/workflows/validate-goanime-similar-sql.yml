@@ -1,0 +1,91 @@
+name: Validate GoAnime offline Similar Works SQL
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/validate-goanime-similar-sql.yml'
+      - 'triggers/goanime-similar-sql/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-similar-sql-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - name: Checkout trusted runner workflow
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve exact requested private commit
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t paths < <(git diff-tree --no-commit-id --name-only -r HEAD^ HEAD -- 'triggers/goanime-similar-sql/*.request')
+          test "${#paths[@]}" -eq 1
+          ref="$(tr -d '\r\n' < "${paths[0]}")"
+          [[ "$ref" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$ref" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private GoAnime code
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          persist-credentials: false
+          fetch-depth: 1
+          lfs: false
+          submodules: false
+
+      - name: Set up Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Install locked dependencies
+        working-directory: private-source
+        run: |
+          flutter pub get --enforce-lockfile
+          (cd packages/goanime_core && dart pub get --enforce-lockfile)
+
+      - name: Validate bounded similar-work lookup
+        working-directory: private-source
+        run: flutter test --no-pub --concurrency=1 test/services/manga/manga_similar_bounded_lookup_test.dart
+
+      - name: Validate offline SQL importer tests
+        working-directory: private-source
+        run: python3 -m unittest -v tools.tests.test_build_manga_similar_works_sql
+
+      - name: Build and validate actual index from production artifacts
+        working-directory: private-source
+        run: |
+          python3 tools/manga/build_manga_similar_works_sql.py \
+            --catalog assets/data/manga_availability.db \
+            --recommendations assets/data/manga_recommendation_index.json \
+            --catalog-version assets/data/manga_availability.db.version \
+            --output "$RUNNER_TEMP/manga_similar_works.db"
+
+      - name: Upload built SQL index as private validation artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: manga-similar-works-sql-${{ steps.request.outputs.sha }}
+          path: ${{ runner.temp }}/manga_similar_works.db
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Sanitize private checkout
+        if: always()
+        run: rm -rf private-source
