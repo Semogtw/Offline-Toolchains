@@ -112,6 +112,13 @@ jobs:
           flutter config --no-analytics
           flutter pub get
 
+      - name: Analyze integrated Flutter source
+        if: steps.focus.outputs.manga_stabilization == 'true'
+        continue-on-error: true
+        working-directory: private-source
+        shell: bash
+        run: flutter analyze --no-pub
+
       - name: Run Flutter tests with machine reporter
         id: tests
         working-directory: private-source
