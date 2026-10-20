@@ -65,6 +65,10 @@ jobs:
         working-directory: private-source
         run: flutter test --no-pub --concurrency=1 test/services/manga/manga_similar_bounded_lookup_test.dart
 
+      - name: Validate Because You Read bounded neighbor lookup
+        working-directory: private-source
+        run: flutter test --no-pub --concurrency=1 test/services/manga/manhastro_recommendations_adapter_test.dart --plain-name 'Because You Read uses bounded offline neighbor hydration'
+
       - name: Validate offline SQL importer tests
         working-directory: private-source
         run: python3 -m unittest -v tools.tests.test_build_manga_similar_works_sql
