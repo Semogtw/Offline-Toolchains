@@ -87,13 +87,24 @@ jobs:
             --catalog-version assets/data/manga_availability.db.version \
             --output "$RUNNER_TEMP/manga_similar_works.db"
 
-      - name: Upload built SQL index as private validation artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: manga-similar-works-sql-${{ steps.request.outputs.sha }}
-          path: ${{ runner.temp }}/manga_similar_works.db
-          retention-days: 1
-          if-no-files-found: error
+      - name: Publish verified binary into private GoAnime artifact branch
+        working-directory: private-source
+        shell: bash
+        env:
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$PRIVATE_REPOSITORIES_TOKEN"
+          install -m 0644 "$RUNNER_TEMP/manga_similar_works.db" assets/data/manga_similar_works.db
+          sha256sum assets/data/manga_similar_works.db
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add assets/data/manga_similar_works.db
+          git commit -m 'build(manga): validated Octen SQL neighbor index'
+          auth="$(printf 'x-access-token:%s' "$PRIVATE_REPOSITORIES_TOKEN" | base64 -w0)"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push origin \
+            HEAD:refs/heads/generated/manga-similar-sql-20261020
+          unset auth PRIVATE_REPOSITORIES_TOKEN
 
       - name: Sanitize private checkout
         if: always()
