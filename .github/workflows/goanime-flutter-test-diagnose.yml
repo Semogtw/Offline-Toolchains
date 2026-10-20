@@ -281,6 +281,10 @@ jobs:
               'exitCode': int(os.environ.get('TEST_EXIT_CODE') or 0),
               'failureCount': len(failures),
               'failures': failures,
+              'unfinishedTests': [
+                  {'name': test.get('name'), 'suitePath': suite_paths.get(test.get('suiteID'))}
+                  for tid, test in tests.items() if tid not in completed_ids
+              ][:25],
               'stderrTail': stderr[-6000:],
           }
           out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
