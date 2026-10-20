@@ -86,7 +86,7 @@ jobs:
             focused-${{ matrix.label }}.txt
             focused-${{ matrix.label }}.log
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
 
       - name: Remove private checkout
         if: always()
@@ -158,7 +158,7 @@ jobs:
             core-d5c4a47.txt
             core-d5c4a47.log
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
 
       - name: Enforce core success
         if: always()
