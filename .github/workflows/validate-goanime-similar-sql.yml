@@ -25,6 +25,9 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
 
+      - name: Validate trusted SQL asset audit contracts
+        run: python3 -m unittest discover -s tests -p 'test_validate_goanime_similar_sql_asset.py' -v
+
       - name: Resolve exact requested private commit
         id: request
         shell: bash
@@ -96,8 +99,12 @@ jobs:
         run: |
           set -euo pipefail
           if test -f assets/data/manga_similar_works.db; then
-            cmp assets/data/manga_similar_works.db "$RUNNER_TEMP/manga_similar_works.db"
-            echo "Shipped SQL sidecar matches reproducible offline build."
+            python3 "$GITHUB_WORKSPACE/scripts/validate_goanime_similar_sql_asset.py" \
+              --catalog assets/data/manga_availability.db \
+              --catalog-version assets/data/manga_availability.db.version \
+              --asset assets/data/manga_similar_works.db \
+              --legacy-rebuilt "$RUNNER_TEMP/manga_similar_works.db"
+            echo "Verified shipped SQL sidecar with its declared ranking policy."
           fi
 
       - name: Validate asset is packaged into a Flutter APK
@@ -133,8 +140,12 @@ jobs:
           set -euo pipefail
           test -n "$PRIVATE_REPOSITORIES_TOKEN"
           if test -f assets/data/manga_similar_works.db; then
-            cmp assets/data/manga_similar_works.db "$RUNNER_TEMP/manga_similar_works.db"
-            echo "Verified committed SQLite matches reproducible builder output."
+            python3 "$GITHUB_WORKSPACE/scripts/validate_goanime_similar_sql_asset.py" \
+              --catalog assets/data/manga_availability.db \
+              --catalog-version assets/data/manga_availability.db.version \
+              --asset assets/data/manga_similar_works.db \
+              --legacy-rebuilt "$RUNNER_TEMP/manga_similar_works.db"
+            echo "Verified shipped offline SQLite; no binary publication required."
             exit 0
           fi
           install -m 0644 "$RUNNER_TEMP/manga_similar_works.db" assets/data/manga_similar_works.db
