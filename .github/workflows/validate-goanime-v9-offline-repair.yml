@@ -1,0 +1,53 @@
+name: Validate GoAnime V9 existing-catalog repairs (no recollection)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-v9-offline-repair-test/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout V9 private source
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: codex/manga-provider-adult-provenance-20261020
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          persist-credentials: false
+      - name: Verify expected V9 sources
+        run: |
+          set -euo pipefail
+          test -s tools/manga/reclassify_certified_v9_remangas.py
+          test -s tools/manga/build_manga_safe_distribution.py
+      - name: Python regression tests and syntax
+        run: |
+          set -euo pipefail
+          python3 -m py_compile tools/manga/reclassify_certified_v9_remangas.py tools/manga/build_manga_safe_distribution.py tools/manga/manga_reference_checkpoint_store.py
+          python3 -m unittest -v tools.tests.test_reclassify_certified_v9_remangas tools.tests.test_manga_safe_distribution tools.tests.test_manga_reference_checkpoint_store
+      - name: Flutter toolchain
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+      - name: Locked dependencies
+        run: |
+          flutter pub get --enforce-lockfile
+          (cd packages/goanime_core && dart pub get --enforce-lockfile)
+      - name: Source-only content policy regression
+        run: |
+          flutter test --no-pub --concurrency=1 test/services/manga/manga_source_content_decision_test.dart
+          flutter test --no-pub --concurrency=1 test/services/manga/manga_home_visibility_paging_test.dart
+      - name: Keep secrets and reference snapshots private
+        if: always()
+        run: |
+          git status --short
+          echo "No certified master, GPG key, or asset was published."
