@@ -127,6 +127,40 @@ jobs:
           flutter config --no-analytics
           flutter pub get
 
+      - name: Audit recommendation bundle aggregate integrity
+        if: steps.focus.outputs.manga_sidecar_audit == 'true'
+        working-directory: private-source
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, pathlib, sqlite3
+          root = pathlib.Path('assets/data')
+          catalog_path = root / 'manga_availability.db'
+          index_path = root / 'manga_recommendation_index.json'
+          declared_sha = (root / 'manga_availability.db.version').read_text().strip()
+          digest = hashlib.file_digest(catalog_path.open('rb'), 'sha256').hexdigest()
+          data = json.loads(index_path.read_text(encoding='utf-8'))
+          neighbors = data.get('neighbors') or {}
+          count = sum(len(value) for value in neighbors.values())
+          db = sqlite3.connect(f'file:{catalog_path}?mode=ro', uri=True)
+          try:
+              works = db.execute('SELECT COUNT(*) FROM works').fetchone()[0]
+              integrity = db.execute('PRAGMA quick_check').fetchone()[0]
+          finally:
+              db.close()
+          print(json.dumps({
+              'sourceCatalogSha256': digest,
+              'manifestCatalogMatches': digest == declared_sha,
+              'sidecarCatalogMatches': digest == data.get('catalogSha256'),
+              'schemaVersion': data.get('schemaVersion'),
+              'rankingMode': data.get('rankingMode'),
+              'workCount': works,
+              'neighborRoots': len(neighbors),
+              'neighborEdges': count,
+              'integrity': integrity,
+          }, sort_keys=True))
+          PY
+
       - name: Analyze integrated Flutter source
         if: steps.focus.outputs.manga_stabilization == 'true'
         continue-on-error: true
