@@ -1,0 +1,43 @@
+name: Preserve certified GoAnime manga V9 encrypted candidate for 30 days
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-manga-v9-preserve/*.request'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  preserve:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Download immutable successful certification candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: goanime-manga-recertified-candidate-encrypted
+          run-id: 39531975740
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: candidate
+      - name: Verify exact certified ciphertext digest and manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s candidate/catalog.tar.zst.gpg
+          test -s candidate/SHA256SUMS
+          test "$(find candidate -maxdepth 1 -type f | wc -l)" -eq 2
+          expected=95b87b62fb1433c9180eb749731d478a3934877d23c236d6fa79abe49257d53a
+          actual="$(sha256sum candidate/catalog.tar.zst.gpg | awk '{print $1}')"
+          test "$actual" = "$expected"
+          grep -F "$expected" candidate/SHA256SUMS >/dev/null
+          printf '%s  %s\n' "$expected" candidate/catalog.tar.zst.gpg | sha256sum -c -
+          echo "Certified run 39531975740 ciphertext verified; exact bytes preserved"
+      - name: Preserve encrypted candidate for 30 days
+        uses: actions/upload-artifact@v4
+        with:
+          name: goanime-manga-v9-certified-encrypted-30d
+          path: candidate/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
