@@ -142,10 +142,18 @@ jobs:
           data = json.loads(index_path.read_text(encoding='utf-8'))
           neighbors = data.get('neighbors') or {}
           count = sum(len(value) for value in neighbors.values())
+          sidecar_digest = hashlib.file_digest(index_path.open('rb'), 'sha256').hexdigest()
+          observed_roots = set(neighbors)
+          observed_targets = {key for links in neighbors.values() for key in links}
+          invalid_scores = sum(
+              1 for links in neighbors.values() for value in links.values()
+              if not isinstance(value, (float, int)) or not (0 < value <= 1)
+          )
           db = sqlite3.connect(f'file:{catalog_path}?mode=ro', uri=True)
           try:
               works = db.execute('SELECT COUNT(*) FROM works').fetchone()[0]
               integrity = db.execute('PRAGMA quick_check').fetchone()[0]
+              known_ids = {row[0] for row in db.execute('SELECT workId FROM works')}
           finally:
               db.close()
           print(json.dumps({
@@ -155,6 +163,11 @@ jobs:
               'schemaVersion': data.get('schemaVersion'),
               'rankingMode': data.get('rankingMode'),
               'workCount': works,
+              'sidecarSha256': sidecar_digest,
+              'orphanRoots': len(observed_roots - known_ids),
+              'orphanTargets': len(observed_targets - known_ids),
+              'selfEdges': sum(1 for root, links in neighbors.items() if root in links),
+              'invalidScores': invalid_scores,
               'neighborRoots': len(neighbors),
               'neighborEdges': count,
               'integrity': integrity,
