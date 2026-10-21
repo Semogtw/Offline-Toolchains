@@ -65,7 +65,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m unittest -v tools.tests.test_stage_mihon_harvest_archive tools.tests.test_manga_reference_snapshot_acquisition tools.tests.test_validate_manga_cover_candidate_sidecar
+          python3 -m unittest -v tools.tests.test_stage_mihon_harvest_archive tools.tests.test_manga_reference_snapshot_acquisition tools.tests.test_validate_manga_cover_candidate_sidecar tools.tests.test_manga_reference_checkpoint_store
           python3 tools/manga/stage_mihon_harvest_archive.py \
             --archive manga_harvest-20261020T051910Z-1-001.zip \
             --output-dir "$RUNNER_TEMP/goanime-master-harvest" \
@@ -175,9 +175,36 @@ jobs:
           MANGA_METADATA_MAX_ANILIST_TITLE_TARGETS: '0'
           MANGA_REFERENCE_MAX_SCORED_TARGETS: '32768'
           MANGA_REFERENCE_DISTRIBUTION_APPROVED: 'false'
+          GOANIME_CHECKPOINT_WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
         run: |
           set -euo pipefail
+          test -n "$GOANIME_CHECKPOINT_WRITE_TOKEN" || {
+            echo "::error::Private checkpoint write token is required before expensive materialization."
+            exit 1
+          }
+          checkpoint_tool=tools/manga/manga_reference_checkpoint_store.py
+          python3 "$checkpoint_tool" restore --checkpoint "$MANGA_REFERENCE_CHECKPOINT_PATH"
+          # The Dart resolver writes an atomic checkpoint every 1,000 targets.
+          # Upload it to an isolated private Git ref while resolution is live,
+          # instead of losing hours of progress if a later gate fails.
+          python3 -u "$checkpoint_tool" watch \
+            --checkpoint "$MANGA_REFERENCE_CHECKPOINT_PATH" --interval 75 &
+          checkpoint_watcher=$!
+          set +e
           bash tools/manga/materialize_global_manga_availability_ci.sh
+          materialize_status=$?
+          set -e
+          kill -TERM "$checkpoint_watcher" 2>/dev/null || true
+          wait "$checkpoint_watcher" || {
+            echo "::warning::Periodic checkpoint watcher exited abnormally; validating final persistence."
+          }
+          # Required even when materialization failed in a later step. Never
+          # silently discard a final checkpoint because the catalog failed.
+          python3 "$checkpoint_tool" save --checkpoint "$MANGA_REFERENCE_CHECKPOINT_PATH"
+          if (( materialize_status != 0 )); then
+            echo "::error::Catalog materialization failed; persistent resolver checkpoint retained."
+            exit "$materialize_status"
+          fi
           echo "Offline materialization passed all catalog checks; no branch was published"
 
       - name: Confirm recertified SQLite remains usable
