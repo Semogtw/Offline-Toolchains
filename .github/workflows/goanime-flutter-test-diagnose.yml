@@ -84,6 +84,10 @@ jobs:
             echo 'manga_other_only=true' >> "$GITHUB_OUTPUT"
           fi
 
+          if [[ -f "$request_file" ]] && grep -Fxq 'reason=manga-legacy-baseline' "$request_file"; then
+            echo 'manga_legacy_baseline=true' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout exact GoAnime source
         uses: actions/checkout@v6
         with:
