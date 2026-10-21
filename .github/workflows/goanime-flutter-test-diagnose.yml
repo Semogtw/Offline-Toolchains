@@ -174,7 +174,11 @@ jobs:
         shell: bash
         run: |
           set +e
-          if [[ '${{ steps.focus.outputs.manga_legacy_baseline }}' == 'true' ]]; then
+          if [[ '${{ steps.focus.outputs.manga_sidecar_audit }}' == 'true' ]]; then
+            flutter test --no-pub --reporter=json \
+              test/services/manga/manga_pr270_bundle_consistency_test.dart \
+              > "$RUNNER_TEMP/flutter-tests.jsonl" 2> "$RUNNER_TEMP/flutter-tests.stderr"
+          elif [[ '${{ steps.focus.outputs.manga_legacy_baseline }}' == 'true' ]]; then
             timeout -k 10s 300s flutter test --no-pub --reporter=json \
               test/services/manga/manhastro_similar_works_adapter_test.dart \
               test/widgets/manga_manhastro/recommendations_production_integration_test.dart \
