@@ -1,0 +1,3 @@
+target_branch=codex/manga-full-ci-baseline-fixes-20261021
+source_hint=c6e4ca6f41e5669c87ecd2f24c3f66b825d05090
+reason=manga-sidecar-audit
