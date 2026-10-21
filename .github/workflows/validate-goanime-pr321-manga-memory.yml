@@ -99,7 +99,6 @@ jobs:
         working-directory: source
         run: |
           flutter test --no-pub \
-            test/services/manga/manga_browse_state_memoizer_test.dart \
             test/services/manga/manga_browse_state_memoizer_test.dart
 
       - name: Test presentation and favorites regressions
