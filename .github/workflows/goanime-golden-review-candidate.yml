@@ -1,0 +1,155 @@
+name: GoAnime private golden visual review candidate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-golden-review/*.request'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-golden-review-candidate
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout trusted exact-request resolver
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve exact branch and source
+        id: request
+        shell: bash
+        run: >-
+          python scripts/goanime_resolve_request.py
+          --request-dir triggers/goanime-golden-review
+          --workspace .
+
+      - name: Require private write token
+        env:
+          WRITE_TOKEN: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+        run: test -n "$WRITE_TOKEN"
+
+      - name: Checkout private golden review branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.source_hint }}
+          token: ${{ secrets.GOANIME_CATALOG_WRITE_TOKEN }}
+          path: private-source
+          fetch-depth: 2
+          persist-credentials: true
+          lfs: false
+          submodules: false
+
+      - name: Verify exact isolated golden branch
+        working-directory: private-source
+        env:
+          EXPECTED_SHA: ${{ steps.request.outputs.source_hint }}
+          TARGET_BRANCH: ${{ steps.request.outputs.target_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$TARGET_BRANCH" = 'codex/manga-golden-review-20261021'
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Set up pinned Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve private app dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-analytics
+          flutter pub get
+          git restore --source=HEAD --staged --worktree -- .
+
+      - name: Rebuild golden candidates and private visual review previews
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            goanime_hero_banner_compact.png
+            goanime_continue_watching.png
+            goanime_home_desktop.png
+            goanime_details_compact.png
+            goanime_episode_list_loaded.png
+            goanime_settings_compact.png
+            goanime_episode_list_empty.png
+          )
+          mkdir -p docs/verification/golden-review/old docs/verification/golden-review/new
+          for f in "${files[@]}"; do
+            base64 -w0 "test/widgets/goldens/$f" > "docs/verification/golden-review/old/$f.b64"
+          done
+          flutter test --no-pub --concurrency=1 --update-goldens \
+            test/widgets/visual_golden_test.dart \
+            test/widgets/visual_screen_golden_test.dart
+          flutter test --no-pub --concurrency=1 \
+            test/widgets/visual_golden_test.dart \
+            test/widgets/visual_screen_golden_test.dart
+          for f in "${files[@]}"; do
+            base64 -w0 "test/widgets/goldens/$f" > "docs/verification/golden-review/new/$f.b64"
+          done
+          python3 - <<'PY'
+          import hashlib, json, pathlib
+          files = [
+            'goanime_hero_banner_compact.png', 'goanime_continue_watching.png',
+            'goanime_home_desktop.png', 'goanime_details_compact.png',
+            'goanime_episode_list_loaded.png', 'goanime_settings_compact.png',
+            'goanime_episode_list_empty.png',
+          ]
+          report = {}
+          for name in files:
+              actual = pathlib.Path('test/widgets/goldens') / name
+              report[name] = {
+                  'sha256': hashlib.sha256(actual.read_bytes()).hexdigest(),
+                  'byteCount': actual.stat().st_size,
+              }
+          pathlib.Path('docs/verification/golden-review/review.json').write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n'
+          )
+          PY
+          # No business logic, snapshots outside this explicit list or policy
+          # files may be included in the generated golden review commit.
+          git diff --name-only | while IFS= read -r file; do
+            case "$file" in
+              test/widgets/goldens/goanime_hero_banner_compact.png|              test/widgets/goldens/goanime_continue_watching.png|              test/widgets/goldens/goanime_home_desktop.png|              test/widgets/goldens/goanime_details_compact.png|              test/widgets/goldens/goanime_episode_list_loaded.png|              test/widgets/goldens/goanime_settings_compact.png|              test/widgets/goldens/goanime_episode_list_empty.png) ;;
+              *) echo "Unexpected modified private file: $file" >&2; exit 1;;
+            esac
+          done
+          git diff --check
+
+      - name: Publish review-only branch; never merge automatically
+        working-directory: private-source
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ steps.request.outputs.source_hint }}
+          TARGET_BRANCH: ${{ steps.request.outputs.target_branch }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add test/widgets/goldens docs/verification/golden-review
+          git diff --cached --check
+          git commit -m 'test(golden): stage renderer-baseline candidates for visual review'
+          git fetch origin "$TARGET_BRANCH"
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_SHA" || {
+            echo 'Review branch advanced; refusing stale push.' >&2
+            exit 1
+          }
+          git push origin "HEAD:$TARGET_BRANCH"
