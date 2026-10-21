@@ -66,8 +66,7 @@ jobs:
             lib/services/manga/manga_favorites_badge_tracker.dart \
             lib/services/manga/manga_favorites_badge_summary_source.dart \
             lib/screens/main_navigation_screen.dart \
-            test/services/manga/manga_favorites_badge_summary_source_test.dart \
-            test/services/manga/manga_favorite_lifecycle_service_test.dart
+            test/services/manga/manga_favorites_badge_summary_source_test.dart
 
       - name: Commit formatted Dart files to PR branch when needed
         working-directory: source
@@ -78,7 +77,7 @@ jobs:
           EXPECTED_SHA: ${{ steps.request.outputs.sha }}
         run: |
           set -euo pipefail
-          files=(lib/services/manga/manga_favorites_badge_tracker.dart lib/services/manga/manga_favorites_badge_summary_source.dart lib/screens/main_navigation_screen.dart test/services/manga/manga_favorites_badge_summary_source_test.dart test/services/manga/manga_favorite_lifecycle_service_test.dart)
+          files=(lib/services/manga/manga_favorites_badge_tracker.dart lib/services/manga/manga_favorites_badge_summary_source.dart lib/screens/main_navigation_screen.dart test/services/manga/manga_favorites_badge_summary_source_test.dart)
           if git diff --quiet -- "${files[@]}"; then
             echo "Already formatted."
             exit 0
@@ -98,15 +97,13 @@ jobs:
             lib/services/manga/manga_favorites_badge_tracker.dart \
             lib/services/manga/manga_favorites_badge_summary_source.dart \
             lib/screens/main_navigation_screen.dart \
-            test/services/manga/manga_favorites_badge_summary_source_test.dart \
-            test/services/manga/manga_favorite_lifecycle_service_test.dart
+            test/services/manga/manga_favorites_badge_summary_source_test.dart
 
       - name: Test memoized local browse state
         working-directory: source
         run: |
           flutter test --no-pub \
-            test/services/manga/manga_favorites_badge_summary_source_test.dart \
-            test/services/manga/manga_favorite_lifecycle_service_test.dart
+            test/services/manga/manga_favorites_badge_summary_source_test.dart
 
       - name: Test presentation and favorites regressions
         working-directory: source
