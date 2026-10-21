@@ -1,0 +1,6 @@
+reason=correct_remangas_canonical_source_id_and_verify_safe_distribution
+private_ref=codex/manga-provider-adult-provenance-20261020
+checkpoint_ref=ci/manga-reference-resume-v9
+persisted_checkpoint_reuse=required
+artifact_retention_days=30
+never_merge_without_safe_assets_and_green_tests=true
