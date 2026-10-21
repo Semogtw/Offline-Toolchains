@@ -32,10 +32,16 @@ jobs:
           set -euo pipefail
           request="$(git -C trusted-source diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD^ HEAD -- 'triggers/goanime-lockfile/*.request' | head -n 1)"
           test -n "$request"
-          read -r project sha _ < "trusted-source/$request"
+          read -r project sha flutter_version < "trusted-source/$request"
           test "$project" = goanime
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
           printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"
+          flutter_version="${flutter_version:-3.44.1}"
+          case "$flutter_version" in
+            3.44.1|3.47.7) ;;
+            *) echo "Unsupported requested Flutter version" >&2; exit 1 ;;
+          esac
+          printf 'flutter_version=%s\n' "$flutter_version" >> "$GITHUB_OUTPUT"
 
       - name: Checkout exact private GoAnime source
         uses: actions/checkout@v6
@@ -48,11 +54,11 @@ jobs:
           persist-credentials: false
           show-progress: false
 
-      - name: Set up Flutter 3.44.1
+      - name: Set up requested Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
-          flutter-version: '3.44.1'
+          flutter-version: ${{ steps.request.outputs.flutter_version }}
           cache: true
 
       - name: Generate and validate lockfile
