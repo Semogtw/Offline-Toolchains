@@ -77,7 +77,7 @@ jobs:
           EXPECTED_SHA: ${{ steps.request.outputs.sha }}
         run: |
           set -euo pipefail
-          files=(lib/screens/main_navigation_screen.dart lib/services/manga/manga_browse_state_memoizer.dart test/services/manga/manga_browse_state_memoizer_test.dart)
+          files=(lib/screens/main_navigation_screen.dart lib/services/manga/manga_repository_browse_data_source.dart lib/services/manga/manga_browse_state_memoizer.dart test/services/manga/manga_browse_state_memoizer_test.dart)
           if git diff --quiet -- "${files[@]}"; then
             echo "Already formatted."
             exit 0
