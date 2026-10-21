@@ -144,10 +144,11 @@ jobs:
           count = sum(len(value) for value in neighbors.values())
           sidecar_digest = hashlib.file_digest(index_path.open('rb'), 'sha256').hexdigest()
           observed_roots = set(neighbors)
-          observed_targets = {key for links in neighbors.values() for key in links}
+          # Sidecar stores roots -> [[targetWorkId, score], ...], not maps.
+          observed_targets = {pair[0] for links in neighbors.values() for pair in links}
           invalid_scores = sum(
-              1 for links in neighbors.values() for value in links.values()
-              if not isinstance(value, (float, int)) or not (0 < value <= 1)
+              1 for links in neighbors.values() for pair in links
+              if not isinstance(pair[1], (float, int)) or not (0 <= pair[1] <= 1)
           )
           db = sqlite3.connect(f'file:{catalog_path}?mode=ro', uri=True)
           try:
