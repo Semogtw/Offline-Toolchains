@@ -65,7 +65,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m unittest -v tools.tests.test_stage_mihon_harvest_archive tools.tests.test_manga_reference_snapshot_acquisition tools.tests.test_validate_manga_cover_candidate_sidecar tools.tests.test_manga_reference_checkpoint_store
+          python3 -m py_compile tools/manga/manga_reference_checkpoint_store.py tools/manga/build_manga_safe_distribution.py
+          python3 -m unittest -v tools.tests.test_stage_mihon_harvest_archive tools.tests.test_manga_reference_snapshot_acquisition tools.tests.test_validate_manga_cover_candidate_sidecar tools.tests.test_manga_reference_checkpoint_store tools.tests.test_manga_safe_distribution tools.tests.test_manga_safe_release_bundle
           python3 tools/manga/stage_mihon_harvest_archive.py \
             --archive manga_harvest-20261020T051910Z-1-001.zip \
             --output-dir "$RUNNER_TEMP/goanime-master-harvest" \
@@ -146,7 +147,8 @@ jobs:
           flutter test --no-pub --concurrency=1 test/tools/build_global_manga_availability_test.dart --plain-name 'existing v4 master retains work IDs and source history'
           flutter test --no-pub --concurrency=1 test/tools/manga_metadata_catalog_targets_test.dart
           python3 tools/manga/validate_manga_reference_release_assets.py
-          echo "Collection and source manifest validated without rewriting provenance"
+          flutter test --no-pub --concurrency=1 test/services/manga/manga_source_content_decision_test.dart
+          echo "Collection, Remangas Home-only policy, and source manifest validated"
 
       - name: Check free staging space
         shell: bash
@@ -219,6 +221,17 @@ jobs:
               assert database.execute('PRAGMA quick_check').fetchone()[0]=='ok'
               count=database.execute('SELECT COUNT(*) FROM works').fetchone()[0]
               assert count >= 1000, count
+              classified=database.execute(
+                  "SELECT COUNT(*),SUM(CASE WHEN e.decision != 'home_only' "
+                  "OR w.hiddenFromHome != 1 THEN 1 ELSE 0 END) "
+                  "FROM work_content_policy_evidence e JOIN works w ON w.workId=e.workId "
+                  "WHERE e.sourceId='ptbr.remangas' AND e.signal='adulto'"
+              ).fetchone()
+              assert classified[0] > 0, 'Remangas Adulto provenance absent'
+              assert classified[1] == 0, 'Remangas Adulto must be Home-only'
+              assert database.execute(
+                  "SELECT COUNT(*) FROM works WHERE hiddenFromHome=1"
+              ).fetchone()[0] > 0, 'No Home-only works materialized'
               print('Recertified SQLite quick_check=ok; usable canonical works='+str(count))
           finally:
               database.close()
