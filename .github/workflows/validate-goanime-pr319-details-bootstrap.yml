@@ -1,0 +1,91 @@
+name: Validate GoAnime PR319 details bootstrap
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'triggers/goanime-pr319-details/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    name: Details recovery format, analysis, and regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout trusted request
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: trusted
+          persist-credentials: false
+          sparse-checkout: |
+            triggers/goanime-pr319-details
+          sparse-checkout-cone-mode: false
+
+      - name: Validate exact GoAnime commit
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(tr -d '\r\n' < trusted/triggers/goanime-pr319-details/source.request)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout GoAnime branch commit
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ steps.request.outputs.sha }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: source
+          persist-credentials: false
+          fetch-depth: 1
+          lfs: false
+
+      - name: Install Flutter 3.44.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.1
+          cache: true
+
+      - name: Resolve dependencies
+        working-directory: source
+        run: |
+          flutter config --no-analytics >/dev/null
+          flutter pub get >/dev/null
+          (cd packages/goanime_core && dart pub get >/dev/null)
+
+      - name: Format changed Dart files
+        working-directory: source
+        run: |
+          dart format --output=none --set-exit-if-changed \
+            lib/screens/main_navigation_screen.dart \
+            lib/services/manga/manga_details_source_recovery.dart \
+            test/services/manga/manga_details_source_recovery_test.dart
+
+      - name: Analyze changed Dart files
+        working-directory: source
+        run: |
+          dart analyze \
+            lib/screens/main_navigation_screen.dart \
+            lib/services/manga/manga_details_source_recovery.dart \
+            test/services/manga/manga_details_source_recovery_test.dart
+
+      - name: Test Details bootstrap and Mihon work provisioning
+        working-directory: source
+        run: |
+          flutter test --no-pub \
+            test/services/manga/manga_details_source_recovery_test.dart \
+            test/services/manga/mihon/mihon_work_source_provisioner_test.dart
+
+      - name: Test chapter hydration regression
+        working-directory: source
+        run: flutter test --no-pub test/services/manga/manga_hydrating_details_data_source_test.dart
+
+      - name: Remove source checkout
+        if: always()
+        run: rm -rf "$GITHUB_WORKSPACE/source"
