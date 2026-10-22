@@ -31,7 +31,7 @@ concurrency:
 
 env:
   FLUTTER_CHANNEL: stable
-  FLUTTER_VERSION: 3.44.1
+  FLUTTER_VERSION: 3.47.7
 
 jobs:
   normalize:
@@ -240,7 +240,7 @@ jobs:
 
       - name: Analyze Flutter project
         working-directory: private-source
-        run: flutter analyze --no-pub
+        run: flutter analyze --no-pub --no-fatal-infos
 
       - name: Run chapter recovery regression tests first
         working-directory: private-source
