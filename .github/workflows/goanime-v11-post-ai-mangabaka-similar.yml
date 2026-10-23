@@ -66,6 +66,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git -C goanime rev-parse HEAD)" = "$INPUT_SHA"
+          test "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["codeSha"])' "$INPUT_RUN/run-inputs.json")" = "$INPUT_SHA"
           umask 077
           dir="$GOANIME_POST_AI_HOME/$INPUT_SHA"
           mkdir -p "$dir"
