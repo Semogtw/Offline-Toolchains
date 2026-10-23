@@ -1,0 +1,91 @@
+name: Hydrate GoAnime current Pub delta
+
+on:
+  push:
+    branches:
+      - toolchain/goanime-local-sdk-20260827
+    paths:
+      - .github/workflows/hydrate-goanime-pub-delta.yml
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: 3.44.1
+  FLUTTER_CHANNEL: stable
+
+jobs:
+  hydrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Hydrate packages absent from the public fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PUB_CACHE="$RUNNER_TEMP/goanime-pub-delta"
+          project="$RUNNER_TEMP/goanime-pub-delta-project"
+          mkdir -p "$project"
+          cat > "$project/pubspec.yaml" <<'YAML'
+          name: goanime_pub_delta
+          publish_to: none
+          environment:
+            sdk: ">=3.10.0 <4.0.0"
+          dependencies:
+            flutter:
+              sdk: flutter
+            archive: ^4.0.9
+            cryptography: ^2.9.0
+            pdfrx: 2.4.7
+            pdfrx_engine: 0.4.6
+          dev_dependencies:
+            fake_async: ^1.3.0
+          YAML
+          cd "$project"
+          flutter pub get
+          tar -C "$RUNNER_TEMP" -I 'zstd -T0 -8' -cf "$RUNNER_TEMP/goanime-pub-delta.tar.zst" goanime-pub-delta
+          sha256sum "$RUNNER_TEMP/goanime-pub-delta.tar.zst" > "$RUNNER_TEMP/goanime-pub-delta.tar.zst.sha256"
+
+      - name: Hydrate PDFium native asset used by pdfrx
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/pdfium-linux-x64.tgz"
+          native="$RUNNER_TEMP/goanime-pdfium/chromium_7811/linux-x64"
+          mkdir -p "$native"
+          curl --fail --location --retry 3 --output "$archive" \
+            'https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F7811/pdfium-linux-x64.tgz'
+          tar -xzf "$archive" -C "$RUNNER_TEMP" lib/libpdfium.so
+          mv "$RUNNER_TEMP/lib/libpdfium.so" "$native/libpdfium.so"
+          sha256sum "$native/libpdfium.so" > "$RUNNER_TEMP/goanime-pdfium/libpdfium.so.sha256"
+
+      - name: Upload Pub delta
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-current-pub-delta
+          path: |
+            ${{ runner.temp }}/goanime-pub-delta.tar.zst
+            ${{ runner.temp }}/goanime-pub-delta.tar.zst.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload PDFium native asset
+        uses: actions/upload-artifact@v7
+        with:
+          name: goanime-pdfium-linux-x64
+          path: |
+            ${{ runner.temp }}/goanime-pdfium/chromium_7811/linux-x64/libpdfium.so
+            ${{ runner.temp }}/goanime-pdfium/libpdfium.so.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
