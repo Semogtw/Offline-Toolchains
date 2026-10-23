@@ -1,0 +1,46 @@
+name: Crownfall Arena CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - crownfall/**
+      - .github/workflows/crownfall-ci.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  core-tests:
+    name: Godot core tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Restore Godot editor from Offline-Toolchains artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          id="$(jq -r '.artifacts[] | select(.name == "godot-base-linux-x64-editor" and .expired == false) | .artifact_id' receipts/godot-base-latest.json | head -n1)"
+          test -n "$id" && test "$id" != null
+          mkdir -p "$RUNNER_TEMP/godot-wrapper" "$RUNNER_TEMP/godot"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "$RUNNER_TEMP/godot-editor-artifact.zip"
+          unzip -q "$RUNNER_TEMP/godot-editor-artifact.zip" -d "$RUNNER_TEMP/godot-wrapper"
+          sha256sum "$RUNNER_TEMP/godot-wrapper/godot-base-linux-x64-editor.zip"
+          unzip -q "$RUNNER_TEMP/godot-wrapper/godot-base-linux-x64-editor.zip" -d "$RUNNER_TEMP/godot"
+          godot_bin="$(find "$RUNNER_TEMP/godot" -maxdepth 1 -type f -name 'Godot_v4.7.2-stable_linux.x86_64' -print -quit)"
+          test -n "$godot_bin"
+          chmod +x "$godot_bin"
+          "$godot_bin" --version
+          echo "GODOT_BIN=$godot_bin" >> "$GITHUB_ENV"
+
+      - name: Run TDD core suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$GODOT_BIN" --headless --path crownfall -s res://tests/run_tests.gd
