@@ -1,0 +1,130 @@
+name: GoAnime V11 post-AI MangaBaka Similar Works
+
+on:
+  workflow_dispatch:
+    inputs:
+      goanime_commit:
+        description: Exact GoAnime commit SHA for the reviewed V11 catalog
+        type: string
+        required: true
+      reviewed_run_dir:
+        description: Absolute private path on the GoAnime offline runner to post-AI V11 run
+        type: string
+        required: true
+      rights_receipt:
+        description: Absolute private path to MangaBaka collection and distribution authorization
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-post-ai-similar
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest discover -s tests -p test_goanime_v11_post_ai_similar_workflow.py -v
+
+  post-ai-collection:
+    needs: validate
+    if: github.actor == github.repository_owner
+    runs-on: [self-hosted, linux, x64, goanime-offline]
+    timeout-minutes: 345
+    steps:
+      - name: Check private run and explicit authorization
+        shell: bash
+        env:
+          INPUT_SHA: ${ inputs.goanime_commit }}
+          INPUT_RUN: ${ inputs.reviewed_run_dir }}
+          INPUT_RIGHTS: ${ inputs.rights_receipt }}
+        run: |
+          set -euo pipefail
+          [[ "$INPUT_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$INPUT_RUN" = /* && -d "$INPUT_RUN" && ! -L "$INPUT_RUN" ]] || exit 1
+          [[ "$INPUT_RIGHTS" = /* && -f "$INPUT_RIGHTS" && ! -L "$INPUT_RIGHTS" ]] || exit 1
+          test -n "$GOANIME_POST_AI_HOME"
+          test -d "$GOANIME_POST_AI_HOME" && test ! -L "$GOANIME_POST_AI_HOME"
+      - uses: actions/checkout@v4
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${ inputs.goanime_commit }}
+          token: ${ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          persist-credentials: false
+          path: goanime
+      - name: Preflight exact reviewed identity set
+        shell: bash
+        env:
+          INPUT_SHA: ${ inputs.goanime_commit }}
+          INPUT_RUN: ${ inputs.reviewed_run_dir }}
+        run: |
+          set -euo pipefail
+          test "$(git -C goanime rev-parse HEAD)" = "$INPUT_SHA"
+          umask 077
+          dir="$GOANIME_POST_AI_HOME/$INPUT_SHA"
+          mkdir -p "$dir"
+          python3 -m py_compile goanime/tools/manga/post_ai_mangabaka_similar.py goanime/tools/manga/collect_mangabaka_reader_overlap_post_ai.py
+          python3 -m unittest discover -s goanime/tools/tests -p test_post_ai_mangabaka_similar.py -v
+          if [[ ! -f "$dir/seeds.json" ]]; then
+            python3 goanime/tools/manga/post_ai_mangabaka_similar.py prepare \
+              --reviewed-run "$INPUT_RUN" --output "$dir/seeds.json"
+          fi
+          python3 goanime/tools/manga/collect_mangabaka_reader_overlap_post_ai.py \
+            --reviewed-run "$INPUT_RUN" --seed-manifest "$dir/seeds.json" \
+            --catalog-db "$INPUT_RUN/work/manga_availability.db" \
+            --output-db "$dir/reader_overlap.sqlite" --dry-run
+      - name: Collect only authorized post-AI MangaBaka seeds with persistent SQLite checkpoints
+        shell: bash
+        timeout-minutes: 290
+        env:
+          INPUT_SHA: ${ inputs.goanime_commit }}
+          INPUT_RUN: ${ inputs.reviewed_run_dir }}
+          INPUT_RIGHTS: ${ inputs.rights_receipt }}
+        run: |
+          set -euo pipefail
+          umask 077
+          dir="$GOANIME_POST_AI_HOME/$INPUT_SHA"
+          timeout --signal=TERM --kill-after=30s 270m \
+            python3 goanime/tools/manga/collect_mangabaka_reader_overlap_post_ai.py \
+            --reviewed-run "$INPUT_RUN" --seed-manifest "$dir/seeds.json" \
+            --rights-receipt "$INPUT_RIGHTS" \
+            --catalog-db "$INPUT_RUN/work/manga_availability.db" \
+            --output-db "$dir/reader_overlap.sqlite" \
+            --rate-per-minute 60 --max-failures 10 --report-every 50
+      - name: Project scoped numeric affinity checkpoint
+        shell: bash
+        env:
+          INPUT_SHA: ${ inputs.goanime_commit }}
+        run: |
+          set -euo pipefail
+          dir="$GOANIME_POST_AI_HOME/$INPUT_SHA"
+          rm -f "$dir/mangabaka_overlap_compact.sqlite"
+          python3 goanime/tools/manga/project_mangabaka_reader_overlap_compact.py \
+            --source "$dir/reader_overlap.sqlite" \
+            --output "$dir/mangabaka_overlap_compact.sqlite"
+      - name: Build separate private final candidate, preserving reviewed catalog
+        shell: bash
+        env:
+          INPUT_SHA: ${ inputs.goanime_commit }}
+          INPUT_RUN: ${ inputs.reviewed_run_dir }}
+          INPUT_RIGHTS: ${ inputs.rights_receipt }}
+        run: |
+          set -euo pipefail
+          umask 077
+          dir="$GOANIME_POST_AI_HOME/$INPUT_SHA"
+          python3 goanime/tools/manga/post_ai_mangabaka_similar.py finalize \
+            --reviewed-run "$INPUT_RUN" --seeds "$dir/seeds.json" \
+            --overlap "$dir/mangabaka_overlap_compact.sqlite" \
+            --rights-receipt "$INPUT_RIGHTS" \
+            --output-dir "$dir/final-candidate"
+          echo "Private candidate materialized under $dir/final-candidate"
+      - name: Remove checkout, retain checkpoint only on private runner
+        if: always()
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/goanime"
