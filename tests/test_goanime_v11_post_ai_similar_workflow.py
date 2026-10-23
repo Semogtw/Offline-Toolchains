@@ -40,7 +40,6 @@ class PostAiMangaBakaWorkflowTest(unittest.TestCase):
         self.assertIn("post_ai_mangabaka_similar.py finalize",s)
         self.assertIn("reader_overlap.sqlite",s)
         self.assertIn("timeout --signal=TERM",s)
-        self.assertIn("goanime/tools/manga/build_mangabaka_only_similar_sql.py",s) if False else None
 
 
 if __name__=="__main__":
