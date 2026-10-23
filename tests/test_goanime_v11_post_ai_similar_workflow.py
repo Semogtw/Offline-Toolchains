@@ -3,7 +3,7 @@ from pathlib import Path
 import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
-FILE=ROOT/".github/workflows/goanime-v11-post-ai-mangabaka-similar.yml"
+FILE=ROOT/".github/workflows/release-goanime-v11-post-ai-similar-candidate.yml"
 
 
 class PostAiMangaBakaWorkflowTest(unittest.TestCase):
