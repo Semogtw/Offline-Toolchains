@@ -15,7 +15,8 @@ class PostAiMangaBakaWorkflowTest(unittest.TestCase):
         s=self.workflow
         self.assertIn("workflow_dispatch:",s)
         self.assertNotIn("schedule:",s)
-        self.assertNotIn("pull_request:",s)
+        self.assertIn("pull_request:",s)
+        self.assertIn("if: github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner",s)
         self.assertIn("goanime_commit:",s)
         self.assertIn("reviewed_run_dir:",s)
         self.assertIn("rights_receipt:",s)
