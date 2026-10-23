@@ -41,9 +41,9 @@ jobs:
       - name: Check private run and explicit authorization
         shell: bash
         env:
-          INPUT_SHA: ${ inputs.goanime_commit }}
-          INPUT_RUN: ${ inputs.reviewed_run_dir }}
-          INPUT_RIGHTS: ${ inputs.rights_receipt }}
+          INPUT_SHA: ${{ inputs.goanime_commit }}
+          INPUT_RUN: ${{ inputs.reviewed_run_dir }}
+          INPUT_RIGHTS: ${{ inputs.rights_receipt }}
         run: |
           set -euo pipefail
           [[ "$INPUT_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
@@ -54,15 +54,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Semogtw/goanime-mobile
-          ref: ${ inputs.goanime_commit }}
-          token: ${ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          ref: ${{ inputs.goanime_commit }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           persist-credentials: false
           path: goanime
       - name: Preflight exact reviewed identity set
         shell: bash
         env:
-          INPUT_SHA: ${ inputs.goanime_commit }}
-          INPUT_RUN: ${ inputs.reviewed_run_dir }}
+          INPUT_SHA: ${{ inputs.goanime_commit }}
+          INPUT_RUN: ${{ inputs.reviewed_run_dir }}
         run: |
           set -euo pipefail
           test "$(git -C goanime rev-parse HEAD)" = "$INPUT_SHA"
@@ -83,9 +83,9 @@ jobs:
         shell: bash
         timeout-minutes: 290
         env:
-          INPUT_SHA: ${ inputs.goanime_commit }}
-          INPUT_RUN: ${ inputs.reviewed_run_dir }}
-          INPUT_RIGHTS: ${ inputs.rights_receipt }}
+          INPUT_SHA: ${{ inputs.goanime_commit }}
+          INPUT_RUN: ${{ inputs.reviewed_run_dir }}
+          INPUT_RIGHTS: ${{ inputs.rights_receipt }}
         run: |
           set -euo pipefail
           umask 077
@@ -100,7 +100,7 @@ jobs:
       - name: Project scoped numeric affinity checkpoint
         shell: bash
         env:
-          INPUT_SHA: ${ inputs.goanime_commit }}
+          INPUT_SHA: ${{ inputs.goanime_commit }}
         run: |
           set -euo pipefail
           dir="$GOANIME_POST_AI_HOME/$INPUT_SHA"
@@ -111,9 +111,9 @@ jobs:
       - name: Build separate private final candidate, preserving reviewed catalog
         shell: bash
         env:
-          INPUT_SHA: ${ inputs.goanime_commit }}
-          INPUT_RUN: ${ inputs.reviewed_run_dir }}
-          INPUT_RIGHTS: ${ inputs.rights_receipt }}
+          INPUT_SHA: ${{ inputs.goanime_commit }}
+          INPUT_RUN: ${{ inputs.reviewed_run_dir }}
+          INPUT_RIGHTS: ${{ inputs.rights_receipt }}
         run: |
           set -euo pipefail
           umask 077
