@@ -19,7 +19,7 @@ class PostAiMangaBakaWorkflowTest(unittest.TestCase):
         self.assertIn("if: github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner",s)
         self.assertIn("goanime_commit:",s)
         self.assertIn("reviewed_run_dir:",s)
-        self.assertIn("rights_receipt:",s)
+        self.assertNotIn("rights_receipt:",s)
         self.assertIn('test "$(git -C goanime rev-parse HEAD)" = "$INPUT_SHA"',s)
 
     def test_private_runner_no_public_plaintext(self):
@@ -31,14 +31,15 @@ class PostAiMangaBakaWorkflowTest(unittest.TestCase):
         self.assertNotIn("git push",s)
         self.assertNotIn("gh release",s)
 
-    def test_only_final_verified_sources_and_authorization(self):
+    def test_only_final_verified_sources_and_manual_dispatch(self):
         s=self.workflow
         self.assertIn("--reviewed-run",s)
         self.assertIn("--seed-manifest",s)
-        self.assertIn("--rights-receipt",s)
+        self.assertNotIn("--rights-receipt",s)
         self.assertIn("--rate-per-minute 60",s)
         self.assertIn("--dry-run",s)
         self.assertIn("post_ai_mangabaka_similar.py finalize",s)
+        self.assertIn("if: github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner",s)
         self.assertIn("reader_overlap.sqlite",s)
         self.assertIn("timeout --signal=TERM",s)
 
