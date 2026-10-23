@@ -1,6 +1,10 @@
 name: GoAnime V11 post-AI Similar Works release candidate
 
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/release-goanime-v11-post-ai-similar-candidate.yml'
+      - 'tests/test_goanime_v11_post_ai_similar_workflow.py'
   workflow_dispatch:
     inputs:
       goanime_commit:
@@ -34,7 +38,7 @@ jobs:
 
   post-ai-collection:
     needs: validate
-    if: github.actor == github.repository_owner
+    if: github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner
     runs-on: [self-hosted, linux, x64, goanime-offline]
     timeout-minutes: 345
     steps:
