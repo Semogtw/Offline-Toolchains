@@ -1,0 +1,1 @@
+Observable PR trigger for GoAnime analysis toolchain refresh.
