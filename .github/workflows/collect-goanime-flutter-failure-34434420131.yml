@@ -100,4 +100,4 @@ jobs:
           name: goanime-flutter-failure-34434420131-102736426704
           path: first-flutter-failure.txt
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 7

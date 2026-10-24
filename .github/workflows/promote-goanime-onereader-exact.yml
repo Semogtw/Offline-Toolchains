@@ -281,7 +281,7 @@ jobs:
           name: goanime-onereader-promotion-${{ steps.push.outputs.new_sha }}
           path: promotion-result.json
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
 
       - name: Remove private checkout
         if: always()

@@ -33,7 +33,7 @@ jobs:
           ref: 09416f39be33930848f1851ff7be2146878f38aa
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: source
-          persist-credentials: true
+          persist-credentials: false
           lfs: false
           submodules: false
 
@@ -171,8 +171,11 @@ jobs:
         if: always() && steps.format.outcome == 'success'
         continue-on-error: true
         working-directory: source
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
         run: |
           set -euo pipefail
+          gh auth setup-git --hostname github.com
           if git diff --quiet -- lib/services/manga/manga_multi_interest_profile.dart \
             lib/services/manga/manga_recommendation_diversifier.dart \
             lib/services/manga/manga_recommendation_candidate_pool.dart \

@@ -93,7 +93,7 @@ jobs:
         with:
           name: goanime-pr262-manga-indexed-sqlite-encrypted
           path: ${{ steps.package.outputs.artifact_dir }}
-          retention-days: 7
+          retention-days: 1
           if-no-files-found: error
 
       - name: Set up Flutter

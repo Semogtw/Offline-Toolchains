@@ -54,7 +54,7 @@ jobs:
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
           fetch-depth: 1
-          persist-credentials: true
+          persist-credentials: false
           lfs: false
           submodules: false
           show-progress: false
@@ -84,8 +84,10 @@ jobs:
         env:
           EXPECTED_SHA: ${{ steps.request.outputs.sha }}
           TARGET_BRANCH: ${{ steps.request.outputs.branch }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
         run: |
           set -euo pipefail
+          gh auth setup-git --hostname github.com
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           remote="$(git ls-remote origin "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
           test "$remote" = "$EXPECTED_SHA"
