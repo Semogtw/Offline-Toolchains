@@ -23,13 +23,16 @@ jobs:
           ref: 4f353ca5b440ce955c034d3aa49519d4164db99d
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: source
-          persist-credentials: true
+          persist-credentials: false
           fetch-depth: 110
           lfs: false
       - name: Merge only verified PR262 head
         working-directory: source
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
         run: |
           set -euo pipefail
+          gh auth setup-git --hostname github.com
           test "$(git rev-parse HEAD)" = "4f353ca5b440ce955c034d3aa49519d4164db99d"
           git fetch --no-tags origin +refs/heads/feat/manga-recommendation-offline-index-20261013:refs/remotes/origin/pr262
           test "$(git rev-parse refs/remotes/origin/pr262)" = "5a9a0cf8bd6782e5e6c306aa50a827d7fe58f865"

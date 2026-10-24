@@ -33,11 +33,11 @@ jobs:
           grep -F "$expected" candidate/SHA256SUMS >/dev/null
           printf '%s  %s\n' "$expected" candidate/catalog.tar.zst.gpg | sha256sum -c -
           echo "Certified run 39531975740 ciphertext verified; exact bytes preserved"
-      - name: Preserve encrypted candidate for 30 days
+      - name: Preserve encrypted candidate for one day
         uses: actions/upload-artifact@v4
         with:
-          name: goanime-manga-v9-certified-encrypted-30d
+          name: goanime-manga-v9-certified-encrypted
           path: candidate/
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 1
           compression-level: 0

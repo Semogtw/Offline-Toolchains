@@ -136,7 +136,7 @@ jobs:
         with:
           name: goanime-optimized-manga-pr262-debug-arm64-encrypted
           path: ${{ steps.pack.outputs.out }}
-          retention-days: 7
+          retention-days: 1
           if-no-files-found: error
 
       - name: Remove temporary private source
