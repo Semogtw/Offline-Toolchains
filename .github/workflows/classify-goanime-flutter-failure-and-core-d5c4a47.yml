@@ -75,16 +75,13 @@ jobs:
             printf 'sha=%s\n' '${{ matrix.sha }}'
             printf 'test=%s\n' 'test/services/title_availability_database_service_test.dart'
             printf 'exit_code=%s\n' "$status"
-            grep -E -m 8 'bundled SQLite|Expected:|Actual:|Which:|\[E\]|Some tests failed|All tests passed' ../focused-${{ matrix.label }}.log || true
           } > ../focused-${{ matrix.label }}.txt
 
-      - name: Upload focused receipt
+      - name: Upload focused metadata receipt
         uses: actions/upload-artifact@v4
         with:
           name: focused-${{ matrix.label }}
-          path: |
-            focused-${{ matrix.label }}.txt
-            focused-${{ matrix.label }}.log
+          path: focused-${{ matrix.label }}.txt
           if-no-files-found: error
           retention-days: 1
 
@@ -146,17 +143,14 @@ jobs:
             printf 'sha=%s\n' 'd5c4a47443653cac02e2e082ab686d388520669c'
             printf 'command=%s\n' 'dart test -r compact'
             printf 'exit_code=%s\n' "$status"
-            tail -n 40 ../../../core-d5c4a47.log
           } > ../../../core-d5c4a47.txt
 
-      - name: Upload core receipt
+      - name: Upload core metadata receipt
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: goanime-core-d5c4a47
-          path: |
-            core-d5c4a47.txt
-            core-d5c4a47.log
+          path: core-d5c4a47.txt
           if-no-files-found: error
           retention-days: 1
 
