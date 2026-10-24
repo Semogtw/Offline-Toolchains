@@ -8,11 +8,15 @@ on:
   workflow_dispatch:
     inputs:
       goanime_commit:
-        description: Exact GoAnime commit SHA for the reviewed V11 catalog
+        description: Exact GoAnime code commit for Similar Works tools
         type: string
         required: true
-      reviewed_run_dir:
-        description: Absolute private path on the GoAnime offline runner to the final V11 catalog run
+      catalog_input_commit:
+        description: Exact private GoAnime commit containing the final catalog package
+        type: string
+        required: true
+      catalog_package_sha256:
+        description: SHA-256 of candidate-input/exact-title-safe-package.zip
         type: string
         required: true
       final_catalog_confirmation:
@@ -30,7 +34,7 @@ concurrency:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,45 +44,175 @@ jobs:
   final-catalog-collection:
     needs: validate
     if: github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner && inputs.final_catalog_confirmation == true
-    runs-on: [self-hosted, linux, x64, goanime-offline]
+    runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      - name: Verify final catalog path and explicit owner confirmation
+      - name: Checkout workflow and encryption recipient
+        uses: actions/checkout@v4
+        with:
+          path: control
+          persist-credentials: false
+
+      - name: Verify exact dispatch inputs
         shell: bash
         env:
           INPUT_SHA: ${{ inputs.goanime_commit }}
-          INPUT_RUN: ${{ inputs.reviewed_run_dir }}
+          INPUT_CATALOG_COMMIT: ${{ inputs.catalog_input_commit }}
+          INPUT_PACKAGE_SHA: ${{ inputs.catalog_package_sha256 }}
           FINAL_CATALOG_CONFIRMATION: ${{ inputs.final_catalog_confirmation }}
+          PRIVATE_REPOSITORIES_TOKEN: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
         run: |
           set -euo pipefail
-          [[ "$INPUT_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
-          [[ "$FINAL_CATALOG_CONFIRMATION" == true ]] || exit 1
-          [[ "$INPUT_RUN" = /* && -d "$INPUT_RUN" && ! -L "$INPUT_RUN" ]] || exit 1
-          test -n "$GOANIME_POST_AI_HOME"
-          test -d "$GOANIME_POST_AI_HOME" && test ! -L "$GOANIME_POST_AI_HOME"
-      - uses: actions/checkout@v4
+          [[ "$INPUT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$INPUT_CATALOG_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$INPUT_PACKAGE_SHA" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$FINAL_CATALOG_CONFIRMATION" == true ]]
+          test -n "$PRIVATE_REPOSITORIES_TOKEN"
+      - name: Checkout exact GoAnime Similar Works tools
+        uses: actions/checkout@v4
         with:
           repository: Semogtw/goanime-mobile
           ref: ${{ inputs.goanime_commit }}
           token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
-          persist-credentials: false
           path: goanime
           fetch-depth: 0
-      - name: Preflight exact reviewed identity set
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Checkout private final-catalog package
+        uses: actions/checkout@v4
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ inputs.catalog_input_commit }}
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: catalog-input
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Materialize and verify final catalog package
+        id: input
         shell: bash
         env:
           INPUT_SHA: ${{ inputs.goanime_commit }}
-          INPUT_RUN: ${{ inputs.reviewed_run_dir }}
-          WORKFLOW_RUN_ID: ${{ github.run_id }}
-          WORKFLOW_CONTROL_COMMIT: ${{ github.sha }}
+          INPUT_CATALOG_COMMIT: ${{ inputs.catalog_input_commit }}
+          INPUT_PACKAGE_SHA: ${{ inputs.catalog_package_sha256 }}
+          RUNNER_TEMP: ${{ runner.temp }}
         run: |
           set -euo pipefail
           test "$(git -C goanime rev-parse HEAD)" = "$INPUT_SHA"
+          test "$(git -C catalog-input rev-parse HEAD)" = "$INPUT_CATALOG_COMMIT"
+          umask 077
+          python3 - "$INPUT_SHA" "$INPUT_PACKAGE_SHA" "$RUNNER_TEMP/goanime-final-catalog" <<'PY'
+          from pathlib import Path
+          import gzip
+          import hashlib
+          import json
+          import shutil
+          import stat
+          import sys
+          import zipfile
+
+          code_sha, expected_package_sha, raw_run = sys.argv[1:]
+          run = Path(raw_run)
+          package = Path('catalog-input/candidate-input/exact-title-safe-package.zip')
+          run_inputs_path = Path('catalog-input/candidate-input/run-inputs.json')
+          receipt_path = Path('catalog-input/candidate-input/package-receipt.json')
+          if run.exists() or run.is_symlink():
+              raise SystemExit('Refusing to overwrite an existing runner input directory')
+          if package.is_symlink() or run_inputs_path.is_symlink() or receipt_path.is_symlink():
+              raise SystemExit('Catalog input package files cannot be symlinks')
+
+          def sha(path):
+              digest = hashlib.sha256()
+              with path.open('rb') as source:
+                  for block in iter(lambda: source.read(1 << 20), b''):
+                      digest.update(block)
+              return digest.hexdigest()
+
+          if sha(package) != expected_package_sha:
+              raise SystemExit('Catalog package SHA does not match the dispatch input')
+          package_receipt = json.loads(receipt_path.read_text(encoding='utf-8'))
+          run_inputs_bytes = run_inputs_path.read_bytes()
+          frozen = json.loads(run_inputs_bytes)
+          if package_receipt.get('candidatePackageSha256') != expected_package_sha:
+              raise SystemExit('Private package receipt SHA mismatch')
+          if package_receipt.get('runInputsSha256') != hashlib.sha256(run_inputs_bytes).hexdigest():
+              raise SystemExit('Private run-inputs receipt SHA mismatch')
+          producer_sha = frozen.get('codeSha')
+          if (not isinstance(producer_sha, str) or len(producer_sha) != 40 or
+                  package_receipt.get('catalogProducerCodeSha') != producer_sha):
+              raise SystemExit('Catalog producer SHA is missing or inconsistent')
+          if package_receipt.get('catalogOrigin') != 'fresh-mihon-mangabaka-v11':
+              raise SystemExit('Only the fresh Mihon V11 catalog is accepted')
+
+          run.mkdir(mode=0o700, parents=True)
+          (run / 'bundle').mkdir(mode=0o700)
+          (run / 'work').mkdir(mode=0o700)
+          (run / '.checkpoints').mkdir(mode=0o700)
+          (run / 'run-inputs.json').write_bytes(run_inputs_bytes)
+          allowed_manifest = False
+          with zipfile.ZipFile(package) as archive:
+              for info in archive.infolist():
+                  if info.is_dir():
+                      continue
+                  mode = info.external_attr >> 16
+                  if stat.S_ISLNK(mode):
+                      raise SystemExit(f'Symlink rejected in catalog package: {info.filename}')
+                  if info.filename == 'candidate-manifest.json':
+                      target = run / info.filename
+                      allowed_manifest = True
+                  elif info.filename.startswith('assets/data/'):
+                      target = run / 'bundle' / info.filename
+                  else:
+                      raise SystemExit(f'Unexpected candidate package path: {info.filename}')
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  with archive.open(info) as source, target.open('xb') as destination:
+                      shutil.copyfileobj(source, destination, length=1 << 20)
+          if not allowed_manifest:
+              raise SystemExit('Candidate manifest is missing from the package')
+
+          assets = run / 'bundle/assets/data'
+          with gzip.open(assets / 'manga_availability.db.gz', 'rb') as source:
+              with (run / 'work/manga_availability.db').open('xb') as destination:
+                  shutil.copyfileobj(source, destination, length=1 << 20)
+          shutil.copyfile(assets / 'manga_availability.db.version',
+                          run / 'work/manga_availability.db.version')
+          shutil.copyfile(assets / 'manga_work_redirects.json',
+                          run / 'work/manga_work_redirects.json')
+          manifest_path = run / 'candidate-manifest.json'
+          manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+          catalog_sha = sha(run / 'work/manga_availability.db')
+          if (catalog_sha != manifest.get('catalogSha256') or
+                  catalog_sha != package_receipt.get('catalogSha256') or
+                  catalog_sha != (run / 'work/manga_availability.db.version').read_text().strip()):
+              raise SystemExit('Decompressed catalog does not match its final SHA')
+          if manifest.get('sourceCodeSha') != producer_sha:
+              raise SystemExit('Candidate manifest and run producer SHAs differ')
+          if manifest.get('adultPolicy') != '10':
+              raise SystemExit('Final catalog is missing adult-safety V10')
+          print(f'catalog_sha256={catalog_sha}')
+          print(f'catalog_producer_sha={producer_sha}')
+          PY
+
+      - name: Preflight final-catalog authorization and seed set
+        shell: bash
+        env:
+          INPUT_SHA: ${{ inputs.goanime_commit }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+          WORKFLOW_CONTROL_COMMIT: ${{ github.sha }}
+          INPUT_RUN: ${{ runner.temp }}/goanime-final-catalog
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
           catalog_code_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["codeSha"])' "$INPUT_RUN/run-inputs.json")"
-          [[ "$catalog_code_sha" =~ ^[0-9a-f]{40}$ ]]
           git -C goanime merge-base --is-ancestor "$catalog_code_sha" "$INPUT_SHA"
           umask 077
-          dir="$GOANIME_POST_AI_HOME/$INPUT_SHA"
+          dir="$RUNNER_TEMP/goanime-post-ai-similar"
           mkdir -p "$dir"
           python3 -m py_compile goanime/tools/manga/post_ai_mangabaka_similar.py goanime/tools/manga/collect_mangabaka_reader_overlap_post_ai.py
           python3 -m unittest discover -s goanime/tools/tests -p test_post_ai_mangabaka_similar.py -v
@@ -86,56 +220,148 @@ jobs:
             --final-run "$INPUT_RUN" --confirmed-by "$GITHUB_ACTOR" \
             --workflow-run-id "$WORKFLOW_RUN_ID" \
             --workflow-control-commit "$WORKFLOW_CONTROL_COMMIT"
-          if [[ ! -f "$dir/seeds.json" ]]; then
-            python3 goanime/tools/manga/post_ai_mangabaka_similar.py prepare \
-              --reviewed-run "$INPUT_RUN" --output "$dir/seeds.json"
-          fi
+          python3 goanime/tools/manga/post_ai_mangabaka_similar.py prepare \
+            --reviewed-run "$INPUT_RUN" --output "$dir/seeds.json"
           python3 goanime/tools/manga/collect_mangabaka_reader_overlap_post_ai.py \
             --reviewed-run "$INPUT_RUN" --seed-manifest "$dir/seeds.json" \
             --catalog-db "$INPUT_RUN/work/manga_availability.db" \
             --output-db "$dir/reader_overlap.sqlite" --dry-run
-      - name: Collect verified final-catalog MangaBaka seeds with persistent SQLite checkpoints
+
+      - name: Smoke-test live MangaBaka Similar Works API
+        shell: bash
+        timeout-minutes: 5
+        env:
+          INPUT_SHA: ${{ inputs.goanime_commit }}
+          INPUT_RUN: ${{ runner.temp }}/goanime-final-catalog
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/goanime-post-ai-similar"
+          python3 goanime/tools/manga/collect_mangabaka_reader_overlap_post_ai.py \
+            --reviewed-run "$INPUT_RUN" --seed-manifest "$dir/seeds.json" \
+            --catalog-db "$INPUT_RUN/work/manga_availability.db" \
+            --output-db "$dir/reader_overlap.sqlite" --max-requests 3 \
+            --rate-per-minute 60 --max-failures 10 --report-every 1 2>&1 |
+            sed -u -E 's/MangaBaka ID [0-9]+/MangaBaka ID [redacted]/g; s/for ID [0-9]+/for ID [redacted]/g'
+
+      - name: Collect verified MangaBaka seeds with SQLite checkpoints
         shell: bash
         timeout-minutes: 330
         env:
-          INPUT_SHA: ${{ inputs.goanime_commit }}
-          INPUT_RUN: ${{ inputs.reviewed_run_dir }}
+          INPUT_RUN: ${{ runner.temp }}/goanime-final-catalog
+          RUNNER_TEMP: ${{ runner.temp }}
         run: |
           set -euo pipefail
           umask 077
-          dir="$GOANIME_POST_AI_HOME/$INPUT_SHA"
+          dir="$RUNNER_TEMP/goanime-post-ai-similar"
           timeout --signal=TERM --kill-after=30s 300m \
             python3 goanime/tools/manga/collect_mangabaka_reader_overlap_post_ai.py \
-            --reviewed-run "$INPUT_RUN" --seed-manifest "$dir/seeds.json" \
-            --catalog-db "$INPUT_RUN/work/manga_availability.db" \
-            --output-db "$dir/reader_overlap.sqlite" \
-            --rate-per-minute 60 --max-failures 10 --report-every 50
+              --reviewed-run "$INPUT_RUN" --seed-manifest "$dir/seeds.json" \
+              --catalog-db "$INPUT_RUN/work/manga_availability.db" \
+              --output-db "$dir/reader_overlap.sqlite" \
+              --rate-per-minute 60 --max-failures 10 --report-every 534 2>&1 |
+            sed -u -E 's/MangaBaka ID [0-9]+/MangaBaka ID [redacted]/g; s/for ID [0-9]+/for ID [redacted]/g'
+
       - name: Project scoped numeric affinity checkpoint
         shell: bash
         env:
-          INPUT_SHA: ${{ inputs.goanime_commit }}
+          RUNNER_TEMP: ${{ runner.temp }}
         run: |
           set -euo pipefail
-          dir="$GOANIME_POST_AI_HOME/$INPUT_SHA"
-          rm -f "$dir/mangabaka_overlap_compact.sqlite"
+          dir="$RUNNER_TEMP/goanime-post-ai-similar"
           python3 goanime/tools/manga/project_mangabaka_reader_overlap_compact.py \
             --source "$dir/reader_overlap.sqlite" \
             --output "$dir/mangabaka_overlap_compact.sqlite"
-      - name: Build separate private final candidate, preserving final catalog
+
+      - name: Build separate final candidate without changing the catalog
         shell: bash
         env:
-          INPUT_SHA: ${{ inputs.goanime_commit }}
-          INPUT_RUN: ${{ inputs.reviewed_run_dir }}
+          INPUT_RUN: ${{ runner.temp }}/goanime-final-catalog
+          RUNNER_TEMP: ${{ runner.temp }}
         run: |
           set -euo pipefail
-          umask 077
-          dir="$GOANIME_POST_AI_HOME/$INPUT_SHA"
+          dir="$RUNNER_TEMP/goanime-post-ai-similar"
           python3 goanime/tools/manga/post_ai_mangabaka_similar.py finalize \
             --reviewed-run "$INPUT_RUN" --seeds "$dir/seeds.json" \
             --overlap "$dir/mangabaka_overlap_compact.sqlite" \
-            --output-dir "$dir/final-candidate"
-          echo "Private candidate materialized under $dir/final-candidate"
-      - name: Remove checkout, retain checkpoint only on private runner
+            --output-dir "$RUNNER_TEMP/final-candidate"
+
+      - name: Encrypt final candidate for private handoff
+        id: candidate-envelope
+        if: success()
+        shell: bash
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/goanime-similar-transfer"
+          mkdir -m 700 "$work"
+          tar -C "$RUNNER_TEMP" --zstd -cf "$work/final-candidate.tar.zst" final-candidate
+          gpg --batch --import control/keys/source-bundles-public.asc >/dev/null 2>&1
+          expected='2DE29DC31427CF0A911AB96175679291435059B0'
+          actual="$(gpg --batch --with-colons --fingerprint "$expected" | awk -F: '$1=="fpr"{print $10;exit}')"
+          test "$actual" = "$expected"
+          gpg --batch --yes --trust-model always --recipient "$expected" \
+            --output "$work/goanime-v11-similar-final-candidate.tar.zst.gpg" \
+            --encrypt "$work/final-candidate.tar.zst"
+          echo 'available=true' >> "$GITHUB_OUTPUT"
+
+      - name: Upload encrypted final candidate only
+        if: success() && steps.candidate-envelope.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: goanime-v11-similar-final-candidate-${{ github.run_id }}
+          path: ${{ runner.temp }}/goanime-similar-transfer/goanime-v11-similar-final-candidate.tar.zst.gpg
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Encrypt resumable overlap checkpoint
+        id: checkpoint-envelope
         if: always()
         shell: bash
-        run: rm -rf "$GITHUB_WORKSPACE/goanime"
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/goanime-post-ai-similar"
+          if [[ ! -s "$dir/reader_overlap.sqlite" ]]; then
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          work="$RUNNER_TEMP/goanime-similar-checkpoint-transfer"
+          mkdir -m 700 "$work"
+          cp "$dir/reader_overlap.sqlite" "$work/reader_overlap.sqlite"
+          cp "$dir/seeds.json" "$work/seeds.json"
+          tar -C "$work" --zstd -cf "$work/checkpoint.tar.zst" reader_overlap.sqlite seeds.json
+          gpg --batch --import control/keys/source-bundles-public.asc >/dev/null 2>&1
+          expected='2DE29DC31427CF0A911AB96175679291435059B0'
+          actual="$(gpg --batch --with-colons --fingerprint "$expected" | awk -F: '$1=="fpr"{print $10;exit}')"
+          test "$actual" = "$expected"
+          gpg --batch --yes --trust-model always --recipient "$expected" \
+            --output "$work/goanime-v11-similar-checkpoint.tar.zst.gpg" \
+            --encrypt "$work/checkpoint.tar.zst"
+          echo 'available=true' >> "$GITHUB_OUTPUT"
+
+      - name: Upload encrypted resumable checkpoint
+        if: always() && steps.checkpoint-envelope.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: goanime-v11-similar-checkpoint-${{ github.run_id }}
+          path: ${{ runner.temp }}/goanime-similar-checkpoint-transfer/goanime-v11-similar-checkpoint.tar.zst.gpg
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Remove private GoAnime inputs and temporary catalog
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          for raw in ('goanime', 'catalog-input'):
+              path = Path(raw)
+              if path.exists() and not path.is_symlink():
+                  shutil.rmtree(path)
+          PY
