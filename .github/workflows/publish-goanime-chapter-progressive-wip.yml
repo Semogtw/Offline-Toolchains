@@ -1,0 +1,88 @@
+name: Publish GoAnime progressive chapter hydration
+
+on:
+  push:
+    branches:
+      - toolchain/goanime-local-sdk-20260827
+    paths:
+      - .github/workflows/publish-goanime-chapter-progressive-wip.yml
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout toolchains transfer
+        uses: actions/checkout@v6
+        with:
+          path: toolchains
+          persist-credentials: false
+
+      - name: Checkout exact GoAnime branch
+        uses: actions/checkout@v6
+        with:
+          repository: Semogtw/goanime-mobile
+          token: ${{ secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          ref: fix/catalog-search-manga-regressions-20260826
+          fetch-depth: 1
+          path: goanime
+
+      - name: Apply and publish tested checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd goanime
+          expected='acf8d7f9623b690c0d6ab46c2454d2f1cfc0a00d'
+          actual="$(git rev-parse HEAD)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "Refusing to publish: expected $expected, found $actual" >&2
+            exit 1
+          fi
+
+          chunks=(
+            "$GITHUB_WORKSPACE/toolchains/transfers/goanime/chapter-progressive-wip-20260827.b64.00"
+            "$GITHUB_WORKSPACE/toolchains/transfers/goanime/chapter-progressive-wip-20260827.b64.01"
+            "$GITHUB_WORKSPACE/toolchains/transfers/goanime/chapter-progressive-wip-20260827.b64.02"
+          )
+          echo 'Transfer chunk sizes/hashes:'
+          wc -c "${chunks[@]}"
+          sha256sum "${chunks[@]}"
+          cat "${chunks[@]}" | base64 --decode > /tmp/chapter-progressive.patch
+          echo 'Reconstructed patch size/hash:'
+          wc -c /tmp/chapter-progressive.patch
+          sha256sum /tmp/chapter-progressive.patch
+          echo 'e9cbfa6a5c44687be8856e9cdee50a3e81789f73abc8c575c006cb85e2a72b40  /tmp/chapter-progressive.patch' | sha256sum -c -
+          git apply --check /tmp/chapter-progressive.patch
+          git apply /tmp/chapter-progressive.patch
+          git diff --check
+
+          changed="$(git diff --name-only | sort)"
+          expected_changed="$(printf '%s\n' \
+            lib/screens/manga/manga_details_screen.dart \
+            lib/services/manga/manga_chapter_hydrator.dart \
+            lib/services/manga/manga_details_data_source.dart \
+            lib/services/manga/manga_hydrating_details_data_source.dart \
+            test/services/manga/manga_hydrating_details_data_source_test.dart \
+            test/widgets/manga/manga_details_screen_test.dart | sort)"
+          if [[ "$changed" != "$expected_changed" ]]; then
+            echo 'Refusing to publish: changed-file set differs from tested checkpoint.' >&2
+            diff -u <(printf '%s\n' "$expected_changed") <(printf '%s\n' "$changed") || true
+            exit 1
+          fi
+
+          git config user.name 'goanime-toolchains-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add \
+            lib/screens/manga/manga_details_screen.dart \
+            lib/services/manga/manga_chapter_hydrator.dart \
+            lib/services/manga/manga_details_data_source.dart \
+            lib/services/manga/manga_hydrating_details_data_source.dart \
+            test/services/manga/manga_hydrating_details_data_source_test.dart \
+            test/widgets/manga/manga_details_screen_test.dart
+          git diff --cached --check
+          git commit -m 'perf(manga): stream chapter hydration progressively'
+          git push origin HEAD:fix/catalog-search-manga-regressions-20260826
+          echo "Published $(git rev-parse HEAD)"

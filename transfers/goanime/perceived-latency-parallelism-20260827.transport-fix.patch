@@ -1,0 +1,12 @@
+diff --git a/lib/services/manga/manga_bundled_catalog_source.dart b/lib/services/manga/manga_bundled_catalog_source.dart
+--- a/lib/services/manga/manga_bundled_catalog_source.dart
++++ b/lib/services/manga/manga_bundled_catalog_source.dart
+@@ -502,7 +502,7 @@
+     for (final chunk in _chunks(workIds)) {
+       final placeholders = _placeholders(chunk.length);
+       final workRows = await database.query(
+-      'works',
++        'works',
+         where: 'workId IN ($placeholders)',
+         whereArgs: chunk,
+       );

@@ -1,0 +1,159 @@
+urn source?.metadataForWorks(workIds) ?? const {};
++  }
++
+   Future<MangaBundledCatalogSource?> _readySource() async {
+     await initialize();
+     final source = _active;
+diff --git a/test/architecture/manga_bootstrap_runtime_wiring_test.dart b/test/architecture/manga_bootstrap_runtime_wiring_test.dart
+--- a/test/architecture/manga_bootstrap_runtime_wiring_test.dart
++++ b/test/architecture/manga_bootstrap_runtime_wiring_test.dart
+@@ -28,8 +28,29 @@
+       final deferredServicesOffset = bootstrap.indexOf(
+         'startDeferredStartupServices(',
+       );
++      final mangaSyncInitializationOffset = bootstrap.indexOf(
++        'unawaited(MangaAccountSyncService.instance.initialize())',
++      );
+       expect(runAppOffset, greaterThanOrEqualTo(0));
+       expect(deferredServicesOffset, greaterThan(runAppOffset));
++      expect(mangaSyncInitializationOffset, greaterThan(runAppOffset));
++
++      expect(
++        bootstrap,
++        contains('final userSyncInitialization = userSyncService.initialize('),
++      );
++      expect(bootstrap, contains('final activeMangaDatabasePath ='));
++      expect(
++        bootstrap,
++        contains('RuntimeDatabaseUpdateService.activeDatabasePathFor('),
++      );
++      final userSyncAwaitOffset = bootstrap.indexOf(
++        'await userSyncInitialization;',
++      );
++      final databasePathFutureOffset = bootstrap.indexOf(
++        'final activeMangaDatabasePath =',
++      );
++      expect(databasePathFutureOffset, lessThan(userSyncAwaitOffset));
+ 
+       expect(bootstrap, isNot(contains('MangaBundledCatalogSource(')));
+       expect(bootstrap, isNot(contains('setMangaEnabled(true)')));
+diff --git a/test/screens/home_banner_artwork_retry_contract_test.dart b/test/screens/home_banner_artwork_retry_contract_test.dart
+--- a/test/screens/home_banner_artwork_retry_contract_test.dart
++++ b/test/screens/home_banner_artwork_retry_contract_test.dart
+@@ -24,4 +24,26 @@
+       reason: 'A failed AniList request must not block later Home refreshes.',
+     );
+   });
++
++  test('Home resolves the bounded cached hero artwork set concurrently', () {
++    final source = File('lib/screens/home_screen_data.dart').readAsStringSync();
++
++    final methodStart = source.indexOf(
++      'Future<void> _loadCachedHeroBannerArtwork() async',
++    );
++    final methodEnd = source.indexOf(
++      'void _precacheNetworkImageQuietly(',
++      methodStart,
++    );
++    expect(methodStart, greaterThanOrEqualTo(0));
++    expect(methodEnd, greaterThan(methodStart));
++    final method = source.substring(methodStart, methodEnd);
++
++    expect(method, contains('.take(5)'));
++    expect(method, contains('await Future.wait<MapEntry<int, String?>>(['));
++    expect(
++      method,
++      contains("debugPrint('[Home] Cached banner artwork lookup failed: "),
++    );
++  });
+ }
+diff --git a/test/services/manga/manga_bundled_metadata_resolver_test.dart b/test/services/manga/manga_bundled_metadata_resolver_test.dart
+--- a/test/services/manga/manga_bundled_metadata_resolver_test.dart
++++ b/test/services/manga/manga_bundled_metadata_resolver_test.dart
+@@ -38,6 +38,8 @@
+       addTearDown(source.close);
+       await source.initialize();
+       final metadata = await source.metadataForWork('mw_meta');
++      final batch = await source.metadataForWorks(['mw_meta', 'missing']);
++      final readable = (await source.allReadable()).single;
+ 
+       expect(source.catalogReady, isTrue);
+       expect(metadata.artists, ['Artist A']);
+@@ -45,6 +47,11 @@
+       expect(metadata.format, MangaFormat.webtoon);
+       expect(metadata.status, MangaPublicationStatus.completed);
+       expect(metadata.countryOfOrigin, 'KR');
++      expect(batch.keys, ['mw_meta']);
++      expect(batch['mw_meta']?.genres, ['Action', 'Fantasy']);
++      expect(readable.metadata.artists, ['Artist A']);
++      expect(readable.metadata.genres, ['Action', 'Fantasy']);
++      expect(readable.metadata.countryOfOrigin, 'KR');
+     },
+   );
+ 
+diff --git a/test/services/manga/manga_hydrating_details_data_source_test.dart b/test/services/manga/manga_hydrating_details_data_source_test.dart
+--- a/test/services/manga/manga_hydrating_details_data_source_test.dart
++++ b/test/services/manga/manga_hydrating_details_data_source_test.dart
+@@ -138,6 +138,96 @@
+   );
+ 
+   test(
++    'starts chapter hydration while an independent cover lookup is still pending',
++    () async {
++      final releaseCover = Completer<void>();
++      final secondaryChaptersStarted = Completer<void>();
++      var primaryDetailsCalls = 0;
++      final primary = FakeMangaSourceProvider(
++        sourceId: 'ptbr.a',
++        detailsHandler: (occurrence) async {
++          primaryDetailsCalls += 1;
++          if (primaryDetailsCalls == 1) await releaseCover.future;
++          return MangaSourceDetails(
++            occurrence: MangaSourceOccurrence(
++              sourceId: occurrence.sourceId,
++              mangaId: occurrence.mangaId,
++              title: occurrence.title,
++              coverUrl: 'https://covers.example.test/example.webp',
++            ),
++          );
++        },
++      );
++      final secondary = FakeMangaSourceProvider(
++        sourceId: 'ptbr.b',
++        chaptersHandler: (occurrence) async {
++          if (!secondaryChaptersStarted.isCompleted) {
++            secondaryChaptersStarted.complete();
++          }
++          return [
++            MangaSourceChapter(
++              sourceId: occurrence.sourceId,
++              mangaId: occurrence.mangaId,
++              chapterId: 'chapter-1',
++              title: 'Chapter 1',
++              number: 1,
++            ),
++          ];
++        },
++      );
++      const primaryPolicy = MangaProviderPolicy(
++        sourceId: 'ptbr.a',
++        minimumRequestSpacing: Duration.zero,
++        maxConcurrent: 1,
++      );
++      const secondaryPolicy = MangaProviderPolicy(
++        sourceId: 'ptbr.b',
++        minimumRequestSpacing: Duration.zero,
++        maxConcurrent: 1,
++      );
++      final scheduler = MangaRequestScheduler(
++        policies: const {'ptbr.a': primaryPolicy, 'ptbr.b': secondaryPolicy},
++      );
++      addTearDown(scheduler.dispose);
++      final availability = _availabilityWithTwoSources();
++      await repository.upsertWork(availability.work);
++
++      final source = MangaHydratingDetailsDataSource(
++        delegate: MangaRepositoryDetailsDataSource(database: database),
++        hydrator: MangaChapterHydrator(
++          registry: MangaSourceRegistry(
++            providers: [primary, se

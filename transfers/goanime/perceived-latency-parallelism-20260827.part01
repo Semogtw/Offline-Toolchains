@@ -1,0 +1,211 @@
+/services/manga/manga_browse_data_source.dart
++++ b/lib/services/manga/manga_browse_data_source.dart
+@@ -8,6 +8,15 @@
+ 
+ abstract interface class MangaBrowseMetadataResolver {
+   Future<MangaBrowseMetadata> metadataForWork(String workId);
++}
++
++/// Optional bulk capability for metadata stores backed by the same local
++/// database as the browse catalog. Browse surfaces can use this to avoid an
++/// N+1 query pattern while preserving the single-work compatibility API.
++abstract interface class MangaBrowseMetadataBatchResolver {
++  Future<Map<String, MangaBrowseMetadata>> metadataForWorks(
++    Iterable<String> workIds,
++  );
+ }
+ 
+ final class MangaBrowseItem {
+diff --git a/lib/services/manga/manga_bundled_catalog_source.dart b/lib/services/manga/manga_bundled_catalog_source.dart
+--- a/lib/services/manga/manga_bundled_catalog_source.dart
++++ b/lib/services/manga/manga_bundled_catalog_source.dart
+@@ -17,7 +17,8 @@
+     implements
+         MangaListedAvailabilityCatalogSource,
+         MangaReadablePreviewSource,
+-        MangaBrowseMetadataResolver {
++        MangaBrowseMetadataResolver,
++        MangaBrowseMetadataBatchResolver {
+   MangaBundledCatalogSource({
+     this.databasePath,
+     Future<ByteData> Function(String path)? assetLoader,
+@@ -86,15 +87,11 @@
+       readableOnly: readableOnly,
+       limit: limit,
+     );
+-    final records = <MangaAvailabilityRecord>[];
+-    for (final workId in workIds) {
+-      final record = await _recordByWorkId(
+-        database,
+-        workId,
+-        readableOnly: readableOnly,
+-      );
+-      if (record != null) records.add(record);
+-    }
++    final records = await _recordsByWorkIds(
++      database,
++      workIds,
++      readableOnly: readableOnly,
++    );
+     _sortRecords(records);
+     return records;
+   }
+@@ -125,17 +122,16 @@
+       whereArgs: keys,
+       orderBy: 'workId ASC',
+     );
+-    final records = <MangaAvailabilityRecord>[];
+-    for (final row in rows) {
+-      final workId = row['workId'] as String?;
+-      if (workId == null || workId.isEmpty) continue;
+-      final record = await _recordByWorkId(
+-        database,
+-        workId,
+-        readableOnly: readableOnly,
+-      );
+-      if (record != null) records.add(record);
+-    }
++    final workIds = rows
++        .map((row) => row['workId'])
++        .whereType<String>()
++        .where((value) => value.isNotEmpty)
++        .toList(growable: false);
++    final records = await _recordsByWorkIds(
++      database,
++      workIds,
++      readableOnly: readableOnly,
++    );
+     _sortRecords(records);
+     return records;
+   }
+@@ -178,45 +174,51 @@
+ 
+   @override
+   Future<MangaBrowseMetadata> metadataForWork(String workId) async {
++    final batch = await metadataForWorks([workId]);
++    return batch[workId] ?? const MangaBrowseMetadata();
++  }
++
++  @override
++  Future<Map<String, MangaBrowseMetadata>> metadataForWorks(
++    Iterable<String> workIds,
++  ) async {
+     await initialize();
+     final database = _database;
+-    if (!_catalogReady || database == null) {
+-      return const MangaBrowseMetadata();
+-    }
++    if (!_catalogReady || database == null) return const {};
++
++    final ids = workIds
++        .map((value) => value.trim())
++        .where((value) => value.isNotEmpty)
++        .toSet()
++        .toList(growable: false);
++    if (ids.isEmpty) return const {};
++
++    final metadata = <String, MangaBrowseMetadata>{};
+     try {
+-      final rows = await database.query(
+-        'works',
+-        columns: [
+-          'artistsJson',
+-          'genresJson',
+-          'format',
+-          'status',
+-          'countryOfOrigin',
+-        ],
+-        where: 'workId = ?',
+-        whereArgs: [workId],
+-        limit: 1,
+-      );
+-      if (rows.isEmpty) return const MangaBrowseMetadata();
+-      final row = rows.single;
+-      return MangaBrowseMetadata(
+-        artists: _decodeStringList(row['artistsJson']),
+-        genres: _decodeStringList(row['genresJson']),
+-        format: _enumByName(
+-          MangaFormat.values,
+-          row['format'],
+-          MangaFormat.unknown,
+-        ),
+-        status: _enumByName(
+-          MangaPublicationStatus.values,
+-          row['status'],
+-          MangaPublicationStatus.unknown,
+-        ),
+-        countryOfOrigin: _requiredString(row['countryOfOrigin']),
+-      );
++      for (final chunk in _chunks(ids)) {
++        final rows = await database.query(
++          'works',
++          columns: [
++            'workId',
++            'artistsJson',
++            'genresJson',
++            'format',
++            'status',
++            'countryOfOrigin',
++          ],
++          where: 'workId IN (${_placeholders(chunk.length)})',
++          whereArgs: chunk,
++        );
++        for (final row in rows) {
++          final workId = row['workId'] as String?;
++          if (workId == null || workId.isEmpty) continue;
++          metadata[workId] = _metadataFromWorkRow(row);
++        }
++      }
+     } catch (_) {
+-      return const MangaBrowseMetadata();
+-    }
++      return const {};
++    }
++    return Map.unmodifiable(metadata);
+   }
+ 
+   Future<void> close() async {
+@@ -491,37 +493,99 @@
+     return value;
+   }
+ 
+-  Future<MangaAvailabilityRecord?> _recordByWorkId(
++  Future<List<MangaAvailabilityRecord>> _recordsByWorkIds(
+     Database database,
+-    String workId, {
++    List<String> workIds, {
+     required bool readableOnly,
+   }) async {
+-    final workRows = await database.query(
+-      'works',
+-      where: 'workId = ?',
+-      whereArgs: [workId],
+-      limit: 1,
+-    );
+-    if (workRows.isEmpty) return null;
+-    final row = workRows.single;
+-    final externalRows = await database.query(
+-      'external_ids',
+-      where: 'workId = ?',
+-      whereArgs: [workId],
+-      orderBy: 'namespace ASC, externalId ASC',
+-    );
+-
++    if (workIds.isEmpty) return const [];
++
++    final recordsByWorkId = <String, MangaAvailabilityRecord>{};
+     final legacy = _openedSchemaVersion == legacySchemaVersion;
+-    final linkRows = await database.query(
+-      'source_links',
+-      where: legacy || !readableOnly
+-          ? 'workId = ?'
+-          : 'workId = ? AND availabilityState = ?',
+-      whereArgs: legacy || !readableOnly ? [workId] : [workId, 'readable'],
+-      orderBy: 'sourceId ASC, mangaId ASC',
+-    );
+-    if (linkRows.isEmpty) return null;
+-
++    for (final chunk in _chunks(workIds)) {
++      final placeholders = _placeholders(chunk.length);
++      final workRows = await database.query(
++
