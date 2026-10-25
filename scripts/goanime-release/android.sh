@@ -57,11 +57,13 @@ test "$entries" = "lib/arm64-v8a/libapp.so" || {
 # The packaged Flutter asset must be raw SQLite, not a GZIP sidecar.
 raw_asset='assets/flutter_assets/assets/data/manga_availability.db'
 version_asset='assets/flutter_assets/assets/data/manga_availability.db.version'
-unzip -Z1 "$apk" | grep -Fxq "$raw_asset" || {
+# Capture listing once: grep -q in a pipe with pipefail could trigger SIGPIPE.
+apk_entries="$(unzip -Z1 "$apk")"
+grep -Fxq "$raw_asset" <<< "$apk_entries" || {
   echo "::error::Raw Manga SQLite asset missing from Android APK."
   exit 1
 }
-if unzip -Z1 "$apk" | grep -Fxq 'assets/flutter_assets/assets/data/manga_availability.db.gz'; then
+if grep -Fxq 'assets/flutter_assets/assets/data/manga_availability.db.gz' <<< "$apk_entries"; then
   echo "::error::Compressed Manga catalog must not be an APK asset."
   exit 1
 fi
@@ -71,7 +73,7 @@ test "$actual" = "$expected" || {
   echo "::error::Android APK Manga SQLite bytes mismatch the source version."
   exit 1
 }
-unzip -Z1 "$apk" | grep -Fxq "$version_asset" || {
+grep -Fxq "$version_asset" <<< "$apk_entries" || {
   echo "::error::Manga SQLite version marker missing from Android APK."
   exit 1
 }
