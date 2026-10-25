@@ -18,6 +18,9 @@ echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/goanime-release.
   echo "storeFile=goanime-release.jks"
 } > android/key.properties
 
+# GoAnime tracks the compressed SQLite in Git. Flutter embeds the raw DB;
+# verify and materialize it on the trusted release runner, never on-device.
+python3 tools/manga/materialize_manga_availability_asset.py
 flutter pub get --enforce-lockfile
 
 if [[ -z "${RUNTIME_DATABASE_MANIFEST_URL:-}" ]]; then
@@ -49,6 +52,27 @@ test -s "$apk" || {
 entries="$(unzip -Z1 "$apk" 'lib/*/libapp.so' || true)"
 test "$entries" = "lib/arm64-v8a/libapp.so" || {
   echo "::error::Android APK must contain only arm64-v8a libapp.so. Found: $entries"
+  exit 1
+}
+# The packaged Flutter asset must be raw SQLite, not a GZIP sidecar.
+raw_asset='assets/flutter_assets/assets/data/manga_availability.db'
+version_asset='assets/flutter_assets/assets/data/manga_availability.db.version'
+unzip -Z1 "$apk" | grep -Fxq "$raw_asset" || {
+  echo "::error::Raw Manga SQLite asset missing from Android APK."
+  exit 1
+}
+if unzip -Z1 "$apk" | grep -Fxq 'assets/flutter_assets/assets/data/manga_availability.db.gz'; then
+  echo "::error::Compressed Manga catalog must not be an APK asset."
+  exit 1
+fi
+expected="$(cat assets/data/manga_availability.db.version)"
+actual="$(unzip -p "$apk" "$raw_asset" | sha256sum | awk '{print $1}')"
+test "$actual" = "$expected" || {
+  echo "::error::Android APK Manga SQLite bytes mismatch the source version."
+  exit 1
+}
+unzip -Z1 "$apk" | grep -Fxq "$version_asset" || {
+  echo "::error::Manga SQLite version marker missing from Android APK."
   exit 1
 }
 cp "$apk" "dist/android-release/$ANDROID_RELEASE_APK_NAME"
