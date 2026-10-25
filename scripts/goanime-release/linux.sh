@@ -18,6 +18,8 @@ export PATH="$HOME/.cargo/bin:$PATH"
 flatpak --user remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
 flatpak --user install -y flathub org.gnome.Platform//50 org.gnome.Sdk//50
 
+# Materialize the SHA-verified raw SQLite for Flutter on the release runner.
+python3 tools/manga/materialize_manga_availability_asset.py
 flutter pub get --enforce-lockfile
 
 if [[ -z "${RUNTIME_DATABASE_MANIFEST_URL:-}" ]]; then
