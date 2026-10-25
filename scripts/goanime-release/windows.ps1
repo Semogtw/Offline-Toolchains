@@ -15,6 +15,13 @@ try {
   $env:AUTO_UPDATER_DSA_PRIVATE_KEY |
     Set-Content -LiteralPath dsa_priv.pem -Encoding ascii
 
+  # The repository stores a compressed source; Flutter bundles raw SQLite.
+  # This step verifies the SHA and expands only on the release runner.
+  & python tools/manga/materialize_manga_availability_asset.py
+  if ($LASTEXITCODE -ne 0) {
+    throw "Manga SQLite release materialization failed with exit code $LASTEXITCODE."
+  }
+
   flutter pub get --enforce-lockfile
   if ($LASTEXITCODE -ne 0) {
     throw "flutter pub get failed with exit code $LASTEXITCODE."
