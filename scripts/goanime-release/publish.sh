@@ -65,8 +65,18 @@ test "${expected_checksum,,}" = "${actual_checksum,,}" || {
   exit 1
 }
 
-python -m pip install --user awscli
-export PATH="$HOME/.local/bin:$PATH"
+# Ubuntu release runners normally provide AWS CLI already. Avoid downloading
+# and re-resolving its Python dependency tree on every publication.
+if ! command -v aws >/dev/null 2>&1; then
+  echo "AWS CLI is unavailable; installing it for this runner."
+  python3 -m pip install --user awscli
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+command -v aws >/dev/null 2>&1 || {
+  echo "::error::AWS CLI is required to publish the verified release."
+  exit 1
+}
+aws --version
 export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
 export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
 endpoint="https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
