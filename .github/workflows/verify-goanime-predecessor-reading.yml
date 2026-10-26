@@ -42,6 +42,8 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = 95d4fa08f95617486e39c4a1b2fc6db8a0277ab9
           flutter pub get --enforce-lockfile
+          python3 tools/manga/materialize_manga_availability_asset.py
+          test -s assets/data/manga_availability.db
 
       - name: Analyze affected code and tests
         working-directory: private-source
