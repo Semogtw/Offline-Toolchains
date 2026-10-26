@@ -4,8 +4,26 @@ set -euo pipefail
 source_dir="${1:?source directory is required}"
 cd "$source_dir"
 
-sudo apt-get update
-sudo apt-get install -y --no-install-recommends \
+# Some hosted Ubuntu runners point APT at azure.archive.ubuntu.com, whose
+# intermittent stalls delayed our 1.26.32 Linux job by ~19 minutes. The
+# official Ubuntu archive is interchangeable for these Ubuntu 24.04 packages.
+# Keep the security/updates suites and package signature verification intact.
+for sources in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+  if [[ -f "$sources" ]] && grep -q 'azure.archive.ubuntu.com/ubuntu' "$sources"; then
+    echo "Switching slow Azure Ubuntu package mirror in $sources"
+    sudo sed -i 's#http://azure.archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g; s#https://azure.archive.ubuntu.com/ubuntu#https://archive.ubuntu.com/ubuntu#g' "$sources"
+  fi
+done
+
+apt_opts=(
+  -o Acquire::Retries=2
+  -o Acquire::http::Timeout=20
+  -o Acquire::https::Timeout=20
+)
+# Fail visibly instead of silently blocking the Android/Windows publication
+# for tens of minutes on an unreachable package mirror.
+timeout 180s sudo apt-get "${apt_opts[@]}" update
+timeout 600s sudo env DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" install -y --no-install-recommends \
   clang cmake curl elfutils file flatpak flatpak-builder libfuse2t64 libgtk-3-dev \
   libjsoncpp-dev liblzma-dev libmpv-dev libsecret-1-0 libsecret-1-dev \
   libsoup-3.0-dev libwebkit2gtk-4.1-dev \
@@ -27,7 +45,9 @@ else
 fi
 
 flatpak --user remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-flatpak --user install -y flathub org.gnome.Platform//50 org.gnome.Sdk//50
+# Locale extensions are not used by flatpak-builder for this manifest.
+# --no-related preserves both required signed Platform and SDK runtimes.
+flatpak --user install --noninteractive --no-related -y flathub org.gnome.Platform//50 org.gnome.Sdk//50
 
 # Materialize the SHA-verified raw SQLite for Flutter on the release runner.
 python3 tools/manga/materialize_manga_availability_asset.py
