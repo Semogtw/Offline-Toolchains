@@ -12,8 +12,19 @@ sudo apt-get install -y --no-install-recommends \
   gstreamer1.0-libav gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
   lld llvm ninja-build pkg-config
 
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+# Most ubuntu-24.04 hosted runners already provide Rust. Reuse that toolchain
+# rather than invoking an unpinned network installer on every release.
 export PATH="$HOME/.cargo/bin:$PATH"
+if command -v rustc >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
+  echo "Reusing preinstalled Rust: $(rustc --version); $(cargo --version)"
+else
+  echo "Rust not installed; bootstrapping the minimal toolchain."
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+  command -v rustc >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1 || {
+    echo "::error::Rust bootstrap did not provide rustc and cargo."
+    exit 1
+  }
+fi
 
 flatpak --user remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
 flatpak --user install -y flathub org.gnome.Platform//50 org.gnome.Sdk//50
