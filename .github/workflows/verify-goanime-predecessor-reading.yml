@@ -1,0 +1,64 @@
+name: Verify GoAnime predecessor reading
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'requests/goanime-verify-predecessor/*.request'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Focused Reader and SQLite progress regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact GoAnime revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: d573ad62232cf5651e8fd5ff136b00c82e94664e
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Pin Flutter used for GoAnime releases
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.47.7
+          cache: true
+
+      - name: Check source revision and dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = d573ad62232cf5651e8fd5ff136b00c82e94664e
+          flutter pub get --enforce-lockfile
+
+      - name: Analyze affected code and tests
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter analyze --no-pub \
+            lib/services/manga/storage/manga_progress_repository.dart \
+            lib/screens/manga/manga_reader_screen.dart \
+            test/services/manga/storage/manga_library_progress_repository_test.dart \
+            test/widgets/manga/manga_reader_screen_test.dart
+
+      - name: Test SQLite predecessor logic and reader regressions
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter test --no-pub --concurrency=1 \
+            test/services/manga/storage/manga_library_progress_repository_test.dart \
+            test/widgets/manga/manga_reader_screen_test.dart
