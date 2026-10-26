@@ -83,7 +83,7 @@ jobs:
           test "$(grep '^version: ' pubspec.yaml)" = "version: $RELEASE_VERSION"
           git diff --exit-code "$BASE_TAG" HEAD -- pubspec.yaml pubspec.lock shorebird.yaml
           mapfile -t changed < <(git diff --name-only "$BASE_TAG" HEAD)
-          test "$${#changed[@]}" -gt 0
+          test "${#changed[@]}" -gt 0
           for path in "${changed[@]}"; do
             case "$path" in
               lib/*.dart|lib/*/*.dart|lib/*/*/*.dart|lib/*/*/*/*.dart|test/*.dart|test/*/*.dart|test/*/*/*.dart|test/*/*/*/*.dart) ;;
