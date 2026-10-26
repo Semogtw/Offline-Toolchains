@@ -177,8 +177,53 @@ jobs:
         with:
           cache: true
 
-      - name: Install Windows packaging tools
-        run: choco install innosetup openssl -y
+      # GitHub-hosted windows-latest already has Inno Setup and Git for Windows.
+      # Installing the 300+ MB Chocolatey OpenSSL distribution on every run can
+      # hang for tens of minutes before the Windows build even begins.
+      - name: Verify Windows packaging tools
+        shell: pwsh
+        timeout-minutes: 6
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path -LiteralPath $iscc -PathType Leaf)) {
+            Write-Host 'Inno Setup missing; installing only that package (bounded).'
+            & choco install innosetup --yes --no-progress --execution-timeout=180
+            if ($LASTEXITCODE -ne 0) {
+              throw "Inno Setup installation failed with exit code $LASTEXITCODE."
+            }
+          }
+          if (-not (Test-Path -LiteralPath $iscc -PathType Leaf)) {
+            throw "Inno Setup compiler not found at $iscc."
+          }
+          Write-Host "Inno Setup ready: $iscc"
+
+          $openssl = Get-Command openssl.exe -ErrorAction SilentlyContinue
+          if (-not $openssl) {
+            # Git for Windows ships OpenSSL on the hosted runner.
+            # Prefer it to downloading a second 300+ MB installer via Chocolatey.
+            $candidateDirs = @(
+              (Join-Path $env:ProgramFiles 'Git\mingw64\bin'),
+              (Join-Path $env:ProgramFiles 'Git\usr\bin'),
+              (Join-Path $env:ProgramFiles 'OpenSSL\bin'),
+              (Join-Path $env:ProgramFiles 'OpenSSL-Win64\bin')
+            )
+            foreach ($dir in $candidateDirs) {
+              if (Test-Path -LiteralPath (Join-Path $dir 'openssl.exe') -PathType Leaf) {
+                $env:PATH = "$dir;$env:PATH"
+                Add-Content -LiteralPath $env:GITHUB_PATH -Value $dir
+                $openssl = Get-Command openssl.exe -ErrorAction Stop
+                break
+              }
+            }
+          }
+          if (-not $openssl) {
+            throw 'OpenSSL was not found on this Windows runner; refusing an unbounded Chocolatey download.'
+          }
+          & $openssl.Source version
+          if ($LASTEXITCODE -ne 0) {
+            throw "OpenSSL check failed with exit code $LASTEXITCODE."
+          }
 
       - name: Build and stage Windows
         id: build
