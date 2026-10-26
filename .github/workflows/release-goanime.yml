@@ -73,7 +73,7 @@ jobs:
           ref: ${{ inputs.source_ref }}
           token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
-          fetch-depth: 21
+          fetch-depth: 1
           persist-credentials: false
           lfs: false
           submodules: false
@@ -121,6 +121,24 @@ jobs:
           lfs: false
           submodules: false
           show-progress: false
+
+      # Only public Android SDK executables are cached in this public hub.
+      # Never cache private-source, Gradle state, signing keys, or build outputs.
+      - name: Locate Android SDK for public tool cache
+        id: android_sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d "${ANDROID_HOME:?ANDROID_HOME is required}"
+          echo "root=$ANDROID_HOME" >> "$GITHUB_OUTPUT"
+
+      - name: Reuse Android NDK and CMake toolchains
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ${{ steps.android_sdk.outputs.root }}/ndk/28.2.13676358
+            ${{ steps.android_sdk.outputs.root }}/cmake/3.22.1
+          key: goanime-public-android-sdk-v1-ubuntu-24.04-ndk28.2.13676358-cmake3.22.1
 
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
