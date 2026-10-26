@@ -1,0 +1,153 @@
+name: Patch GoAnime 1.26.35 Android
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'requests/goanime-patch/v1.26.35-android.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-shorebird-patch-1-26-35
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: 5b5f413285bf511f7dd4f1d6e3c5206bda5c37b5
+  BASE_TAG: release-v1.26.35
+  RELEASE_VERSION: 1.26.35+2080
+  FLUTTER_VERSION: 3.47.7
+  GOANIME_REPOSITORY: Semogtw/goanime-mobile
+  SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_TOKEN }}
+  FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+  FIREBASE_WEB_API_KEY: ${{ secrets.FIREBASE_WEB_API_KEY }}
+  UPDATE_MANIFEST_URL: ${{ secrets.UPDATE_MANIFEST_URL }}
+  UPDATE_APPCAST_URL: ${{ secrets.UPDATE_APPCAST_URL }}
+  UPDATE_MANIFEST_PUBLIC_KEY_ID: ${{ secrets.UPDATE_MANIFEST_PUBLIC_KEY_ID }}
+  UPDATE_MANIFEST_PUBLIC_KEY_B64: ${{ secrets.UPDATE_MANIFEST_PUBLIC_KEY_B64 }}
+  ANIME_METADATA_SEED_MANIFEST_URL: ${{ secrets.ANIME_METADATA_SEED_MANIFEST_URL }}
+  RUNTIME_DATABASE_MANIFEST_URL: ${{ secrets.RUNTIME_DATABASE_MANIFEST_URL }}
+
+jobs:
+  patch-android:
+    name: Build and publish Dart-only Shorebird Android patch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout trusted patch request
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Verify exact one-shot patch request
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          item = json.loads(Path('requests/goanime-patch/v1.26.35-android.json').read_text())
+          expected = {
+            'source_sha': '5b5f413285bf511f7dd4f1d6e3c5206bda5c37b5',
+            'release_version': '1.26.35+2080',
+            'platform': 'android'
+          }
+          assert item == expected, f"Unexpected patch request: {item}"
+          PY
+          test -n "$SHOREBIRD_TOKEN"
+          test -n "$FIREBASE_PROJECT_ID"
+          test -n "$FIREBASE_WEB_API_KEY"
+
+      - name: Checkout immutable GoAnime source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.SOURCE_SHA }}
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Fail closed on native, dependency or asset changes
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git rev-parse --verify "refs/tags/$BASE_TAG"
+          git merge-base --is-ancestor "$BASE_TAG" HEAD
+          test "$(git show "$BASE_TAG:pubspec.yaml" | grep '^version: ')" = "version: $RELEASE_VERSION"
+          test "$(grep '^version: ' pubspec.yaml)" = "version: $RELEASE_VERSION"
+          git diff --exit-code "$BASE_TAG" HEAD -- pubspec.yaml pubspec.lock shorebird.yaml
+          mapfile -t changed < <(git diff --name-only "$BASE_TAG" HEAD)
+          test "$${#changed[@]}" -gt 0
+          for path in "${changed[@]}"; do
+            case "$path" in
+              lib/*.dart|lib/*/*.dart|lib/*/*/*.dart|lib/*/*/*/*.dart|test/*.dart|test/*/*.dart|test/*/*/*.dart|test/*/*/*/*.dart) ;;
+              *) echo "::error::Not patchable or unexpected delta: $path"; exit 1 ;;
+            esac
+          done
+          printf 'Patchable changed files:\n%s\n' "${changed[@]}"
+
+      - name: Setup Flutter 3.47.7
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.47.7
+          cache: true
+
+      - name: Setup Shorebird
+        uses: shorebirdtech/setup-shorebird@4dd9d7dc2d7930bfeadb053b6e94b5110779d1e5 # v1
+        with:
+          cache: true
+
+      - name: Materialize verified catalog and prepare Android signing
+        working-directory: private-source
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$ANDROID_KEYSTORE_BASE64"
+          mkdir -p android/app
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/goanime-release.jks
+          {
+            echo "storePassword=$ANDROID_KEYSTORE_PASSWORD"
+            echo "keyPassword=$ANDROID_KEY_PASSWORD"
+            echo "keyAlias=$ANDROID_KEY_ALIAS"
+            echo "storeFile=goanime-release.jks"
+          } > android/key.properties
+          python3 tools/manga/materialize_manga_availability_asset.py
+          flutter pub get --enforce-lockfile
+
+      - name: Publish signed Shorebird patch (fail on native or asset diffs)
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${RUNTIME_DATABASE_MANIFEST_URL:-}" ]]; then
+            RUNTIME_DATABASE_MANIFEST_URL="${UPDATE_MANIFEST_URL%/update.json}/runtime_database_manifest.json"
+            export RUNTIME_DATABASE_MANIFEST_URL
+          fi
+          shorebird patch android \
+            --release-version="$RELEASE_VERSION" \
+            --dart-define="FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID" \
+            --dart-define="FIREBASE_WEB_API_KEY=$FIREBASE_WEB_API_KEY" \
+            --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL" \
+            --dart-define="UPDATE_APPCAST_URL=$UPDATE_APPCAST_URL" \
+            --dart-define="UPDATE_MANIFEST_PUBLIC_KEY_ID=$UPDATE_MANIFEST_PUBLIC_KEY_ID" \
+            --dart-define="UPDATE_MANIFEST_PUBLIC_KEY_B64=$UPDATE_MANIFEST_PUBLIC_KEY_B64" \
+            --dart-define=UPDATE_MANIFEST_SIGNATURE_REQUIRED=true \
+            --dart-define="ANIME_METADATA_SEED_MANIFEST_URL=$ANIME_METADATA_SEED_MANIFEST_URL" \
+            --dart-define="RUNTIME_DATABASE_MANIFEST_URL=$RUNTIME_DATABASE_MANIFEST_URL"
+
+      - name: Cleanup signing secrets
+        if: always()
+        shell: bash
+        run: rm -f private-source/android/app/goanime-release.jks private-source/android/key.properties
