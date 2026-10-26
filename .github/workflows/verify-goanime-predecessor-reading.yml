@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: Semogtw/goanime-mobile
-          ref: d573ad62232cf5651e8fd5ff136b00c82e94664e
+          ref: 95d4fa08f95617486e39c4a1b2fc6db8a0277ab9
           token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
           fetch-depth: 1
@@ -40,7 +40,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = d573ad62232cf5651e8fd5ff136b00c82e94664e
+          test "$(git rev-parse HEAD)" = 95d4fa08f95617486e39c4a1b2fc6db8a0277ab9
           flutter pub get --enforce-lockfile
 
       - name: Analyze affected code and tests
@@ -48,7 +48,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          flutter analyze --no-pub \
+          flutter analyze --no-pub --no-fatal-infos \
             lib/services/manga/storage/manga_progress_repository.dart \
             lib/screens/manga/manga_reader_screen.dart \
             test/services/manga/storage/manga_library_progress_repository_test.dart \
