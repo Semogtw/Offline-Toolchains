@@ -155,18 +155,9 @@ if [[ -n "$release_row" ]]; then
     exit 1
   }
 
-  tag_row="$(gh api "repos/$GOANIME_REPOSITORY/git/ref/tags/$release_tag" \
-    --jq '[.object.type, .object.sha] | @tsv' 2>/dev/null || true)"
-  if [[ -n "$tag_row" ]]; then
-    read -r tag_type tag_sha <<< "$tag_row"
-    if [[ "$tag_type" == "tag" ]]; then
-      tag_sha="$(gh api "repos/$GOANIME_REPOSITORY/git/tags/$tag_sha" --jq .object.sha)"
-    fi
-    test "$tag_sha" = "$source_sha" || {
-      echo "::error::Existing Git tag $release_tag points to $tag_sha, not $source_sha."
-      exit 1
-    }
-  fi
+  # Draft release is pinned to the exact SHA above. Its Git tag may not
+  # exist until publication; avoid querying an absent ref and interpreting
+  # GitHub's 404 response as a tag SHA.
 
   # Preserve staged Android/Windows assets while safely refreshing draft notes.
   gh api --method PATCH "repos/$GOANIME_REPOSITORY/releases/$existing_release_id" \
