@@ -159,11 +159,12 @@ if [[ -n "$release_row" ]]; then
   # exist until publication; avoid querying an absent ref and interpreting
   # GitHub's 404 response as a tag SHA.
 
-  # Preserve staged Android/Windows assets while safely refreshing draft notes.
-  gh api --method PATCH "repos/$GOANIME_REPOSITORY/releases/$existing_release_id" \
-    -f "name=GoAnime v$version" \
-    -f "body=$(cat "$notes_file")" \
-    -F draft=true -F prerelease=false >/dev/null
+  # Do not PATCH an existing draft: GitHub can replace an unmaterialized
+  # tag_name with "untagged-..." when edited through the Releases API,
+  # orphaning the draft and making gh release upload report "release not found".
+  # The initial create owns release metadata; a retry only validates the SHA
+  # and preserves staged assets. Shorebird release versions are immutable.
+  echo "Reusing verified draft $release_tag (id $existing_release_id) without mutation."
 else
   gh release create "$release_tag" \
     --repo "$GOANIME_REPOSITORY" \
