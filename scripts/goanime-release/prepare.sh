@@ -142,12 +142,19 @@ if gh release view "$release_tag" --repo "$GOANIME_REPOSITORY" >/dev/null 2>&1; 
     exit 1
   }
 
-  tag_type="$(gh api "repos/$GOANIME_REPOSITORY/git/ref/tags/$release_tag" --jq .object.type)"
-  tag_sha="$(gh api "repos/$GOANIME_REPOSITORY/git/ref/tags/$release_tag" --jq .object.sha)"
-  if [[ "$tag_type" == "tag" ]]; then
-    tag_sha="$(gh api "repos/$GOANIME_REPOSITORY/git/tags/$tag_sha" --jq .object.sha)"
+  # GitHub drafts can exist before refs/tags/<tag> is materialized.
+  # Always require the saved target to match our exact, immutable source SHA.
+  # If a Git tag already exists, the tag wins (including annotated tags).
+  tag_type="$(gh api "repos/$GOANIME_REPOSITORY/git/ref/tags/$release_tag" --jq .object.type 2>/dev/null || true)"
+  if [[ -n "$tag_type" ]]; then
+    tag_sha="$(gh api "repos/$GOANIME_REPOSITORY/git/ref/tags/$release_tag" --jq .object.sha)"
+    if [[ "$tag_type" == "tag" ]]; then
+      tag_sha="$(gh api "repos/$GOANIME_REPOSITORY/git/tags/$tag_sha" --jq .object.sha)"
+    fi
+  else
+    tag_sha="$(gh release view "$release_tag" --repo "$GOANIME_REPOSITORY" --json targetCommitish --jq .targetCommitish)"
   fi
-  test "$tag_sha" = "$source_sha" || {
+  test -n "$tag_sha" && test "$tag_sha" = "$source_sha" || {
     echo "::error::Existing draft $release_tag points to $tag_sha, but this run resolved $source_sha. Refusing a mixed-source release."
     exit 1
   }
