@@ -141,7 +141,7 @@ printf '%s\n' "${RELEASE_NOTES:-}" > "$notes_file"
 release_row="$(gh api "repos/$GOANIME_REPOSITORY/releases?per_page=100" \
   --jq ".[] | select(.tag_name == \"$release_tag\") | [.id, .draft, .target_commitish] | @tsv")"
 if [[ -n "$release_row" ]]; then
-  test "$(printf '%s\\n' "$release_row" | wc -l)" -eq 1 || {
+  test "$(printf '%s\n' "$release_row" | wc -l)" -eq 1 || {
     echo "::error::Multiple releases found for $release_tag."
     exit 1
   }
