@@ -135,36 +135,44 @@ notes_file="$(mktemp)"
 trap 'rm -f "$notes_file"' EXIT
 printf '%s\n' "${RELEASE_NOTES:-}" > "$notes_file"
 
-if gh release view "$release_tag" --repo "$GOANIME_REPOSITORY" >/dev/null 2>&1; then
-  is_draft="$(gh release view "$release_tag" --repo "$GOANIME_REPOSITORY" --json isDraft --jq .isDraft)"
+# Query the release collection rather than GET releases/tags/<name>:
+# drafts with an unmaterialized Git tag may return 404 to the by-tag API.
+# Match both target SHA and (when it exists) the Git ref before reusing.
+release_row="$(gh api "repos/$GOANIME_REPOSITORY/releases?per_page=100" \
+  --jq ".[] | select(.tag_name == \"$release_tag\") | [.id, .draft, .target_commitish] | @tsv")"
+if [[ -n "$release_row" ]]; then
+  test "$(printf '%s\\n' "$release_row" | wc -l)" -eq 1 || {
+    echo "::error::Multiple releases found for $release_tag."
+    exit 1
+  }
+  read -r existing_release_id is_draft release_target_sha <<< "$release_row"
   test "$is_draft" = "true" || {
     echo "::error::Release $release_tag is already published; refusing to overwrite it."
     exit 1
   }
-
-  # GitHub drafts can exist before refs/tags/<tag> is materialized.
-  # Always require the saved target to match our exact, immutable source SHA.
-  # If a Git tag already exists, the tag wins (including annotated tags).
-  tag_type="$(gh api "repos/$GOANIME_REPOSITORY/git/ref/tags/$release_tag" --jq .object.type 2>/dev/null || true)"
-  if [[ -n "$tag_type" ]]; then
-    tag_sha="$(gh api "repos/$GOANIME_REPOSITORY/git/ref/tags/$release_tag" --jq .object.sha)"
-    if [[ "$tag_type" == "tag" ]]; then
-      tag_sha="$(gh api "repos/$GOANIME_REPOSITORY/git/tags/$tag_sha" --jq .object.sha)"
-    fi
-  else
-    tag_sha="$(gh release view "$release_tag" --repo "$GOANIME_REPOSITORY" --json targetCommitish --jq .targetCommitish)"
-  fi
-  test -n "$tag_sha" && test "$tag_sha" = "$source_sha" || {
-    echo "::error::Existing draft $release_tag points to $tag_sha, but this run resolved $source_sha. Refusing a mixed-source release."
+  test "$release_target_sha" = "$source_sha" || {
+    echo "::error::Existing draft $release_tag targets $release_target_sha, but the source is $source_sha."
     exit 1
   }
 
-  gh release edit "$release_tag" \
-    --repo "$GOANIME_REPOSITORY" \
-    --draft=true \
-    --prerelease=false \
-    --title "GoAnime v$version" \
-    --notes-file "$notes_file"
+  tag_row="$(gh api "repos/$GOANIME_REPOSITORY/git/ref/tags/$release_tag" \
+    --jq '[.object.type, .object.sha] | @tsv' 2>/dev/null || true)"
+  if [[ -n "$tag_row" ]]; then
+    read -r tag_type tag_sha <<< "$tag_row"
+    if [[ "$tag_type" == "tag" ]]; then
+      tag_sha="$(gh api "repos/$GOANIME_REPOSITORY/git/tags/$tag_sha" --jq .object.sha)"
+    fi
+    test "$tag_sha" = "$source_sha" || {
+      echo "::error::Existing Git tag $release_tag points to $tag_sha, not $source_sha."
+      exit 1
+    }
+  fi
+
+  # Preserve staged Android/Windows assets while safely refreshing draft notes.
+  gh api --method PATCH "repos/$GOANIME_REPOSITORY/releases/$existing_release_id" \
+    -f "name=GoAnime v$version" \
+    -f "body=$(cat "$notes_file")" \
+    -F draft=true -F prerelease=false >/dev/null
 else
   gh release create "$release_tag" \
     --repo "$GOANIME_REPOSITORY" \
