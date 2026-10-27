@@ -4,11 +4,12 @@ set -euo pipefail
 source_dir="${1:?source directory is required}"
 cd "$source_dir"
 
-# Some hosted Ubuntu runners point APT at azure.archive.ubuntu.com, whose
-# intermittent stalls delayed our 1.26.32 Linux job by ~19 minutes. The
-# official Ubuntu archive is interchangeable for these Ubuntu 24.04 packages.
-# Keep the security/updates suites and package signature verification intact.
-for sources in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+# Hosted Ubuntu runners may use mirror+file:/etc/apt/apt-mirrors.txt,
+# not a direct URL in ubuntu.sources. Changing only the latter leaves Azure
+# active and repeatedly timed out during the 1.26.37 release (exit 124).
+# Replace Azure in the mirrorlist itself, keeping Ubuntu package signatures,
+# suites and security updates unchanged.
+for sources in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources /etc/apt/apt-mirrors.txt; do
   if [[ -f "$sources" ]] && grep -q 'azure.archive.ubuntu.com/ubuntu' "$sources"; then
     echo "Switching slow Azure Ubuntu package mirror in $sources"
     sudo sed -i 's#http://azure.archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g; s#https://azure.archive.ubuntu.com/ubuntu#https://archive.ubuntu.com/ubuntu#g' "$sources"
