@@ -294,6 +294,9 @@ jobs:
         run: bash scripts/goanime-release/linux.sh private-source
 
   publish:
+    concurrency:
+      group: goanime-r2-publish
+      cancel-in-progress: false
     name: Publish R2 channel and GoAnime release
     if: ${{ always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     needs: [prepare, android, windows, linux]
