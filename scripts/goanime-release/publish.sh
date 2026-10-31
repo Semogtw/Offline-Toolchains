@@ -143,3 +143,32 @@ aws s3api head-object \
   --bucket "$R2_BUCKET" \
   --key latest/update.json \
   --endpoint-url "$endpoint" >/dev/null
+
+# Prune immutable R2 release snapshots only after latest points at this release.
+# Historical releases remain available on GitHub Releases.
+[[ "$RELEASE_TAG" =~ ^[A-Za-z0-9._-]+$ ]] || {
+  echo "::error::Unsafe release tag for R2 cleanup."
+  exit 1
+}
+latest_copy="$(mktemp)"
+aws s3api get-object --bucket "$R2_BUCKET" --key latest/update.json \
+  --endpoint-url "$endpoint" "$latest_copy" >/dev/null
+if cmp -s dist/update.json "$latest_copy"; then
+  prefixes="$(aws s3api list-objects-v2 --bucket "$R2_BUCKET" --prefix releases/ \
+    --delimiter / --query 'CommonPrefixes[].Prefix' --output text --endpoint-url "$endpoint")"
+  while IFS= read -r old_prefix; do
+    [[ "$old_prefix" =~ ^releases/[^/]+/$ ]] || continue
+    [[ "$old_prefix" != "releases/$RELEASE_TAG/" ]] || continue
+    # Avoid deleting a release staged concurrently after a newer publication.
+    aws s3api get-object --bucket "$R2_BUCKET" --key latest/update.json \
+      --endpoint-url "$endpoint" "$latest_copy" >/dev/null
+    if ! cmp -s dist/update.json "$latest_copy"; then
+      echo "::warning::R2 latest changed concurrently; stop pruning."
+      break
+    fi
+    aws s3 rm "s3://\${R2_BUCKET}/\${old_prefix}" --recursive --endpoint-url "$endpoint"
+  done < <(printf '%s\n' "$prefixes" | tr '\t' '\n')
+else
+  echo "::warning::R2 latest does not match this release; skip pruning."
+fi
+rm -f "$latest_copy"
