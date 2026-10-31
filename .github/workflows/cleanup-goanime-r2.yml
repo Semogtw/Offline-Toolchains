@@ -1,0 +1,13 @@
+name: Verify GoAnime R2 retention
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'triggers/goanime-r2-cleanup/*.request'
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'Retention workflow initialized'
