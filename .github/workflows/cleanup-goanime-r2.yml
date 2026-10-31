@@ -1,15 +1,53 @@
-name: Verify GoAnime R2 retention
+name: Clean obsolete GoAnime R2 objects
+
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - 'triggers/goanime-r2-cleanup/*.request'
+    inputs:
+      apply:
+        description: Delete old releases and MegaPlay databases (false = dry run)
+        type: boolean
+        required: true
+        default: false
+
 permissions:
   contents: read
+
+concurrency:
+  group: goanime-r2-publish
+  cancel-in-progress: false
+
 jobs:
-  verify:
-    runs-on: ubuntu-latest
+  cleanup:
+    name: Validate current manifests and prune old objects
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: 'true'
+      AWS_DEFAULT_REGION: auto
+      APPLY: ${{ inputs.apply }}
     steps:
-      - uses: actions/checkout@v4
-      - run: python3 -m pip install --user boto3
-      - run: python3 -m py_compile scripts/goanime-release/prune_r2.py
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install S3 client and validate script
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --user --disable-pip-version-check boto3
+          python3 -m py_compile scripts/goanime-release/prune_r2.py
+      - name: Prune and verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$APPLY" == 'true' ]]; then
+            python3 scripts/goanime-release/prune_r2.py --apply
+            python3 scripts/goanime-release/prune_r2.py --apply
+          else
+            python3 scripts/goanime-release/prune_r2.py
+          fi
