@@ -10,4 +10,6 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - run: echo 'Retention workflow initialized'
+      - uses: actions/checkout@v4
+      - run: python3 -m pip install --user boto3
+      - run: python3 -m py_compile scripts/goanime-release/prune_r2.py
