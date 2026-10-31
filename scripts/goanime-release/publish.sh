@@ -166,7 +166,7 @@ if cmp -s dist/update.json "$latest_copy"; then
       echo "::warning::R2 latest changed concurrently; stop pruning."
       break
     fi
-    aws s3 rm "s3://\${R2_BUCKET}/\${old_prefix}" --recursive --endpoint-url "$endpoint"
+    aws s3 rm "s3://${R2_BUCKET}/${old_prefix}" --recursive --endpoint-url "$endpoint"
   done < <(printf '%s\n' "$prefixes" | tr '\t' '\n')
 else
   echo "::warning::R2 latest does not match this release; skip pruning."
