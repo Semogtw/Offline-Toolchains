@@ -311,3 +311,18 @@ jobs:
           aws s3 cp dist/megaplay-cache/manifest-r2.json \
             "s3://${R2_BUCKET}/latest/megaplay/manifest.json" \
             --endpoint-url "$endpoint"
+
+          # The manifest is the commit point: remove all older content-addressed DBs
+          # only after the latest manifest is active and verified.
+          remote_manifest="$(mktemp)"
+          trap 'rm -f "$remote_manifest"' EXIT
+          aws s3api get-object --bucket "$R2_BUCKET" \
+            --key latest/megaplay/manifest.json --endpoint-url "$endpoint" \
+            "$remote_manifest" >/dev/null
+          if cmp -s dist/megaplay-cache/manifest-r2.json "$remote_manifest"; then
+            aws s3 sync dist/megaplay-cache/ "s3://${R2_BUCKET}/latest/megaplay/" \
+              --endpoint-url "$endpoint" --delete \
+              --exclude '*' --include 'megaplay_catalog_*.db'
+          else
+            echo "::warning::MegaPlay manifest changed concurrently; skip old DB cleanup."
+          fi
