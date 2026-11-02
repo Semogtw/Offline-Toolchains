@@ -1,6 +1,7 @@
 name: Patch GoAnime 1.26.51 Android 3
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
@@ -139,6 +140,7 @@ jobs:
             export RUNTIME_DATABASE_MANIFEST_URL
           fi
           shorebird patch android \
+            --allow-asset-diffs \
             --release-version="$RELEASE_VERSION" \
             --dart-define="FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID" \
             --dart-define="FIREBASE_WEB_API_KEY=$FIREBASE_WEB_API_KEY" \
