@@ -1,4 +1,4 @@
-name: Patch GoAnime 1.26.52 Android 2
+name: Patch GoAnime 1.26.52 Android P2
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SOURCE_SHA: 0fdac0f5d367d2a091840bc7f0a0bf89490753e5
+  SOURCE_SHA: 2b26cb046677dc64c7d76b155ccef57abf1ee9a2
   BASE_TAG: release-v1.26.52
   RELEASE_VERSION: 1.26.52+2097
   FLUTTER_VERSION: 3.47.7
@@ -49,7 +49,7 @@ jobs:
           from pathlib import Path
           item = json.loads(Path('requests/goanime-patch/v1.26.52-android-p2.json').read_text())
           expected = {
-            'source_sha': '0fdac0f5d367d2a091840bc7f0a0bf89490753e5',
+            'source_sha': '2b26cb046677dc64c7d76b155ccef57abf1ee9a2',
             'release_version': '1.26.52+2097',
             'platform': 'android'
           }
