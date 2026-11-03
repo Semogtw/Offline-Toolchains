@@ -1,4 +1,4 @@
-name: Patch GoAnime 1.26.52 Android 3
+name: Patch GoAnime 1.26.52 Android P3
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SOURCE_SHA: 181452f841e24d69970bbb4cf509298eaab7b3d3
+  SOURCE_SHA: 0e2163378c10c166e34943aca5477dc805faa39d
   BASE_TAG: release-v1.26.52
   RELEASE_VERSION: 1.26.52+2097
   FLUTTER_VERSION: 3.47.7
@@ -49,7 +49,7 @@ jobs:
           from pathlib import Path
           item = json.loads(Path('requests/goanime-patch/v1.26.52-android-p3.json').read_text())
           expected = {
-            'source_sha': '181452f841e24d69970bbb4cf509298eaab7b3d3',
+            'source_sha': '0e2163378c10c166e34943aca5477dc805faa39d',
             'release_version': '1.26.52+2097',
             'platform': 'android'
           }
@@ -91,8 +91,6 @@ jobs:
               lib/*.dart|lib/*/*.dart|lib/*/*/*.dart|lib/*/*/*/*.dart) ;;
               test/*.dart|test/*/*.dart|test/*/*/*.dart|test/*/*/*/*.dart) ;;
               packages/goanime_core/*.dart|packages/goanime_core/*/*.dart|packages/goanime_core/*/*/*.dart|packages/goanime_core/*/*/*/*.dart) ;;
-              assets/*|assets/*/*|assets/*/*/*) ;;
-              tools/*|tools/*/*|tools/*/*/*) ;;
               *) echo "::error::Not patchable or unexpected delta: $path"; exit 1 ;;
             esac
           done
