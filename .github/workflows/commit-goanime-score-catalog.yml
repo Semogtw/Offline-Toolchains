@@ -1,0 +1,128 @@
+name: Commit GoAnime score-only catalog 2026-11-04
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'requests/goanime-score-catalog/run-2026-11-04.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-score-catalog-2026-11-04
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: 78928f54e191683c2cd65d7b5de472aa1c268fca
+  GOANIME_REPOSITORY: Semogtw/goanime-mobile
+
+jobs:
+  commit-catalog:
+    name: Recompute catalog scores only and commit the asset
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout trusted request
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Verify exact one-shot request
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          item = json.loads(Path('requests/goanime-score-catalog/run-2026-11-04.json').read_text())
+          expected = {
+            'source_sha': '78928f54e191683c2cd65d7b5de472aa1c268fca'
+          }
+          assert item == expected, f"Unexpected request: {item}"
+          PY
+
+      - name: Checkout GoAnime source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.SOURCE_SHA }}
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Download and verify the official MangaBaka dump
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o series.full.sqlite.tar.gz https://api.mangabaka.org/v1/database/series.full.sqlite.tar.gz
+          curl -fsSL -o series.full.sqlite.tar.gz.sha1 https://api.mangabaka.org/v1/database/series.full.sqlite.tar.gz.sha1
+          sha1sum -c series.full.sqlite.tar.gz.sha1
+          tar -xzf series.full.sqlite.tar.gz --no-same-owner
+          ls -la series.full.sqlite
+
+      - name: Materialize current catalog
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          python3 tools/manga/materialize_manga_availability_asset.py
+          cp assets/data/manga_availability.db "$RUNNER_TEMP/old_catalog.db"
+          cp assets/data/manga_availability.db "$RUNNER_TEMP/new_catalog.db"
+
+      - name: Recompute scores only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 private-source/tools/manga/recompute_catalog_scores.py "$RUNNER_TEMP/new_catalog.db" "$RUNNER_TEMP/series.full.sqlite" "$RUNNER_TEMP/report.json"
+
+      - name: Audit the diff is scores only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 private-source/tools/manga/audit_catalog_score_diff.py "$RUNNER_TEMP/old_catalog.db" "$RUNNER_TEMP/new_catalog.db"
+
+      - name: Repackage asset and sidecars
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          NEW_SHA="$(sha256sum "$RUNNER_TEMP/new_catalog.db" | cut -d' ' -f1)"
+          OLD_SHA="$(tr -d '[:space:]' < assets/data/manga_availability.db.version)"
+          printf '%s' "$NEW_SHA" > assets/data/manga_availability.db.version
+          python3 tools/manga/materialize_manga_availability_asset.py --compress --source "$RUNNER_TEMP/new_catalog.db" --version-file assets/data/manga_availability.db.version --output assets/data/manga_availability.db.gz
+          python3 - "$OLD_SHA" "$NEW_SHA" <<'PY'
+          import sys
+          from pathlib import Path
+          old, new = sys.argv[1], sys.argv[2]
+          p = Path('assets/data/manga_recommendation_index.json')
+          text = p.read_text()
+          assert text.count(old) == 1, 'catalogSha256 binding not found exactly once'
+          p.write_text(text.replace(old, new))
+          PY
+          python3 tools/manga/materialize_manga_availability_asset.py --source assets/data/manga_availability.db.gz --version-file assets/data/manga_availability.db.version --output "$RUNNER_TEMP/roundtrip.db"
+          test "$(sha256sum "$RUNNER_TEMP/roundtrip.db" | cut -d' ' -f1)" = "$NEW_SHA"
+          echo "new catalog sha256: $NEW_SHA"
+
+      - name: Commit and push the asset trio
+        working-directory: private-source
+        shell: bash
+        env:
+          PUSH_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          rm -f assets/data/manga_availability.db
+          git config user.name "Arthur Almeida"
+          git config user.email "arthurgva1602@gmail.com"
+          git add assets/data/manga_availability.db.gz assets/data/manga_availability.db.version assets/data/manga_recommendation_index.json
+          git status --porcelain
+          test "$(git diff --cached --name-only | wc -l)" = "3"
+          git commit -m "data(manga): recompute catalog scores only, generic preference MAL > AniList > MangaBaka > MangaUpdates > Anime Planet > Kitsu > Shikimori"
+          git push "https://x-access-token:${PUSH_TOKEN}@github.com/Semogtw/goanime-mobile.git" HEAD:main
+          echo "pushed commit: $(git rev-parse HEAD)"
