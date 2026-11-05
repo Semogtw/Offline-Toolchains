@@ -63,7 +63,7 @@ jobs:
           test "$(git -C private-source rev-parse HEAD)" = "$SOURCE_SHA"
           python3 scripts/goanime-favperf3-apply.py private-source
           git -C private-source status --porcelain
-          test "$(git -C private-source diff --name-only | sort | tr '\n' ' ')" = "lib/services/manga/manga_browse_local_state_loader.dart lib/services/manga/manga_browse_state_memoizer.dart lib/services/manga/manga_favorite_lifecycle_service.dart lib/services/manga/storage/manga_manual_merge_repository.dart test/services/manga/manga_browse_local_state_loader_test.dart test/services/manga/manga_browse_state_memoizer_test.dart test/services/manga/manga_favorite_lifecycle_service_test.dart test/services/manga/storage/manga_manual_merge_repository_test.dart "
+          test "$(git -C private-source diff --name-only | sort | tr '\n' ' ')" = "lib/services/manga/manga_browse_local_state_loader.dart lib/services/manga/manga_browse_state_memoizer.dart lib/services/manga/manga_favorite_lifecycle_service.dart lib/services/manga/storage/manga_manual_merge_repository.dart test/services/manga/manga_browse_local_state_loader_test.dart test/services/manga/manga_browse_state_memoizer_test.dart test/services/manga/manga_favorite_lifecycle_service_test.dart test/services/manga/manga_manual_merge_availability_projection_test.dart test/services/manga/manga_repository_browse_data_source_test.dart test/services/manga/storage/manga_library_progress_repository_test.dart test/services/manga/storage/manga_manual_merge_repository_test.dart test/services/manga/sync/manga_manual_merge_cloud_sync_test.dart "
 
       - name: Setup Flutter 3.47.7
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
@@ -117,9 +117,9 @@ jobs:
           set -euo pipefail
           git config user.name "Arthur Almeida"
           git config user.email "arthurgva1602@gmail.com"
-          git add lib/services/manga/manga_browse_local_state_loader.dart lib/services/manga/manga_browse_state_memoizer.dart lib/services/manga/manga_favorite_lifecycle_service.dart lib/services/manga/storage/manga_manual_merge_repository.dart test/services/manga/manga_browse_local_state_loader_test.dart test/services/manga/manga_browse_state_memoizer_test.dart test/services/manga/manga_favorite_lifecycle_service_test.dart test/services/manga/storage/manga_manual_merge_repository_test.dart
+          git add lib/services/manga/manga_browse_local_state_loader.dart lib/services/manga/manga_browse_state_memoizer.dart lib/services/manga/manga_favorite_lifecycle_service.dart lib/services/manga/storage/manga_manual_merge_repository.dart test/services/manga/manga_browse_local_state_loader_test.dart test/services/manga/manga_browse_state_memoizer_test.dart test/services/manga/manga_favorite_lifecycle_service_test.dart test/services/manga/manga_manual_merge_availability_projection_test.dart test/services/manga/manga_repository_browse_data_source_test.dart test/services/manga/storage/manga_library_progress_repository_test.dart test/services/manga/storage/manga_manual_merge_repository_test.dart test/services/manga/sync/manga_manual_merge_cloud_sync_test.dart
           git status --porcelain
-          test "$(git diff --cached --name-only | wc -l)" = "8"
+          test "$(git diff --cached --name-only | wc -l)" = "12"
           git commit -m "perf(manga): loser metadata projection, retained library memo and pending-only favorite writes"
           git push "https://x-access-token:${PUSH_TOKEN}@github.com/Semogtw/goanime-mobile.git" HEAD:main
           echo "pushed commit: $(git rev-parse HEAD)"
