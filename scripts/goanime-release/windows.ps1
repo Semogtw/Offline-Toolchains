@@ -32,19 +32,31 @@ try {
       $env:UPDATE_MANIFEST_URL -replace "/update\.json$", "/runtime_database_manifest.json"
   }
 
+  # Endpoint dart-defines are hex-encoded so the compiled binary does not
+  # carry the plain URLs (the workers.dev host embeds a personal username).
+  # The app decodes them at runtime (decodeCompiledEndpoint).
+  function ConvertTo-HexDefine([string]$Value) {
+    "hex:" + (-join ([Text.Encoding]::UTF8.GetBytes($Value) |
+      ForEach-Object { $_.ToString("x2") }))
+  }
+  $updateManifestUrlDefine = ConvertTo-HexDefine $env:UPDATE_MANIFEST_URL
+  $updateAppcastUrlDefine = ConvertTo-HexDefine $env:UPDATE_APPCAST_URL
+  $runtimeDatabaseManifestUrlDefine =
+    ConvertTo-HexDefine $env:RUNTIME_DATABASE_MANIFEST_URL
+
   $shorebirdArgs = @(
     "release",
     "--platforms=windows",
     "--flutter-version=$env:FLUTTER_VERSION",
     "--dart-define=FIREBASE_PROJECT_ID=$env:FIREBASE_PROJECT_ID",
     "--dart-define=FIREBASE_WEB_API_KEY=$env:FIREBASE_WEB_API_KEY",
-    "--dart-define=UPDATE_MANIFEST_URL=$env:UPDATE_MANIFEST_URL",
-    "--dart-define=UPDATE_APPCAST_URL=$env:UPDATE_APPCAST_URL",
+    "--dart-define=UPDATE_MANIFEST_URL=$updateManifestUrlDefine",
+    "--dart-define=UPDATE_APPCAST_URL=$updateAppcastUrlDefine",
     "--dart-define=UPDATE_MANIFEST_PUBLIC_KEY_ID=$env:UPDATE_MANIFEST_PUBLIC_KEY_ID",
     "--dart-define=UPDATE_MANIFEST_PUBLIC_KEY_B64=$env:UPDATE_MANIFEST_PUBLIC_KEY_B64",
     "--dart-define=UPDATE_MANIFEST_SIGNATURE_REQUIRED=true",
     "--dart-define=ANIME_METADATA_SEED_MANIFEST_URL=$env:ANIME_METADATA_SEED_MANIFEST_URL",
-    "--dart-define=RUNTIME_DATABASE_MANIFEST_URL=$env:RUNTIME_DATABASE_MANIFEST_URL"
+    "--dart-define=RUNTIME_DATABASE_MANIFEST_URL=$runtimeDatabaseManifestUrlDefine"
   )
 
   $built = $false

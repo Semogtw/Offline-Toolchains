@@ -28,6 +28,14 @@ if [[ -z "${RUNTIME_DATABASE_MANIFEST_URL:-}" ]]; then
   export RUNTIME_DATABASE_MANIFEST_URL
 fi
 
+# Endpoint dart-defines are hex-encoded so the compiled binary does not
+# carry the plain URLs (the workers.dev host embeds a personal username).
+# The app decodes them at runtime (decodeCompiledEndpoint).
+encode_endpoint() { printf '%s' "$1" | od -An -tx1 | tr -d ' \n'; }
+UPDATE_MANIFEST_URL_DEFINE="hex:$(encode_endpoint "$UPDATE_MANIFEST_URL")"
+UPDATE_APPCAST_URL_DEFINE="hex:$(encode_endpoint "$UPDATE_APPCAST_URL")"
+RUNTIME_DATABASE_MANIFEST_URL_DEFINE="hex:$(encode_endpoint "$RUNTIME_DATABASE_MANIFEST_URL")"
+
 shorebird release android \
   --flutter-version="$FLUTTER_VERSION" \
   --artifact apk \
@@ -35,13 +43,13 @@ shorebird release android \
   -- \
   --dart-define="FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID" \
   --dart-define="FIREBASE_WEB_API_KEY=$FIREBASE_WEB_API_KEY" \
-  --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL" \
-  --dart-define="UPDATE_APPCAST_URL=$UPDATE_APPCAST_URL" \
+  --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL_DEFINE" \
+  --dart-define="UPDATE_APPCAST_URL=$UPDATE_APPCAST_URL_DEFINE" \
   --dart-define="UPDATE_MANIFEST_PUBLIC_KEY_ID=$UPDATE_MANIFEST_PUBLIC_KEY_ID" \
   --dart-define="UPDATE_MANIFEST_PUBLIC_KEY_B64=$UPDATE_MANIFEST_PUBLIC_KEY_B64" \
   --dart-define=UPDATE_MANIFEST_SIGNATURE_REQUIRED=true \
   --dart-define="ANIME_METADATA_SEED_MANIFEST_URL=$ANIME_METADATA_SEED_MANIFEST_URL" \
-  --dart-define="RUNTIME_DATABASE_MANIFEST_URL=$RUNTIME_DATABASE_MANIFEST_URL"
+  --dart-define="RUNTIME_DATABASE_MANIFEST_URL=$RUNTIME_DATABASE_MANIFEST_URL_DEFINE"
 
 mkdir -p dist/android-release
 apk="build/app/outputs/flutter-apk/app-release.apk"
