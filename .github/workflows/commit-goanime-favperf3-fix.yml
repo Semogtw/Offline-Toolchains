@@ -1,0 +1,125 @@
+name: Commit GoAnime favorites perf patch 3 2026-11-04
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'requests/goanime-favperf3/run-2026-11-04.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-favperf3-fix-2026-11-04
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: 2ade2c3520c28c3f9c232999cbc69f187c397091
+  FLUTTER_VERSION: 3.47.7
+  GOANIME_REPOSITORY: Semogtw/goanime-mobile
+
+jobs:
+  commit-fix:
+    name: Apply favorites perf patch 3, run tests and commit to main
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout trusted request
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Verify exact one-shot request
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          item = json.loads(Path('requests/goanime-favperf3/run-2026-11-04.json').read_text())
+          expected = {
+            'source_sha': '2ade2c3520c28c3f9c232999cbc69f187c397091'
+          }
+          assert item == expected, f"Unexpected request: {item}"
+          PY
+
+      - name: Checkout GoAnime source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.SOURCE_SHA }}
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Apply anchored source transform
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C private-source rev-parse HEAD)" = "$SOURCE_SHA"
+          python3 scripts/goanime-favperf3-apply.py private-source
+          git -C private-source status --porcelain
+          test "$(git -C private-source diff --name-only | sort | tr '\n' ' ')" = "lib/services/manga/manga_browse_local_state_loader.dart lib/services/manga/manga_browse_state_memoizer.dart lib/services/manga/manga_favorite_lifecycle_service.dart lib/services/manga/storage/manga_manual_merge_repository.dart test/services/manga/manga_browse_local_state_loader_test.dart test/services/manga/manga_browse_state_memoizer_test.dart test/services/manga/manga_favorite_lifecycle_service_test.dart test/services/manga/storage/manga_manual_merge_repository_test.dart "
+
+      - name: Setup Flutter 3.47.7
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.47.7
+          cache: true
+
+      - name: Materialize verified catalog and resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/manga/materialize_manga_availability_asset.py
+          flutter pub get --enforce-lockfile
+
+      - name: Run the favorites perf patch 3 test cycle
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          flutter test --reporter expanded \
+            test/services/manga/storage/manga_manual_merge_repository_test.dart \
+            test/services/manga/manga_browse_local_state_loader_test.dart \
+            test/services/manga/manga_browse_state_memoizer_test.dart \
+            test/services/manga/manga_repository_browse_data_source_test.dart \
+            test/services/manga/storage/manga_library_progress_repository_test.dart \
+            test/services/manga/storage/manga_catalog_repository_test.dart \
+            test/services/manga/manga_manual_merge_availability_projection_test.dart \
+            test/services/manga/sync/manga_manual_merge_cloud_sync_test.dart \
+            test/services/manga/manga_favorite_lifecycle_service_test.dart \
+            test/architecture/service_singleton_inventory_guard_test.dart \
+            2>&1 | tee "$RUNNER_TEMP/favperf3-tests.log"
+          code=${PIPESTATUS[0]}
+          {
+            echo '## Favorites perf patch 3 test cycle'
+            echo ''
+            echo '```'
+            tail -n 150 "$RUNNER_TEMP/favperf3-tests.log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $code
+
+      - name: Commit and push the fix
+        working-directory: private-source
+        shell: bash
+        env:
+          PUSH_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "Arthur Almeida"
+          git config user.email "arthurgva1602@gmail.com"
+          git add lib/services/manga/manga_browse_local_state_loader.dart lib/services/manga/manga_browse_state_memoizer.dart lib/services/manga/manga_favorite_lifecycle_service.dart lib/services/manga/storage/manga_manual_merge_repository.dart test/services/manga/manga_browse_local_state_loader_test.dart test/services/manga/manga_browse_state_memoizer_test.dart test/services/manga/manga_favorite_lifecycle_service_test.dart test/services/manga/storage/manga_manual_merge_repository_test.dart
+          git status --porcelain
+          test "$(git diff --cached --name-only | wc -l)" = "8"
+          git commit -m "perf(manga): loser metadata projection, retained library memo and pending-only favorite writes"
+          git push "https://x-access-token:${PUSH_TOKEN}@github.com/Semogtw/goanime-mobile.git" HEAD:main
+          echo "pushed commit: $(git rev-parse HEAD)"
