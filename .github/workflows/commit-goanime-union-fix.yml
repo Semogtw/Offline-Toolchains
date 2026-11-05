@@ -63,7 +63,7 @@ jobs:
           test "$(git -C private-source rev-parse HEAD)" = "$SOURCE_SHA"
           python3 scripts/goanime-union-apply.py private-source
           git -C private-source status --porcelain
-          test "$( { git -C private-source diff --name-only; git -C private-source ls-files --others --exclude-standard; } | sort | tr '\n' ' ')" = "lib/services/manga/manga_platform_runtime.dart lib/services/manga/storage/manga_catalog_repository.dart lib/services/manga/storage/manga_manual_merge_repository.dart lib/services/manga/sync/manga_manual_merge_sync_codec.dart lib/services/manga/sync/manga_sync_local_store.dart test/services/manga/manga_manual_merge_availability_projection_test.dart test/services/manga/storage/manga_manual_merge_repository_test.dart test/services/manga/storage/manga_manual_union_final_test.dart test/services/manga/sync/manga_manual_merge_union_sync_test.dart "
+          test "$( { git -C private-source diff --name-only; git -C private-source ls-files --others --exclude-standard; } | sort | tr '\n' ' ')" = "lib/services/manga/download/manga_manual_merge_download_router.dart lib/services/manga/manga_browse_local_state_loader.dart lib/services/manga/manga_platform_runtime.dart lib/services/manga/storage/manga_catalog_repository.dart lib/services/manga/storage/manga_manual_merge_repository.dart lib/services/manga/storage/manga_progress_repository.dart lib/services/manga/sync/manga_manual_merge_sync_codec.dart lib/services/manga/sync/manga_sync_local_store.dart test/services/manga/manga_manual_merge_availability_projection_test.dart test/services/manga/manga_manual_merge_identity_projection_test.dart test/services/manga/storage/manga_manual_merge_repository_test.dart test/services/manga/storage/manga_manual_union_final_test.dart test/services/manga/sync/manga_manual_merge_union_sync_test.dart "
 
       - name: Setup Flutter 3.47.7
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
@@ -123,9 +123,9 @@ jobs:
           set -euo pipefail
           git config user.name "Arthur Almeida"
           git config user.email "arthurgva1602@gmail.com"
-          git add lib/services/manga/manga_platform_runtime.dart lib/services/manga/storage/manga_catalog_repository.dart lib/services/manga/storage/manga_manual_merge_repository.dart lib/services/manga/sync/manga_manual_merge_sync_codec.dart lib/services/manga/sync/manga_sync_local_store.dart test/services/manga/manga_manual_merge_availability_projection_test.dart test/services/manga/storage/manga_manual_merge_repository_test.dart test/services/manga/storage/manga_manual_union_final_test.dart test/services/manga/sync/manga_manual_merge_union_sync_test.dart
+          git add lib/services/manga/download/manga_manual_merge_download_router.dart lib/services/manga/manga_browse_local_state_loader.dart lib/services/manga/manga_platform_runtime.dart lib/services/manga/storage/manga_catalog_repository.dart lib/services/manga/storage/manga_manual_merge_repository.dart lib/services/manga/storage/manga_progress_repository.dart lib/services/manga/sync/manga_manual_merge_sync_codec.dart lib/services/manga/sync/manga_sync_local_store.dart test/services/manga/manga_manual_merge_availability_projection_test.dart test/services/manga/manga_manual_merge_identity_projection_test.dart test/services/manga/storage/manga_manual_merge_repository_test.dart test/services/manga/storage/manga_manual_union_final_test.dart test/services/manga/sync/manga_manual_merge_union_sync_test.dart
           git status --porcelain
-          test "$(git diff --cached --name-only | wc -l)" = "9"
+          test "$(git diff --cached --name-only | wc -l)" = "13"
           git commit -m "feat(manga): merged works become a single record with history-free revert"
           git push "https://x-access-token:${PUSH_TOKEN}@github.com/Semogtw/goanime-mobile.git" HEAD:main
           echo "pushed commit: $(git rev-parse HEAD)"
