@@ -1,0 +1,131 @@
+name: Commit GoAnime favorites perf patch 4 round 2 2026-11-06
+
+on:
+  push:
+    paths:
+      - requests/goanime-favperf5/run-2026-11-06.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-favperf5-commit
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: 5b2f9757e624043bfd52dadeb65089f528709f6e
+
+jobs:
+  commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout toolchains
+        uses: actions/checkout@v4
+
+      - name: Verify one-shot request
+        shell: bash
+        run: |
+          set -euo pipefail
+          REQUEST="requests/goanime-favperf5/run-2026-11-06.json"
+          if [[ -f "$REQUEST" ]]; then
+            python3 - "$REQUEST" <<'PY'
+          import json, pathlib, sys
+          expected = {"source_sha": "5b2f9757e624043bfd52dadeb65089f528709f6e"}
+          actual = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          if actual != expected:
+              raise SystemExit(f"unexpected request: {actual!r} != {expected!r}")
+          print("request ok")
+          PY
+          fi
+
+      - name: Checkout private GoAnime source
+        uses: actions/checkout@v4
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.SOURCE_SHA }}
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+
+      - name: Apply anchored patch 4 round 2 transforms
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/goanime-favperf5-apply.py private-source
+          cd private-source
+          git diff --name-only > /tmp/changed.txt
+          cat /tmp/changed.txt
+          cat > /tmp/expected.txt <<'EOF'
+          lib/services/manga/manga_browse_local_state_loader.dart
+          test/services/manga/manga_browse_local_state_loader_test.dart
+          EOF
+          diff <(sort /tmp/expected.txt) <(sort /tmp/changed.txt)
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.7
+          channel: stable
+          cache: true
+
+      - name: Materialize catalog asset and resolve dependencies
+        shell: bash
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          python3 tools/manga/materialize_manga_availability_asset.py
+          flutter pub get --enforce-lockfile
+
+      - name: Run targeted tests
+        shell: bash
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          set +e
+          flutter test --reporter expanded \
+            test/services/manga/storage/manga_manual_merge_repository_test.dart \
+            test/services/manga/storage/manga_manual_union_final_test.dart \
+            test/services/manga/manga_manual_merge_identity_projection_test.dart \
+            test/services/manga/manga_manual_merge_availability_projection_test.dart \
+            test/services/manga/manga_repository_browse_data_source_test.dart \
+            test/services/manga/manga_browse_local_state_loader_test.dart \
+            test/services/manga/manga_browse_state_memoizer_test.dart \
+            test/services/manga/manga_favorite_lifecycle_service_test.dart \
+            test/services/manga/storage/manga_library_repository_test.dart \
+            test/services/manga/storage/manga_library_progress_repository_test.dart \
+            test/services/manga/storage/manga_database_test.dart \
+            test/services/manga/manga_library_release_radar_coordinator_test.dart \
+            test/services/manga/sync/manga_sync_local_store_test.dart \
+            test/services/manga/sync/manga_manual_merge_union_sync_test.dart \
+            test/services/manga/sync/manga_manual_merge_cloud_sync_test.dart \
+            test/services/manga/manhastro_presentation_adapter_test.dart \
+            test/architecture/manhastro_home_source_contract_test.dart \
+            test/architecture/service_singleton_inventory_guard_test.dart \
+            2>&1 | tee /tmp/flutter-test.log
+          code=${PIPESTATUS[0]}
+          set -e
+          {
+            echo '## GoAnime favperf5 tests'
+            echo
+            echo '```text'
+            tail -150 /tmp/flutter-test.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"
+
+      - name: Commit and push to GoAnime main
+        shell: bash
+        working-directory: private-source
+        env:
+          PUSH_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "Arthur Almeida"
+          git config user.email "arthurgva1602@gmail.com"
+          git add -A
+          test "$(git diff --cached --name-only | wc -l)" -eq 2
+          git commit -m "perf(manga): summary library loads read only latest progress and newest-completion pairs"
+          git push "https://x-access-token:${PUSH_TOKEN}@github.com/Semogtw/goanime-mobile.git" HEAD:main
+          git rev-parse HEAD >> "$GITHUB_STEP_SUMMARY"
