@@ -1,0 +1,125 @@
+name: Commit GoAnime sync quota fix 2026-11-06
+
+on:
+  push:
+    paths:
+      - requests/goanime-syncquota/run-2026-11-06.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-syncquota-commit
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: 03a76fb0673a33ad4ef609db2f8807da9f98f2f4
+
+jobs:
+  commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout toolchains
+        uses: actions/checkout@v4
+
+      - name: Verify one-shot request
+        shell: bash
+        run: |
+          set -euo pipefail
+          REQUEST="requests/goanime-syncquota/run-2026-11-06.json"
+          if [[ -f "$REQUEST" ]]; then
+            python3 - "$REQUEST" <<'PY'
+          import json, pathlib, sys
+          expected = {"source_sha": "03a76fb0673a33ad4ef609db2f8807da9f98f2f4"}
+          actual = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          if actual != expected:
+              raise SystemExit(f"unexpected request: {actual!r} != {expected!r}")
+          print("request ok")
+          PY
+          fi
+
+      - name: Checkout private GoAnime source
+        uses: actions/checkout@v4
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.SOURCE_SHA }}
+          token: <redacted>
+          path: private-source
+          fetch-depth: 1
+
+      - name: Apply anchored sync quota transforms
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/goanime-syncquota-apply.py private-source
+          cd private-source
+          git diff --name-only > /tmp/changed.txt
+          cat /tmp/changed.txt
+          cat > /tmp/expected.txt <<'EOF'
+          lib/services/firebase_sync_client.dart
+          lib/services/manga/sync/manga_account_sync_service.dart
+          lib/services/manga/sync/manga_firebase_sync_client.dart
+          lib/services/user_sync_service.dart
+          EOF
+          diff <(sort /tmp/expected.txt) <(sort /tmp/changed.txt)
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.7
+          channel: stable
+          cache: true
+
+      - name: Materialize catalog asset and resolve dependencies
+        shell: bash
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          python3 tools/manga/materialize_manga_availability_asset.py
+          flutter pub get --enforce-lockfile
+
+      - name: Run targeted tests
+        shell: bash
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          set +e
+          flutter test --reporter expanded \
+            test/services/manga/sync/manga_account_sync_service_test.dart \
+            test/services/manga/sync/manga_firebase_sync_client_test.dart \
+            test/services/manga/sync/manga_manual_merge_cloud_sync_test.dart \
+            test/services/manga/sync/manga_sync_local_store_test.dart \
+            test/services/user_sync_event_driven_schedule_test.dart \
+            test/services/user_sync_automatic_failure_test.dart \
+            test/services/user_sync_session_persistence_test.dart \
+            test/services/user_sync_enabled_persistence_test.dart \
+            test/services/sync/sync_scheduler_state_test.dart \
+            test/screens/account_screen_test.dart \
+            2>&1 | tee /tmp/flutter-test.log
+          code=${PIPESTATUS[0]}
+          set -e
+          {
+            echo '## GoAnime syncquota tests'
+            echo
+            echo '```text'
+            tail -150 /tmp/flutter-test.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"
+
+      - name: Commit and push to GoAnime main
+        shell: bash
+        working-directory: private-source
+        env:
+          PUSH_TOKEN: <redacted>
+        run: |
+          set -euo pipefail
+          git config user.name "Arthur Almeida"
+          git config user.email "arthurgva1602@gmail.com"
+          git add -A
+          test "$(git diff --cached --name-only | wc -l)" -eq 4
+          git commit -m "fix(sync): stop rereading the whole cloud history on every cold start"
+          git push "https://x-access-token:${PUSH_TOKEN}@github.com/Semogtw/goanime-mobile.git" HEAD:main
+          git rev-parse HEAD >> "$GITHUB_STEP_SUMMARY"
