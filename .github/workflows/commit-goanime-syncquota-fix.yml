@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SOURCE_SHA: 03a76fb0673a33ad4ef609db2f8807da9f98f2f4
+  SOURCE_SHA: 03c44de0c3f48d10220da1606f12bbb6e6f01dfc
 
 jobs:
   commit:
@@ -32,7 +32,7 @@ jobs:
           if [[ -f "$REQUEST" ]]; then
             python3 - "$REQUEST" <<'PY'
           import json, pathlib, sys
-          expected = {"source_sha": "03a76fb0673a33ad4ef609db2f8807da9f98f2f4"}
+          expected = {"source_sha": "03c44de0c3f48d10220da1606f12bbb6e6f01dfc"}
           actual = json.loads(pathlib.Path(sys.argv[1]).read_text())
           if actual != expected:
               raise SystemExit(f"unexpected request: {actual!r} != {expected!r}")
