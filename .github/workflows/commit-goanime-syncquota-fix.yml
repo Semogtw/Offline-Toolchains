@@ -45,7 +45,7 @@ jobs:
         with:
           repository: Semogtw/goanime-mobile
           ref: ${{ env.SOURCE_SHA }}
-          token: <redacted>
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
           path: private-source
           fetch-depth: 1
 
@@ -113,7 +113,7 @@ jobs:
         shell: bash
         working-directory: private-source
         env:
-          PUSH_TOKEN: <redacted>
+          PUSH_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
         run: |
           set -euo pipefail
           git config user.name "Arthur Almeida"
