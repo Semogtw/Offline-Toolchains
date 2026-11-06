@@ -1,0 +1,121 @@
+name: Commit GoAnime similar works digest fix 2026-11-06
+
+on:
+  push:
+    paths:
+      - requests/goanime-similarfix/run-2026-11-06.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-similarfix-commit
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: eaa15a400680489829aa3d0a9e4c66261fde2c42
+
+jobs:
+  commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout toolchains
+        uses: actions/checkout@v4
+
+      - name: Verify one-shot request
+        shell: bash
+        run: |
+          set -euo pipefail
+          REQUEST="requests/goanime-similarfix/run-2026-11-06.json"
+          if [[ -f "$REQUEST" ]]; then
+            python3 - "$REQUEST" <<'PY'
+          import json, pathlib, sys
+          expected = {"source_sha": "eaa15a400680489829aa3d0a9e4c66261fde2c42"}
+          actual = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          if actual != expected:
+              raise SystemExit(f"unexpected request: {actual!r} != {expected!r}")
+          print("request ok")
+          PY
+          fi
+
+      - name: Checkout private GoAnime source
+        uses: actions/checkout@v4
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.SOURCE_SHA }}
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+
+      - name: Apply anchored similar works digest transforms
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/goanime-similarfix-apply.py private-source
+          cd private-source
+          git diff --name-only > /tmp/changed.txt
+          cat /tmp/changed.txt
+          cat > /tmp/expected.txt <<'EOF'
+          lib/services/manga/storage/manga_bundled_similar_sql_index.dart
+          test/services/manga/storage/manga_bundled_similar_sql_index_test.dart
+          EOF
+          diff <(sort /tmp/expected.txt) <(sort /tmp/changed.txt)
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.7
+          channel: stable
+          cache: true
+
+      - name: Materialize catalog asset and resolve dependencies
+        shell: bash
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          python3 tools/manga/materialize_manga_availability_asset.py
+          flutter pub get --enforce-lockfile
+
+      - name: Run targeted tests
+        shell: bash
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          set +e
+          flutter test --reporter expanded \
+            test/services/manga/storage/manga_bundled_similar_sql_index_test.dart \
+            test/services/manga/storage/manga_bundled_recommendation_index_test.dart \
+            test/services/manga/storage/manga_user_similar_works_repository_test.dart \
+            test/services/manga/manhastro_similar_works_adapter_test.dart \
+            test/services/manga/manga_similar_works_service_test.dart \
+            test/services/manga/manga_similar_bounded_lookup_test.dart \
+            test/services/manga/manga_baka_similar_works_client_test.dart \
+            test/widgets/manga_manhastro/similar_works_section_test.dart \
+            2>&1 | tee /tmp/flutter-test.log
+          code=${PIPESTATUS[0]}
+          set -e
+          {
+            echo '## GoAnime similarfix tests'
+            echo
+            echo '```text'
+            tail -150 /tmp/flutter-test.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"
+
+      - name: Commit and push to GoAnime main
+        shell: bash
+        working-directory: private-source
+        env:
+          PUSH_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "Arthur Almeida"
+          git config user.email "arthurgva1602@gmail.com"
+          git add -A
+          test "$(git diff --cached --name-only | wc -l)" -eq 2
+          git commit -m "fix(manga): stop failing Similar Works closed on catalog digest drift"
+          git push "https://x-access-token:${PUSH_TOKEN}@github.com/Semogtw/goanime-mobile.git" HEAD:main
+          git rev-parse HEAD >> "$GITHUB_STEP_SUMMARY"
