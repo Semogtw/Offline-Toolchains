@@ -1,0 +1,88 @@
+name: Test GoAnime full suite shards (baseline) 2026-11-07
+
+on:
+  push:
+    paths:
+      - requests/goanime-fullsuite/baseline.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA: 9019db4c0985f1435e7ad7feb8309464186f3735
+  VARIANT: baseline
+
+jobs:
+  shard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - name: Checkout toolchains
+        uses: actions/checkout@v4
+
+      - name: Verify one-shot request
+        shell: bash
+        run: |
+          set -euo pipefail
+          REQUEST="requests/goanime-fullsuite/baseline.json"
+          if [[ -f "$REQUEST" ]]; then
+            python3 - "$REQUEST" <<'PY'
+          import json, pathlib, sys
+          expected = {"source_sha": "9019db4c0985f1435e7ad7feb8309464186f3735", "variant": "baseline"}
+          actual = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          if actual != expected:
+              raise SystemExit(f"unexpected request: {actual!r} != {expected!r}")
+          print("request ok")
+          PY
+          fi
+
+      - name: Checkout private GoAnime source
+        uses: actions/checkout@v4
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.SOURCE_SHA }}
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.7
+          channel: stable
+          cache: true
+
+      - name: Materialize catalog asset and resolve dependencies
+        shell: bash
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          python3 tools/manga/materialize_manga_availability_asset.py
+          flutter pub get --enforce-lockfile
+
+      - name: Run shard tests
+        shell: bash
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          mapfile -t FILES < <(find test -name '*_test.dart' | sort | awk -v k=${{ matrix.shard }} 'NR % 8 == k')
+          echo "shard ${{ matrix.shard }}: ${#FILES[@]} test files"
+          set +e
+          flutter test --reporter expanded "${FILES[@]}" 2>&1 | tee /tmp/shard-test.log
+          code=${PIPESTATUS[0]}
+          set -e
+          {
+            echo "## fullsuite baseline shard ${{ matrix.shard }} (flutter exit $code, ${#FILES[@]} files)"
+            echo
+            echo '```text'
+            grep -E '^[0-9]+:[0-9]+ \+' /tmp/shard-test.log | tail -1 || true
+            echo '--- failing tests ---'
+            grep '\[E\]' /tmp/shard-test.log | sed -E 's/^[0-9]+:[0-9]+ \+[0-9]+( ~[0-9]+)? -[0-9]+: //' | sort -u || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "diagnostic leg done"
