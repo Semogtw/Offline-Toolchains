@@ -1,0 +1,126 @@
+name: Commit GoAnime dead search chain removal 2026-11-06
+
+on:
+  push:
+    paths:
+      - requests/goanime-deadsearch/run-2026-11-06.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-deadsearch-commit
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: 9019db4c0985f1435e7ad7feb8309464186f3735
+
+jobs:
+  commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout toolchains
+        uses: actions/checkout@v4
+
+      - name: Verify one-shot request
+        shell: bash
+        run: |
+          set -euo pipefail
+          REQUEST="requests/goanime-deadsearch/run-2026-11-06.json"
+          if [[ -f "$REQUEST" ]]; then
+            python3 - "$REQUEST" <<'PY'
+          import json, pathlib, sys
+          expected = {"source_sha": "9019db4c0985f1435e7ad7feb8309464186f3735"}
+          actual = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          if actual != expected:
+              raise SystemExit(f"unexpected request: {actual!r} != {expected!r}")
+          print("request ok")
+          PY
+          fi
+
+      - name: Checkout private GoAnime source
+        uses: actions/checkout@v4
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.SOURCE_SHA }}
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+
+      - name: Apply dead search chain removal
+        shell: bash
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/scripts/goanime-deadsearch-apply.py"
+          git diff --name-only > /tmp/changed.txt
+          cat /tmp/changed.txt
+          cat > /tmp/expected.txt <<'EOF'
+          lib/screens/manga/manga_home_screen.dart
+          lib/screens/manga/manga_search_screen.dart
+          lib/services/manga/manga_readable_search_adapter.dart
+          lib/widgets/manga/manga_readable_search_view.dart
+          test/architecture/shared_search_lifecycle_guard_test.dart
+          test/integration/manga_no_implicit_provider_fanout_test.dart
+          test/services/manga/manga_readable_search_adapter_test.dart
+          test/widgets/manga/manga_catalog_navigation_test.dart
+          test/widgets/manga/manga_catalog_screen_integration_test.dart
+          test/widgets/manga/manga_default_details_navigation_test.dart
+          test/widgets/manga/manga_readable_search_view_test.dart
+          test/widgets/manga/manga_runtime_catalog_screen_test.dart
+          test/widgets/manga/manga_runtime_provider_screen_test.dart
+          test/widgets/manga/manga_search_screen_test.dart
+          test/widgets/media_mode_navigation_test.dart
+          EOF
+          diff <(sort /tmp/expected.txt) <(sort /tmp/changed.txt)
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.7
+          channel: stable
+          cache: true
+
+      - name: Materialize catalog asset and resolve dependencies
+        shell: bash
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          python3 tools/manga/materialize_manga_availability_asset.py
+          flutter pub get --enforce-lockfile
+
+      - name: Run targeted tests
+        shell: bash
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          set +e
+          flutter test --reporter expanded \
+            2>&1 | tee /tmp/flutter-test.log
+          code=${PIPESTATUS[0]}
+          set -e
+          {
+            echo '## GoAnime deadsearch full test suite'
+            echo
+            echo '```text'
+            tail -150 /tmp/flutter-test.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"
+
+      - name: Commit and push to GoAnime main
+        shell: bash
+        working-directory: private-source
+        env:
+          PUSH_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "Arthur Almeida"
+          git config user.email "arthurgva1602@gmail.com"
+          git add -A
+          test "$(git diff --cached --name-only | wc -l)" -eq 15
+          git commit -m "refactor(manga): remove the unused legacy search screen chain"
+          git push "https://x-access-token:${PUSH_TOKEN}@github.com/Semogtw/goanime-mobile.git" HEAD:main
+          git rev-parse HEAD >> "$GITHUB_STEP_SUMMARY"
