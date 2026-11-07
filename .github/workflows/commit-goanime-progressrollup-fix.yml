@@ -1,0 +1,124 @@
+name: Commit GoAnime progress rollup fix 2026-11-07
+
+on:
+  push:
+    paths:
+      - requests/goanime-progressrollup/run-2026-11-07.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-progressrollup-commit
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: 8947f8b2bf62a696c61bd01c723039efafb2e6f9
+
+jobs:
+  commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout toolchains
+        uses: actions/checkout@v4
+
+      - name: Verify one-shot request
+        shell: bash
+        run: |
+          set -euo pipefail
+          REQUEST="requests/goanime-progressrollup/run-2026-11-07.json"
+          if [[ -f "$REQUEST" ]]; then
+            python3 - "$REQUEST" <<'PY'
+          import json, pathlib, sys
+          expected = {"source_sha": "8947f8b2bf62a696c61bd01c723039efafb2e6f9"}
+          actual = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          if actual != expected:
+              raise SystemExit(f"unexpected request: {actual!r} != {expected!r}")
+          print("request ok")
+          PY
+          fi
+
+      - name: Checkout private GoAnime source
+        uses: actions/checkout@v4
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.SOURCE_SHA }}
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+
+      - name: Apply anchored progress rollup transforms
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/goanime-progressrollup-apply.py private-source
+          cd private-source
+          git diff --name-only > /tmp/changed.txt
+          cat /tmp/changed.txt
+          cat > /tmp/expected.txt <<'EOF'
+          lib/services/manga/sync/manga_sync_local_store.dart
+          lib/services/manga/sync/manga_sync_record.dart
+          lib/services/manga/sync/manga_sync_recorder.dart
+          test/services/manga/sync/manga_sync_local_store_test.dart
+          EOF
+          diff <(sort /tmp/expected.txt) <(sort /tmp/changed.txt)
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.7
+          channel: stable
+          cache: true
+
+      - name: Materialize catalog asset and resolve dependencies
+        shell: bash
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          python3 tools/manga/materialize_manga_availability_asset.py
+          flutter pub get --enforce-lockfile
+
+      - name: Run targeted tests
+        shell: bash
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          set +e
+          flutter test --reporter expanded \
+            test/services/manga/sync/manga_account_sync_service_test.dart \
+            test/services/manga/sync/manga_external_identity_sync_test.dart \
+            test/services/manga/sync/manga_favorite_organization_sync_codec_test.dart \
+            test/services/manga/sync/manga_firebase_sync_client_test.dart \
+            test/services/manga/sync/manga_manual_merge_cloud_sync_test.dart \
+            test/services/manga/sync/manga_manual_merge_union_sync_test.dart \
+            test/services/manga/sync/manga_sync_local_store_test.dart \
+            test/services/manga/sync/manga_sync_record_test.dart \
+            test/services/manga/storage/manga_library_progress_repository_test.dart \
+            2>&1 | tee /tmp/flutter-test.log
+          code=${PIPESTATUS[0]}
+          set -e
+          {
+            echo '## GoAnime progress rollup tests'
+            echo
+            echo '```text'
+            tail -150 /tmp/flutter-test.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"
+
+      - name: Commit and push to GoAnime main
+        shell: bash
+        working-directory: private-source
+        env:
+          PUSH_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "Arthur Almeida"
+          git config user.email "arthurgva1602@gmail.com"
+          git add -A
+          test "$(git diff --cached --name-only | wc -l)" -eq 4
+          git commit -m "perf(sync): sync reading progress as one summary record per work"
+          git push "https://x-access-token:${PUSH_TOKEN}@github.com/Semogtw/goanime-mobile.git" HEAD:main
+          git rev-parse HEAD >> "$GITHUB_STEP_SUMMARY"
