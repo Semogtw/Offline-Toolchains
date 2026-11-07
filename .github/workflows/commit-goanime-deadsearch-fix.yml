@@ -3,7 +3,7 @@ name: Commit GoAnime dead search chain removal 2026-11-06
 on:
   push:
     paths:
-      - requests/goanime-deadsearch/run-2026-11-06.json
+      - requests/goanime-deadsearch/run-2026-11-07.json
   workflow_dispatch:
 
 permissions:
@@ -19,7 +19,7 @@ env:
 jobs:
   commit:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 240
     steps:
       - name: Checkout toolchains
         uses: actions/checkout@v4
@@ -28,7 +28,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          REQUEST="requests/goanime-deadsearch/run-2026-11-06.json"
+          REQUEST="requests/goanime-deadsearch/run-2026-11-07.json"
           if [[ -f "$REQUEST" ]]; then
             python3 - "$REQUEST" <<'PY'
           import json, pathlib, sys
