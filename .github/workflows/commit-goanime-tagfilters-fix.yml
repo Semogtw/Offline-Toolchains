@@ -1,0 +1,115 @@
+name: Commit GoAnime tag filters test fix 2026-11-06
+
+on:
+  push:
+    paths:
+      - requests/goanime-tagfilters/run-2026-11-06.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-tagfilters-commit
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: c699e6c13de220e1bd40dd4e69868697bd0b80fe
+
+jobs:
+  commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout toolchains
+        uses: actions/checkout@v4
+
+      - name: Verify one-shot request
+        shell: bash
+        run: |
+          set -euo pipefail
+          REQUEST="requests/goanime-tagfilters/run-2026-11-06.json"
+          if [[ -f "$REQUEST" ]]; then
+            python3 - "$REQUEST" <<'PY'
+          import json, pathlib, sys
+          expected = {"source_sha": "c699e6c13de220e1bd40dd4e69868697bd0b80fe"}
+          actual = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          if actual != expected:
+              raise SystemExit(f"unexpected request: {actual!r} != {expected!r}")
+          print("request ok")
+          PY
+          fi
+
+      - name: Checkout private GoAnime source
+        uses: actions/checkout@v4
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.SOURCE_SHA }}
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+
+      - name: Apply anchored tag filters test transform
+        shell: bash
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/scripts/goanime-tagfilters-apply.py"
+          git diff --name-only > /tmp/changed.txt
+          cat /tmp/changed.txt
+          cat > /tmp/expected.txt <<'EOF'
+          test/widgets/manga_manhastro/search_tag_filters_test.dart
+          EOF
+          diff <(sort /tmp/expected.txt) <(sort /tmp/changed.txt)
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.7
+          channel: stable
+          cache: true
+
+      - name: Materialize catalog asset and resolve dependencies
+        shell: bash
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          python3 tools/manga/materialize_manga_availability_asset.py
+          flutter pub get --enforce-lockfile
+
+      - name: Run targeted tests
+        shell: bash
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          set +e
+          flutter test --reporter expanded \
+            test/manga_manhastro/manhastro_search_controller_test.dart \
+            test/manga_manhastro/manhastro_search_cache_revision_test.dart \
+            test/widgets/manga_manhastro/search_tag_filters_test.dart \
+            2>&1 | tee /tmp/flutter-test.log
+          code=${PIPESTATUS[0]}
+          set -e
+          {
+            echo '## GoAnime tagfilters tests'
+            echo
+            echo '```text'
+            tail -150 /tmp/flutter-test.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"
+
+      - name: Commit and push to GoAnime main
+        shell: bash
+        working-directory: private-source
+        env:
+          PUSH_TOKEN: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "Arthur Almeida"
+          git config user.email "arthurgva1602@gmail.com"
+          git add -A
+          test "$(git diff --cached --name-only | wc -l)" -eq 1
+          git commit -m "test(manga): update tag filter importance flow to the action-sheet field"
+          git push "https://x-access-token:${PUSH_TOKEN}@github.com/Semogtw/goanime-mobile.git" HEAD:main
+          git rev-parse HEAD >> "$GITHUB_STEP_SUMMARY"
