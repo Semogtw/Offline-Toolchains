@@ -3,7 +3,7 @@ name: Commit GoAnime tag filters test fix 2026-11-06
 on:
   push:
     paths:
-      - requests/goanime-tagfilters/run-2026-11-06.json
+      - requests/goanime-tagfilters/run-2026-11-06-b.json
   workflow_dispatch:
 
 permissions:
@@ -28,7 +28,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          REQUEST="requests/goanime-tagfilters/run-2026-11-06.json"
+          REQUEST="requests/goanime-tagfilters/run-2026-11-06-b.json"
           if [[ -f "$REQUEST" ]]; then
             python3 - "$REQUEST" <<'PY'
           import json, pathlib, sys
