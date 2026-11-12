@@ -1,0 +1,84 @@
+name: Test GoAnime preload baseline 2026-11-12
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'requests/goanime-tests/preload-baseline-2026-11-12.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-tests-preload-baseline-2026-11-12
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: 5add16ee9c5ad498ba979a3beb8ca87992250f42
+  FLUTTER_VERSION: 3.47.7
+  GOANIME_REPOSITORY: Semogtw/goanime-mobile
+
+jobs:
+  test:
+    name: Run GoAnime preload baseline tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout trusted test request
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Verify exact one-shot test request
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          item = json.loads(Path('requests/goanime-tests/preload-baseline-2026-11-12.json').read_text())
+          expected = {
+            'source_sha': '5add16ee9c5ad498ba979a3beb8ca87992250f42'
+          }
+          assert item == expected, f"Unexpected test request: {item}"
+          PY
+
+      - name: Checkout immutable GoAnime source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.SOURCE_SHA }}
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Setup Flutter 3.47.7
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.47.7
+          cache: true
+
+      - name: Materialize verified catalog and resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          python3 tools/manga/materialize_manga_availability_asset.py
+          flutter pub get --enforce-lockfile
+
+      - name: Run the reader preload test files
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter test --reporter expanded \
+            test/services/manga/manga_reader_preload_policy_test.dart \
+            test/widgets/manga/manga_reader_screen_test.dart \
+            test/services/manga/manga_reader_remote_transport_test.dart \
+            test/architecture/manga_cloudflare_network_contract_test.dart
