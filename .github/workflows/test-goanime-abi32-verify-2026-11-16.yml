@@ -1,0 +1,141 @@
+name: Test GoAnime abi32 verify 2026-11-16
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'requests/goanime-tests/abi32-verify-2026-11-16.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-tests-abi32-verify-2026-11-16
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: 633d28ac2bed9dda288a6dd24bbf55d8b2566d18
+  FLUTTER_VERSION: 3.47.7
+  GOANIME_REPOSITORY: Semogtw/goanime-mobile
+
+jobs:
+  test:
+    name: Build and verify the 32-bit GoAnime APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout trusted test request
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Verify exact one-shot test request
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          item = json.loads(Path('requests/goanime-tests/abi32-verify-2026-11-16.json').read_text())
+          expected = {
+            'source_sha': '633d28ac2bed9dda288a6dd24bbf55d8b2566d18'
+          }
+          assert item == expected, f"Unexpected test request: {item}"
+          PY
+
+      - name: Checkout immutable GoAnime source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.SOURCE_SHA }}
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Setup Flutter 3.47.7
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.47.7
+          cache: true
+
+      - name: Materialize verified catalog and resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          python3 tools/manga/materialize_manga_availability_asset.py
+          flutter pub get --enforce-lockfile
+
+      - name: Run goanime_core update selector tests
+        working-directory: private-source/packages/goanime_core
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart pub get
+          dart test test/update_asset_selector_edition_test.dart
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.14
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+          cache-disabled: true
+
+      - name: Expose Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: ''
+
+      - name: Generate Gradle wrapper if missing
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f android/gradlew ]]; then
+            (cd android && gradle wrapper --gradle-version "8.14" --distribution-type all)
+          fi
+
+      - name: Build the 32-bit (armeabi-v7a) release APK with a throwaway keystore
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          keytool -genkeypair -v -keystore android/app/goanime-release.jks \
+            -alias goanime-test -keyalg RSA -keysize 2048 -validity 3650 \
+            -storepass goanime-test -keypass goanime-test \
+            -dname "CN=GoAnime Test, O=GoAnime, C=BR"
+          {
+            echo "storePassword=goanime-test"
+            echo "keyPassword=goanime-test"
+            echo "keyAlias=goanime-test"
+            echo "storeFile=goanime-release.jks"
+          } > android/key.properties
+          GOANIME_ANDROID_ABI=armeabi-v7a flutter build apk --release --target-platform android-arm
+
+      - name: Verify the 32-bit APK contents
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="build/app/outputs/flutter-apk/app-release.apk"
+          test -s "$apk"
+          entries="$(unzip -Z1 "$apk" 'lib/*/libapp.so')"
+          echo "libapp entries: $entries"
+          test "$entries" = "lib/armeabi-v7a/libapp.so"
+          aapt="$(ls "$ANDROID_HOME"/build-tools/*/aapt | sort -V | tail -n1)"
+          badging="$("$aapt" dump badging "$apk")"
+          echo "$badging" | head -n 3
+          grep -q "sdkVersion:'24'" <<< "$badging"
+          grep -q "native-code: 'armeabi-v7a'" <<< "$badging"
+          echo "ABI32 APK VERIFIED"
