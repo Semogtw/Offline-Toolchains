@@ -135,7 +135,9 @@ jobs:
           test "$entries" = "lib/armeabi-v7a/libapp.so"
           aapt="$(ls "$ANDROID_HOME"/build-tools/*/aapt | sort -V | tail -n1)"
           badging="$("$aapt" dump badging "$apk")"
-          echo "$badging" | head -n 3
+          echo "$badging" | head -n 6
           grep -q "sdkVersion:'24'" <<< "$badging"
-          grep -q "native-code: 'armeabi-v7a'" <<< "$badging"
+          lib_abis="$(unzip -Z1 "$apk" 'lib/*/*.so' | cut -d/ -f2 | sort -u)"
+          echo "lib ABIs: $lib_abis"
+          test "$lib_abis" = "armeabi-v7a"
           echo "ABI32 APK VERIFIED"
