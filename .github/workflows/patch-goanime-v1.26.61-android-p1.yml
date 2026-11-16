@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SOURCE_SHA: c326b5e487079e64da55c102cc4f3a8f99c6b99f
+  SOURCE_SHA: a586c584b6f3c5f22dab114e2fef9f110e606b3f
   BASE_TAG: release-v1.26.61
   RELEASE_VERSION: 1.26.61+2106
   FLUTTER_VERSION: 3.47.7
@@ -50,7 +50,7 @@ jobs:
           from pathlib import Path
           item = json.loads(Path('requests/goanime-patch/v1.26.61-android-p1.json').read_text())
           expected = {
-            'source_sha': 'c326b5e487079e64da55c102cc4f3a8f99c6b99f',
+            'source_sha': 'a586c584b6f3c5f22dab114e2fef9f110e606b3f',
             'release_version': '1.26.61+2106',
             'platform': 'android'
           }

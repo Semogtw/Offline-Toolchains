@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SOURCE_SHA: c326b5e487079e64da55c102cc4f3a8f99c6b99f
+  SOURCE_SHA: a586c584b6f3c5f22dab114e2fef9f110e606b3f
   FLUTTER_VERSION: 3.47.7
   GOANIME_REPOSITORY: Semogtw/goanime-mobile
 
@@ -38,7 +38,7 @@ jobs:
           from pathlib import Path
           item = json.loads(Path('requests/goanime-tests/onechap-verify-2026-11-16.json').read_text())
           expected = {
-            'source_sha': 'c326b5e487079e64da55c102cc4f3a8f99c6b99f'
+            'source_sha': 'a586c584b6f3c5f22dab114e2fef9f110e606b3f'
           }
           assert item == expected, f"Unexpected test request: {item}"
           PY
