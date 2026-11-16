@@ -131,8 +131,12 @@ jobs:
         shell: bash
         env:
           PATCH_PLATFORM: ${{ matrix.platform }}
+          SHOREBIRD_MANGA_ONLY_APP_ID: ${{ secrets.SHOREBIRD_MANGA_ONLY_APP_ID }}
         run: |
           set -euo pipefail
+          if [[ -f tools/manga/materialize_manga_availability_asset.py ]]; then
+            python3 tools/manga/materialize_manga_availability_asset.py
+          fi
           shorebird patch \
             --platforms="$PATCH_PLATFORM" \
             --release-version="$RELEASE_VERSION" \
@@ -145,3 +149,25 @@ jobs:
             --dart-define=UPDATE_MANIFEST_SIGNATURE_REQUIRED=true \
             --dart-define="ANIME_METADATA_SEED_MANIFEST_URL=$ANIME_METADATA_SEED_MANIFEST_URL" \
             --dart-define="RUNTIME_DATABASE_MANIFEST_URL=$RUNTIME_DATABASE_MANIFEST_URL"
+          if [[ "$PATCH_PLATFORM" == "android" && -n "${SHOREBIRD_MANGA_ONLY_APP_ID:-}" && -f tools/manga/configure_shorebird_edition.py ]]; then
+            restore_shorebird() {
+              python3 tools/manga/configure_shorebird_edition.py --restore || true
+            }
+            trap restore_shorebird EXIT
+            python3 tools/manga/configure_shorebird_edition.py \
+              --app-id "$SHOREBIRD_MANGA_ONLY_APP_ID"
+            shorebird patch \
+              --platforms=android \
+              --release-version="$RELEASE_VERSION" \
+              --dart-define=GOANIME_MANGA_ONLY=true \
+              --dart-define="FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID" \
+              --dart-define="FIREBASE_WEB_API_KEY=$FIREBASE_WEB_API_KEY" \
+              --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL" \
+              --dart-define="UPDATE_APPCAST_URL=$UPDATE_APPCAST_URL" \
+              --dart-define="UPDATE_MANIFEST_PUBLIC_KEY_ID=$UPDATE_MANIFEST_PUBLIC_KEY_ID" \
+              --dart-define="UPDATE_MANIFEST_PUBLIC_KEY_B64=$UPDATE_MANIFEST_PUBLIC_KEY_B64" \
+              --dart-define=UPDATE_MANIFEST_SIGNATURE_REQUIRED=true \
+              --dart-define="ANIME_METADATA_SEED_MANIFEST_URL=$ANIME_METADATA_SEED_MANIFEST_URL" \
+              --dart-define="RUNTIME_DATABASE_MANIFEST_URL=$RUNTIME_DATABASE_MANIFEST_URL"
+            python3 tools/manga/configure_shorebird_edition.py --restore
+          fi
