@@ -72,13 +72,28 @@ jobs:
           python3 tools/manga/materialize_manga_availability_asset.py
           flutter pub get --enforce-lockfile
 
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+          cache-disabled: true
+      - name: Expose Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: ''
       - name: Run the Cloudflare interceptor and Mihon bridge unit tests
-        working-directory: private-source/android
+        working-directory: private-source
         shell: bash
         run: |
           set -euo pipefail
-          cd ../
           flutter pub get
+          (cd packages/goanime_core && dart pub get)
+          (cd android && gradle wrapper --gradle-version "8.14" --distribution-type all)
           cd android
           ./gradlew :app:testDebugUnitTest \
             --tests "eu.kanade.tachiyomi.network.interceptor.CloudflareInterceptorTest" \
