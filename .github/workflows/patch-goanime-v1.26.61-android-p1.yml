@@ -33,7 +33,7 @@ env:
 
 jobs:
   patch-android:
-    name: Build and publish Dart-only Shorebird Android patch
+    name: Build and publish Dart-only Shorebird Android patch (full edition)
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -161,6 +161,112 @@ jobs:
             --dart-define="RUNTIME_DATABASE_MANIFEST_URL=$RUNTIME_DATABASE_MANIFEST_URL"
 
 
+      - name: Cleanup signing secrets
+        if: always()
+        shell: bash
+        run: |
+          (cd private-source && python3 tools/manga/configure_shorebird_edition.py --restore) || true
+          rm -f private-source/android/app/goanime-release.jks private-source/android/key.properties
+
+  patch-android-manga-only:
+    name: Build and publish Dart-only Shorebird Android patch (Manga-only edition)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout trusted patch request
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Verify exact one-shot patch request
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          item = json.loads(Path('requests/goanime-patch/v1.26.61-android-p1.json').read_text())
+          expected = {
+            'source_sha': 'a586c584b6f3c5f22dab114e2fef9f110e606b3f',
+            'release_version': '1.26.61+2106',
+            'platform': 'android'
+          }
+          assert item == expected, f"Unexpected patch request: {item}"
+          PY
+          test -n "$SHOREBIRD_TOKEN"
+          test -n "$FIREBASE_PROJECT_ID"
+          test -n "$FIREBASE_WEB_API_KEY"
+
+      - name: Checkout immutable GoAnime source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.SOURCE_SHA }}
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Fail closed on native, dependency or asset changes
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git rev-parse --verify "refs/tags/$BASE_TAG"
+          git merge-base --is-ancestor "$BASE_TAG" HEAD
+          test "$(git show "$BASE_TAG:pubspec.yaml" | grep '^version: ')" = "version: $RELEASE_VERSION"
+          test "$(grep '^version: ' pubspec.yaml)" = "version: $RELEASE_VERSION"
+          git diff --exit-code "$BASE_TAG" HEAD -- pubspec.yaml pubspec.lock shorebird.yaml
+          mapfile -t changed < <(git diff --name-only "$BASE_TAG" HEAD)
+          test "${#changed[@]}" -gt 0
+          for path in "${changed[@]}"; do
+            case "$path" in
+              *.md|docs/*|docs/*/*|docs/*/*/*) ;;
+              lib/*.dart|lib/*/*.dart|lib/*/*/*.dart|lib/*/*/*/*.dart) ;;
+              test/*.dart|test/*/*.dart|test/*/*/*.dart|test/*/*/*/*.dart) ;;
+              packages/goanime_core/*.dart|packages/goanime_core/*/*.dart|packages/goanime_core/*/*/*.dart|packages/goanime_core/*/*/*/*.dart) ;;
+              *) echo "::error::Not patchable or unexpected delta: $path"; exit 1 ;;
+            esac
+          done
+          printf 'Patchable changed files:\n%s\n' "${changed[@]}"
+
+      - name: Setup Flutter 3.47.7
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.47.7
+          cache: true
+
+      - name: Setup Shorebird
+        uses: shorebirdtech/setup-shorebird@4dd9d7dc2d7930bfeadb053b6e94b5110779d1e5 # v1
+        with:
+          cache: true
+
+      - name: Materialize verified catalog and prepare Android signing
+        working-directory: private-source
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$ANDROID_KEYSTORE_BASE64"
+          mkdir -p android/app
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/goanime-release.jks
+          {
+            echo "storePassword=$ANDROID_KEYSTORE_PASSWORD"
+            echo "keyPassword=$ANDROID_KEY_PASSWORD"
+            echo "keyAlias=$ANDROID_KEY_ALIAS"
+            echo "storeFile=goanime-release.jks"
+          } > android/key.properties
+          python3 tools/manga/materialize_manga_availability_asset.py
+          flutter pub get --enforce-lockfile
+
       - name: Publish signed Shorebird patch (Manga-only edition)
         working-directory: private-source
         shell: bash
@@ -202,3 +308,4 @@ jobs:
         run: |
           (cd private-source && python3 tools/manga/configure_shorebird_edition.py --restore) || true
           rm -f private-source/android/app/goanime-release.jks private-source/android/key.properties
+
