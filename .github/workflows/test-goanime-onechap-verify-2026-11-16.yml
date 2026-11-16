@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SOURCE_SHA: f3b45acfa8b666e2468f57f0d7fb4a24b829804a
+  SOURCE_SHA: 9061deeb6f2c7b61c5d00b7e051ff644eebcbfcd
   FLUTTER_VERSION: 3.47.7
   GOANIME_REPOSITORY: Semogtw/goanime-mobile
 
@@ -38,7 +38,7 @@ jobs:
           from pathlib import Path
           item = json.loads(Path('requests/goanime-tests/onechap-verify-2026-11-16.json').read_text())
           expected = {
-            'source_sha': 'f3b45acfa8b666e2468f57f0d7fb4a24b829804a'
+            'source_sha': '9061deeb6f2c7b61c5d00b7e051ff644eebcbfcd'
           }
           assert item == expected, f"Unexpected test request: {item}"
           PY
@@ -85,4 +85,5 @@ jobs:
             test/services/manga/manga_library_update_coordinator_test.dart \
             test/integration/manga_no_implicit_provider_fanout_test.dart \
             test/services/manga/manga_external_identity_association_service_test.dart \
-            test/widgets/manga_external_identity_association_sheet_test.dart
+            test/widgets/manga_external_identity_association_sheet_test.dart \
+            test/services/manga/sync/manga_sync_local_store_test.dart
