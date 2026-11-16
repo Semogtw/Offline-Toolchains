@@ -54,14 +54,15 @@ common_dart_defines=(
 verify_android_apk() {
   local apk_path="$1"
   local label="$2"
+  local abi_dir="${3:-arm64-v8a}"
   test -s "$apk_path" || {
-    echo "::error::Expected ${label} arm64 APK was not produced."
+    echo "::error::Expected ${label} APK was not produced."
     exit 1
   }
   local entries
   entries="$(unzip -Z1 "$apk_path" 'lib/*/libapp.so' || true)"
-  test "$entries" = "lib/arm64-v8a/libapp.so" || {
-    echo "::error::${label} APK must contain only arm64-v8a libapp.so. Found: $entries"
+  test "$entries" = "lib/${abi_dir}/libapp.so" || {
+    echo "::error::${label} APK must contain only ${abi_dir} libapp.so. Found: $entries"
     exit 1
   }
   # The packaged Flutter asset must be raw SQLite, not a GZIP sidecar.
@@ -104,6 +105,19 @@ apk="build/app/outputs/flutter-apk/app-release.apk"
 verify_android_apk "$apk" "Android"
 cp "$apk" "dist/android-release/$ANDROID_RELEASE_APK_NAME"
 
+# Separate 32-bit (armeabi-v7a) APK for legacy 32-bit Android devices.
+# Shorebird does not support split-per-abi releases, so this variant is a
+# plain signed flutter build: it receives no OTA patches and updates by
+# installing the new release APK (update.json carries it as kind apk-arm32).
+if [[ -n "${ANDROID_RELEASE_APK_NAME_32:-}" ]]; then
+  GOANIME_ANDROID_ABI=armeabi-v7a flutter build apk \
+    --release \
+    --target-platform android-arm \
+    "${common_dart_defines[@]}"
+  verify_android_apk "$apk" "Android 32-bit" "armeabi-v7a"
+  cp "$apk" "dist/android-release/$ANDROID_RELEASE_APK_NAME_32"
+fi
+
 if [[ "${BUILD_MANGA_ONLY:-true}" == "true" && -n "${ANDROID_MANGA_ONLY_RELEASE_APK_NAME:-}" ]]; then
   if [[ -n "${SHOREBIRD_MANGA_ONLY_APP_ID:-}" ]]; then
     python3 tools/manga/configure_shorebird_edition.py \
@@ -127,6 +141,17 @@ if [[ "${BUILD_MANGA_ONLY:-true}" == "true" && -n "${ANDROID_MANGA_ONLY_RELEASE_
   verify_android_apk "$apk" "Manga-only Android"
   python3 tools/manga/verify_manga_only_apk.py "$apk"
   cp "$apk" "dist/android-release/$ANDROID_MANGA_ONLY_RELEASE_APK_NAME"
+
+  if [[ -n "${ANDROID_MANGA_ONLY_RELEASE_APK_NAME_32:-}" ]]; then
+    GOANIME_ANDROID_ABI=armeabi-v7a flutter build apk \
+      --release \
+      --target-platform android-arm \
+      --dart-define=GOANIME_MANGA_ONLY=true \
+      "${common_dart_defines[@]}"
+    verify_android_apk "$apk" "Manga-only Android 32-bit" "armeabi-v7a"
+    python3 tools/manga/verify_manga_only_apk.py "$apk"
+    cp "$apk" "dist/android-release/$ANDROID_MANGA_ONLY_RELEASE_APK_NAME_32"
+  fi
 fi
 
 gh release upload "$RELEASE_TAG" dist/android-release/* \
