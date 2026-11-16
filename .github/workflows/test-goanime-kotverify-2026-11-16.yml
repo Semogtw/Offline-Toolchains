@@ -1,0 +1,105 @@
+name: Test GoAnime kotverify verify 2026-11-16
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'requests/goanime-tests/kotverify-verify-2026-11-16.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-tests-kotverify-verify-2026-11-16
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: 893aac3667d888c60835da4422c7b6f98ba55bb5
+  FLUTTER_VERSION: 3.47.7
+  GOANIME_REPOSITORY: Semogtw/goanime-mobile
+
+jobs:
+  test:
+    name: Run GoAnime kotverify verify tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout trusted test request
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Verify exact one-shot test request
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          item = json.loads(Path('requests/goanime-tests/kotverify-verify-2026-11-16.json').read_text())
+          expected = {
+            'source_sha': '893aac3667d888c60835da4422c7b6f98ba55bb5'
+          }
+          assert item == expected, f"Unexpected test request: {item}"
+          PY
+
+      - name: Checkout immutable GoAnime source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ env.SOURCE_SHA }}
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Setup Flutter 3.47.7
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.47.7
+          cache: true
+
+      - name: Materialize verified catalog and resolve dependencies
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          python3 tools/manga/materialize_manga_availability_asset.py
+          flutter pub get --enforce-lockfile
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.14
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+          cache-disabled: true
+
+      - name: Expose Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: ''
+
+      - name: Generate Gradle wrapper and resolve core deps
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd packages/goanime_core && dart pub get)
+          (cd android && gradle wrapper --gradle-version "8.14" --distribution-type all)
+
+      - name: Run the Mihon bridge and interceptor unit tests
+        working-directory: private-source/android
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest --tests '*MihonSourceBridgeTest' --tests '*CloudflareInterceptorTest'
