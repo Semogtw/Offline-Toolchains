@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SOURCE_SHA: 633d28ac2bed9dda288a6dd24bbf55d8b2566d18
+  SOURCE_SHA: b0776d5726e51c08a2294b03d49ce9700ef68440
   FLUTTER_VERSION: 3.47.7
   GOANIME_REPOSITORY: Semogtw/goanime-mobile
 
@@ -38,7 +38,7 @@ jobs:
           from pathlib import Path
           item = json.loads(Path('requests/goanime-tests/abi32-verify-2026-11-16.json').read_text())
           expected = {
-            'source_sha': '633d28ac2bed9dda288a6dd24bbf55d8b2566d18'
+            'source_sha': 'b0776d5726e51c08a2294b03d49ce9700ef68440'
           }
           assert item == expected, f"Unexpected test request: {item}"
           PY
@@ -139,5 +139,7 @@ jobs:
           grep -q "sdkVersion:'24'" <<< "$badging"
           lib_abis="$(unzip -Z1 "$apk" 'lib/*/*.so' | cut -d/ -f2 | sort -u)"
           echo "lib ABIs: $lib_abis"
+          echo "non-arm32 lib entries:"
+          unzip -Z1 "$apk" 'lib/*/*.so' | grep -v '^lib/armeabi-v7a/' || true
           test "$lib_abis" = "armeabi-v7a"
           echo "ABI32 APK VERIFIED"
