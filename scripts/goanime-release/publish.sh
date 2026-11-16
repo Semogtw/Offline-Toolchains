@@ -79,6 +79,11 @@ command -v aws >/dev/null 2>&1 || {
 aws --version
 export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
 export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
+# Pin the R2 signing region. With no region configured, the AWS CLI falls
+# back to the runner's instance metadata; on AWS-hosted runners that leaks
+# the machine's region (e.g. us-west-2), which R2 rejects as invalid.
+export AWS_DEFAULT_REGION="auto"
+export AWS_REGION="auto"
 endpoint="https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
 # Stage immutable release-specific objects first. The public latest channel is
