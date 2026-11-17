@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SOURCE_SHA: 180fe0693a84631e6ae8a07d3dc42b1ca18fa56e
+  SOURCE_SHA: e432b86a7a8d6beb501e7b8f20b8a99e1d97ff8c
   FLUTTER_VERSION: 3.47.7
   GOANIME_REPOSITORY: Semogtw/goanime-mobile
 
@@ -38,7 +38,7 @@ jobs:
           from pathlib import Path
           item = json.loads(Path('requests/goanime-tests/sharefix-verify-2026-11-16.json').read_text())
           expected = {
-            'source_sha': '180fe0693a84631e6ae8a07d3dc42b1ca18fa56e'
+            'source_sha': 'e432b86a7a8d6beb501e7b8f20b8a99e1d97ff8c'
           }
           assert item == expected, f"Unexpected test request: {item}"
           PY
