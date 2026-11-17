@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SOURCE_SHA: 5d18c0e0f5ea91f4f98ad687d4ce4be55527b8e6
+  SOURCE_SHA: 5b81359e2c326199ebc46fe8e76b6dfce5b3f5ac
   BASE_TAG: release-v1.26.64
   RELEASE_VERSION: 1.26.64+2109
   FLUTTER_VERSION: 3.47.7
@@ -50,7 +50,7 @@ jobs:
           from pathlib import Path
           item = json.loads(Path('requests/goanime-patch/v1.26.64-android-p3.json').read_text())
           expected = {
-            'source_sha': '5d18c0e0f5ea91f4f98ad687d4ce4be55527b8e6',
+            'source_sha': '5b81359e2c326199ebc46fe8e76b6dfce5b3f5ac',
             'release_version': '1.26.64+2109',
             'platform': 'android'
           }
@@ -186,7 +186,7 @@ jobs:
           from pathlib import Path
           item = json.loads(Path('requests/goanime-patch/v1.26.64-android-p3.json').read_text())
           expected = {
-            'source_sha': '5d18c0e0f5ea91f4f98ad687d4ce4be55527b8e6',
+            'source_sha': '5b81359e2c326199ebc46fe8e76b6dfce5b3f5ac',
             'release_version': '1.26.64+2109',
             'platform': 'android'
           }
