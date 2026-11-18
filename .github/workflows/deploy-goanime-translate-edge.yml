@@ -1,0 +1,229 @@
+name: Deploy GoAnime Manga Translation Broker Edge
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: GoAnime source branch or 40-char commit SHA
+        required: true
+        default: main
+      deploy:
+        description: Provision D1/R2 and deploy Cloudflare Worker
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goanime-translate-edge-deploy
+  cancel-in-progress: false
+
+env:
+  WORKER_NAME: goanime-manga-translate-broker
+  D1_DATABASE_NAME: goanime-manga-translate-db
+  R2_BUCKET_NAME: goanime-manga-translate-ephemeral
+  WRANGLER_VERSION: 4.113.0
+
+jobs:
+  deploy:
+    name: Validate, provision D1/R2, and deploy translation broker
+    if: github.event_name == 'workflow_dispatch' && github.actor == github.repository_owner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CF_API_TOKEN }}
+      FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+      COLAB_OAUTH_CLIENT_ID: ${{ secrets.COLAB_OAUTH_CLIENT_ID }}
+      COLAB_OAUTH_CLIENT_SECRET: ${{ secrets.COLAB_OAUTH_CLIENT_SECRET }}
+      COLAB_OAUTH_REFRESH_TOKEN: ${{ secrets.COLAB_OAUTH_REFRESH_TOKEN }}
+      COLAB_WORKER_TOKEN: ${{ secrets.COLAB_WORKER_TOKEN }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      CLIENT_APP_KEY: ${{ secrets.CLIENT_APP_KEY }}
+      COLAB_BOOTSTRAP_REPO_URL: https://github.com/Semogtw/goanime-mobile.git
+      COLAB_BOOTSTRAP_REF: ${{ github.event.inputs.target_ref || 'main' }}
+    steps:
+      - name: Validate target ref input
+        shell: bash
+        env:
+          TARGET_REF: ${{ github.event.inputs.target_ref || 'main' }}
+        run: |
+          set -euo pipefail
+          [[ "$TARGET_REF" =~ ^[A-Za-z0-9._/-]+$ ]]
+
+      - name: Checkout private GoAnime source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Semogtw/goanime-mobile
+          ref: ${{ github.event.inputs.target_ref || 'main' }}
+          token: ${{ secrets.GOANIME_RELEASE_TOKEN || secrets.PRIVATE_REPOSITORIES_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@249970729cb0ef3589644e289644e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+
+      - name: Run translate-worker syntax check and unit tests
+        working-directory: private-source
+        run: |
+          set -euo pipefail
+          npm --prefix cloudflare/translate-worker run check
+          npm --prefix cloudflare/translate-worker test
+
+      - name: Verify Cloudflare and translation secrets
+        if: inputs.deploy == true
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in \
+            CLOUDFLARE_ACCOUNT_ID \
+            CLOUDFLARE_API_TOKEN \
+            FIREBASE_PROJECT_ID \
+            COLAB_OAUTH_CLIENT_ID \
+            COLAB_OAUTH_CLIENT_SECRET \
+            COLAB_OAUTH_REFRESH_TOKEN \
+            COLAB_WORKER_TOKEN \
+            GEMINI_API_KEY; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Missing required Offline-Toolchains secret: ${name}"
+              missing=1
+            fi
+          done
+          test "$missing" -eq 0
+
+      - name: Create or reuse D1 and apply schema
+        id: d1
+        if: inputs.deploy == true
+        working-directory: private-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          api() {
+            local method="$1"
+            local path="$2"
+            local body="${3:-}"
+            local args=(
+              --silent --show-error --fail-with-body
+              --request "$method"
+              --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"
+              --header 'Content-Type: application/json'
+              "https://api.cloudflare.com/client/v4${path}"
+            )
+            if [ -n "$body" ]; then
+              args+=(--data "$body")
+            fi
+            curl "${args[@]}"
+          }
+
+          list_res="$(api GET "/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database?name=${D1_DATABASE_NAME}&per_page=100")"
+          jq -e '.success == true' >/dev/null <<<"$list_res"
+          database_id="$(jq -r --arg name "$D1_DATABASE_NAME" '.result[]? | select(.name == $name) | .uuid' <<<"$list_res" | head -n 1)"
+
+          if [ -z "$database_id" ]; then
+            create_body="$(jq -n --arg name "$D1_DATABASE_NAME" '{name: $name}')"
+            create_res="$(api POST "/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database" "$create_body")"
+            jq -e '.success == true' >/dev/null <<<"$create_res"
+            database_id="$(jq -r '.result.uuid' <<<"$create_res")"
+          fi
+          test -n "$database_id"
+          echo "database_id=$database_id" >> "$GITHUB_OUTPUT"
+
+          schema_sql="$(cat cloudflare/translate-worker/schema.sql)"
+          schema_body="$(jq -n --arg sql "$schema_sql" '{sql: $sql}')"
+          schema_res="$(api POST "/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database/${database_id}/query" "$schema_body")"
+          jq -e '.success == true' >/dev/null <<<"$schema_res"
+
+      - name: Ensure R2 bucket and ephemeral lifecycle rules
+        if: inputs.deploy == true
+        shell: bash
+        run: |
+          set -euo pipefail
+          api() {
+            local method="$1"
+            local path="$2"
+            local body="${3:-}"
+            local args=(
+              --silent --show-error
+              --request "$method"
+              --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"
+              --header 'Content-Type: application/json'
+              "https://api.cloudflare.com/client/v4${path}"
+            )
+            if [ -n "$body" ]; then
+              args+=(--data "$body")
+            fi
+            curl "${args[@]}"
+          }
+
+          bucket_check="$(api GET "/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets/${R2_BUCKET_NAME}")"
+          if ! jq -e '.success == true' >/dev/null 2>&1 <<<"$bucket_check"; then
+            create_res="$(api POST "/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets" "$(jq -n --arg name "$R2_BUCKET_NAME" '{name: $name}')")"
+            jq -e '.success == true' >/dev/null <<<"$create_res"
+          fi
+
+          lifecycle_body='{
+            "rules": [
+              {
+                "id": "expire-source-inputs-1d",
+                "enabled": true,
+                "conditions": { "prefix": "source-inputs/" },
+                "deleteObjectsTransition": { "condition": { "type": "Age", "maxAge": 86400 } }
+              },
+              {
+                "id": "expire-ephemeral-translations-2d",
+                "enabled": true,
+                "conditions": { "prefix": "ephemeral-translations/" },
+                "deleteObjectsTransition": { "condition": { "type": "Age", "maxAge": 172800 } }
+              }
+            ]
+          }'
+          lifecycle_res="$(api PUT "/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets/${R2_BUCKET_NAME}/lifecycle" "$lifecycle_body")"
+          jq -e '.success == true' >/dev/null <<<"$lifecycle_res"
+
+      - name: Install pinned Wrangler
+        if: inputs.deploy == true
+        working-directory: private-source/cloudflare/translate-worker
+        run: |
+          set -euo pipefail
+          npm install --no-save --ignore-scripts "wrangler@${WRANGLER_VERSION}"
+
+      - name: Deploy Worker, Durable Object, and Secrets
+        if: inputs.deploy == true
+        working-directory: private-source/cloudflare/translate-worker
+        env:
+          D1_DATABASE_ID: ${{ steps.d1.outputs.database_id }}
+        run: |
+          set -euo pipefail
+          config_file="wrangler.deploy.toml"
+          trap 'rm -f "$config_file"' EXIT
+
+          cp wrangler.toml "$config_file"
+          sed -i "s|<D1_DATABASE_ID>|${D1_DATABASE_ID}|g" "$config_file"
+          sed -i "s|FIREBASE_PROJECT_ID = \"goanime-placeholder\"|FIREBASE_PROJECT_ID = \"${FIREBASE_PROJECT_ID}\"|g" "$config_file"
+          sed -i "s|COLAB_BOOTSTRAP_REPO_URL = \"https://github.com/OWNER/REPO.git\"|COLAB_BOOTSTRAP_REPO_URL = \"${COLAB_BOOTSTRAP_REPO_URL}\"|g" "$config_file"
+          sed -i "s|COLAB_BOOTSTRAP_REF = \"main\"|COLAB_BOOTSTRAP_REF = \"${COLAB_BOOTSTRAP_REF}\"|g" "$config_file"
+
+          npx wrangler deploy --config "$config_file"
+
+          printf '%s' "$COLAB_OAUTH_CLIENT_ID" | npx wrangler secret put COLAB_OAUTH_CLIENT_ID --config "$config_file"
+          printf '%s' "$COLAB_OAUTH_CLIENT_SECRET" | npx wrangler secret put COLAB_OAUTH_CLIENT_SECRET --config "$config_file"
+          printf '%s' "$COLAB_OAUTH_REFRESH_TOKEN" | npx wrangler secret put COLAB_OAUTH_REFRESH_TOKEN --config "$config_file"
+          printf '%s' "$COLAB_WORKER_TOKEN" | npx wrangler secret put COLAB_WORKER_TOKEN --config "$config_file"
+          printf '%s' "$GEMINI_API_KEY" | npx wrangler secret put GEMINI_API_KEY --config "$config_file"
+          if [ -n "${CLIENT_APP_KEY:-}" ]; then
+            printf '%s' "$CLIENT_APP_KEY" | npx wrangler secret put CLIENT_APP_KEY --config "$config_file"
+          fi
+
+      - name: Clean private workspace
+        if: always()
+        shell: bash
+        run: rm -rf private-source
