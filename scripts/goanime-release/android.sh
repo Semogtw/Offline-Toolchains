@@ -39,6 +39,25 @@ UPDATE_MANIFEST_URL_DEFINE="hex:$(encode_endpoint "$UPDATE_MANIFEST_URL")"
 UPDATE_APPCAST_URL_DEFINE="hex:$(encode_endpoint "$UPDATE_APPCAST_URL")"
 RUNTIME_DATABASE_MANIFEST_URL_DEFINE="hex:$(encode_endpoint "$RUNTIME_DATABASE_MANIFEST_URL")"
 
+# Koharu translation broker (opt-in at release time): the broker URL and
+# the client key only make sense together. Both set -> compile the defines
+# (hex-encoded, same as the other endpoints). Only one set -> fail loudly
+# instead of shipping a half-configured broker. Neither set -> warn loudly
+# and build without the broker, so releases keep working before the
+# secrets exist (the app treats an empty define as broker unconfigured).
+translation_broker_defines=()
+if [[ -n "${MANGA_TRANSLATION_BROKER_URL:-}" && -n "${MANGA_TRANSLATION_CLIENT_KEY:-}" ]]; then
+  translation_broker_defines+=(
+    --dart-define="MANGA_TRANSLATION_BROKER_URL=hex:$(encode_endpoint "$MANGA_TRANSLATION_BROKER_URL")"
+    --dart-define="MANGA_TRANSLATION_CLIENT_KEY=hex:$(encode_endpoint "$MANGA_TRANSLATION_CLIENT_KEY")"
+  )
+elif [[ -n "${MANGA_TRANSLATION_BROKER_URL:-}" || -n "${MANGA_TRANSLATION_CLIENT_KEY:-}" ]]; then
+  echo "::error::MANGA_TRANSLATION_BROKER_URL and MANGA_TRANSLATION_CLIENT_KEY must be set together; only one of them is defined. Refusing to build a release with a half-configured Koharu translation broker."
+  exit 1
+else
+  echo "::warning::MANGA_TRANSLATION_BROKER_URL and MANGA_TRANSLATION_CLIENT_KEY are not set: this release ships WITHOUT the Koharu translation broker and the in-app translation option will be disabled."
+fi
+
 common_dart_defines=(
   --dart-define="FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID"
   --dart-define="FIREBASE_WEB_API_KEY=$FIREBASE_WEB_API_KEY"
@@ -49,6 +68,7 @@ common_dart_defines=(
   --dart-define=UPDATE_MANIFEST_SIGNATURE_REQUIRED=true
   --dart-define="ANIME_METADATA_SEED_MANIFEST_URL=$ANIME_METADATA_SEED_MANIFEST_URL"
   --dart-define="RUNTIME_DATABASE_MANIFEST_URL=$RUNTIME_DATABASE_MANIFEST_URL_DEFINE"
+  "${translation_broker_defines[@]}"
 )
 
 verify_android_apk() {
