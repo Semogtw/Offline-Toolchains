@@ -43,7 +43,6 @@ env:
   ANDROID_TARGET_PLATFORM: android-arm64
   ANDROID_RELEASE_APK_NAME: GoAnime-android-arm64-v8a-release.apk
   ANDROID_MANGA_ONLY_RELEASE_APK_NAME: GoAnime-manga-only-android-arm64-v8a-release.apk
-  ANDROID_MANGA_ONLY_RELEASE_APK_NAME_32: GoAnime-manga-only-android-armeabi-v7a-release.apk
   GOANIME_OFFICIAL_RELEASE: "true"
   FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
   FIREBASE_WEB_API_KEY: ${{ secrets.FIREBASE_WEB_API_KEY }}

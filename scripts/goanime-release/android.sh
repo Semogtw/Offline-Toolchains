@@ -149,21 +149,6 @@ if [[ "${BUILD_MANGA_ONLY:-true}" == "true" && -n "${ANDROID_MANGA_ONLY_RELEASE_
   verify_android_apk "$apk" "Manga-only Android"
   python3 tools/manga/verify_manga_only_apk.py "$apk"
   cp "$apk" "dist/android-release/$ANDROID_MANGA_ONLY_RELEASE_APK_NAME"
-
-  # The 32-bit (armeabi-v7a) variant ships ONLY in the manga-only edition
-  # (decision 2026-11-16): a plain signed flutter build for legacy 32-bit
-  # Android devices. No Shorebird registration (no split-per-abi support),
-  # so no OTA patches; update.json carries it as apk-manga-only-arm32.
-  if [[ -n "${ANDROID_MANGA_ONLY_RELEASE_APK_NAME_32:-}" ]]; then
-    GOANIME_ANDROID_ABI=armeabi-v7a flutter build apk \
-      --release \
-      --target-platform android-arm \
-      --dart-define=GOANIME_MANGA_ONLY=true \
-      "${common_dart_defines[@]}"
-    verify_android_apk "$apk" "Manga-only Android 32-bit" "armeabi-v7a"
-    python3 tools/manga/verify_manga_only_apk.py "$apk"
-    cp "$apk" "dist/android-release/$ANDROID_MANGA_ONLY_RELEASE_APK_NAME_32"
-  fi
 fi
 
 gh release upload "$RELEASE_TAG" dist/android-release/* \
