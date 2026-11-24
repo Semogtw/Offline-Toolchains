@@ -67,7 +67,7 @@ jobs:
           show-progress: false
 
       - name: Setup Node.js 22
-        uses: actions/setup-node@249970729cb0ef3589644e289644e5dc5ba9c38 # v6
+        uses: actions/setup-node@249970729cb0ef35896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
 
@@ -222,6 +222,18 @@ jobs:
           if [ -n "${CLIENT_APP_KEY:-}" ]; then
             printf '%s' "$CLIENT_APP_KEY" | npx wrangler secret put CLIENT_APP_KEY --config "$config_file"
           fi
+
+      - name: Check Colab MCP runtimes inventory (sanitized)
+        if: inputs.deploy == true && env.BROKER_URL != ''
+        env:
+          BROKER_URL: ${{ secrets.MANGA_TRANSLATION_BROKER_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          resp="$(curl --silent --show-error --fail --request POST \
+            --header "Authorization: Bearer ${COLAB_WORKER_TOKEN}" \
+            "${BROKER_URL%/}/v1/worker/diag-log")"
+          jq '{orchestratorState, runtimeSpec, hasRuntime, queuedCount, runningCount, lastError, lastTriageReason, runtimes}' <<<"$resp"
 
       - name: Clean private workspace
         if: always()
